@@ -73,6 +73,12 @@ set_target_properties(neural_amp_modeler
 
 # Platform
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	# Keep symbols from static archives out of .dynsym; with -static-libstdc++
+	# they would otherwise clash with the host's libstdc++.
+	target_link_options(neural_amp_modeler PRIVATE -Wl,--exclude-libs,ALL)
+endif()
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	target_compile_definitions(neural_amp_modeler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
