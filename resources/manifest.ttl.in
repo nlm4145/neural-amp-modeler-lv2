@@ -5,4 +5,9 @@
 <@NAM_LV2_ID@>
 	a lv2:Plugin;
 	lv2:binary <neural_amp_modeler@CMAKE_SHARED_MODULE_SUFFIX@>;
-	rdfs:seeAlso <neural_amp_modeler.ttl>,<modgui.ttl>.
+	rdfs:seeAlso <neural_amp_modeler.ttl>,<modgui.ttl>@NAM_UI_SEE_ALSO@.
+
+<@NAM_RIG_LV2_ID@>
+	a lv2:Plugin;
+	lv2:binary <neural_amp_modeler_rig@CMAKE_SHARED_MODULE_SUFFIX@>;
+	rdfs:seeAlso <neural_amp_modeler_rig.ttl>@NAM_RIG_UI_SEE_ALSO@.

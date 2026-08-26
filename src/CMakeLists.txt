@@ -40,11 +40,24 @@ set(NA_SOURCES ../deps/NeuralAudio/NeuralAudio/NeuralModel.h)
 
 add_library(neural_amp_modeler SHARED ${SOURCES} ${NA_SOURCES})
 
+set(RIG_SOURCES nam_rig_lv2.cpp
+	nam_rig_plugin.cpp
+	nam_rig_plugin.h
+	wav_ir.cpp
+	wav_ir.h)
+
+add_library(neural_amp_modeler_rig SHARED ${RIG_SOURCES} ${NA_SOURCES})
+
 target_include_directories(neural_amp_modeler PUBLIC ../deps/NeuralAudio)
 target_include_directories(neural_amp_modeler PUBLIC ../deps/lv2/include)
 target_include_directories(neural_amp_modeler PUBLIC ../deps/denormal)
 
 target_link_libraries(neural_amp_modeler PRIVATE NeuralAudio)
+
+target_include_directories(neural_amp_modeler_rig PUBLIC ../deps/NeuralAudio)
+target_include_directories(neural_amp_modeler_rig PUBLIC ../deps/lv2/include)
+target_include_directories(neural_amp_modeler_rig PUBLIC ../deps/denormal)
+target_link_libraries(neural_amp_modeler_rig PRIVATE NeuralAudio)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SOURCES})
 source_group(NAM ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NA_SOURCES})
@@ -69,10 +82,46 @@ set_target_properties(neural_amp_modeler
 	CXX_VISIBILITY_PRESET hidden
 	INTERPROCEDURAL_OPTIMIZATION TRUE
 	PREFIX ""
+	SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
+)
+
+set_target_properties(neural_amp_modeler_rig
+	PROPERTIES
+	CXX_VISIBILITY_PRESET hidden
+	INTERPROCEDURAL_OPTIMIZATION TRUE
+	PREFIX ""
+	SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 )
 
 # Platform
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	target_compile_definitions(neural_amp_modeler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+if (APPLE)
+	enable_language(OBJCXX)
+	find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
+	find_library(AUTHENTICATIONSERVICES_FRAMEWORK AuthenticationServices REQUIRED)
+	find_library(SECURITY_FRAMEWORK Security REQUIRED)
+	find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
+
+	add_library(neural_amp_modeler_ui MODULE nam_ui.mm)
+	target_include_directories(neural_amp_modeler_ui PRIVATE ../deps/lv2/include)
+	target_link_libraries(neural_amp_modeler_ui PRIVATE ${COCOA_FRAMEWORK})
+	target_compile_options(neural_amp_modeler_ui PRIVATE -fobjc-arc)
+	set_target_properties(neural_amp_modeler_ui PROPERTIES
+		PREFIX ""
+		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
+	)
+
+	add_library(neural_amp_modeler_rig_ui MODULE nam_rig_ui.mm)
+	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
+	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK})
+	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
+	set_target_properties(neural_amp_modeler_rig_ui PROPERTIES
+		PREFIX ""
+		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
+	)
 endif()

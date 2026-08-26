@@ -1,0 +1,40 @@
+@prefix atom: <http://lv2plug.in/ns/ext/atom#> .
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+@prefix urid: <http://lv2plug.in/ns/ext/urid#> .
+
+<@NAM_RIG_LV2_ID@>
+	ui:ui <@NAM_RIG_LV2_ID@-ui> .
+
+<@NAM_RIG_LV2_ID@-ui>
+	a ui:CocoaUI ;
+	ui:binary <neural_amp_modeler_rig_ui@CMAKE_SHARED_MODULE_SUFFIX@> ;
+	lv2:requiredFeature urid:map, ui:parent ;
+	lv2:optionalFeature ui:resize ;
+	ui:portNotification [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "notify" ; ui:notifyType atom:Blank
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "input_level" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "output_level" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "quality_scale" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "pedal_enabled" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "amp_enabled" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_enabled" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "auto_cab" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_auto_bypassed" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "bass" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "mid" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "treble" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "gate_threshold" ; ui:notifyType atom:Float
+	] .

@@ -20,21 +20,39 @@ else()
 endif()
 
 set(NAM_LV2_ID http://github.com/mikeoliphant/neural-amp-modeler-lv2)
+set(NAM_RIG_LV2_ID "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig")
 
 add_subdirectory(src)
 
 
 # create neural_amp_modeler.lv2
 add_custom_target(copy_binaries ALL
-	${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler>" neural_amp_modeler.lv2/
-	DEPENDS neural_amp_modeler
+	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler>" neural_amp_modeler.lv2/
+	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig>" neural_amp_modeler.lv2/
+	DEPENDS neural_amp_modeler neural_amp_modeler_rig
 )
+
+if (APPLE)
+	add_custom_target(copy_ui ALL
+		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_ui>" neural_amp_modeler.lv2/
+		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig_ui>" neural_amp_modeler.lv2/
+		DEPENDS neural_amp_modeler_ui neural_amp_modeler_rig_ui
+	)
+	set(NAM_UI_SEE_ALSO ",<neural_amp_modeler_ui.ttl>")
+	set(NAM_RIG_UI_SEE_ALSO ",<neural_amp_modeler_rig_ui.ttl>")
+	configure_file(resources/neural_amp_modeler_ui.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_ui.ttl)
+	configure_file(resources/neural_amp_modeler_rig_ui.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_rig_ui.ttl)
+else()
+	set(NAM_UI_SEE_ALSO "")
+	set(NAM_RIG_UI_SEE_ALSO "")
+endif()
 
 file(COPY resources/modgui.ttl DESTINATION neural_amp_modeler.lv2)
 file(COPY resources/modgui DESTINATION neural_amp_modeler.lv2)
 
 configure_file(resources/manifest.ttl.in neural_amp_modeler.lv2/manifest.ttl)
 configure_file(resources/neural_amp_modeler.ttl.in neural_amp_modeler.lv2/neural_amp_modeler.ttl)
+configure_file(resources/neural_amp_modeler_rig.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_rig.ttl)
 
 install (DIRECTORY ${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2
        DESTINATION ${LIB_INSTALL_DIR}/lv2
