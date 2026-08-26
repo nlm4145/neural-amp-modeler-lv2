@@ -12,6 +12,7 @@
 
 namespace NAMRig {
 namespace {
+constexpr double kPi = 3.14159265358979323846;
 uint16_t u16(const unsigned char* p) { return uint16_t(p[0]) | (uint16_t(p[1]) << 8); }
 uint32_t u32(const unsigned char* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
@@ -71,17 +72,39 @@ std::vector<float> readWav(const char* path, uint32_t& rate) {
   return mono;
 }
 
+// Bandlimited windowed-sinc resampling, evaluated directly at each output
+// position. An IR's spectrum IS its transfer function, so resampling errors
+// are tone errors: the previous linear interpolation attenuated the top of the
+// IR's band (~-3 dB at the old Nyquist) and left spectral images that fold
+// back in on any later downsampling. Windowed-sinc is near-transparent
+// (<0.1 dB passband ripple, >90 dB image rejection) and, because this only
+// runs once per IR load, the cost of evaluating the sinc per tap is irrelevant.
 std::vector<float> resample(const std::vector<float>& input, double from, double to) {
   if (std::fabs(from - to) < 1.0 || input.size() < 2) return input;
+  constexpr int kTaps = 64;                             // kernel half-width (input samples)
+  const double ratio = from / to;                       // input samples per output sample
+  const double beta = 0.9 * std::min(from, to) / from;  // 2*fc/from, fc = 0.45*min(rate)
   const size_t count = std::max<size_t>(2, std::llround(input.size() * to / from));
   std::vector<float> output(count);
-  const double step = from / to;
   for (size_t i = 0; i < count; ++i) {
-    const double source = std::min<double>(i * step, input.size() - 1);
-    const size_t a = static_cast<size_t>(source);
-    const size_t b = std::min(a + 1, input.size() - 1);
-    const float mix = float(source - a);
-    output[i] = input[a] + (input[b] - input[a]) * mix;
+    const double pos = i * ratio;
+    const long center = std::lround(pos);
+    double acc = 0.0, wsum = 0.0;
+    for (long k = center - kTaps; k <= center + kTaps; ++k) {
+      if (k < 0 || k >= static_cast<long>(input.size())) continue;
+      const double r = pos - k;               // offset in input samples
+      const double u = beta * r;
+      const double s = std::fabs(u) < 1e-8 ? beta : beta * std::sin(kPi * u) / (kPi * u);
+      const double v = r / kTaps;             // window argument, clamped to [-1, 1]
+      const double w = 0.35875 + 0.48829 * std::cos(kPi * v) + 0.14128 * std::cos(2.0 * kPi * v)
+                     + 0.01168 * std::cos(3.0 * kPi * v);   // Blackman-Harris
+      acc += input[k] * s * w;
+      wsum += s * w;
+    }
+    // Normalizing by the windowed-sinc sum keeps the DC gain at exactly 1.0
+    // despite the finite window and edge truncation.
+    output[i] = wsum != 0.0 ? static_cast<float>(acc / wsum)
+                            : input[std::min<long>(center, static_cast<long>(input.size()) - 1)];
   }
   return output;
 }
@@ -101,6 +124,18 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlo
   // gives natural tails while keeping direct convolution inexpensive at 96 kHz.
   if (taps.size() > static_cast<size_t>(hostRate * 0.08)) taps.resize(static_cast<size_t>(hostRate * 0.08));
   if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
+
+  // Normalize to unity energy (sqrt(sum h^2) = 1) so the cab stage sits at
+  // roughly unity gain, matching the .nam stages whose recommended input and
+  // output trims the plugin applies. A raw full-scale IR keeps ~2.5x energy
+  // gain, running the cab stage ~8 dB hot and clipping on hot post-amp
+  // material. Level-invariant loading also makes quiet captures usable.
+  double energy = 0.0;
+  for (float t : taps) energy += static_cast<double>(t) * t;
+  if (energy > 0.0) {
+    const double scale = 1.0 / std::sqrt(energy);
+    for (float& t : taps) t = static_cast<float>(t * scale);
+  }
   return std::unique_ptr<WavIR>(new WavIR(std::move(taps), maxBlockSize));
 }
 

@@ -1,0 +1,30 @@
+@prefix atom: <http://lv2plug.in/ns/ext/atom#> .
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+@prefix urid: <http://lv2plug.in/ns/ext/urid#> .
+
+<http://github.com/mikeoliphant/neural-amp-modeler-lv2>
+	ui:ui <http://github.com/mikeoliphant/neural-amp-modeler-lv2#cocoa-ui> .
+
+<http://github.com/mikeoliphant/neural-amp-modeler-lv2#cocoa-ui>
+	a ui:CocoaUI ;
+	ui:binary <neural_amp_modeler_ui.so> ;
+	lv2:requiredFeature urid:map , ui:parent ;
+	lv2:optionalFeature ui:resize ;
+	ui:portNotification [
+		ui:plugin <http://github.com/mikeoliphant/neural-amp-modeler-lv2> ;
+		lv2:symbol "notify" ;
+		ui:notifyType atom:Blank
+	], [
+		ui:plugin <http://github.com/mikeoliphant/neural-amp-modeler-lv2> ;
+		lv2:symbol "input_level" ;
+		ui:notifyType atom:Float
+	], [
+		ui:plugin <http://github.com/mikeoliphant/neural-amp-modeler-lv2> ;
+		lv2:symbol "output_level" ;
+		ui:notifyType atom:Float
+	], [
+		ui:plugin <http://github.com/mikeoliphant/neural-amp-modeler-lv2> ;
+		lv2:symbol "quality_scale" ;
+		ui:notifyType atom:Float
+	] .

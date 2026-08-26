@@ -10,14 +10,14 @@
 @prefix urid:  <http://lv2plug.in/ns/ext/urid#> .
 @prefix work:  <http://lv2plug.in/ns/ext/worker#> .
 
-<@NAM_RIG_LV2_ID@-pedal-model>
+<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model>
 	a lv2:Parameter ; rdfs:label "Pedal Model" ; rdfs:range atom:Path .
-<@NAM_RIG_LV2_ID@-amp-model>
+<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model>
 	a lv2:Parameter ; rdfs:label "Amp Model" ; rdfs:range atom:Path .
-<@NAM_RIG_LV2_ID@-cab-model>
+<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model>
 	a lv2:Parameter ; rdfs:label "Cab Model" ; rdfs:range atom:Path .
 
-<@NAM_RIG_LV2_ID@>
+<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig>
 	a lv2:Plugin, lv2:SimulatorPlugin, doap:Project ;
 	doap:name "NAM Oversampled Rig Testing" ;
 	doap:license <http://opensource.org/licenses/gpl-3-0> ;
@@ -27,9 +27,9 @@
 	lv2:extensionData work:interface, state:interface, opts:interface ;
 	opts:supportedOption <http://lv2plug.in/ns/ext/buf-size#maxBlockLength> ;
 	patch:writable
-		<@NAM_RIG_LV2_ID@-pedal-model>,
-		<@NAM_RIG_LV2_ID@-amp-model>,
-		<@NAM_RIG_LV2_ID@-cab-model> ;
+		<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model>,
+		<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model>,
+		<http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model> ;
 
 	lv2:port [
 		a atom:AtomPort, lv2:InputPort ; atom:bufferType atom:Sequence ;

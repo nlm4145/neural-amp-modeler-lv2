@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -arch arm64 -bundle -Wl,-headerpad_max_install_names -o neural_amp_modeler_rig_ui.so CMakeFiles/neural_amp_modeler_rig_ui.dir/nam_rig_ui.mm.o  -framework Cocoa -framework AuthenticationServices -framework Security

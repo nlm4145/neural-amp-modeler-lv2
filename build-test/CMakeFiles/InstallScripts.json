@@ -1,0 +1,14 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/NeuralAudio/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/NeuralAudio/NeuralAudio/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/NeuralAudio/NeuralAudio/RTNeural/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/NeuralAudio/NeuralAudio/RTNeural/RTNeural/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/NeuralAudio/NeuralAudio/math_approx/cmake_install.cmake",
+		"/Users/personal/Documents/Github/neural-amp-modeler-lv2/build-test/src/NeuralAudio/NeuralAudioCAPI/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
