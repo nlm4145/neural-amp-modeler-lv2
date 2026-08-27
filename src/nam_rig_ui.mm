@@ -417,6 +417,7 @@ struct RigUIState {
 - (void)selectMode:(NSButton*)sender;
 - (void)filterChanged:(id)sender;
 - (void)sortChanged:(id)sender;
++ (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort;
 - (void)connectTone3000:(id)sender;
 - (void)connectIfNeeded;
 - (void)connectIfNeededAllowBrowser:(BOOL)allowBrowser;
@@ -958,6 +959,33 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 }
 
 @implementation ToneBrowserController
+// Persist the Browse filter dropdowns (gear + sort) to disk on every USER change
+// (sender != nil; programmatic [self filterChanged:nil] calls never write), and
+// re-select the saved titles when the popup is built. Element recreates the
+// plugin editor (and these NSPopUpButtons) every time the window is reopened,
+// so without this the selections reset to "All Gear"/"Newest".
+- (void)persistFilterSelection {
+  NSString* dir = [@("~/Library/Application Support/NAM Oversampled Rig") stringByExpandingTildeInPath];
+  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString* path = [dir stringByAppendingPathComponent:@"browse-filters.txt"];
+  NSString* line = [NSString stringWithFormat:@"%@\n%@\n",
+                    self.gear.titleOfSelectedItem ?: @"", self.sort.titleOfSelectedItem ?: @""];
+  [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
++ (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort {
+  NSString* path = [[@("~/Library/Application Support/NAM Oversampled Rig") stringByExpandingTildeInPath]
+                    stringByAppendingPathComponent:@"browse-filters.txt"];
+  NSString* text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+  if (![text isKindOfClass:[NSString class]] || !text.length) return;
+  NSArray* lines = [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+  NSString* savedGear = lines.count > 0 ? lines[0] : @"";
+  NSString* savedSort = lines.count > 1 ? lines[1] : @"";
+  for (NSString* title in gear.itemTitles)
+    if ([title isEqualToString:savedGear]) { [gear selectItemWithTitle:title]; break; }
+  for (NSString* title in sort.itemTitles)
+    if ([title isEqualToString:savedSort]) { [sort selectItemWithTitle:title]; break; }
+}
+
 - (void)dealloc {
   [self logTone3000:@"ToneBrowserController dealloc"];
 }
@@ -1254,7 +1282,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   });
 }
 
-- (void)sortChanged:(id)sender { [self refreshOnline]; }
+- (void)sortChanged:(id)sender { if (sender) [self persistFilterSelection]; [self refreshOnline]; }
 
 // Infinite scroll: as the user nears the bottom of the tone list, pull the
 // next search page (cache-first, one page at a time). Fired via the clip
@@ -1767,6 +1795,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)controlTextDidEndEditing:(NSNotification*)notification { if (self.accessToken.length) [self refreshOnline]; }
 
 - (void)filterChanged:(id)sender {
+  if (sender) [self persistFilterSelection];
   NSString* query = self.search.stringValue.lowercaseString;
   NSString* gear = self.gear.titleOfSelectedItem;
   NSMutableArray<ToneItem*>* shown = [NSMutableArray array];
@@ -2127,6 +2156,7 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   controller.sort.controlSize = NSControlSizeSmall;
   controller.sort.target = controller; controller.sort.action = @selector(sortChanged:);
   [browser addSubview:controller.sort];
+  [ToneBrowserController restoreFilterSelectionForGear:controller.gear sort:controller.sort];
 
   // Tone cards — multi-column collection view, click to load/download.
   const CGFloat tableWidth = bw - 56;
