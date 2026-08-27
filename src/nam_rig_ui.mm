@@ -1059,7 +1059,12 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (savedExp) expMs = savedExp.doubleValue;
     const BOOL expired = expMs > 0 && expMs < ([[NSDate date] timeIntervalSince1970] * 1000.0 + 60000.0);
     if (expired) {
-      dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshToneSession]; });
+      // Try a refresh when there's a refresh token to use; otherwise (corrupt
+      // or partial session) go straight to a fresh browser login.
+      if (refresh.length)
+        dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshToneSession]; });
+      else
+        dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf startOAuthLogin]; });
       return;
     }
     // If we bootstrapped from NAM Rig, persist our own copy immediately.
