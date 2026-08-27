@@ -408,6 +408,9 @@ struct RigUIState {
 @property(nonatomic, copy) NSString* activeSearchPrefix;  // prefix the current page state belongs to
 - (void)loadMoreSearchResults;
 - (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
+- (void)downloadAllModels:(ToneItem*)item;
+- (void)downloadModelStep:(NSInteger)index of:(NSArray*)models item:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
+- (void)finishModelDownload:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
 - (void)reloadLibrary:(id)sender;
 - (void)selectMode:(NSButton*)sender;
 - (void)filterChanged:(id)sender;
@@ -1673,35 +1676,34 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* query = self.search.stringValue.lowercaseString;
   NSString* gear = self.gear.titleOfSelectedItem;
   NSMutableArray<ToneItem*>* shown = [NSMutableArray array];
-  for (ToneItem* item in self.allItems) {
-    if ([self.mode isEqualToString:@"Favorites"] && !item.favorite) continue;
-    if ([self.mode isEqualToString:@"Local"] && !item.local) continue;
-    if ([gear isEqualToString:@"Pedals"] && item.stage != 0) continue;
-    if ([gear isEqualToString:@"Amps"] && item.stage != 1) continue;
-    if ([gear isEqualToString:@"Cabs"] && item.stage != 2) continue;
-    if ([gear isEqualToString:@"Amp + Cab"] && item.stage != 1 && item.stage != 2) continue;
-    NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", item.title, item.creator, item.gear].lowercaseString;
-    if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
-    [shown addObject:item];
+  // Browse mode mirrors tone3000.com: the search API returns results ALREADY
+  // sorted (newest/oldest/trending/downloads-all-time), so we preserve that
+  // server order exactly — current-search results first, then locally-known
+  // extras (local packs, favorites not in this search). Never re-sort by
+  // local fields: a downloaded tone's createdAt is its file's modification
+  // date, which would jump it ahead of the true server ordering (this was
+  // exactly why sorts "didn't match the site").
+  const BOOL browseServerOrder = [self.mode isEqualToString:@"Browse"] && self.searchIds.count > 0;
+  for (NSInteger pass = browseServerOrder ? 0 : 1; pass < 2; pass++) {
+    for (ToneItem* item in self.allItems) {
+      if ([self.mode isEqualToString:@"Favorites"] && !item.favorite) continue;
+      if ([self.mode isEqualToString:@"Local"] && !item.local) continue;
+      if ([gear isEqualToString:@"Pedals"] && item.stage != 0) continue;
+      if ([gear isEqualToString:@"Amps"] && item.stage != 1) continue;
+      if ([gear isEqualToString:@"Cabs"] && item.stage != 2) continue;
+      if ([gear isEqualToString:@"Amp + Cab"] && item.stage != 1 && item.stage != 2) continue;
+      NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", item.title, item.creator, item.gear].lowercaseString;
+      if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
+      if (browseServerOrder) {
+        const BOOL inSearch = [self.searchIds containsObject:@(item.toneId)];
+        if ((pass == 0) != inSearch) continue;   // pass 0: search hits in server order; pass 1: the rest
+      }
+      [shown addObject:item];
+    }
+    if (!browseServerOrder) break;
   }
   if ([self.mode isEqualToString:@"Recent"]) {
     [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) { return [b.modified compare:a.modified]; }];
-  } else if ([self.mode isEqualToString:@"Browse"]) {
-    // In Browse mode the sort popup mirrors tone3000.com's ordering. Trending
-    // and Best Match are server-computed (no local equivalent), so we preserve
-    // the order the search API returned; the rest sort locally by real fields.
-    NSString* sort = self.sort.titleOfSelectedItem;
-    if (sort != nil && [sort isEqualToString:@"Oldest"]) {
-      [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) { return [a.createdAt compare:b.createdAt]; }];
-    } else if (sort != nil && [sort isEqualToString:@"Most Downloaded"]) {
-      [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
-        if (b.downloadsCount == a.downloadsCount) return NSOrderedSame;
-        return b.downloadsCount > a.downloadsCount ? NSOrderedAscending : NSOrderedDescending;
-      }];
-    } else if (sort == nil || [sort isEqualToString:@"Newest"]) {
-      [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) { return [b.createdAt compare:a.createdAt]; }];
-    }
-    // Trending / Best Match: leave in server-returned order.
   }
   self.visibleItems = shown;
   [self.collectionView reloadData];
@@ -1748,18 +1750,33 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
         if (!current || current.item >= (NSInteger)strongSelf.visibleItems.count || strongSelf.visibleItems[current.item].toneId != selectedToneId) return;
         item.remoteModels = data;
         if (data.count > 0) {
-          strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models available — downloading first…", (unsigned long)data.count];
-          [strongSelf downloadFirstModel:item];
+          strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models — downloading all…", (unsigned long)data.count];
+          [strongSelf downloadAllModels:item];
         } else {
           strongSelf.status.stringValue = @"No downloadable models found";
         }
       });
     };
-    void (^fetchA2MaybeA1)(NSArray*) = ^(NSArray *a2) {
-      if (a2.count > 0) { finish(a2); }
-      else { fetch(@"1", ^(NSArray *a1) { finish(a1); }); }
+    // A2 + Custom are the default set (merged, deduped by model id). A1 legacy
+    // is fetched ONLY when neither A2 nor Custom has any models. Verified
+    // against the live API: tone 44691 → arch2=44, arch1=39, arch3=0 rows.
+    void (^fetchMaybeA1)(NSArray*, NSArray*) = ^(NSArray *a2, NSArray *custom) {
+      if (a2.count == 0 && custom.count == 0) {
+        fetch(@"1", ^(NSArray *a1) { finish(a1); });
+        return;
+      }
+      NSMutableArray *merged = [NSMutableArray arrayWithArray:a2];
+      for (NSDictionary *m in custom) {
+        id mid = m[@"id"];
+        BOOL dup = NO;
+        for (NSDictionary *e in a2) if (mid && [e[@"id"] isEqual:mid]) { dup = YES; break; }
+        if (!dup) [merged addObject:m];
+      }
+      finish(merged);
     };
-    fetch(@"2", fetchA2MaybeA1);
+    fetch(@"2", ^(NSArray *a2) {
+      fetch(@"3", ^(NSArray *custom) { fetchMaybeA1(a2, custom); });
+    });
   } else {
     self.status.stringValue = @"Connect Tone3000 to download models";
   }
@@ -1778,41 +1795,109 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   }
 }
 
-- (void)downloadFirstModel:(ToneItem*)item {
+// Downloads EVERY model of a tone into one folder (one card = one folder =
+// one _tone3000.json whose downloads[] fills the tile's model dropdown),
+// mirroring NAM Rig's layout. Sequential (one request at a time) to stay
+// server-friendly. Self-healing: files already on disk with the right size
+// are skipped, so re-selecting a tone only fetches missing models — and
+// folders created by the old first-model-only build get topped up here.
+- (void)downloadAllModels:(ToneItem*)item {
   if (!self.accessToken.length || item.remoteModels.count == 0) return;
-  NSDictionary* model = item.remoteModels.firstObject;
+  NSString* category = item.stage == 0 ? @"Pedal" : (item.stage == 2 ? @"Cab" : @"Amp");
+  NSString* folder = [[[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]
+                        stringByAppendingPathComponent:category]
+                       stringByAppendingPathComponent:@"NAM Oversampled Rig"]
+                      stringByAppendingPathComponent:safeFilename(item.title)] copy];
+  NSFileManager* fm = [NSFileManager defaultManager];
+  [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+  NSMutableArray<NSDictionary*>* downloads = [NSMutableArray array];
+  NSDictionary* old = jsonDictionaryAtPath([folder stringByAppendingPathComponent:@"_tone3000.json"]);
+  for (NSDictionary* d in [old[@"downloads"] isKindOfClass:NSArray.class] ? old[@"downloads"] : @[])
+    if ([d isKindOfClass:NSDictionary.class]) [downloads addObject:d];
+  [self downloadModelStep:0 of:item.remoteModels item:item folder:folder downloads:downloads];
+}
+
+// One step of the sequential downloader: process models[index], then recurse.
+- (void)downloadModelStep:(NSInteger)index
+                       of:(NSArray*)models
+                     item:(ToneItem*)item
+                   folder:(NSString*)folder
+                downloads:(NSMutableArray<NSDictionary*>*)downloads {
+  if (index >= (NSInteger)models.count) {
+    [self finishModelDownload:item folder:folder downloads:downloads];
+    return;
+  }
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSDictionary* model = models[index];
+  NSString* name = [model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model";
+  NSString* ext = [model[@"model_url"] isKindOfClass:NSString.class] && [model[@"model_url"] pathExtension].length
+      ? [model[@"model_url"] pathExtension] : (item.stage == 2 ? @"wav" : @"nam");
+  NSString* filename = [safeFilename(name) stringByAppendingPathExtension:ext];
+  NSString* path = [folder stringByAppendingPathComponent:filename];
+  self.status.stringValue = [NSString stringWithFormat:@"Downloading model %ld of %ld — %@",
+                            (long)index + 1, (long)models.count, name];
+  // Self-heal skip: already on disk at the expected size → just record it.
+  NSDictionary* existing = nil;
+  for (NSDictionary* d in downloads)
+    if ([d[@"local_filename"] isKindOfClass:NSString.class] && [d[@"local_filename"] isEqualToString:filename]) { existing = d; break; }
+  NSUInteger expected = [model[@"size"] respondsToSelector:@selector(longLongValue)] ? [model[@"size"] longLongValue] : 0;
+  if (existing && [fm fileExistsAtPath:path]) {
+    NSDictionary* attr = [fm attributesOfItemAtPath:path error:nil];
+    if (!expected || [attr fileSize] == expected) {
+      [self downloadModelStep:index + 1 of:models item:item folder:folder downloads:downloads];
+      return;
+    }
+  }
   NSString* urlString = [model[@"model_url"] isKindOfClass:NSString.class] ? model[@"model_url"] : nil;
-  if (!urlString.length) return;
-  self.status.stringValue = @"Downloading model…";
+  if (!urlString.length) {
+    [self downloadModelStep:index + 1 of:models item:item folder:folder downloads:downloads];
+    return;
+  }
   NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
   [request setValue:[@"Bearer " stringByAppendingString:self.accessToken] forHTTPHeaderField:@"Authorization"];
+  __weak ToneBrowserController* weakSelf = self;
   [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
     NSInteger code = [(NSHTTPURLResponse*)response statusCode];
-    if (!data.length || code < 200 || code >= 300) { [self setOnlineStatus:code == 401 ? @"Tone3000 session expired — reconnect" : @"Model download failed"]; return; }
-    NSString* category = item.stage == 0 ? @"Pedal" : (item.stage == 2 ? @"Cab" : @"Amp");
-    NSString* folder = [[[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath] stringByAppendingPathComponent:category]
-                         stringByAppendingPathComponent:@"NAM Oversampled Rig"] stringByAppendingPathComponent:safeFilename(item.title)] copy];
-    [[NSFileManager defaultManager] createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
-    NSString* ext = [NSURL URLWithString:urlString].pathExtension.length ? [NSURL URLWithString:urlString].pathExtension : (item.stage == 2 ? @"wav" : @"nam");
-    NSString* filename = [[safeFilename([model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model") stringByAppendingPathExtension:ext] copy];
-    NSString* path = [folder stringByAppendingPathComponent:filename]; NSError* writeError = nil;
-    if (![data writeToFile:path options:NSDataWritingAtomic error:&writeError]) { [self setOnlineStatus:@"Could not save the downloaded model"]; return; }
-    NSDictionary* download = @{@"model_id": model[@"id"] ?: @0, @"original_model": model,
-                               @"local_filename": filename, @"status": @"downloaded",
-                               @"bytes": @(data.length), @"downloaded_at": [[NSDate date] description]};
-    NSDictionary* manifest = @{@"powered_by": @"Tone3000", @"tone": item.toneData ?: @{}, @"downloads": @[download]};
-    NSData* json = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:nil];
-    [json writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
     dispatch_async(dispatch_get_main_queue(), ^{
-      item.models = @[path]; item.local = YES;
-      self.status.stringValue = @"Downloaded and loaded";
-      if (self.state) {
-        self.state->sendPath((size_t)item.stage, path.fileSystemRepresentation);
-        self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
+      ToneBrowserController* s = weakSelf; if (!s) return;
+      if (data.length && code >= 200 && code < 300) {
+        [data writeToFile:path options:NSDataWritingAtomic error:nil];
+        NSDictionary* download = @{@"model_id": model[@"id"] ?: @0, @"original_model": model,
+                                   @"local_filename": filename, @"bytes": @(data.length),
+                                   @"status": @"downloaded", @"downloaded_at": [[NSDate date] description]};
+        if (existing) [downloads removeObjectIdenticalTo:existing];
+        [downloads addObject:download];
+      } else {
+        [s logTone3000:[NSString stringWithFormat:@"MODEL DOWNLOAD FAILED (%@, HTTP %ld): %@",
+                        name, (long)code, error.localizedDescription ?: @"none"]];
       }
-      [self showModelsForItem:item andLoad:NO];
+      [s downloadModelStep:index + 1 of:models item:item folder:folder downloads:downloads];
     });
   }] resume];
+}
+
+// All models processed: write the complete manifest (schema matches NAM
+// Rig's exactly, so reloadLibrary merges it like any NAM Rig pack) and
+// populate the stage tile with every downloaded file.
+- (void)finishModelDownload:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads {
+  NSDictionary* manifest = @{@"powered_by": @"Tone3000", @"tone": item.toneData ?: @{}, @"downloads": downloads};
+  NSData* json = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:nil];
+  [json writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSMutableArray<NSString*>* paths = [NSMutableArray array];
+  for (NSDictionary* d in downloads) {
+    NSString* p = [folder stringByAppendingPathComponent:d[@"local_filename"]];
+    if (p.length && [fm fileExistsAtPath:p]) [paths addObject:p];
+  }
+  item.models = paths; item.local = YES;
+  self.status.stringValue = [NSString stringWithFormat:@"%ld models ready — %@", (long)paths.count, item.title];
+  if (self.state) {
+    self.state->setStageModels((size_t)item.stage, item.models);
+    if (paths.count) {
+      self.state->sendPath((size_t)item.stage, paths.firstObject.fileSystemRepresentation);
+      self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
+    }
+  }
 }
 
 @end
