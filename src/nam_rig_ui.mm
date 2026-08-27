@@ -418,6 +418,7 @@ struct RigUIState {
 - (void)filterChanged:(id)sender;
 - (void)sortChanged:(id)sender;
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort;
+- (void)toggleFavoriteFromCard:(ToneItem*)item;
 - (void)connectTone3000:(id)sender;
 - (void)connectIfNeeded;
 - (void)connectIfNeededAllowBrowser:(BOOL)allowBrowser;
@@ -521,11 +522,13 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 
 // Multi-column tone card for the collection-view grid.
 @interface ToneCardItem : NSCollectionViewItem
+@property(nonatomic, copy) void (^onFavToggle)(ToneItem*);
 @end
 @implementation ToneCardItem {
   NSImageView *_artView;
   NSTextField *_titleField;
   NSTextField *_detailField;
+  NSButton *_favButton;
 }
 - (void)loadView {
   NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 190, 74)];
@@ -540,7 +543,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _artView.layer.masksToBounds = YES;
   [v addSubview:_artView];
 
-  _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(72, 42, 112, 16)];
+  _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(72, 42, 92, 16)];
   _titleField.font = [NSFont boldSystemFontOfSize:11];
   _titleField.textColor = rigText();
   _titleField.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -554,6 +557,15 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _detailField.editable = NO; _detailField.selectable = NO; _detailField.drawsBackground = NO; _detailField.bordered = NO;
   [v addSubview:_detailField];
 
+  // Favorite star (top-right). Clicking reports to the browser controller;
+  // the star is intentionally NOT a title/mode control, just a toggle.
+  _favButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 42, 18, 18)];
+  _favButton.bordered = NO;
+  _favButton.imagePosition = NSImageOnly;
+  _favButton.target = self;
+  _favButton.action = @selector(favClicked:);
+  [v addSubview:_favButton];
+
   self.view = v;
 }
 - (void)setRepresentedObject:(id)representedObject {
@@ -562,6 +574,8 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   ToneItem *item = (ToneItem *)representedObject;
   _titleField.stringValue = item.title ?: @"";
   _detailField.stringValue = [NSString stringWithFormat:@"@%@  ·  %@", item.creator, item.gear.uppercaseString];
+  _favButton.image = [NSImage imageWithSystemSymbolName:(item.favorite ? @"star.fill" : @"star") accessibilityDescription:nil];
+  _favButton.contentTintColor = item.favorite ? rigAccent() : rigDimText();
 
   // Placeholder immediately; load real artwork asynchronously from cache or disk.
   _artView.image = [NSImage imageWithSystemSymbolName:@"guitars" accessibilityDescription:nil];
@@ -615,6 +629,9 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
       if (strongArt) strongArt.image = img;
     });
   });
+}
+- (IBAction)favClicked:(id)sender {
+  if (self.onFavToggle && self.representedObject) self.onFavToggle((ToneItem*)self.representedObject);
 }
 @end
 
@@ -1069,6 +1086,61 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     }
     [self filterChanged:nil];
   });
+}
+
+// Favorite/unfavorite a tone from its card's star toggle. Optimistic UI: flip
+// the flag and redraw immediately; revert if the API call fails. Idempotent
+// per API docs (PUT → 200, DELETE → 204), so retries are safe.
+- (void)toggleFavoriteFromCard:(ToneItem*)item {
+  if (!item) return;
+  if (!self.accessToken.length) {
+    self.status.stringValue = @"Connect to Tone3000 to save favorites";
+    return;
+  }
+  BOOL adding = !item.favorite;
+  item.favorite = adding;
+
+  // If the card is visible, redraw it (and siblings sharing the tone).
+  for (ToneCardItem *card in self.collectionView.visibleItems) {
+    ToneItem *cardItem = (ToneItem *)card.representedObject;
+    if ([cardItem isKindOfClass:[ToneItem class]] && cardItem.toneId == item.toneId) {
+      card.representedObject = cardItem;   // re-runs setRepresentedObject → star redraw
+    }
+  }
+
+  NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"%@/tones/%ld/favorite", kToneAPI, (long)item.toneId]]];
+  request.HTTPMethod = adding ? @"PUT" : @"DELETE";
+  request.timeoutInterval = 15;
+  [request setValue:[@"Bearer " stringByAppendingString:self.accessToken] forHTTPHeaderField:@"Authorization"];
+
+  __weak ToneBrowserController *weakSelf = self;
+  [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+    NSInteger status = [(NSHTTPURLResponse*)response statusCode];
+    BOOL ok = (status >= 200 && status < 300) && !error;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
+      if (ok) {
+        [strongSelf logTone3000:[NSString stringWithFormat:@"FAVORITE %@ -> %ld tone=%ld", adding ? @"PUT" : @"DELETE", (long)status, (long)item.toneId]];
+        strongSelf.status.stringValue = adding ? @"Added to favorites" : @"Removed from favorites";
+        if (!adding) {
+          // Drop the tone from the in-memory union so Favorites mode and the
+          // extras section stop offering it (mirrors mergeRemoteTones cleanup).
+          NSMutableArray<ToneItem*>* kept = [NSMutableArray array];
+          for (ToneItem* it in strongSelf.allItems) if (it.toneId != item.toneId) [kept addObject:it];
+          strongSelf.allItems = kept;
+          [strongSelf filterChanged:nil];
+        }
+      } else {
+        item.favorite = !adding;   // revert optimistic flip
+        [strongSelf logTone3000:[NSString stringWithFormat:@"FAVORITE FAILED tone=%ld -> %ld %@ %@", (long)item.toneId, (long)status, error.localizedDescription ?: @"", data.length ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @""]];
+        strongSelf.status.stringValue = @"Favorite failed — try again";
+        for (ToneCardItem *card in strongSelf.collectionView.visibleItems) {
+          ToneItem *cardItem = (ToneItem *)card.representedObject;
+          if ([cardItem isKindOfClass:[ToneItem class]] && cardItem.toneId == item.toneId) card.representedObject = cardItem;
+        }
+      }
+    });
+  }] resume];
 }
 
 - (void)refreshOnline {
@@ -1839,6 +1911,10 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (NSCollectionViewItem *)collectionView:(NSCollectionView *)collectionView itemForRepresentedObjectAtIndexPath:(NSIndexPath *)indexPath {
   ToneCardItem *card = [collectionView makeItemWithIdentifier:@"ToneCard" forIndexPath:indexPath];
   card.representedObject = self.visibleItems[indexPath.item];
+  __weak ToneBrowserController *weakSelf = self;
+  card.onFavToggle = ^(ToneItem *item) {
+    [weakSelf toggleFavoriteFromCard:item];
+  };
   return card;
 }
 
