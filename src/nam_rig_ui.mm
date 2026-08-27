@@ -389,6 +389,17 @@ struct RigUIState {
 @property(nonatomic, copy) NSString* oauthVerifier;
 @property(nonatomic, copy) NSString* oauthState;
 @property(nonatomic, strong) NSTimer* oauthTimer;
+// Background auto-connect state: the plugin assumes the user always wants to
+// be connected. connectIfNeeded is guarded so startup, the periodic timer and
+// manual Connect clicks never stack concurrent attempts.
+@property(nonatomic) BOOL connectRequested;
+@property(nonatomic) NSInteger oauthLoginAttempts;   // per-launch browser-login retry budget
+@property(nonatomic, strong) NSTimer* connectTimer;
+// Rate-limits auto-login so a dead session can't re-open the browser on every
+// interaction. After a failed login we wait loginBackoffSeconds; the periodic
+// connectTimer retries in the background. Manual Connect resets the backoff.
+@property(nonatomic) NSTimeInterval loginBackoffUntil;
+@property(nonatomic) BOOL refreshingToken;   // guards concurrent refresh calls
 - (void)reloadLibrary:(id)sender;
 - (void)selectMode:(NSButton*)sender;
 - (void)filterChanged:(id)sender;
@@ -1026,15 +1037,24 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)sortChanged:(id)sender { [self refreshOnline]; }
 
 - (void)connectTone3000:(id)sender {
-  // The plugin owns its own TONE3000 session. "Connect" uses the plugin's own
-  // keychain session; if it has none yet it bootstraps from NAM Rig's session
-  // (refreshed + persisted to our own entry), then loads the online library.
-  __weak ToneBrowserController* weakSelf = self;
+  // Manual Connect button: clears the auto-login backoff so an explicit click
+  // always tries immediately, then re-runs the background connect.
+  self.oauthLoginAttempts = 0;
+  self.loginBackoffUntil = 0;
   [self setAuthStatus:@"CHECKING SESSION…" color:NSColor.systemOrangeColor];
+  [self connectIfNeeded];
+}
 
+// Automatic background connection. The plugin assumes the user always wants to
+// be connected: uses a stored session when valid, refreshes when expired, and
+// falls back to a fresh browser login when the session is dead or missing.
+- (void)connectIfNeeded {
+  if (self.connectRequested || self.oauthActive) return;   // don't stack attempts
+  self.connectRequested = YES;
+  __weak ToneBrowserController* weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     ToneBrowserController* strongSelf = weakSelf;
-    if (!strongSelf) return;
+    if (!strongSelf) { return; }
     NSDictionary* session = pluginSession();
     BOOL fromNamRig = NO;
     if (!session) { session = namRigSession(); fromNamRig = YES; }
@@ -1045,6 +1065,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
                              (int)access.length, (int)refresh.length]];
     if (!session || !access.length) {
       // No stored session at all: go straight to a real browser login.
+      strongSelf.connectRequested = NO;
       dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf startOAuthLogin]; });
       return;
     }
@@ -1061,6 +1082,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (expired) {
       // Try a refresh when there's a refresh token to use; otherwise (corrupt
       // or partial session) go straight to a fresh browser login.
+      strongSelf.connectRequested = NO;
       if (refresh.length)
         dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshToneSession]; });
       else
@@ -1075,6 +1097,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       savePluginSession(saved);
       [strongSelf logTone3000:@"BOOTSTRAP: saved plugin session from NAM Rig"];
     }
+    strongSelf.connectRequested = NO;
     dispatch_async(dispatch_get_main_queue(), ^{
       [strongSelf setAuthStatus:(fromNamRig ? @"Signed in via NAM Rig" : @"Signed in")
                           color:NSColor.systemGreenColor];
@@ -1083,12 +1106,36 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   });
 }
 
+// Kick-starts the background connect when the browser UI is built and keeps a
+// periodic safety net: if the session dies silently while the plugin is open
+// (no request fired to trigger the 401 chain), re-establish it.
+- (void)autoConnect {
+  __weak ToneBrowserController* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    __strong ToneBrowserController* s = weakSelf; if (!s) return;
+    [s connectIfNeeded];
+  });
+  if (self.connectTimer) return;
+  self.connectTimer = [NSTimer scheduledTimerWithTimeInterval:1200.0 repeats:YES block:^(NSTimer* t) {
+    __strong ToneBrowserController* s = weakSelf; if (!s) return;
+    if (s.oauthActive || s.connectRequested) return;      // a flow is already running
+    if (s.oauthLoginAttempts >= 3) return;                // gave up this launch
+    [s connectIfNeeded];
+  }];
+}
+
 // ---- TONE3000 OAuth login flow (authorization-code + PKCE) ----
 // Binds a one-shot HTTP listener on 127.0.0.1 at an OS-chosen port, opens the
 // authorize page in the default browser, waits for the redirect, exchanges the
 // code for tokens, and persists the session to the plugin's keychain.
 - (void)startOAuthLogin {
   if (self.oauthActive) return;
+  // Auto-retry pacing: don't re-open the browser during a backoff window set
+  // by a recent failed attempt. Manual Connect clears the backoff.
+  if ([[NSDate date] timeIntervalSince1970] < self.loginBackoffUntil) {
+    [self setAuthStatus:@"Will retry sign-in automatically" color:NSColor.systemOrangeColor];
+    return;
+  }
   self.oauthActive = YES;
 
   int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -1129,9 +1176,23 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   __weak ToneBrowserController* weakSelf = self;
   self.oauthTimer = [NSTimer scheduledTimerWithTimeInterval:180.0 repeats:NO block:^(NSTimer* t) {
     __strong ToneBrowserController* s = weakSelf; if (!s) return;
-    if (s.oauthActive) {
-      [s oauthCleanup];
-      [s setAuthStatus:@"Sign-in timed out — click Connect to try again" color:NSColor.systemRedColor];
+    if (!s.oauthActive) return;
+    [s oauthCleanup];
+    s.oauthLoginAttempts++;
+    if (s.oauthLoginAttempts < 2) {
+      // One silent retry shortly after a timeout; further attempts wait for
+      // the backoff window + periodic timer so the browser isn't re-opened on
+      // every interaction.
+      [s setAuthStatus:@"Sign-in timed out — retrying…" color:NSColor.systemOrangeColor];
+      s.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 90.0;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong ToneBrowserController* s2 = weakSelf; if (!s2) return;
+        if (!s2.oauthActive && s2.oauthLoginAttempts < 2) [s2 startOAuthLogin];
+      });
+    } else {
+      // Give up for a while; the periodic connectTimer retries in background.
+      s.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 1200.0;
+      [s setAuthStatus:@"Couldn't connect automatically — will retry in the background" color:NSColor.systemRedColor];
     }
   }];
 }
@@ -1163,7 +1224,12 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
         if (params[@"error"]) failed = YES;
         code = [params[@"code"] isKindOfClass:NSString.class] ? params[@"code"] : nil;
         state = params[@"state"];
+        [self logTone3000:[NSString stringWithFormat:@"OAUTH callback received (code=%lu state=%@)", (unsigned long)code.length, state ? @"yes" : @"no"]];
+      } else {
+        failed = YES;
       }
+    } else {
+      failed = YES;
     }
     const char* resp =
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
@@ -1204,34 +1270,45 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   [[[NSURLSession sharedSession] dataTaskWithRequest:request
                                    completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
     __strong ToneBrowserController* s = weakSelf; if (!s) return;
-    NSInteger statusCode = [(NSHTTPURLResponse*)response statusCode];
-    NSDictionary* token = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    NSString* access = [token[@"access_token"] isKindOfClass:NSString.class] ? token[@"access_token"] : nil;
-    if (statusCode == 200 && access.length) {
-      NSString* refresh = [token[@"refresh_token"] isKindOfClass:NSString.class] ? token[@"refresh_token"] : @"";
-      NSNumber* expMs = [token[@"expires_at"] respondsToSelector:@selector(doubleValue)]
-          ? @([token[@"expires_at"] doubleValue] * 1000.0) : nil;
-      if (!expMs && [token[@"expires_at_millis"] respondsToSelector:@selector(doubleValue)])
-        expMs = token[@"expires_at_millis"];
-      if (!expMs && [token[@"expires_in"] respondsToSelector:@selector(doubleValue)])
-        expMs = @(([[NSDate date] timeIntervalSince1970] + [token[@"expires_in"] doubleValue]) * 1000.0);
-      NSMutableDictionary* saved = [@{@"accessToken": access} mutableCopy];
-      if (refresh.length) saved[@"refreshToken"] = refresh;
-      if (expMs) saved[@"expiresAtMilliseconds"] = expMs;
-      savePluginSession(saved);
-      s.accessToken = access;
-      s.refreshToken = refresh;
-      [s oauthCleanup];
-      [s logTone3000:@"OAUTH login success (session saved)"];
-      [s setAuthStatus:@"Signed in" color:NSColor.systemGreenColor];
-      [s refreshOnline];
-    } else {
-      [s oauthCleanup];
-      [s logTone3000:[NSString stringWithFormat:@"OAUTH exchange failed (%ld)", (long)statusCode]];
-      [s setAuthStatus:@"Sign-in failed — click Connect to try again" color:NSColor.systemRedColor];
+        NSInteger statusCode = [(NSHTTPURLResponse*)response statusCode];
+        NSDictionary* token = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        // Tolerate both flat responses and a nested {"data": {...}} envelope.
+        NSDictionary* payload = token;
+        NSDictionary* nested = [token[@"data"] isKindOfClass:NSDictionary.class] ? token[@"data"] : nil;
+        if (nested) payload = nested;
+        NSString* access = [payload[@"access_token"] isKindOfClass:NSString.class] ? payload[@"access_token"] : nil;
+        if (statusCode == 200 && access.length) {
+          NSString* refresh = [payload[@"refresh_token"] isKindOfClass:NSString.class] ? payload[@"refresh_token"] : @"";
+          NSNumber* expMs = [payload[@"expires_at"] respondsToSelector:@selector(doubleValue)]
+              ? @([payload[@"expires_at"] doubleValue] * 1000.0) : nil;
+          if (!expMs && [payload[@"expires_at_millis"] respondsToSelector:@selector(doubleValue)])
+            expMs = payload[@"expires_at_millis"];
+          if (!expMs && [payload[@"expires_in"] respondsToSelector:@selector(doubleValue)])
+            expMs = @(([[NSDate date] timeIntervalSince1970] + [payload[@"expires_in"] doubleValue]) * 1000.0);
+          NSMutableDictionary* saved = [@{@"accessToken": access} mutableCopy];
+          if (refresh.length) saved[@"refreshToken"] = refresh;
+          if (expMs) saved[@"expiresAtMilliseconds"] = expMs;
+          savePluginSession(saved);
+          s.accessToken = access;
+          s.refreshToken = refresh;
+          s.oauthLoginAttempts = 0;         // login succeeded: reset retry budget + backoff
+          s.loginBackoffUntil = 0;
+          [s oauthCleanup];
+          [s logTone3000:@"OAUTH login success (session saved)"];
+          [s setAuthStatus:@"Signed in" color:NSColor.systemGreenColor];
+          [s refreshOnline];
+        } else {
+          [s oauthCleanup];
+          NSString* errMsg = [token[@"error_description"] isKindOfClass:NSString.class] ? token[@"error_description"]
+              : ([token[@"msg"] isKindOfClass:NSString.class] ? token[@"msg"]
+                 : [NSString stringWithFormat:@"HTTP %ld", (long)statusCode]);
+          [s logTone3000:[NSString stringWithFormat:@"OAUTH exchange failed: %@", errMsg]];
+          // Don't loop: silently wait for the periodic reconnect instead.
+          s.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 300.0;
+          [s setAuthStatus:@"Sign-in didn't complete — will retry automatically" color:NSColor.systemRedColor];
+        }
+      }] resume];
     }
-  }] resume];
-}
 
 - (void)oauthCleanup {
   self.oauthActive = NO;
@@ -1247,6 +1324,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 // entry is left untouched, since NAM Rig is the session owner).
 - (void)refreshToneSession {
   if (!self.refreshToken.length) return;
+  if (self.refreshingToken) return;   // concurrent 401s can't stack refreshes
+  self.refreshingToken = YES;
   NSString* clientId = kNamRigPublishableKey;
   NSString* body = [NSString stringWithFormat:@"grant_type=refresh_token&refresh_token=%@&client_id=%@",
                     [self.refreshToken stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet],
@@ -1259,6 +1338,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
                                    completionHandler:^(NSData* data, NSURLResponse* response, NSError* e) {
     ToneBrowserController* strongSelf = weakSelf;
     if (!strongSelf) return;
+    strongSelf.refreshingToken = NO;    // clear before the branches below
     NSDictionary* token = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSString* access = [token[@"access_token"] isKindOfClass:NSString.class]
         ? token[@"access_token"] : nil;
@@ -1619,6 +1699,11 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
 
   ToneBrowserController* controller = [[ToneBrowserController alloc] init];
   controller.state = state; state->browserController = controller;
+  // Connect automatically in the background — no button click required. The
+  // deferred dispatch lets the rest of the browser UI (search/gear/sort) wire
+  // up before the first connect; autoConnect also installs the periodic
+  // re-connect safety net.
+  dispatch_async(dispatch_get_main_queue(), ^{ [controller autoConnect]; });
 
   const CGFloat bw = content.bounds.size.width - pad * 2;
 
