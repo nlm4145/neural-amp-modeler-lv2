@@ -376,6 +376,19 @@ struct RigUIState {
 @property(nonatomic, copy) NSString* accessToken;
 @property(nonatomic, copy) NSString* refreshToken;
 @property(nonatomic, copy) NSString* mode;
+// Pagination state for the online search. The explorer mirrors tone3000.com:
+// the API returns {data, page, page_size, total, total_pages} and a search is
+// fetched page-by-page (page_size=100) in server order until exhausted.
+@property(nonatomic) NSInteger nextSearchPage;
+@property(nonatomic) NSInteger searchTotalPages;
+@property(nonatomic) NSInteger searchGeneration;   // bumped on every new search
+@property(nonatomic, strong) NSMutableSet<NSNumber*>* searchIds;  // tone ids from the current search
+// One-shot OAuth login state (authorization-code + PKCE via a localhost callback).
+@property(nonatomic) BOOL oauthActive;
+@property(nonatomic) int oauthPort;
+@property(nonatomic, copy) NSString* oauthVerifier;
+@property(nonatomic, copy) NSString* oauthState;
+@property(nonatomic, strong) NSTimer* oauthTimer;
 - (void)reloadLibrary:(id)sender;
 - (void)selectMode:(NSButton*)sender;
 - (void)filterChanged:(id)sender;
@@ -687,6 +700,90 @@ static void savePluginSession(NSDictionary* session) {
   }
 }
 
+// Deletes the plugin's own TONE3000 session. Used when the stored refresh
+// token has been rotated server-side ("refresh_token_already_used"): keeping
+// it poisons every request with a 401 and "REFRESH failed" forever.
+static void clearPluginSession(void) {
+  NSDictionary* query = @{
+    (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService:kPluginKeychainService,
+    (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
+  };
+  SecItemDelete((__bridge CFDictionaryRef)query);
+}
+
+// ---- TONE3000 OAuth2 authorization-code + PKCE helpers ----
+// The plugin logs in directly against the same OAuth endpoints NAM Rig uses
+// (www.tone3000.com/api/v1/oauth/authorize + /oauth/token). This makes the
+// explorer self-sufficient: Connect opens the browser once and the plugin then
+// owns a session it can refresh forever, instead of depending on NAM Rig or a
+// stale keychain copy.
+
+static NSData* randomDataOfLength(size_t len) {
+  NSMutableData* d = [NSMutableData dataWithLength:len];
+  SecRandomCopyBytes(kSecRandomDefault, len, d.mutableBytes);
+  return d;
+}
+
+// RFC 4648 base64url WITHOUT padding. Used for the PKCE code_verifier
+// (43 chars from 32 random bytes), the S256 challenge and the state value.
+static NSString* base64URLStringNoPadding(NSData* data) {
+  NSString* b64 = [data base64EncodedStringWithOptions:0];
+  b64 = [b64 stringByReplacingOccurrencesOfString:@"+" withString:@"-"];
+  b64 = [b64 stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+  b64 = [b64 stringByReplacingOccurrencesOfString:@"=" withString:@""];
+  return b64;
+}
+
+// RFC 3986 unreserved-only percent-encoding, safe for form bodies and query
+// values (URLQueryAllowedCharacterSet would let & and + through).
+static NSString* percentEncode(NSString* s) {
+  static NSCharacterSet* allowed = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSMutableCharacterSet* set = [NSMutableCharacterSet alphanumericCharacterSet];
+    [set addCharactersInString:@"-._~"];
+    allowed = set;
+  });
+  return [s stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+}
+
+static NSData* sha256Data(NSString* s) {
+  NSData* data = [s dataUsingEncoding:NSUTF8StringEncoding];
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+  return [NSData dataWithBytes:digest length:CC_SHA256_DIGEST_LENGTH];
+}
+
+// JWT "exp" claim in milliseconds, or 0 if the token isn't a parseable JWT.
+static NSTimeInterval jwtExpiryMilliseconds(NSString* token) {
+  if (![token isKindOfClass:NSString.class] || ![token hasPrefix:@"eyJ"]) return 0;
+  NSArray* parts = [token componentsSeparatedByString:@"."];
+  if (parts.count < 2) return 0;
+  NSString* payload = [parts[1] stringByReplacingOccurrencesOfString:@"-" withString:@"+"];
+  payload = [payload stringByReplacingOccurrencesOfString:@"_" withString:@"/"];
+  while (payload.length % 4) payload = [payload stringByAppendingString:@"="];
+  NSData* data = [[NSData alloc] initWithBase64EncodedString:payload options:0];
+  if (!data) return 0;
+  NSDictionary* claims = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  NSNumber* exp = [claims isKindOfClass:NSDictionary.class] ? claims[@"exp"] : nil;
+  if (![exp respondsToSelector:@selector(doubleValue)]) return 0;
+  return exp.doubleValue * 1000.0;
+}
+
+// Minimal query-string parser for the OAuth callback (GET /callback?code=..&state=..).
+static NSDictionary* parseQueryString(NSString* query) {
+  NSMutableDictionary* d = [NSMutableDictionary dictionary];
+  for (NSString* pair in [query componentsSeparatedByString:@"&"]) {
+    NSArray* kv = [pair componentsSeparatedByString:@"="];
+    if (kv.count != 2) continue;
+    NSString* k = [kv[0] stringByRemovingPercentEncoding];
+    NSString* v = [kv[1] stringByRemovingPercentEncoding];
+    if (k.length) d[k] = v ?: @"";
+  }
+  return d;
+}
+
 static NSString* safeFilename(NSString* name) {
   NSCharacterSet* bad = [NSCharacterSet characterSetWithCharactersInString:@"/:\\?%*|\"<>\n\r"];
   NSArray* parts = [name componentsSeparatedByCharactersInSet:bad];
@@ -765,6 +862,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   if ((self = [super init])) {
     _allItems = [NSMutableArray array]; _visibleItems = @[];
     _images = [NSMutableDictionary dictionary]; _mode = @"Browse";
+    _nextSearchPage = 1; _searchTotalPages = 0; _searchGeneration = 0;
+    _searchIds = [NSMutableSet set];
     // Prefer the plugin's OWN persisted session. If absent (fresh install / not
     // yet connected), bootstrap from NAM Rig's session so we can refresh it and
     // persist our own copy — from then on we no longer depend on NAM Rig.
@@ -844,7 +943,9 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* sort = sortValues[self.sort.titleOfSelectedItem] ?: @"newest";
   // Mirror tone3000.com's server-side gear filter so the result set and order
   // match the site (the site/NAM Rig send &gears=... rather than filtering
-  // client-side after pulling all gear types).
+  // client-side after pulling all gear types). No &architecture= param is sent
+  // because the site's default Format filter shows every model architecture;
+  // hardcoding architecture=2 previously shrank result sets to A2-only.
   NSString* gearTitle = self.gear.titleOfSelectedItem;
   NSString* gearParam = @"";
   if ([gearTitle isEqualToString:@"Amps"]) gearParam = @"&gears=amp";
@@ -852,19 +953,73 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   else if ([gearTitle isEqualToString:@"Pedals"]) gearParam = @"&gears=pedal";
   else if ([gearTitle isEqualToString:@"Amp + Cab"]) gearParam = @"&gears=amp-cab";
   NSString* encodedQuery = [self.search.stringValue stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
-  NSString* path = [NSString stringWithFormat:@"/tones/search?page=1&page_size=100&sort=%@&architecture=2%@%@", sort, gearParam,
-                    encodedQuery.length ? [@"&query=" stringByAppendingString:encodedQuery] : @""];
-  [self apiGET:path completion:^(NSDictionary* json, NSInteger status, NSError* error) {
-    if (status == 401) {
-      dispatch_async(dispatch_get_main_queue(), ^{ [self refreshToneSession]; });
-      return;
-    }
-    NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
-    [self mergeRemoteTones:data favorite:NO];
-  }];
+  NSString* prefix = [NSString stringWithFormat:@"/tones/search?sort=%@%@%@", sort, gearParam,
+                      encodedQuery.length ? [@"&query=" stringByAppendingString:encodedQuery] : @""];
+  // A fresh search: draw a new generation and drop the previous search's rows
+  // (favorites and locally downloaded tones stay intact).
+  self.searchGeneration++;
+  NSMutableArray<ToneItem*>* survivors = [NSMutableArray array];
+  for (ToneItem* item in self.allItems)
+    if (![self.searchIds containsObject:@(item.toneId)]) [survivors addObject:item];
+  self.allItems = survivors;
+  [self.searchIds removeAllObjects];
+  self.nextSearchPage = 1;
+  self.searchTotalPages = 0;
+  [self fetchSearchPagesWithPrefix:prefix];
   [self apiGET:@"/tones/favorited?page=1&page_size=100" completion:^(NSDictionary* json, NSInteger status, NSError* error) {
     NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
     [self mergeRemoteTones:data favorite:YES];
+  }];
+}
+
+// Fetches every page of the current search, chaining in server order, then
+// merges the complete set in ONE call so results match tone3000.com exactly
+// (the site paginates "Newest" across, e.g., 127 pages for amp heads; the old
+// code fetched only page 1 and topped out at 100 rows + favorites).
+// Response shape (shared with the site and NAM Rig):
+//   {data: [...], page, page_size, total, total_pages}
+- (void)fetchSearchPagesWithPrefix:(NSString*)prefix {
+  const NSInteger generation = self.searchGeneration;
+  // Accumulate pages here so the final merge sees page1..pageN in server
+  // order (merging per page would re-order the list on every merge).
+  NSMutableArray<NSDictionary*>* collected = [NSMutableArray array];
+  [self fetchSearchPage:self.nextSearchPage prefix:prefix generation:generation collected:collected];
+}
+
+- (void)fetchSearchPage:(NSInteger)page
+                 prefix:(NSString*)prefix
+             generation:(NSInteger)generation
+              collected:(NSMutableArray<NSDictionary*>*)collected {
+  if (self.searchTotalPages > 0 && page > self.searchTotalPages) return;
+  NSString* path = [NSString stringWithFormat:@"%@&page=%ld&page_size=100", prefix, (long)page];
+  __weak ToneBrowserController* weakSelf = self;
+  [self apiGET:path completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+    __strong ToneBrowserController* s = weakSelf;
+    if (!s || s.searchGeneration != generation) return;   // a newer search took over
+    if (status == 401) {
+      dispatch_async(dispatch_get_main_queue(), ^{ [s refreshToneSession]; });
+      return;
+    }
+    NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
+    const NSInteger got = [json[@"page"] respondsToSelector:@selector(integerValue)]
+        ? [json[@"page"] integerValue] : page;
+    const NSInteger pages = [json[@"total_pages"] respondsToSelector:@selector(integerValue)]
+        ? [json[@"total_pages"] integerValue] : (data.count ? got : got - 1);
+    if (pages > 0) s.searchTotalPages = pages;
+    const BOOL done = (data.count == 0) || (pages > 0 && got >= pages);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (s.searchGeneration != generation) return;
+      [collected addObjectsFromArray:data];
+      for (NSDictionary* tone in data) {
+        if ([tone[@"id"] respondsToSelector:@selector(integerValue)])
+          [s.searchIds addObject:@([tone[@"id"] integerValue])];
+      }
+      if (done) {
+        [s mergeRemoteTones:collected favorite:NO];   // page1..pageN in server order
+      } else {
+        [s fetchSearchPage:got + 1 prefix:prefix generation:generation collected:collected];
+      }
+    });
   }];
 }
 
@@ -889,12 +1044,24 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
                              session ? @"yes" : @"no", fromNamRig ? @"namrig" : @"own",
                              (int)access.length, (int)refresh.length]];
     if (!session || !access.length) {
-      [strongSelf setAuthStatus:@"Sign in via NAM Rig once to create this plugin's session"
-                          color:NSColor.systemRedColor];
+      // No stored session at all: go straight to a real browser login.
+      dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf startOAuthLogin]; });
       return;
     }
     strongSelf.accessToken = access;
     strongSelf.refreshToken = refresh;
+    // If the stored access token has already expired, don't claim "Signed in".
+    // Try a refresh first (fast path); when the refresh token is also dead, the
+    // refresh handler clears the poisoned session and auto-launches the login.
+    NSTimeInterval expMs = jwtExpiryMilliseconds(access);
+    NSNumber* savedExp = [session[@"expiresAtMilliseconds"] respondsToSelector:@selector(doubleValue)]
+        ? session[@"expiresAtMilliseconds"] : nil;
+    if (savedExp) expMs = savedExp.doubleValue;
+    const BOOL expired = expMs > 0 && expMs < ([[NSDate date] timeIntervalSince1970] * 1000.0 + 60000.0);
+    if (expired) {
+      dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshToneSession]; });
+      return;
+    }
     // If we bootstrapped from NAM Rig, persist our own copy immediately.
     if (fromNamRig && refresh.length) {
       NSMutableDictionary* saved = [NSMutableDictionary dictionary];
@@ -909,6 +1076,164 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       [strongSelf refreshOnline];
     });
   });
+}
+
+// ---- TONE3000 OAuth login flow (authorization-code + PKCE) ----
+// Binds a one-shot HTTP listener on 127.0.0.1 at an OS-chosen port, opens the
+// authorize page in the default browser, waits for the redirect, exchanges the
+// code for tokens, and persists the session to the plugin's keychain.
+- (void)startOAuthLogin {
+  if (self.oauthActive) return;
+  self.oauthActive = YES;
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) { [self oauthCleanup]; [self setAuthStatus:@"Could not start sign-in" color:NSColor.systemRedColor]; return; }
+  int yes = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof addr);
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;   // OS-assigned free port
+  if (bind(sock, (struct sockaddr*)&addr, sizeof addr) < 0) { close(sock); [self oauthCleanup]; [self setAuthStatus:@"Could not start sign-in" color:NSColor.systemRedColor]; return; }
+  socklen_t alen = sizeof addr;
+  getsockname(sock, (struct sockaddr*)&addr, &alen);
+  self.oauthPort = ntohs(addr.sin_port);
+  if (listen(sock, 1) < 0) { close(sock); [self oauthCleanup]; [self setAuthStatus:@"Could not start sign-in" color:NSColor.systemRedColor]; return; }
+
+  NSString* verifier = base64URLStringNoPadding(randomDataOfLength(32));   // 43 chars
+  self.oauthVerifier = verifier;
+  self.oauthState = base64URLStringNoPadding(randomDataOfLength(24));
+  NSString* challenge = base64URLStringNoPadding(sha256Data(verifier));
+
+  // Accept the browser redirect on a background thread.
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    [self acceptOAuthCallbackOnSocket:sock];
+  });
+
+  NSString* redirect = [NSString stringWithFormat:@"http://127.0.0.1:%d/callback", self.oauthPort];
+  NSString* authorizeURL = [NSString stringWithFormat:
+      @"%@/oauth/authorize?client_id=%@&response_type=code&redirect_uri=%@&code_challenge=%@&code_challenge_method=S256&state=%@",
+      kToneAPI, kNamRigPublishableKey,
+      percentEncode(redirect), challenge, self.oauthState];
+  [self setAuthStatus:@"Waiting for browser sign-in…" color:NSColor.systemOrangeColor];
+  self.status.stringValue = @"Authorize in the browser that opened — then come back here";
+  [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:authorizeURL]];
+  [self logTone3000:[NSString stringWithFormat:@"OAUTH authorize opened (port %d)", self.oauthPort]];
+
+  __weak ToneBrowserController* weakSelf = self;
+  self.oauthTimer = [NSTimer scheduledTimerWithTimeInterval:180.0 repeats:NO block:^(NSTimer* t) {
+    __strong ToneBrowserController* s = weakSelf; if (!s) return;
+    if (s.oauthActive) {
+      [s oauthCleanup];
+      [s setAuthStatus:@"Sign-in timed out — click Connect to try again" color:NSColor.systemRedColor];
+    }
+  }];
+}
+
+// Runs on a background thread: accept()s the browser's redirect, parses the
+// callback query, responds with a tiny HTML page, then hands off to main.
+- (void)acceptOAuthCallbackOnSocket:(int)sock {
+  NSString* code = nil;
+  NSString* state = nil;
+  BOOL failed = NO;
+  int c = accept(sock, NULL, NULL);
+  close(sock);
+  if (c >= 0) {
+    char buf[16384];
+    ssize_t n = read(c, buf, sizeof buf - 1);
+    if (n > 0) {
+      buf[n] = 0;
+      NSString* req = [NSString stringWithUTF8String:buf];
+      NSRange sp = [req rangeOfString:@" "];
+      if (sp.location != NSNotFound) {
+        NSRange rest = NSMakeRange(sp.location + 1, req.length - sp.location - 1);
+        NSRange sp2 = [req rangeOfString:@" " options:0 range:rest];
+        NSString* target = sp2.location == NSNotFound
+            ? [req substringWithRange:rest]
+            : [req substringWithRange:NSMakeRange(rest.location, sp2.location - rest.location)];
+        NSRange q = [target rangeOfString:@"?"];
+        NSString* query = q.location == NSNotFound ? @"" : [target substringFromIndex:q.location + 1];
+        NSDictionary* params = parseQueryString(query);
+        if (params[@"error"]) failed = YES;
+        code = [params[@"code"] isKindOfClass:NSString.class] ? params[@"code"] : nil;
+        state = params[@"state"];
+      }
+    }
+    const char* resp =
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
+        "<html><body style='font-family:sans-serif;padding:2em'><h2>Sign-in complete</h2>"
+        "<p>You can close this window and return to the plugin.</p></body></html>";
+    write(c, resp, strlen(resp));
+    close(c);
+  } else {
+    failed = YES;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (failed || !code.length) {
+      [self oauthCleanup];
+      [self setAuthStatus:@"Sign-in failed — click Connect to try again" color:NSColor.systemRedColor];
+      return;
+    }
+    [self handleOAuthCode:code state:state];
+  });
+}
+
+- (void)handleOAuthCode:(NSString*)code state:(NSString*)state {
+  if (![state isEqualToString:self.oauthState]) {
+    [self oauthCleanup];
+    [self setAuthStatus:@"Sign-in failed (state mismatch) — click Connect to try again" color:NSColor.systemRedColor];
+    return;
+  }
+  [self setAuthStatus:@"Completing sign-in…" color:NSColor.systemOrangeColor];
+  NSString* verifier = self.oauthVerifier;
+  NSString* redirect = [NSString stringWithFormat:@"http://127.0.0.1:%d/callback", self.oauthPort];
+  NSString* body = [NSString stringWithFormat:
+      @"grant_type=authorization_code&code=%@&client_id=%@&redirect_uri=%@&code_verifier=%@",
+      percentEncode(code), kNamRigPublishableKey, percentEncode(redirect), percentEncode(verifier)];
+  NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[kToneAPI stringByAppendingString:@"/oauth/token"]]];
+  request.HTTPMethod = @"POST";
+  request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+  [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
+  __weak ToneBrowserController* weakSelf = self;
+  [[[NSURLSession sharedSession] dataTaskWithRequest:request
+                                   completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+    __strong ToneBrowserController* s = weakSelf; if (!s) return;
+    NSInteger statusCode = [(NSHTTPURLResponse*)response statusCode];
+    NSDictionary* token = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSString* access = [token[@"access_token"] isKindOfClass:NSString.class] ? token[@"access_token"] : nil;
+    if (statusCode == 200 && access.length) {
+      NSString* refresh = [token[@"refresh_token"] isKindOfClass:NSString.class] ? token[@"refresh_token"] : @"";
+      NSNumber* expMs = [token[@"expires_at"] respondsToSelector:@selector(doubleValue)]
+          ? @([token[@"expires_at"] doubleValue] * 1000.0) : nil;
+      if (!expMs && [token[@"expires_at_millis"] respondsToSelector:@selector(doubleValue)])
+        expMs = token[@"expires_at_millis"];
+      if (!expMs && [token[@"expires_in"] respondsToSelector:@selector(doubleValue)])
+        expMs = @(([[NSDate date] timeIntervalSince1970] + [token[@"expires_in"] doubleValue]) * 1000.0);
+      NSMutableDictionary* saved = [@{@"accessToken": access} mutableCopy];
+      if (refresh.length) saved[@"refreshToken"] = refresh;
+      if (expMs) saved[@"expiresAtMilliseconds"] = expMs;
+      savePluginSession(saved);
+      s.accessToken = access;
+      s.refreshToken = refresh;
+      [s oauthCleanup];
+      [s logTone3000:@"OAUTH login success (session saved)"];
+      [s setAuthStatus:@"Signed in" color:NSColor.systemGreenColor];
+      [s refreshOnline];
+    } else {
+      [s oauthCleanup];
+      [s logTone3000:[NSString stringWithFormat:@"OAUTH exchange failed (%ld)", (long)statusCode]];
+      [s setAuthStatus:@"Sign-in failed — click Connect to try again" color:NSColor.systemRedColor];
+    }
+  }] resume];
+}
+
+- (void)oauthCleanup {
+  self.oauthActive = NO;
+  [self.oauthTimer invalidate];
+  self.oauthTimer = nil;
+  self.oauthVerifier = nil;
+  self.oauthState = nil;
 }
 
 // Best-effort token refresh through NAM Rig's stored session. NAM Rig usually
@@ -951,8 +1276,30 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       [strongSelf logTone3000:@"REFRESH token success (saved to plugin session)"];
       dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshOnline]; });
     } else {
-      [strongSelf logTone3000:[NSString stringWithFormat:
-          @"REFRESH failed: %@ / %@", token[@"error"] ?: @"?", token[@"error_description"] ?: e.localizedDescription ?: @"?"]];
+      // The refresh endpoint reports failures as {"code":400,"error_code":"...","msg":"..."};
+      // some grants use the standard {"error","error_description"} shape. Read both.
+      NSString* err = [token[@"error_code"] isKindOfClass:NSString.class] ? token[@"error_code"]
+          : ([token[@"error"] isKindOfClass:NSString.class] ? token[@"error"] : @"?");
+      NSString* desc = [token[@"msg"] isKindOfClass:NSString.class] ? token[@"msg"]
+          : ([token[@"error_description"] isKindOfClass:NSString.class] ? token[@"error_description"]
+             : (e.localizedDescription ?: @"?"));
+      [strongSelf logTone3000:[NSString stringWithFormat:@"REFRESH failed: %@ / %@", err, desc]];
+      // A value error (not a network problem) means the stored refresh token
+      // was rotated server-side ("refresh_token_already_used" / "not_found");
+      // keeping it poisons every request with 401. Drop the poisoned session
+      // and open a fresh browser login so Connect never dead-ends again.
+      if ([err containsString:@"used"] || [err containsString:@"not_found"]
+          || [err containsString:@"invalid_grant"] || [err containsString:@"invalid-client"]
+          || [err containsString:@"expired"] || [err containsString:@"invalid_request"]) {
+        clearPluginSession();
+        dispatch_async(dispatch_get_main_queue(), ^{
+          strongSelf.accessToken = nil;
+          strongSelf.refreshToken = nil;
+          [strongSelf setAuthStatus:@"Session expired — signing you in again…" color:NSColor.systemOrangeColor];
+          [strongSelf startOAuthLogin];
+        });
+        return;
+      }
       // Fall back to any NAM Rig tokens we still have.
       NSDictionary* s = pluginSession();
       if (!s) s = namRigSession();

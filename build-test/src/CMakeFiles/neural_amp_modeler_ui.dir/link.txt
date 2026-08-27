@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -arch arm64 -bundle -Wl,-headerpad_max_install_names -o neural_amp_modeler_ui.so CMakeFiles/neural_amp_modeler_ui.dir/nam_ui.mm.o  -framework Cocoa
