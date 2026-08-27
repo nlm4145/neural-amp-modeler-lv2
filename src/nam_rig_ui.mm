@@ -383,6 +383,7 @@ struct RigUIState {
 @property(nonatomic) NSInteger searchTotalPages;
 @property(nonatomic) NSInteger searchGeneration;   // bumped on every new search
 @property(nonatomic, strong) NSMutableSet<NSNumber*>* searchIds;  // tone ids from the current search
+@property(nonatomic, strong) NSMutableArray<ToneItem*>* searchResults;  // current search, strict server order
 // One-shot OAuth login state (authorization-code + PKCE via a localhost callback).
 @property(nonatomic) BOOL oauthActive;
 @property(nonatomic) int oauthPort;
@@ -407,6 +408,7 @@ struct RigUIState {
 @property(nonatomic) BOOL loadingNextPage;          // one search page in flight
 @property(nonatomic, copy) NSString* activeSearchPrefix;  // prefix the current page state belongs to
 - (void)loadMoreSearchResults;
+- (void)mergeArchPages:(NSDictionary<NSString*, NSDictionary*>*)fetched page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)downloadAllModels:(ToneItem*)item;
 - (void)downloadModelStep:(NSInteger)index of:(NSArray*)models item:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
@@ -823,6 +825,20 @@ static NSInteger stageForGear(NSString* gear) {
   return 1;
 }
 
+// Filter a tone by the gear dropdown using the API's own Gear enum values
+// (amp / amp-cab / pedal / cab / outboard / space / experimental) — NOT the
+// collapsed 3-stage value. stageForGear maps amp-cab to the amp tile for
+// playback, but amp and amp-cab are DISTINCT site categories and must filter
+// separately (they were being combined before).
+static BOOL gearMatchesFilter(NSString* itemGear, NSString* filterTitle) {
+  NSString* g = itemGear.lowercaseString;
+  if ([filterTitle isEqualToString:@"Amps"]) return [g isEqualToString:@"amp"];
+  if ([filterTitle isEqualToString:@"Cabs"]) return [g isEqualToString:@"cab"];
+  if ([filterTitle isEqualToString:@"Pedals"]) return [g isEqualToString:@"pedal"];
+  if ([filterTitle isEqualToString:@"Amp + Cab"]) return [g isEqualToString:@"amp-cab"] || [g isEqualToString:@"full-rig"];
+  return YES;   // All Gear
+}
+
 // Computes the on-disk artwork cache path for a tone (shared with NAM Rig's
 // "Tone3000 State Artwork" cache so thumbnails persist across launches).
 static NSString* artworkCachePathForTone(NSInteger toneId, NSInteger stage) {
@@ -948,6 +964,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (instancetype)init {
   if ((self = [super init])) {
     _allItems = [NSMutableArray array]; _visibleItems = @[];
+    _searchResults = [NSMutableArray array];
     _images = [NSMutableDictionary dictionary]; _mode = @"Browse";
     _nextSearchPage = 1; _searchTotalPages = 0; _searchGeneration = 0;
     _searchIds = [NSMutableSet set];
@@ -1052,13 +1069,10 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* encodedQuery = [self.search.stringValue stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
   NSString* prefix = [NSString stringWithFormat:@"/tones/search?sort=%@%@%@", sort, gearParam,
                       encodedQuery.length ? [@"&query=" stringByAppendingString:encodedQuery] : @""];
-  // A fresh search: draw a new generation and drop the previous search's rows
-  // (favorites and locally downloaded tones stay intact).
+  // A fresh search: draw a new generation and reset paging state. allItems is
+  // a persistent union (local packs, favorites, previously seen tones) — we do
+  // NOT prune it here; filterChanged renders searchResults first, extras after.
   self.searchGeneration++;
-  NSMutableArray<ToneItem*>* survivors = [NSMutableArray array];
-  for (ToneItem* item in self.allItems)
-    if (![self.searchIds containsObject:@(item.toneId)]) [survivors addObject:item];
-  self.allItems = survivors;
   [self.searchIds removeAllObjects];
   self.activeSearchPrefix = prefix;
   self.nextSearchPage = 1;
@@ -1083,53 +1097,112 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)loadMoreSearchResults {
   NSString* prefix = self.activeSearchPrefix;
   if (!prefix.length) return;
-  if (self.loadingNextPage) return;                       // one page in flight
+  if (self.loadingNextPage) return;                       // one page unit in flight
   if (self.searchTotalPages > 0 && self.nextSearchPage > self.searchTotalPages) return;  // exhausted
   if ([[NSDate date] timeIntervalSince1970] < self.rateLimitUntil) return;
   const NSInteger page = self.nextSearchPage;
   const NSInteger generation = self.searchGeneration;
-  NSString* path = [NSString stringWithFormat:@"%@&page=%ld&page_size=100", prefix, (long)page];
+  // The API caps search page_size at 25 (docs). CRITICAL: omitting the
+  // architecture param applies the LEGACY default (A1 + Custom ONLY —
+  // documented "excludes A2-only tones"), which hides nearly all new uploads
+  // and mismatched the site's result set/order. We fetch each architecture
+  // explicitly and merge: A2 first, then Custom, then A1, deduped by tone id.
+  NSString* p2  = [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=2", prefix, (long)page];
+  NSString* p1  = [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=1", prefix, (long)page];
+  NSString* pc  = [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=custom", prefix, (long)page];
+  NSArray<NSString*>* paths = @[p2, pc, p1];
 
-  // 1) Cache hit (<10 min old): merge instantly, zero network.
-  NSDictionary* cached = cachedSearchPageForPath(path, 600.0);
-  if (cached) {
-    [self applySearchPage:cached page:page generation:generation fromCache:YES];
+  // 1) Cache-first: serve any page (<10 min old) from disk; only the misses
+  // hit the network (sequential, ~150ms apart — server-friendly).
+  NSMutableDictionary* fetched = [NSMutableDictionary dictionary];   // path -> json
+  NSMutableArray<NSString*>* misses = [NSMutableArray array];
+  for (NSString* p in paths) {
+    NSDictionary* cached = cachedSearchPageForPath(p, 600.0);
+    if (cached) fetched[p] = cached; else [misses addObject:p];
+  }
+  if (misses.count == 0) {
+    [self mergeArchPages:fetched page:page generation:generation fromCache:YES];
     return;
   }
-  // 2) Cache miss: fetch ONE page, ~400ms-paced, then cache + merge. Only a
-  // user scroll (or an explicit refresh) gets here, so a long browse costs
-  // one small request per scroll instead of 50 requests per sort change.
   self.loadingNextPage = YES;
   __weak ToneBrowserController* weakSelf = self;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    __strong ToneBrowserController* s = weakSelf;
-    if (!s || s.searchGeneration != generation) { s.loadingNextPage = NO; return; }
-    [s apiGET:path completion:^(NSDictionary* json, NSInteger status, NSError* error) {
-      __strong ToneBrowserController* s = weakSelf;
-      if (!s) return;
+  __block NSInteger missIndex = 0;
+  void (^fetchNextMiss)(void);
+  void (^__block fetchNextMissCopy)(void);
+  fetchNextMiss = ^{
+    ToneBrowserController* s = weakSelf;
+    if (!s) return;
+    if (missIndex >= (NSInteger)misses.count) {   // all done — merge
       s.loadingNextPage = NO;
-      if (s.searchGeneration != generation) return;
+      [s mergeArchPages:fetched page:page generation:generation fromCache:NO];
+      return;
+    }
+    NSString* p = misses[missIndex];
+    [s apiGET:p completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+      __strong ToneBrowserController* s2 = weakSelf;
+      if (!s2) return;
+      if (s2.searchGeneration != generation) { s2.loadingNextPage = NO; return; }
       if (status == 401) {
-        dispatch_async(dispatch_get_main_queue(), ^{ [s refreshToneSession]; });
+        s2.loadingNextPage = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ [s2 refreshToneSession]; });
         return;
       }
       if (status == 429 || status == 403) {
+        s2.loadingNextPage = NO;
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s logTone3000:[NSString stringWithFormat:@"RATE LIMIT: %ld — serving cache; cooling down 60s", (long)status]];
-          s.rateLimitUntil = [[NSDate date] timeIntervalSince1970] + 60.0;
+          [s2 logTone3000:[NSString stringWithFormat:@"RATE LIMIT: %ld — serving cache; cooling down 60s", (long)status]];
+          s2.rateLimitUntil = [[NSDate date] timeIntervalSince1970] + 60.0;
         });
         return;
       }
-      if (status != 200 || ![json isKindOfClass:NSDictionary.class]) return;
-      saveSearchPageForPath(path, json);
-      [s applySearchPage:json page:page generation:generation fromCache:NO];
+      if (status == 200 && [json isKindOfClass:NSDictionary.class]) {
+        saveSearchPageForPath(p, json);
+        fetched[p] = json;
+      }
+      missIndex++;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), fetchNextMissCopy);
     }];
+  };
+  fetchNextMissCopy = fetchNextMiss;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    fetchNextMiss();
   });
+}
+
+// Merges the three architecture pages of one page index into a single search
+// page and applies it. A2 first (matches the site's default), then Custom,
+// then A1, deduped by tone id. total_pages = max across arches, so the scroll
+// chain runs until every architecture is exhausted.
+- (void)mergeArchPages:(NSDictionary<NSString*, NSDictionary*>*)fetched page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache {
+  NSMutableArray<NSDictionary*>* merged = [NSMutableArray array];
+  NSMutableSet<NSNumber*>* seen = [NSMutableSet set];
+  NSInteger totalPages = 0;
+  for (NSString* p in @[
+        [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=2", self.activeSearchPrefix, (long)page],
+        [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=custom", self.activeSearchPrefix, (long)page],
+        [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=1", self.activeSearchPrefix, (long)page]]) {
+    NSDictionary* json = fetched[p];
+    if (!json) continue;
+    NSInteger tp = [json[@"total_pages"] respondsToSelector:@selector(integerValue)] ? [json[@"total_pages"] integerValue] : 0;
+    if (tp > totalPages) totalPages = tp;
+    for (NSDictionary* tone in [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[]) {
+      if (![tone isKindOfClass:NSDictionary.class]) continue;
+      NSNumber* key = [tone[@"id"] respondsToSelector:@selector(integerValue)] ? @([tone[@"id"] integerValue]) : nil;
+      if (!key || [seen containsObject:key]) continue;
+      [seen addObject:key];
+      [merged addObject:tone];
+    }
+  }
+  if (totalPages <= 0) totalPages = (merged.count > 0) ? page + 1 : page;
+  NSDictionary* synthesized = @{@"data": merged, @"page": @(page), @"page_size": @(25), @"total_pages": @(totalPages)};
+  [self applySearchPage:synthesized page:page generation:generation fromCache:fromCache];
 }
 
 // Merges one search page (cache or network) into the list. Pages merge in
 // ascending order, so appending new items at the END preserves the server's
-// ordering across the whole search.
+// ordering across the whole search. Search results live in their own array
+// (strict server order); everything else (local packs, favorites) renders
+// after them, never interleaved — this keeps page1→pageN contiguous.
 - (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache {
   NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
   NSInteger pages = [json[@"total_pages"] respondsToSelector:@selector(integerValue)]
@@ -1140,17 +1213,38 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     self.searchTotalPages = pages;
     NSMutableDictionary<NSNumber*, ToneItem*>* byId = [NSMutableDictionary dictionary];
     for (ToneItem* item in self.allItems) byId[@(item.toneId)] = item;
+    NSMutableArray<ToneItem*>* pageItems = [NSMutableArray array];
     for (NSDictionary* tone in data) {
       if (![tone isKindOfClass:NSDictionary.class]) continue;
       NSNumber* key = [tone[@"id"] respondsToSelector:@selector(integerValue)] ? @([tone[@"id"] integerValue]) : nil;
       if (!key) continue;
       ToneItem* existing = byId[key];
-      if (existing) { existing.toneData = tone; continue; }   // update in place
-      ToneItem* item = toneItem(tone, @[], nil);
-      if (!item) continue;
-      [self.allItems addObject:item];                        // append: server order
-      byId[key] = item;
-      [self.searchIds addObject:key];
+      if (existing) {
+        existing.toneData = tone;            // refresh metadata in place
+        [byId removeObjectForKey:key];       // claimed
+      } else {
+        ToneItem* item = toneItem(tone, @[], nil);
+        if (!item) continue;
+        existing = item;
+        [self.allItems addObject:item];      // allItems stays the full union
+        byId[key] = item;
+      }
+      if (![self.searchIds containsObject:key]) [self.searchIds addObject:key];
+      [pageItems addObject:existing];
+    }
+    // Page 1 replaces any previously-loaded search rows; later pages append
+    // (pages load strictly in ascending order via the scroll chain).
+    BOOL page1 = (page == 1);
+    if (page1) {
+      // Drop any previously-loaded search rows (all pages) then add this page.
+      NSMutableIndexSet* drop = [NSMutableIndexSet indexSet];
+      for (NSUInteger i = 0; i < self.searchResults.count; i++)
+        if ([self.searchIds containsObject:@(self.searchResults[i].toneId)]) [drop addIndex:i];
+      [self.searchResults removeObjectsAtIndexes:drop];
+      [self.searchResults replaceObjectsInRange:NSMakeRange(0, 0) withObjectsFromArray:pageItems];
+    } else {
+      // Append (pages load strictly in ascending order via the scroll chain).
+      [self.searchResults addObjectsFromArray:pageItems];
     }
     self.nextSearchPage = page + 1;
     [self filterChanged:nil];
@@ -1676,31 +1770,30 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* query = self.search.stringValue.lowercaseString;
   NSString* gear = self.gear.titleOfSelectedItem;
   NSMutableArray<ToneItem*>* shown = [NSMutableArray array];
-  // Browse mode mirrors tone3000.com: the search API returns results ALREADY
-  // sorted (newest/oldest/trending/downloads-all-time), so we preserve that
-  // server order exactly — current-search results first, then locally-known
-  // extras (local packs, favorites not in this search). Never re-sort by
-  // local fields: a downloaded tone's createdAt is its file's modification
-  // date, which would jump it ahead of the true server ordering (this was
-  // exactly why sorts "didn't match the site").
-  const BOOL browseServerOrder = [self.mode isEqualToString:@"Browse"] && self.searchIds.count > 0;
-  for (NSInteger pass = browseServerOrder ? 0 : 1; pass < 2; pass++) {
-    for (ToneItem* item in self.allItems) {
-      if ([self.mode isEqualToString:@"Favorites"] && !item.favorite) continue;
-      if ([self.mode isEqualToString:@"Local"] && !item.local) continue;
-      if ([gear isEqualToString:@"Pedals"] && item.stage != 0) continue;
-      if ([gear isEqualToString:@"Amps"] && item.stage != 1) continue;
-      if ([gear isEqualToString:@"Cabs"] && item.stage != 2) continue;
-      if ([gear isEqualToString:@"Amp + Cab"] && item.stage != 1 && item.stage != 2) continue;
+  // Browse mode: the search API returns results ALREADY sorted — render
+  // searchResults (strict server order, page1→pageN contiguous) first, then
+  // locally-known extras (local packs, favorites not in this search). Never
+  // re-sort by local fields: a downloaded tone's createdAt is its file's
+  // modification date, which would scramble the true server ordering.
+  const BOOL browseServerOrder = [self.mode isEqualToString:@"Browse"] && self.searchResults.count > 0;
+  if (browseServerOrder) {
+    for (ToneItem* item in self.searchResults) {
+      if (!gearMatchesFilter(item.gear, gear)) continue;
       NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", item.title, item.creator, item.gear].lowercaseString;
       if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
-      if (browseServerOrder) {
-        const BOOL inSearch = [self.searchIds containsObject:@(item.toneId)];
-        if ((pass == 0) != inSearch) continue;   // pass 0: search hits in server order; pass 1: the rest
-      }
       [shown addObject:item];
     }
-    if (!browseServerOrder) break;
+  }
+  NSMutableSet<NSNumber*>* emitted = [NSMutableSet set];
+  for (ToneItem* item in shown) [emitted addObject:@(item.toneId)];
+  for (ToneItem* item in self.allItems) {
+    if (browseServerOrder && [emitted containsObject:@(item.toneId)]) continue;   // already shown
+    if ([self.mode isEqualToString:@"Favorites"] && !item.favorite) continue;
+    if ([self.mode isEqualToString:@"Local"] && !item.local) continue;
+    if (!gearMatchesFilter(item.gear, gear)) continue;
+    NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", item.title, item.creator, item.gear].lowercaseString;
+    if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
+    [shown addObject:item];
   }
   if ([self.mode isEqualToString:@"Recent"]) {
     [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) { return [b.modified compare:a.modified]; }];
@@ -1775,7 +1868,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       finish(merged);
     };
     fetch(@"2", ^(NSArray *a2) {
-      fetch(@"3", ^(NSArray *custom) { fetchMaybeA1(a2, custom); });
+      fetch(@"custom", ^(NSArray *custom) { fetchMaybeA1(a2, custom); });
     });
   } else {
     self.status.stringValue = @"Connect Tone3000 to download models";
@@ -1803,7 +1896,12 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 // folders created by the old first-model-only build get topped up here.
 - (void)downloadAllModels:(ToneItem*)item {
   if (!self.accessToken.length || item.remoteModels.count == 0) return;
-  NSString* category = item.stage == 0 ? @"Pedal" : (item.stage == 2 ? @"Cab" : @"Amp");
+  NSString* category;
+  if (item.stage == 0) category = @"Pedal";
+  else if (item.stage == 2) category = @"Cab";
+  else if ([item.gear.lowercaseString isEqualToString:@"amp-cab"] || [item.gear.lowercaseString isEqualToString:@"full-rig"])
+    category = @"Full Rig";   // NAM Rig's library layout: full rigs get their own folder
+  else category = @"Amp";
   NSString* folder = [[[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]
                         stringByAppendingPathComponent:category]
                        stringByAppendingPathComponent:@"NAM Oversampled Rig"]
