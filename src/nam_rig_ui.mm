@@ -389,23 +389,34 @@ struct RigUIState {
 @property(nonatomic, copy) NSString* oauthVerifier;
 @property(nonatomic, copy) NSString* oauthState;
 @property(nonatomic, strong) NSTimer* oauthTimer;
-// Background auto-connect state: the plugin assumes the user always wants to
-// be connected. connectIfNeeded is guarded so startup, the periodic timer and
+// Background connect state: startup + the periodic timer only use a valid
+// session and silently refresh an expired one — they NEVER open the browser.
+// The browser login runs only from the manual Connect button.
+// connectIfNeededAllowBrowser: is guarded so startup, the periodic timer and
 // manual Connect clicks never stack concurrent attempts.
 @property(nonatomic) BOOL connectRequested;
-@property(nonatomic) NSInteger oauthLoginAttempts;   // per-launch browser-login retry budget
+@property(nonatomic) NSInteger oauthLoginAttempts;   // reserved; login is manual-only now
 @property(nonatomic, strong) NSTimer* connectTimer;
-// Rate-limits auto-login so a dead session can't re-open the browser on every
-// interaction. After a failed login we wait loginBackoffSeconds; the periodic
-// connectTimer retries in the background. Manual Connect resets the backoff.
+// Cooldown after a failed login so a re-click can't instantly re-open the
+// browser. Manual Connect resets it.
 @property(nonatomic) NSTimeInterval loginBackoffUntil;
 @property(nonatomic) BOOL refreshingToken;   // guards concurrent refresh calls
+// Cooldown after the server rate-limits (429) or WAF-blocks (403) us. While
+// active, refreshOnline does nothing so browsing can't escalate the block.
+@property(nonatomic) NSTimeInterval rateLimitUntil;
+@property(nonatomic) BOOL loadingNextPage;          // one search page in flight
+@property(nonatomic, copy) NSString* activeSearchPrefix;  // prefix the current page state belongs to
+- (void)loadMoreSearchResults;
+- (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)reloadLibrary:(id)sender;
 - (void)selectMode:(NSButton*)sender;
 - (void)filterChanged:(id)sender;
 - (void)sortChanged:(id)sender;
 - (void)connectTone3000:(id)sender;
+- (void)connectIfNeeded;
+- (void)connectIfNeededAllowBrowser:(BOOL)allowBrowser;
 - (void)refreshToneSession;
+- (void)refreshToneSessionAllowBrowser:(BOOL)allowBrowser;
 @end
 
 @implementation NAMRigUIController
@@ -647,7 +658,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 static NSString* const kNamRigKeychainService = @"Nouratone.comnouratonenamrig.Tone3000";
 static NSString* const kNamRigAccountPrefix = @"apiv1tone3000.";
 static NSString* const kNamRigAccountSuffix = @".refresh-token";
-static NSString* const kNamRigPublishableKey = @"t3k_pub_axcZuBDWv8fHFR4LN0UV5kLXjIqbQ5G-";
+static NSString* const kPluginPublishableKey = @"t3k_pub_ScsutPfmPM2CwvG726tU60R5WN_KChza";
 
 // The plugin keeps its OWN TONE3000 session in a separate keychain entry so it
 // stops depending on NAM Rig. It bootstraps once from NAM Rig's session, then
@@ -824,6 +835,65 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage) {
   return [[NSFileManager defaultManager] fileExistsAtPath:path] ? path : nil;
 }
 
+// ---- TONE3000 search cache (NAM-Rig-style: cache-first browsing) ----
+// Full pagination of every keystroke/sort-change was getting us 429-throttled
+// then 403-WAF-blocked (427 requests in ~2 minutes). NAM Rig avoids this by
+// browsing from local data. We now do the same: every search page fetched from
+// the API is persisted under ~/Library/Application Support/NAM Oversampled
+// Rig/SearchCache/<sha1 of path>.json and served from disk when fresh (<10 min
+// old). Pages load lazily (one page per filter change / scroll), so a full
+// 30-page browse never re-downloads pages it already has.
+static NSString* searchCacheDir(void) {
+  static NSString* dir = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dir = [@("~/Library/Application Support/NAM Oversampled Rig/SearchCache")
+           stringByExpandingTildeInPath];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+  });
+  return dir;
+}
+
+// A stable cache key: the request path (sort/gears/query/page), hashed so the
+// filesystem doesn't see query characters it dislikes.
+static NSString* searchCacheKeyForPath(NSString* path) {
+  unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+  CC_SHA1([path UTF8String], (CC_LONG)strlen([path UTF8String]), digest);
+  NSMutableString* hex = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
+  for (size_t i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+  return hex;
+}
+
+// Returns the cached {data, page, total_pages, ...} dictionary for a search
+// page if it exists and is younger than maxAgeSeconds; nil otherwise.
+static NSDictionary* cachedSearchPageForPath(NSString* path, NSTimeInterval maxAgeSeconds) {
+  NSString* file = [searchCacheDir() stringByAppendingPathComponent:
+                    [searchCacheKeyForPath(path) stringByAppendingPathExtension:@"json"]];
+  NSDictionary* wrapper = jsonDictionaryAtPath(file);
+  NSDictionary* page = [wrapper[@"page"] isKindOfClass:NSDictionary.class] ? wrapper[@"page"] : nil;
+  NSNumber* fetched = [wrapper[@"fetchedAt"] respondsToSelector:@selector(doubleValue)]
+      ? wrapper[@"fetchedAt"] : nil;
+  if (!page || !fetched) return nil;
+  if ([[NSDate date] timeIntervalSince1970] - fetched.doubleValue > maxAgeSeconds) return nil;
+  return page;
+}
+
+// Persists a fetched search page (called after every successful API page).
+static void saveSearchPageForPath(NSString* path, NSDictionary* page) {
+  if (![page isKindOfClass:NSDictionary.class] || !page[@"data"]) return;
+  NSDictionary* wrapper = @{
+    @"fetchedAt": @([[NSDate date] timeIntervalSince1970]),
+    @"path": path,
+    @"page": page,
+  };
+  NSData* json = [NSJSONSerialization dataWithJSONObject:wrapper options:0 error:nil];
+  if (!json) return;
+  NSString* file = [searchCacheDir() stringByAppendingPathComponent:
+                    [searchCacheKeyForPath(path) stringByAppendingPathExtension:@"json"]];
+  [json writeToFile:file options:NSDataWritingAtomic error:nil];
+}
+
 static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate* modified) {
   if (![tone[@"title"] isKindOfClass:NSString.class] || ![tone[@"id"] respondsToSelector:@selector(integerValue)])
     return nil;
@@ -869,6 +939,9 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 }
 
 @implementation ToneBrowserController
+- (void)dealloc {
+  [self logTone3000:@"ToneBrowserController dealloc"];
+}
 - (instancetype)init {
   if ((self = [super init])) {
     _allItems = [NSMutableArray array]; _visibleItems = @[];
@@ -878,12 +951,22 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     // Prefer the plugin's OWN persisted session. If absent (fresh install / not
     // yet connected), bootstrap from NAM Rig's session so we can refresh it and
     // persist our own copy — from then on we no longer depend on NAM Rig.
+    // Only adopt plausible tokens (same gate as connectIfNeeded): a rotated
+    // refresh stub would poison the refresh path with 401s. NOTE: real
+    // Tone3000 refresh tokens are SHORT (~12 chars — verified against NAM
+    // Rig's own working keychain session), so the floor is 8, not 20+.
     NSDictionary* session = pluginSession();
     if (!session) session = namRigSession();
-    _accessToken = [session[@"accessToken"] isKindOfClass:NSString.class]
+    NSString* access = [session[@"accessToken"] isKindOfClass:NSString.class]
         ? session[@"accessToken"] : nil;
-    _refreshToken = [session[@"refreshToken"] isKindOfClass:NSString.class]
+    NSString* refresh = [session[@"refreshToken"] isKindOfClass:NSString.class]
         ? session[@"refreshToken"] : nil;
+    if (access.length >= 100 && (!refresh.length || refresh.length >= 8)) {
+      _accessToken = access;
+      _refreshToken = refresh;
+    }
+    [self logTone3000:[NSString stringWithFormat:@"INIT tokens access=%d refresh=%d",
+                       (int)access.length, (int)refresh.length]];
   }
   return self;
 }
@@ -974,81 +1057,137 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (![self.searchIds containsObject:@(item.toneId)]) [survivors addObject:item];
   self.allItems = survivors;
   [self.searchIds removeAllObjects];
+  self.activeSearchPrefix = prefix;
   self.nextSearchPage = 1;
   self.searchTotalPages = 0;
-  [self fetchSearchPagesWithPrefix:prefix];
-  [self apiGET:@"/tones/favorited?page=1&page_size=100" completion:^(NSDictionary* json, NSInteger status, NSError* error) {
-    NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
-    [self mergeRemoteTones:data favorite:YES];
-  }];
+  // Cache-first: page 1 comes from the local SearchCache when fresh, so re-
+  // sorting / re-searching within 10 minutes costs ZERO network requests.
+  [self loadMoreSearchResults];
+  // Favorites still come from the API (small, single page) — but not while a
+  // rate-limit cooldown is active; the cached flags carry us until it lifts.
+  if ([[NSDate date] timeIntervalSince1970] >= self.rateLimitUntil) {
+    [self apiGET:@"/tones/favorited?page=1&page_size=100" completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+      NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
+      [self mergeRemoteTones:data favorite:YES];
+    }];
+  }
 }
 
-// Fetches every page of the current search, chaining in server order, then
-// merges the complete set in ONE call so results match tone3000.com exactly
-// (the site paginates "Newest" across, e.g., 127 pages for amp heads; the old
-// code fetched only page 1 and topped out at 100 rows + favorites).
-// Response shape (shared with the site and NAM Rig):
-//   {data: [...], page, page_size, total, total_pages}
-- (void)fetchSearchPagesWithPrefix:(NSString*)prefix {
+// Loads the NEXT page of the active search — NAM-Rig-style cache-first lazy
+// pagination. Page 1 loads on every refresh; further pages load only as the
+// user scrolls toward the bottom of the list (scrollViewDidScroll). Fresh
+// pages are persisted to the SearchCache so revisits never touch the network.
+- (void)loadMoreSearchResults {
+  NSString* prefix = self.activeSearchPrefix;
+  if (!prefix.length) return;
+  if (self.loadingNextPage) return;                       // one page in flight
+  if (self.searchTotalPages > 0 && self.nextSearchPage > self.searchTotalPages) return;  // exhausted
+  if ([[NSDate date] timeIntervalSince1970] < self.rateLimitUntil) return;
+  const NSInteger page = self.nextSearchPage;
   const NSInteger generation = self.searchGeneration;
-  // Accumulate pages here so the final merge sees page1..pageN in server
-  // order (merging per page would re-order the list on every merge).
-  NSMutableArray<NSDictionary*>* collected = [NSMutableArray array];
-  [self fetchSearchPage:self.nextSearchPage prefix:prefix generation:generation collected:collected];
+  NSString* path = [NSString stringWithFormat:@"%@&page=%ld&page_size=100", prefix, (long)page];
+
+  // 1) Cache hit (<10 min old): merge instantly, zero network.
+  NSDictionary* cached = cachedSearchPageForPath(path, 600.0);
+  if (cached) {
+    [self applySearchPage:cached page:page generation:generation fromCache:YES];
+    return;
+  }
+  // 2) Cache miss: fetch ONE page, ~400ms-paced, then cache + merge. Only a
+  // user scroll (or an explicit refresh) gets here, so a long browse costs
+  // one small request per scroll instead of 50 requests per sort change.
+  self.loadingNextPage = YES;
+  __weak ToneBrowserController* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    __strong ToneBrowserController* s = weakSelf;
+    if (!s || s.searchGeneration != generation) { s.loadingNextPage = NO; return; }
+    [s apiGET:path completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+      __strong ToneBrowserController* s = weakSelf;
+      if (!s) return;
+      s.loadingNextPage = NO;
+      if (s.searchGeneration != generation) return;
+      if (status == 401) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [s refreshToneSession]; });
+        return;
+      }
+      if (status == 429 || status == 403) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [s logTone3000:[NSString stringWithFormat:@"RATE LIMIT: %ld — serving cache; cooling down 60s", (long)status]];
+          s.rateLimitUntil = [[NSDate date] timeIntervalSince1970] + 60.0;
+        });
+        return;
+      }
+      if (status != 200 || ![json isKindOfClass:NSDictionary.class]) return;
+      saveSearchPageForPath(path, json);
+      [s applySearchPage:json page:page generation:generation fromCache:NO];
+    }];
+  });
 }
 
-- (void)fetchSearchPage:(NSInteger)page
-                 prefix:(NSString*)prefix
-             generation:(NSInteger)generation
-              collected:(NSMutableArray<NSDictionary*>*)collected {
-  if (self.searchTotalPages > 0 && page > self.searchTotalPages) return;
-  NSString* path = [NSString stringWithFormat:@"%@&page=%ld&page_size=100", prefix, (long)page];
-  __weak ToneBrowserController* weakSelf = self;
-  [self apiGET:path completion:^(NSDictionary* json, NSInteger status, NSError* error) {
-    __strong ToneBrowserController* s = weakSelf;
-    if (!s || s.searchGeneration != generation) return;   // a newer search took over
-    if (status == 401) {
-      dispatch_async(dispatch_get_main_queue(), ^{ [s refreshToneSession]; });
-      return;
+// Merges one search page (cache or network) into the list. Pages merge in
+// ascending order, so appending new items at the END preserves the server's
+// ordering across the whole search.
+- (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache {
+  NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
+  NSInteger pages = [json[@"total_pages"] respondsToSelector:@selector(integerValue)]
+      ? [json[@"total_pages"] integerValue] : 0;
+  if (pages <= 0) pages = (data.count >= 25) ? page + 1 : page;   // full page ⇒ probably more
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self.searchGeneration != generation) return;
+    self.searchTotalPages = pages;
+    NSMutableDictionary<NSNumber*, ToneItem*>* byId = [NSMutableDictionary dictionary];
+    for (ToneItem* item in self.allItems) byId[@(item.toneId)] = item;
+    for (NSDictionary* tone in data) {
+      if (![tone isKindOfClass:NSDictionary.class]) continue;
+      NSNumber* key = [tone[@"id"] respondsToSelector:@selector(integerValue)] ? @([tone[@"id"] integerValue]) : nil;
+      if (!key) continue;
+      ToneItem* existing = byId[key];
+      if (existing) { existing.toneData = tone; continue; }   // update in place
+      ToneItem* item = toneItem(tone, @[], nil);
+      if (!item) continue;
+      [self.allItems addObject:item];                        // append: server order
+      byId[key] = item;
+      [self.searchIds addObject:key];
     }
-    NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
-    const NSInteger got = [json[@"page"] respondsToSelector:@selector(integerValue)]
-        ? [json[@"page"] integerValue] : page;
-    const NSInteger pages = [json[@"total_pages"] respondsToSelector:@selector(integerValue)]
-        ? [json[@"total_pages"] integerValue] : (data.count ? got : got - 1);
-    if (pages > 0) s.searchTotalPages = pages;
-    const BOOL done = (data.count == 0) || (pages > 0 && got >= pages);
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (s.searchGeneration != generation) return;
-      [collected addObjectsFromArray:data];
-      for (NSDictionary* tone in data) {
-        if ([tone[@"id"] respondsToSelector:@selector(integerValue)])
-          [s.searchIds addObject:@([tone[@"id"] integerValue])];
-      }
-      if (done) {
-        [s mergeRemoteTones:collected favorite:NO];   // page1..pageN in server order
-      } else {
-        [s fetchSearchPage:got + 1 prefix:prefix generation:generation collected:collected];
-      }
-    });
-  }];
+    self.nextSearchPage = page + 1;
+    [self filterChanged:nil];
+    self.status.stringValue = [NSString stringWithFormat:@"%lu tones • page %ld of %ld%@ — scroll for more",
+                               (unsigned long)self.visibleItems.count, (long)page, (long)pages,
+                               fromCache ? @" (cached)" : @""];
+  });
 }
 
 - (void)sortChanged:(id)sender { [self refreshOnline]; }
 
+// Infinite scroll: as the user nears the bottom of the tone list, pull the
+// next search page (cache-first, one page at a time). Fired via the clip
+// view's bounds-change notification; note.object is the NSClipView.
+- (void)scrollViewDidScroll:(NSNotification *)note {
+  if (![self.activeSearchPrefix length]) return;
+  NSClipView* clip = note.object;
+  if (![clip isKindOfClass:NSClipView.class] || !clip.documentView) return;
+  const CGFloat visibleHeight = clip.bounds.size.height;
+  if (visibleHeight <= 0) return;
+  const CGFloat documentHeight = clip.documentView.bounds.size.height;
+  const CGFloat distanceToBottom = documentHeight - clip.bounds.origin.y - visibleHeight;
+  if (distanceToBottom < 240.0)   // within ~2 rows of the bottom
+    [self loadMoreSearchResults];
+}
+
 - (void)connectTone3000:(id)sender {
-  // Manual Connect button: clears the auto-login backoff so an explicit click
-  // always tries immediately, then re-runs the background connect.
+  // Manual Connect button — the ONLY user gesture that may open the browser.
+  // Clears the login backoff so an explicit click always tries immediately.
   self.oauthLoginAttempts = 0;
   self.loginBackoffUntil = 0;
   [self setAuthStatus:@"CHECKING SESSION…" color:NSColor.systemOrangeColor];
-  [self connectIfNeeded];
+  [self connectIfNeededAllowBrowser:YES];
 }
 
-// Automatic background connection. The plugin assumes the user always wants to
-// be connected: uses a stored session when valid, refreshes when expired, and
-// falls back to a fresh browser login when the session is dead or missing.
-- (void)connectIfNeeded {
+// Background connection. Uses a stored session when valid and silently
+// refreshes when expired — it NEVER opens the browser on its own. If the
+// session is dead or missing it falls back to a "Not connected" state and
+// waits for the user to click Connect (the only path that opens the browser).
+- (void)connectIfNeededAllowBrowser:(BOOL)allowBrowser {
   if (self.connectRequested || self.oauthActive) return;   // don't stack attempts
   self.connectRequested = YES;
   __weak ToneBrowserController* weakSelf = self;
@@ -1063,10 +1202,34 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     [strongSelf logTone3000:[NSString stringWithFormat:@"CONNECT session=%@ source=%@ access=%d refresh=%d",
                              session ? @"yes" : @"no", fromNamRig ? @"namrig" : @"own",
                              (int)access.length, (int)refresh.length]];
-    if (!session || !access.length) {
-      // No stored session at all: go straight to a real browser login.
+    // Sanity gate: never adopt a session whose tokens are garbage. A real
+    // access token is a ~900-char JWT. A real Tone3000 refresh token is SHORT
+    // (~12 chars — e.g. NAM Rig's own keychain session holds a 12-char one),
+    // so the floor is 8; only a missing/empty refresh is treated as poisoned.
+    if ((access.length < 100) || (refresh.length && refresh.length < 8)) {
+      [strongSelf logTone3000:[NSString stringWithFormat:@"CONNECT rejecting implausible session (access=%d refresh=%d)",
+                               (int)access.length, (int)refresh.length]];
       strongSelf.connectRequested = NO;
-      dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf startOAuthLogin]; });
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (allowBrowser)
+          [strongSelf startOAuthLogin];
+        else
+          [strongSelf setAuthStatus:@"Not connected — click Connect to sign in"
+                              color:NSColor.systemGrayColor];
+      });
+      return;
+    }
+    if (!session || !access.length) {
+      // No stored session. Only a manual Connect click may open the browser;
+      // background paths just show the signed-out state and stay usable.
+      strongSelf.connectRequested = NO;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (allowBrowser)
+          [strongSelf startOAuthLogin];
+        else
+          [strongSelf setAuthStatus:@"Not connected — click Connect to sign in"
+                              color:NSColor.systemGrayColor];
+      });
       return;
     }
     strongSelf.accessToken = access;
@@ -1080,13 +1243,19 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (savedExp) expMs = savedExp.doubleValue;
     const BOOL expired = expMs > 0 && expMs < ([[NSDate date] timeIntervalSince1970] * 1000.0 + 60000.0);
     if (expired) {
-      // Try a refresh when there's a refresh token to use; otherwise (corrupt
-      // or partial session) go straight to a fresh browser login.
+      // Try a silent refresh when a refresh token exists; otherwise (corrupt
+      // or partial session) only a manual Connect click opens the browser.
       strongSelf.connectRequested = NO;
       if (refresh.length)
-        dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshToneSession]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf refreshToneSessionAllowBrowser:allowBrowser]; });
       else
-        dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf startOAuthLogin]; });
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (allowBrowser)
+            [strongSelf startOAuthLogin];
+          else
+            [strongSelf setAuthStatus:@"Session expired — click Connect to sign in again"
+                                color:NSColor.systemOrangeColor];
+        });
       return;
     }
     // If we bootstrapped from NAM Rig, persist our own copy immediately.
@@ -1106,9 +1275,15 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   });
 }
 
+// Silent variant used by UI build + periodic timer; never opens the browser.
+- (void)connectIfNeeded {
+  [self connectIfNeededAllowBrowser:NO];
+}
+
 // Kick-starts the background connect when the browser UI is built and keeps a
 // periodic safety net: if the session dies silently while the plugin is open
-// (no request fired to trigger the 401 chain), re-establish it.
+// (no request fired to trigger the 401 chain), re-establish it. This path is
+// silent-only: it may refresh tokens but never launches a browser login.
 - (void)autoConnect {
   __weak ToneBrowserController* weakSelf = self;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1119,8 +1294,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   self.connectTimer = [NSTimer scheduledTimerWithTimeInterval:1200.0 repeats:YES block:^(NSTimer* t) {
     __strong ToneBrowserController* s = weakSelf; if (!s) return;
     if (s.oauthActive || s.connectRequested) return;      // a flow is already running
-    if (s.oauthLoginAttempts >= 3) return;                // gave up this launch
-    [s connectIfNeeded];
+    [s connectIfNeeded];                                  // silent: never opens the browser
   }];
 }
 
@@ -1133,7 +1307,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   // Auto-retry pacing: don't re-open the browser during a backoff window set
   // by a recent failed attempt. Manual Connect clears the backoff.
   if ([[NSDate date] timeIntervalSince1970] < self.loginBackoffUntil) {
-    [self setAuthStatus:@"Will retry sign-in automatically" color:NSColor.systemOrangeColor];
+    [self setAuthStatus:@"Sign-in is on a short cooldown — click Connect again in a moment"
+                  color:NSColor.systemOrangeColor];
     return;
   }
   self.oauthActive = YES;
@@ -1166,7 +1341,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* redirect = [NSString stringWithFormat:@"http://127.0.0.1:%d/callback", self.oauthPort];
   NSString* authorizeURL = [NSString stringWithFormat:
       @"%@/oauth/authorize?client_id=%@&response_type=code&redirect_uri=%@&code_challenge=%@&code_challenge_method=S256&state=%@",
-      kToneAPI, kNamRigPublishableKey,
+      kToneAPI, kPluginPublishableKey,
       percentEncode(redirect), challenge, self.oauthState];
   [self setAuthStatus:@"Waiting for browser sign-in…" color:NSColor.systemOrangeColor];
   self.status.stringValue = @"Authorize in the browser that opened — then come back here";
@@ -1174,26 +1349,14 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   [self logTone3000:[NSString stringWithFormat:@"OAUTH authorize opened (port %d)", self.oauthPort]];
 
   __weak ToneBrowserController* weakSelf = self;
+  // Timeout: stop the flow quietly. Login is always user-initiated now, so the
+  // next attempt happens only when the user clicks Connect again — never by
+  // re-opening the browser on a timer.
   self.oauthTimer = [NSTimer scheduledTimerWithTimeInterval:180.0 repeats:NO block:^(NSTimer* t) {
     __strong ToneBrowserController* s = weakSelf; if (!s) return;
     if (!s.oauthActive) return;
     [s oauthCleanup];
-    s.oauthLoginAttempts++;
-    if (s.oauthLoginAttempts < 2) {
-      // One silent retry shortly after a timeout; further attempts wait for
-      // the backoff window + periodic timer so the browser isn't re-opened on
-      // every interaction.
-      [s setAuthStatus:@"Sign-in timed out — retrying…" color:NSColor.systemOrangeColor];
-      s.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 90.0;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong ToneBrowserController* s2 = weakSelf; if (!s2) return;
-        if (!s2.oauthActive && s2.oauthLoginAttempts < 2) [s2 startOAuthLogin];
-      });
-    } else {
-      // Give up for a while; the periodic connectTimer retries in background.
-      s.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 1200.0;
-      [s setAuthStatus:@"Couldn't connect automatically — will retry in the background" color:NSColor.systemRedColor];
-    }
+    [s setAuthStatus:@"Sign-in timed out — click Connect to try again" color:NSColor.systemRedColor];
   }];
 }
 
@@ -1251,63 +1414,84 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 }
 
 - (void)handleOAuthCode:(NSString*)code state:(NSString*)state {
+  [self logTone3000:[NSString stringWithFormat:@"OAUTH handle: code=%lu state=%lu expect=%lu",
+                     (unsigned long)code.length, (unsigned long)state.length,
+                     (unsigned long)self.oauthState.length]];
   if (![state isEqualToString:self.oauthState]) {
+    [self logTone3000:@"OAUTH handle: STATE MISMATCH — aborting"];
     [self oauthCleanup];
     [self setAuthStatus:@"Sign-in failed (state mismatch) — click Connect to try again" color:NSColor.systemRedColor];
     return;
   }
   [self setAuthStatus:@"Completing sign-in…" color:NSColor.systemOrangeColor];
+  // Strong capture — the login flow MUST survive UI teardown. Element can
+  // destroy the plugin window while the browser authorize is in flight (e.g.
+  // the user switches to the browser to approve); with a weak capture the
+  // controller would deallocate and the exchange would die silently. Retain
+  // self so the flow completes and the session is saved even if the window
+  // is gone. The blocks release the controller once the exchange resolves.
+  ToneBrowserController* strongSelf = self;
   NSString* verifier = self.oauthVerifier;
   NSString* redirect = [NSString stringWithFormat:@"http://127.0.0.1:%d/callback", self.oauthPort];
   NSString* body = [NSString stringWithFormat:
       @"grant_type=authorization_code&code=%@&client_id=%@&redirect_uri=%@&code_verifier=%@",
-      percentEncode(code), kNamRigPublishableKey, percentEncode(redirect), percentEncode(verifier)];
+      percentEncode(code), kPluginPublishableKey, percentEncode(redirect), percentEncode(verifier)];
   NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[kToneAPI stringByAppendingString:@"/oauth/token"]]];
   request.HTTPMethod = @"POST";
   request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
   [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
-  __weak ToneBrowserController* weakSelf = self;
+  __block BOOL finished = NO;
+  // Hard timeout so a hung exchange can never die silently.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (finished) return;
+    finished = YES;
+    [strongSelf logTone3000:@"EXCHANGE timed out after 25s (no response from /oauth/token)"];
+    [strongSelf oauthCleanup];
+    [strongSelf setAuthStatus:@"Sign-in didn't complete (timeout) — click Connect to try again" color:NSColor.systemRedColor];
+  });
   [[[NSURLSession sharedSession] dataTaskWithRequest:request
                                    completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-    __strong ToneBrowserController* s = weakSelf; if (!s) return;
-        NSInteger statusCode = [(NSHTTPURLResponse*)response statusCode];
-        NSDictionary* token = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-        // Tolerate both flat responses and a nested {"data": {...}} envelope.
-        NSDictionary* payload = token;
-        NSDictionary* nested = [token[@"data"] isKindOfClass:NSDictionary.class] ? token[@"data"] : nil;
-        if (nested) payload = nested;
-        NSString* access = [payload[@"access_token"] isKindOfClass:NSString.class] ? payload[@"access_token"] : nil;
-        if (statusCode == 200 && access.length) {
-          NSString* refresh = [payload[@"refresh_token"] isKindOfClass:NSString.class] ? payload[@"refresh_token"] : @"";
-          NSNumber* expMs = [payload[@"expires_at"] respondsToSelector:@selector(doubleValue)]
-              ? @([payload[@"expires_at"] doubleValue] * 1000.0) : nil;
-          if (!expMs && [payload[@"expires_at_millis"] respondsToSelector:@selector(doubleValue)])
-            expMs = payload[@"expires_at_millis"];
-          if (!expMs && [payload[@"expires_in"] respondsToSelector:@selector(doubleValue)])
-            expMs = @(([[NSDate date] timeIntervalSince1970] + [payload[@"expires_in"] doubleValue]) * 1000.0);
-          NSMutableDictionary* saved = [@{@"accessToken": access} mutableCopy];
-          if (refresh.length) saved[@"refreshToken"] = refresh;
-          if (expMs) saved[@"expiresAtMilliseconds"] = expMs;
-          savePluginSession(saved);
-          s.accessToken = access;
-          s.refreshToken = refresh;
-          s.oauthLoginAttempts = 0;         // login succeeded: reset retry budget + backoff
-          s.loginBackoffUntil = 0;
-          [s oauthCleanup];
-          [s logTone3000:@"OAUTH login success (session saved)"];
-          [s setAuthStatus:@"Signed in" color:NSColor.systemGreenColor];
-          [s refreshOnline];
-        } else {
-          [s oauthCleanup];
-          NSString* errMsg = [token[@"error_description"] isKindOfClass:NSString.class] ? token[@"error_description"]
-              : ([token[@"msg"] isKindOfClass:NSString.class] ? token[@"msg"]
-                 : [NSString stringWithFormat:@"HTTP %ld", (long)statusCode]);
-          [s logTone3000:[NSString stringWithFormat:@"OAUTH exchange failed: %@", errMsg]];
-          // Don't loop: silently wait for the periodic reconnect instead.
-          s.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 300.0;
-          [s setAuthStatus:@"Sign-in didn't complete — will retry automatically" color:NSColor.systemRedColor];
-        }
-      }] resume];
+    NSInteger statusCode = [(NSHTTPURLResponse*)response statusCode];
+    if (finished) { return; }
+    finished = YES;
+    NSDictionary* token = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    [strongSelf logTone3000:[NSString stringWithFormat:@"EXCHANGE response: status=%ld data=%lu err=%@",
+                    (long)statusCode, (unsigned long)data.length, error.localizedDescription ?: @"none"]];
+    // Tolerate both flat responses and a nested {"data": {...}} envelope.
+    NSDictionary* payload = token;
+    NSDictionary* nested = [token[@"data"] isKindOfClass:NSDictionary.class] ? token[@"data"] : nil;
+    if (nested) payload = nested;
+    NSString* access = [payload[@"access_token"] isKindOfClass:NSString.class] ? payload[@"access_token"] : nil;
+    if (statusCode == 200 && access.length) {
+      NSString* refresh = [payload[@"refresh_token"] isKindOfClass:NSString.class] ? payload[@"refresh_token"] : @"";
+      NSNumber* expMs = [payload[@"expires_at"] respondsToSelector:@selector(doubleValue)]
+          ? @([payload[@"expires_at"] doubleValue] * 1000.0) : nil;
+      if (!expMs && [payload[@"expires_at_millis"] respondsToSelector:@selector(doubleValue)])
+        expMs = payload[@"expires_at_millis"];
+      if (!expMs && [payload[@"expires_in"] respondsToSelector:@selector(doubleValue)])
+        expMs = @(([[NSDate date] timeIntervalSince1970] + [payload[@"expires_in"] doubleValue]) * 1000.0);
+      NSMutableDictionary* saved = [@{@"accessToken": access} mutableCopy];
+      if (refresh.length) saved[@"refreshToken"] = refresh;
+      if (expMs) saved[@"expiresAtMilliseconds"] = expMs;
+      savePluginSession(saved);
+      strongSelf.accessToken = access;
+      strongSelf.refreshToken = refresh;
+      strongSelf.oauthLoginAttempts = 0;         // login succeeded: reset retry budget + backoff
+      strongSelf.loginBackoffUntil = 0;
+      [strongSelf oauthCleanup];
+      [strongSelf logTone3000:@"OAUTH login success (session saved)"];
+      [strongSelf setAuthStatus:@"Signed in" color:NSColor.systemGreenColor];
+      [strongSelf refreshOnline];
+    } else {
+      [strongSelf oauthCleanup];
+      NSString* errMsg = [token[@"error_description"] isKindOfClass:NSString.class] ? token[@"error_description"]
+          : ([token[@"msg"] isKindOfClass:NSString.class] ? token[@"msg"]
+             : [NSString stringWithFormat:@"HTTP %ld", (long)statusCode]);
+      [strongSelf logTone3000:[NSString stringWithFormat:@"OAUTH exchange failed: %@", errMsg]];
+      strongSelf.loginBackoffUntil = [[NSDate date] timeIntervalSince1970] + 30.0;
+      [strongSelf setAuthStatus:@"Sign-in didn't complete — click Connect to try again" color:NSColor.systemRedColor];
+    }
+  }] resume];
     }
 
 - (void)oauthCleanup {
@@ -1318,15 +1502,24 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   self.oauthState = nil;
 }
 
-// Best-effort token refresh through NAM Rig's stored session. NAM Rig usually
-// refreshes on its own; this is a safety net when the local token has expired.
-// On success the updated token pair is applied in memory (NAM Rig's keychain
-// entry is left untouched, since NAM Rig is the session owner).
+// Best-effort token refresh. NAM Rig usually refreshes on its own; this is a
+// safety net when the local token has expired. On success the updated token
+// pair is applied in memory and persisted to the plugin's own keychain entry
+// (NAM Rig's keychain entry is left untouched, since NAM Rig is the owner).
 - (void)refreshToneSession {
+  [self refreshToneSessionAllowBrowser:NO];
+}
+
+// Refreshes the access token with the stored refresh token. Called from the
+// search-401 path and the background connect with allowBrowser=NO: on failure
+// the poisoned session is cleared and the UI shows the signed-out state
+// instead of launching a browser. Only the manual Connect button passes
+// allowBrowser=YES.
+- (void)refreshToneSessionAllowBrowser:(BOOL)allowBrowser {
   if (!self.refreshToken.length) return;
   if (self.refreshingToken) return;   // concurrent 401s can't stack refreshes
   self.refreshingToken = YES;
-  NSString* clientId = kNamRigPublishableKey;
+  NSString* clientId = kPluginPublishableKey;
   NSString* body = [NSString stringWithFormat:@"grant_type=refresh_token&refresh_token=%@&client_id=%@",
                     [self.refreshToken stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet],
                     [clientId stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]];
@@ -1375,13 +1568,19 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       // and open a fresh browser login so Connect never dead-ends again.
       if ([err containsString:@"used"] || [err containsString:@"not_found"]
           || [err containsString:@"invalid_grant"] || [err containsString:@"invalid-client"]
+          || [err containsString:@"invalid_client"]   // server sends underscore form ("Client does not match the session's OAuth client")
           || [err containsString:@"expired"] || [err containsString:@"invalid_request"]) {
         clearPluginSession();
         dispatch_async(dispatch_get_main_queue(), ^{
           strongSelf.accessToken = nil;
           strongSelf.refreshToken = nil;
-          [strongSelf setAuthStatus:@"Session expired — signing you in again…" color:NSColor.systemOrangeColor];
-          [strongSelf startOAuthLogin];
+          if (allowBrowser) {
+            [strongSelf setAuthStatus:@"Session expired — signing you in…" color:NSColor.systemOrangeColor];
+            [strongSelf startOAuthLogin];
+          } else {
+            [strongSelf setAuthStatus:@"Session expired — click Connect to sign in again"
+                                color:NSColor.systemRedColor];
+          }
         });
         return;
       }
@@ -1768,6 +1967,12 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   [controller.collectionView registerClass:[ToneCardItem class] forItemWithIdentifier:@"ToneCard"];
 
   scroll.documentView = controller.collectionView;
+  // Infinite scroll: observe the scrollview's bounds change (no delegate
+  // protocol exists for NSScrollView) — notification fires on every scroll.
+  [NSNotificationCenter.defaultCenter addObserver:controller
+                                         selector:@selector(scrollViewDidScroll:)
+                                             name:NSViewBoundsDidChangeNotification
+                                           object:scroll.contentView];
   [browser addSubview:scroll];
 
   controller.status = addLabel(browser, @"Scanning NAM Rig's Tone3000 library…", NSMakeRect(28, 16, bw - 56, 22),
