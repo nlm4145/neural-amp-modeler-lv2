@@ -33,19 +33,24 @@ struct RigUIState;
 @class ToneBrowserController;
 @class RigButton;
 
-@interface NAMRigUIController : NSObject <NSComboBoxDelegate>
+@interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate>
 @property(nonatomic, assign) RigUIState* state;
 - (void)chooseModel:(NSButton*)sender;
 - (void)clearModel:(NSButton*)sender;
 - (void)controlChanged:(NSSlider*)sender;
+- (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
 
-// Knob configuration — port-index order matches display order in the footer
+// Knob configuration — index order matches the LV2 port list in nam_rig_plugin.ttl.
 // strip. Atom ports (0/1) and the stage toggles (7–10) are handled separately.
 constexpr size_t kRigKnobCount = 6;
 const std::array<uint32_t, kRigKnobCount> kRigKnobPorts{15, 4, 5, 12, 13, 14};
+// Footer display order follows the SIGNAL CHAIN, not the port list:
+// GATE → INPUT → [pedal/amp/cab stages] → BASS → MID → TREBLE → OUTPUT.
+// Maps display slot → index into kRigKnobPorts (port tags / state arrays unchanged).
+const std::array<size_t, kRigKnobCount> kRigKnobDisplayOrder{0, 1, 3, 4, 5, 2};
 
 static NSString* rigKnobValueText(uint32_t port, float value) {
   switch (port) {
@@ -84,6 +89,9 @@ struct RigUIState {
   // auto-cab is always on — no toggle or status label needed
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
   std::array<__strong NSTextField*, kRigKnobCount> valueLabels{};
+  // Editable knob value boxes: while the user is typing in one, host-driven
+  // updates must not clobber that field (index = kRigKnobPorts index).
+  std::array<bool, kRigKnobCount> knobFieldEditing{};
   std::array<__strong NSPopUpButton*, 3> modelPickers{};  // per-stage model selector in each tile
   LV2UI_Resize* hostResize = nullptr;
   CGFloat zoom = 1.0;
@@ -334,6 +342,7 @@ struct RigUIState {
     if (index < 0) return;
     dispatch_async(dispatch_get_main_queue(), ^{
       knobs[index].floatValue = value;
+      if (knobFieldEditing[index]) return;   // user is typing — don't clobber the field
       valueLabels[index].stringValue = rigKnobValueText(port, value);
     });
   }
@@ -453,6 +462,64 @@ struct RigUIState {
   if (!_state) return;
   _state->sendControl((uint32_t)sender.tag, sender.floatValue);
   _state->updateControl((uint32_t)sender.tag, sender.floatValue);
+}
+
+// Delegate: track which knob value box the user is editing so live knob/host
+// updates don't overwrite the text they're typing.
+- (void)controlTextDidBeginEditing:(NSNotification*)obj {
+  if (!_state) return;
+  NSTextField* f = obj.object;
+  if (![f isKindOfClass:[NSTextField class]]) return;
+  for (size_t k = 0; k < kRigKnobCount; ++k)
+    if (_state->valueLabels[k] == f) _state->knobFieldEditing[k] = true;
+}
+- (void)controlTextDidEndEditing:(NSNotification*)obj {
+  if (!_state) return;
+  NSTextField* f = obj.object;
+  if (![f isKindOfClass:[NSTextField class]]) return;
+  for (size_t k = 0; k < kRigKnobCount; ++k) {
+    if (_state->valueLabels[k] == f) {
+      _state->knobFieldEditing[k] = false;
+      // Commit on click-away / Tab too (Enter already ran the action; the
+      // equality guard keeps a no-op focus visit from re-sending the value).
+      NSSlider* knob = _state->knobs[k];
+      if (![f.stringValue isEqualToString:rigKnobValueText(kRigKnobPorts[k], knob.floatValue)])
+        [self knobFieldCommitted:f];
+    }
+  }
+}
+
+// Return pressed (or focus left) in a knob value box: parse the number,
+// clamp to the knob's range, drive the knob + DSP, and rewrite the box in
+// canonical format. Accepts bare numbers ("3.5") or pasted strings
+// ("+3.5 dB"); text with no numeric characters reverts to the current value.
+- (void)knobFieldCommitted:(NSTextField*)sender {
+  if (!_state) return;
+  const NSInteger port = sender.tag;
+  ssize_t index = -1;
+  for (size_t k = 0; k < kRigKnobCount; ++k)
+    if (kRigKnobPorts[k] == (uint32_t)port) { index = (ssize_t)k; break; }
+  if (index < 0) return;
+  NSSlider* knob = _state->knobs[index];
+
+  NSString* s = [[sender.stringValue stringByTrimmingCharactersInSet:
+                  [NSCharacterSet whitespaceCharacterSet]]
+                 stringByReplacingOccurrencesOfString:@"dB" withString:@""];
+  static NSCharacterSet* numeric = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ numeric = [NSCharacterSet characterSetWithCharactersInString:@"0123456789+-.eE"]; });
+  if (!s.length || [s rangeOfCharacterFromSet:numeric].location == NSNotFound) {
+    _state->updateControl((uint32_t)port, knob.floatValue);   // revert display
+    return;
+  }
+
+  const double v = s.doubleValue;
+  double clamped = v;
+  if (clamped < knob.minValue) clamped = knob.minValue;
+  if (clamped > knob.maxValue) clamped = knob.maxValue;
+  knob.doubleValue = clamped;
+  _state->sendControl((uint32_t)port, (float)clamped);
+  _state->updateControl((uint32_t)port, (float)clamped);
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -2402,49 +2469,91 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
+    // Display names indexed by kRigKnobPorts order; cells are laid out in
+    // signal order via kRigKnobDisplayOrder.
     NSArray<NSString*>* knobNames = @[@"GATE", @"INPUT", @"OUTPUT", @"BASS", @"MID", @"TREBLE"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB"];
     const std::array<double, kRigKnobCount> defaults{-80.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> mins{-80.0, -20.0, -20.0, -12.0, -12.0, -12.0};
     const std::array<double, kRigKnobCount> maxes{0.0, 20.0, 20.0, 12.0, 12.0, 12.0};
 
-    // Global INPUT / OUTPUT strip — these are scoped to the whole
-    // signal chain (not per stage), so they live in a shared footer row.
-    NSStackView* knobRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
-    knobRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    knobRow.distribution = NSStackViewDistributionFillEqually;
-    knobRow.spacing = 22.0;
-    knobRow.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:knobRow];
-    [[knobRow.leadingAnchor constraintEqualToAnchor:topView.leadingAnchor constant:24] setActive:YES];
-    [[knobRow.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-24] setActive:YES];
-    [[knobRow.bottomAnchor constraintEqualToAnchor:topView.bottomAnchor constant:-16] setActive:YES];
-    [[knobRow.heightAnchor constraintEqualToConstant:110] setActive:YES];
+    // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
+    // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
+    // TRAILING edges are pinned to its tile box in the tile loop below, so the
+    // knobs stay exactly within the tile's footprint at any width/zoom.
+    NSView* knobGroups[3] = {nil, nil, nil};
 
-    for (NSInteger k = 0; k < (NSInteger)kRigKnobCount; ++k) {
-      NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
-      [knobRow addArrangedSubview:cell];
+    // Display slots (indices into kRigKnobDisplayOrder, i.e. signal order)
+    // grouped per tile: PEDAL {GATE, INPUT}, AMP {BASS, MID, TREBLE}, CAB {OUTPUT}.
+    const size_t groupSlots[3][3] = {{0, 1}, {2, 3, 4}, {5}};
+    const size_t groupCounts[3] = {2, 3, 1};
 
-      state->knobs[(size_t)k] = addKnob(cell, (NSInteger)kRigKnobPorts[(NSUInteger)k], defaults[(NSUInteger)k],
-                                        mins[(NSUInteger)k], maxes[(NSUInteger)k],
-                                        NSMakePoint(0, 0), state->uiController);
-      NSSlider* knob = state->knobs[(size_t)k];
-      knob.translatesAutoresizingMaskIntoConstraints = NO;
-      centerX(knob, cell, 0);
-      [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
+    for (size_t g = 0; g < 3; ++g) {
+      NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
+      group.translatesAutoresizingMaskIntoConstraints = NO;
+      [topView addSubview:group];
+      knobGroups[g] = group;
+      [[group.bottomAnchor constraintEqualToAnchor:topView.bottomAnchor constant:-16] setActive:YES];
+      [[group.heightAnchor constraintEqualToConstant:110] setActive:YES];
 
-      NSTextField* kname = addLabel(cell, knobNames[(NSUInteger)k], NSZeroRect,
-                                    [NSFont boldSystemFontOfSize:10.5], rigDimText(), NSTextAlignmentCenter);
-      kname.translatesAutoresizingMaskIntoConstraints = NO;
-      centerX(kname, cell, 0);
-      [[kname.bottomAnchor constraintEqualToAnchor:knob.topAnchor constant:-8] setActive:YES];
+      // Equal-width cells tiled across the group with the same 22pt spacing
+      // the tiles use — knobs stay inside their tile's footprint at any width.
+      NSView* prev = nil;
+      for (size_t gi = 0; gi < groupCounts[g]; ++gi) {
+        const size_t slot = groupSlots[g][gi];
+        const size_t k = kRigKnobDisplayOrder[slot];
+        NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
+        cell.translatesAutoresizingMaskIntoConstraints = NO;
+        [group addSubview:cell];
+        [[cell.topAnchor constraintEqualToAnchor:group.topAnchor] setActive:YES];
+        [[cell.bottomAnchor constraintEqualToAnchor:group.bottomAnchor] setActive:YES];
+        if (prev) {
+          [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:22] setActive:YES];
+          [[cell.widthAnchor constraintEqualToAnchor:prev.widthAnchor] setActive:YES];
+        } else {
+          [[cell.leadingAnchor constraintEqualToAnchor:group.leadingAnchor] setActive:YES];
+        }
+        prev = cell;
+        if (gi == groupCounts[g] - 1)
+          [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor] setActive:YES];
 
-      state->valueLabels[(size_t)k] = addLabel(cell, knobValues[(NSUInteger)k], NSZeroRect,
-        [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
-      NSTextField* kval = state->valueLabels[(size_t)k];
-      kval.translatesAutoresizingMaskIntoConstraints = NO;
-      centerX(kval, cell, 0);
-      [[kval.bottomAnchor constraintEqualToAnchor:kname.topAnchor constant:-4] setActive:YES];
+        state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k],
+                                  mins[k], maxes[k],
+                                  NSMakePoint(0, 0), state->uiController);
+        NSSlider* knob = state->knobs[k];
+        knob.translatesAutoresizingMaskIntoConstraints = NO;
+        centerX(knob, cell, 0);
+        [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
+
+        NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
+                                      [NSFont boldSystemFontOfSize:10.5], rigDimText(), NSTextAlignmentCenter);
+        kname.translatesAutoresizingMaskIntoConstraints = NO;
+        centerX(kname, cell, 0);
+        [[kname.bottomAnchor constraintEqualToAnchor:knob.topAnchor constant:-8] setActive:YES];
+
+        state->valueLabels[k] = addLabel(cell, knobValues[k], NSZeroRect,
+          [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
+        // Turn the value display into an editable text box: type a number and
+        // press Return (or click away) to set the knob. Knob turns still update
+        // the box text while not editing.
+        NSTextField* kval = state->valueLabels[k];
+        kval.editable = YES;
+        kval.selectable = YES;   // editable alone is NOT enough on label-created fields
+        kval.bordered = YES;
+        kval.drawsBackground = YES;
+        kval.backgroundColor = rigRaised();
+        kval.textColor = rigText();
+        kval.focusRingType = NSFocusRingTypeNone;
+        kval.tag = (NSInteger)kRigKnobPorts[k];
+        kval.delegate = state->uiController;
+        kval.target = state->uiController;
+        kval.action = @selector(knobFieldCommitted:);
+        kval.translatesAutoresizingMaskIntoConstraints = NO;
+        centerX(kval, cell, 0);
+        [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];
+        [[kval.heightAnchor constraintEqualToConstant:19] setActive:YES];
+        [[kval.bottomAnchor constraintEqualToAnchor:kname.topAnchor constant:-6] setActive:YES];
+      }
     }
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
@@ -2456,7 +2565,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.leadingAnchor constraintEqualToAnchor:topView.leadingAnchor constant:24] setActive:YES];
     [[boxRow.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-24] setActive:YES];
     [[boxRow.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:18] setActive:YES];
-    [[boxRow.bottomAnchor constraintEqualToAnchor:knobRow.topAnchor constant:-12] setActive:YES];
+    [[boxRow.bottomAnchor constraintEqualToAnchor:knobGroups[0].topAnchor constant:-12] setActive:YES];
 
     for (NSInteger i = 0; i < 3; ++i) {
       NSBox* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
@@ -2528,6 +2637,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
       [[mp.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+      // Pin this tile's knob group exactly to the tile's footprint: the
+      // group's leading/trailing edges match the box (which insets itself
+      // 16pt inside its cell via its own interior padding), so knobs sit
+      // within the tile's visual bounds. Vertical placement is fixed above.
+      NSView* grp = knobGroups[i];
+      [[grp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor] setActive:YES];
+      [[grp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor] setActive:YES];
 
       [boxRow addArrangedSubview:box];
       state->setStageThumb((size_t)i, nil, 0, nil);
