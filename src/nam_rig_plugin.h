@@ -23,6 +23,8 @@
 #define NAM_RIG_PEDAL_URI NAM_RIG_URI "-pedal-model"
 #define NAM_RIG_AMP_URI NAM_RIG_URI "-amp-model"
 #define NAM_RIG_CAB_URI NAM_RIG_URI "-cab-model"
+#define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
+#define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 
 namespace NAMRig {
 class WavIR;
@@ -87,6 +89,9 @@ public:
     float* mid;
     float* treble;
     float* gate_threshold;
+    float* tuner_enable;    // in:  UI toggle (0/1)
+    float* tuner_note;      // out: MIDI note number, -1 = no pitch
+    float* tuner_cents;     // out: detune in cents [-50, +50]
   };
 
   Ports ports = {};
@@ -142,6 +147,9 @@ private:
     LV2_URID patchValue;
     LV2_URID unitsFrame;
     std::array<LV2_URID, kStageCount> stagePath;
+    LV2_URID atomFloat;
+    LV2_URID tunerNote;
+    LV2_URID tunerCents;
   } uris{};
 
   LV2_Atom_Forge forge{};
@@ -153,5 +161,35 @@ private:
   float gateDetector = 0.0f;
   float gateGain = 1.0f;
   int32_t maxBufferSize = 512;
+
+  // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).
+  // Front end: 2-pole×2 lowpass then decimate to ~12 kHz (kills harmonics →
+  // fewer octave errors, and makes low E comfortably inside the lag range),
+  // then McLeod Pitch Method (NSDF) over a 3072-sample decimated ring.
+  // Results land on output ports 17/18 + patch:Set atoms for the UI. Only
+  // runs while tuner_enable is on.
+  struct Tuner {
+    static constexpr int kBuf = 3072;        // decimated-domain ring length
+    static constexpr int kWindow = 2048;     // NSDF correlation window
+    static constexpr int kMinTau = 8;        // ~1500 Hz top
+    static constexpr int kMaxTau = 300;      // 12k/300 = 40 Hz floor
+    std::array<float, kBuf> ring{};
+    int ringPos = 0;
+    int filled = 0;
+    bool wasEnabled = false;
+    int cooldown = 0;               // blocks to skip between analyses
+    int decimPhase = 0;             // raw-sample counter for decimation
+    float lastNote = -1.0f, lastCents = 0.0f;
+    float sentNote = -99.0f;        // last values pushed over notify (change gate)
+    float sentCentsQ = -99.0f;
+    float noteHist[3] = {-1.f, -1.f, -1.f};   // median-3 display filter
+    int histLen = 0;
+    float nsdf[kMaxTau + 2] = {};
+    float scratch[kWindow + kMaxTau] = {};   // unwrapped NSDF window
+    Biquad lp1, lp2;                // anti-alias front end
+    int decimFactor = 1;
+    float decimRate = 12000.0f;
+  } tuner;
+  void tunerSetRates(double rate);
 };
 } // namespace NAMRig

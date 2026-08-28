@@ -151,9 +151,13 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.stagePath[0] = map->map(map->handle, NAM_RIG_PEDAL_URI);
   uris.stagePath[1] = map->map(map->handle, NAM_RIG_AMP_URI);
   uris.stagePath[2] = map->map(map->handle, NAM_RIG_CAB_URI);
+  uris.atomFloat = map->map(map->handle, LV2_ATOM__Float);
+  uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
+  uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
 
   for (auto& loader : loaders)
     loader.SetExternalSampleRate(static_cast<int>(rate));
+  tunerSetRates(rate);
 
   if (options)
     optionsSet(this, options);
@@ -238,10 +242,32 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   return LV2_WORKER_SUCCESS;
 }
 
+void Plugin::tunerSetRates(double rate) {
+  tuner.decimFactor = std::max(1, (int)std::lround(rate / 12000.0));
+  const double dr = rate / tuner.decimFactor;
+  tuner.decimRate = (float)dr;
+  // Two cascaded RBJ lowpass sections (Q=0.707), cutoff at 0.45 x the
+  // decimated Nyquist — clean anti-alias for the decimator.
+  const double fc = 0.45 * dr / 2.0;
+  const double w0 = 2.0 * 3.14159265358979323846 * fc / dr;
+  const double cosw = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * 0.7071);
+  const double a0 = 1.0 + alpha;
+  tuner.lp1.b0 = (float)((1.0 - cosw) / 2.0 / a0);
+  tuner.lp1.b1 = (float)((1.0 - cosw) / a0);
+  tuner.lp1.b2 = (float)((1.0 - cosw) / 2.0 / a0);
+  tuner.lp1.a1 = (float)(-2.0 * cosw / a0);
+  tuner.lp1.a2 = (float)((1.0 - alpha) / a0);
+  tuner.lp2 = tuner.lp1;
+  tuner.lp1.reset();
+  tuner.lp2.reset();
+}
+
 void Plugin::process(uint32_t sampleCount) noexcept {
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
       !ports.input_level || !ports.output_level ||
-      !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab)
+      !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
+      !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents)
     return;
 
   lv2_atom_forge_set_buffer(&forge, reinterpret_cast<uint8_t*>(ports.notify), ports.notify->atom.size);
@@ -286,6 +312,149 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         break;
       }
     }
+  }
+
+  // ---- Tuner (raw input tap — runs BEFORE gate/trim/stages/EQ) ----
+  // Only active while tuner_enable is on. Low-pass + decimate the dry input
+  // into a ring buffer, then run McLeod Pitch Method (NSDF) for a robust f0.
+  // Results publish on the tuner_note/tuner_cents output ports and as
+  // change-gated patch:Set atoms for the UI.
+  {
+    const bool tunerOn = *ports.tuner_enable >= 0.5f;
+    if (!tunerOn && tuner.wasEnabled) {
+      tuner.lastNote = -1.0f;
+      tuner.lastCents = 0.0f;
+      tuner.histLen = 0;
+    }
+    tuner.wasEnabled = tunerOn;
+    if (tunerOn) {
+      for (uint32_t i = 0; i < sampleCount; ++i) {
+        const float x = tuner.lp2.process(tuner.lp1.process(ports.audio_in[i]));
+        if (++tuner.decimPhase >= tuner.decimFactor) {
+          tuner.decimPhase = 0;
+          tuner.ring[(size_t)tuner.ringPos] = x;
+          tuner.ringPos = (tuner.ringPos + 1) % Tuner::kBuf;
+          if (tuner.filled < Tuner::kBuf) ++tuner.filled;
+        }
+      }
+      if (tuner.cooldown > 0) {
+        --tuner.cooldown;
+      } else if (tuner.filled >= Tuner::kBuf) {
+        tuner.cooldown = 3;   // re-analyze every few blocks; UI stays smooth
+        // Unwrap the most recent window (+ max lag) into linear scratch.
+        float* win = tuner.scratch;
+        const int span = Tuner::kWindow + Tuner::kMaxTau;
+        const int start = (tuner.ringPos - span + 2 * Tuner::kBuf) % Tuner::kBuf;
+        for (int i = 0; i < span; ++i)
+          win[i] = tuner.ring[(size_t)((start + i) % Tuner::kBuf)];
+
+        float energy = 0.0f;
+        for (int i = 0; i < Tuner::kWindow; ++i) energy += win[i] * win[i];
+        const float rms = std::sqrt(energy / Tuner::kWindow);
+        if (rms < 0.003f) {           // silence — show "no signal"
+          tuner.lastNote = -1.0f;
+          tuner.histLen = 0;
+        } else {
+          // NSDF (McLeod): nsdf[tau] = 2*acf[tau] / m[tau], in [-1, 1].
+          for (int tau = Tuner::kMinTau; tau <= Tuner::kMaxTau; ++tau) {
+            float acf = 0.0f, m = 0.0f;
+            for (int i = 0; i < Tuner::kWindow; ++i) {
+              const float a = win[i];
+              const float b = win[i + tau];
+              acf += a * b;
+              m += a * a + b * b;
+            }
+            tuner.nsdf[tau] = (m > 0.0f) ? (2.0f * acf / m) : 0.0f;
+          }
+          // Local maxima after the first positive zero-crossing; take the
+          // FIRST peak within 90% of the best (avoids sub-octave picks).
+          int peaks[64];
+          int nPeaks = 0;
+          bool crossed = false;
+          for (int tau = Tuner::kMinTau + 1; tau < Tuner::kMaxTau; ++tau) {
+            if (!crossed) {
+              if (tuner.nsdf[tau - 1] < 0.0f && tuner.nsdf[tau] >= 0.0f) crossed = true;
+              continue;
+            }
+            if (tuner.nsdf[tau] > tuner.nsdf[tau - 1] &&
+                tuner.nsdf[tau] >= tuner.nsdf[tau + 1] && tuner.nsdf[tau] > 0.0f) {
+              if (nPeaks < 64) peaks[nPeaks++] = tau;
+            }
+          }
+          int chosen = -1;
+          if (nPeaks > 0) {
+            float best = 0.0f;
+            for (int p = 0; p < nPeaks; ++p)
+              if (tuner.nsdf[peaks[p]] > best) best = tuner.nsdf[peaks[p]];
+            for (int p = 0; p < nPeaks; ++p)
+              if (tuner.nsdf[peaks[p]] >= 0.90f * best) { chosen = peaks[p]; break; }
+          }
+          float midi = -1.0f;
+          if (chosen > 0) {
+            // Parabolic vertex refinement around the NSDF peak.
+            const float s0 = tuner.nsdf[chosen - 1];
+            const float s1 = tuner.nsdf[chosen];
+            const float s2 = tuner.nsdf[chosen + 1];
+            float tauF = (float)chosen;
+            const float denom = s0 - 2.0f * s1 + s2;
+            if (denom < -1e-9f) {
+              float delta = (s0 - s2) / (2.0f * denom);
+              delta = std::max(-1.0f, std::min(1.0f, delta));
+              tauF += delta;
+            }
+            const float freq = tuner.decimRate / tauF;
+            if (freq >= 55.0f && freq <= 1400.0f)
+              midi = 69.0f + 12.0f * std::log2(freq / 440.0f);
+          }
+          if (midi < 0.0f) {
+            tuner.lastNote = -1.0f;
+            tuner.histLen = 0;
+          } else {
+            // Median-of-3 display filter kills single-frame octave jumps.
+            tuner.noteHist[tuner.histLen % 3] = midi;
+            tuner.histLen = std::min(tuner.histLen + 1, 3);
+            if (tuner.histLen >= 3) {
+              const float a = tuner.noteHist[0], b = tuner.noteHist[1], c = tuner.noteHist[2];
+              tuner.lastNote = std::max(std::min(a, b), std::min(std::max(a, b), c));
+            } else if (tuner.lastNote < 0.0f) {
+              tuner.lastNote = -1.0f;   // need 3 consistent frames before showing
+            }
+          }
+          if (tuner.lastNote >= 0.0f) {
+            const int nearest = std::lround(tuner.lastNote);
+            tuner.lastCents = std::max(-50.0f, std::min(50.0f, (tuner.lastNote - nearest) * 100.0f));
+          } else {
+            tuner.lastCents = 0.0f;
+          }
+        }
+      }
+    }
+    // Publish results: output ports for host polling, plus patch:Set atom
+    // events on the notify port for the UI — only when something actually
+    // changed (note change or >=2-cent drift) to keep notify traffic low.
+    const int noteI = (int)tuner.lastNote;
+    const int centsQ = (int)std::lround(tuner.lastCents / 2.0f);
+    if (noteI != (int)tuner.sentNote || centsQ != (int)tuner.sentCentsQ) {
+      tuner.sentNote = tuner.lastNote;
+      tuner.sentCentsQ = (float)centsQ;
+      LV2_Atom_Forge_Frame frame;
+      lv2_atom_forge_frame_time(&forge, 0);
+      lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+      lv2_atom_forge_key(&forge, uris.patchProperty);
+      lv2_atom_forge_urid(&forge, uris.tunerNote);
+      lv2_atom_forge_key(&forge, uris.patchValue);
+      lv2_atom_forge_float(&forge, tuner.lastNote);
+      lv2_atom_forge_pop(&forge, &frame);
+      lv2_atom_forge_frame_time(&forge, 0);
+      lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+      lv2_atom_forge_key(&forge, uris.patchProperty);
+      lv2_atom_forge_urid(&forge, uris.tunerCents);
+      lv2_atom_forge_key(&forge, uris.patchValue);
+      lv2_atom_forge_float(&forge, tuner.lastCents);
+      lv2_atom_forge_pop(&forge, &frame);
+    }
+    *ports.tuner_note = tuner.lastNote;
+    *ports.tuner_cents = tuner.lastCents;
   }
 
   // Noise gate (before the input trim). Fully bypassed at the -80 dB minimum

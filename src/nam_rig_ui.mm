@@ -11,7 +11,14 @@
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
 
+// Tuner patch property URIs — must match nam_rig_plugin.h (kept local so the
+// UI target doesn't need the DSP header's NeuralAudio includes).
+#define NAM_RIG_URI "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig"
+#define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
+#define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
+
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -39,9 +46,14 @@ struct RigUIState;
 - (void)clearModel:(NSButton*)sender;
 - (void)controlChanged:(NSSlider*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
+- (void)tunerToggled:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
+
+// Theme helpers are defined further down; the controller's tuner toggle uses them.
+static NSColor* rigText(void);
+static NSColor* rigDimText(void);
 
 // Knob configuration — index order matches the LV2 port list in nam_rig_plugin.ttl.
 // strip. Atom ports (0/1) and the stage toggles (7–10) are handled separately.
@@ -78,6 +90,45 @@ struct RigUIState {
   LV2_URID patchProperty = 0;
   LV2_URID patchValue = 0;
   std::array<LV2_URID, 3> pathURIDs{};
+  LV2_URID atomFloat = 0;
+  LV2_URID tunerNoteURID = 0;
+  LV2_URID tunerCentsURID = 0;
+
+  // Tuner UI: toggle button in the title bar + the display panel it reveals.
+  __strong NSButton* tunerButton = nil;
+  __strong NSView* tunerPanel = nil;
+  __strong NSTextField* tunerNoteLabel = nil;
+  __strong NSTextField* tunerCentsLabel = nil;
+  __strong NSImageView* tunerNeedle = nil;
+  __strong NSLayoutConstraint* tunerNeedleLeading = nil;  // constant = pixel offset
+  float lastTunerNote = -1.0f;
+  float lastTunerCents = 0.0f;
+
+  // Redraw the readout from lastTunerNote/lastTunerCents. Called on the main
+  // thread from portEvent.
+  void updateTunerDisplay() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!tunerPanel || tunerPanel.hidden) return;
+      if (lastTunerNote < 0) {
+        tunerNoteLabel.stringValue = @"—";
+        tunerCentsLabel.stringValue = @"";
+        tunerNeedle.hidden = YES;
+        return;
+      }
+      static NSString* const kNames[] = {@"C", @"C#", @"D", @"D#", @"E", @"F",
+                                         @"F#", @"G", @"G#", @"A", @"A#", @"B"};
+      const int n = (int)(lastTunerNote + 0.5f);
+      tunerNoteLabel.stringValue = [NSString stringWithFormat:@"%@%d",
+                                    kNames[((n % 12) + 12) % 12], n / 12 - 1];
+      tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢",
+                                     (int)std::lround(lastTunerCents)];
+      tunerNeedle.hidden = NO;
+      // Needle across ±50 cents: middle of the meter = in tune.
+      NSView* meter = tunerNeedle.superview;
+      const CGFloat w = meter.bounds.size.width - 6.0;
+      tunerNeedleLeading.constant = 3.0 + (lastTunerCents + 50.0f) / 100.0f * w;
+    });
+  }
 
   __strong NSView* view = nil;
   __weak NSView* parent = nil;
@@ -520,6 +571,22 @@ struct RigUIState {
   knob.doubleValue = clamped;
   _state->sendControl((uint32_t)port, (float)clamped);
   _state->updateControl((uint32_t)port, (float)clamped);
+}
+
+// Tuner on/off: drives the tuner_enable port, swaps the icon brightness,
+// and shows/hides the readout panel. DSP analysis only runs while enabled.
+- (void)tunerToggled:(NSButton*)sender {
+  if (!_state) return;
+  const BOOL on = sender.state == NSControlStateValueOn;
+  _state->sendControl(16, on ? 1.0f : 0.0f);
+  sender.contentTintColor = on ? rigText() : rigDimText();
+  sender.needsDisplay = YES;
+  _state->tunerPanel.hidden = !on;
+  if (!on) {
+    _state->tunerNoteLabel.stringValue = @"—";
+    _state->tunerCentsLabel.stringValue = @"";
+    _state->tunerNeedle.hidden = YES;
+  }
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -2397,6 +2464,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->patchSet = map->map(map->handle, LV2_PATCH__Set);
     state->patchProperty = map->map(map->handle, LV2_PATCH__property);
     state->patchValue = map->map(map->handle, LV2_PATCH__value);
+    state->atomFloat = map->map(map->handle, LV2_ATOM__Float);
+    state->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
+    state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
     for (size_t i = 0; i < 3; ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
@@ -2455,6 +2525,95 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[chain.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-170] setActive:YES];
     [[chain.topAnchor constraintEqualToAnchor:topView.topAnchor constant:14] setActive:YES];
     [[chain.widthAnchor constraintEqualToConstant:300] setActive:YES];
+
+    // Tuner toggle (title bar) — flat icon button, dim when off, bright when on.
+    state->tunerButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+    state->tunerButton.bordered = NO;
+    state->tunerButton.imagePosition = NSImageOnly;
+    state->tunerButton.image = [NSImage imageWithSystemSymbolName:@"guitars"
+                                          accessibilityDescription:@"Tuner"];
+    state->tunerButton.contentTintColor = rigDimText();
+    [state->tunerButton setButtonType:NSButtonTypeToggle];
+    state->tunerButton.target = state->uiController;
+    state->tunerButton.action = @selector(tunerToggled:);
+    state->tunerButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:state->tunerButton];
+    [[state->tunerButton.leadingAnchor constraintEqualToAnchor:title.trailingAnchor constant:28] setActive:YES];
+    [[state->tunerButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[state->tunerButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
+    [[state->tunerButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+    // Tuner readout panel — hidden until the toggle is on. Note name, detune
+    // in cents, and a needle meter across ±50 cents. Styled like the tiles
+    // (panel bg, subtle border, accent highlights).
+    NSView* tp = [[NSView alloc] initWithFrame:NSZeroRect];
+    tp.wantsLayer = YES;
+    tp.layer.backgroundColor = rigPanelBG().CGColor;
+    tp.layer.cornerRadius = 8;
+    tp.layer.borderWidth = 1.0;
+    tp.layer.borderColor = rigPanelBorder().CGColor;
+    tp.hidden = YES;
+    tp.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:tp];
+    state->tunerPanel = tp;
+    [[tp.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:20] setActive:YES];
+    [[tp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[tp.widthAnchor constraintEqualToConstant:380] setActive:YES];
+    [[tp.heightAnchor constraintEqualToConstant:34] setActive:YES];
+
+    NSTextField* noteL = addLabel(tp, @"—", NSZeroRect,
+                                  [NSFont monospacedDigitSystemFontOfSize:17 weight:NSFontWeightBold],
+                                  rigText(), NSTextAlignmentCenter);
+    noteL.translatesAutoresizingMaskIntoConstraints = NO;
+    state->tunerNoteLabel = noteL;
+    [[noteL.leadingAnchor constraintEqualToAnchor:tp.leadingAnchor constant:14] setActive:YES];
+    [[noteL.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
+    [[noteL.widthAnchor constraintEqualToConstant:58] setActive:YES];
+
+    NSTextField* centsL = addLabel(tp, @"", NSZeroRect,
+                                   [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightRegular],
+                                   rigDimText(), NSTextAlignmentCenter);
+    centsL.translatesAutoresizingMaskIntoConstraints = NO;
+    state->tunerCentsLabel = centsL;
+    [[centsL.trailingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:-10] setActive:YES];
+    [[centsL.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
+    [[centsL.widthAnchor constraintEqualToConstant:74] setActive:YES];
+
+    // Needle: thin accent bar that slides across the ±50-cent scale.
+    NSView* meter = [[NSView alloc] initWithFrame:NSZeroRect];
+    meter.wantsLayer = YES;
+    meter.layer.backgroundColor = rigRaised().CGColor;
+    meter.layer.cornerRadius = 2;
+    meter.translatesAutoresizingMaskIntoConstraints = NO;
+    [tp addSubview:meter];
+    [[meter.leadingAnchor constraintEqualToAnchor:noteL.trailingAnchor constant:10] setActive:YES];
+    [[meter.trailingAnchor constraintEqualToAnchor:centsL.leadingAnchor constant:-10] setActive:YES];
+    [[meter.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
+    [[meter.heightAnchor constraintEqualToConstant:6] setActive:YES];
+
+    NSImageView* needle = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    needle.wantsLayer = YES;
+    needle.layer.backgroundColor = rigAccent().CGColor;
+    needle.layer.cornerRadius = 1.5;
+    needle.hidden = YES;
+    needle.translatesAutoresizingMaskIntoConstraints = NO;
+    [meter addSubview:needle];
+    state->tunerNeedle = needle;
+    [[needle.topAnchor constraintEqualToAnchor:meter.topAnchor constant:-3] setActive:YES];
+    [[needle.bottomAnchor constraintEqualToAnchor:meter.bottomAnchor constant:3] setActive:YES];
+    [[needle.widthAnchor constraintEqualToConstant:3] setActive:YES];
+    // Horizontal position is set at update time as a fraction of meter width;
+    // pin to leading edge with a settable constant.
+    NSLayoutConstraint* needleLeading =
+        [NSLayoutConstraint constraintWithItem:needle
+                                     attribute:NSLayoutAttributeLeading
+                                     relatedBy:NSLayoutRelationEqual
+                                        toItem:meter
+                                     attribute:NSLayoutAttributeLeading
+                                    multiplier:1.0
+                                      constant:0];
+    needleLeading.active = YES;
+    state->tunerNeedleLeading = needleLeading;
 
     state->zoomControl = [[NSComboBox alloc] initWithFrame:NSZeroRect];
     state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
@@ -2689,12 +2848,24 @@ void portEvent(LV2UI_Handle handle,
                       state->patchProperty, &property,
                       state->patchValue, &value,
                       0);
-  if (!property || property->type != state->atomURID || !value ||
-      value->type != state->atomPath || value->size == 0) return;
+  if (!property || property->type != state->atomURID || !value) return;
   const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
-  for (size_t i = 0; i < 3; ++i)
-    if (propertyId == state->pathURIDs[i])
-      state->displayPath(i, reinterpret_cast<const char*>(value + 1));
+  if (value->type == state->atomPath && value->size > 0) {
+    for (size_t i = 0; i < 3; ++i)
+      if (propertyId == state->pathURIDs[i])
+        state->displayPath(i, reinterpret_cast<const char*>(value + 1));
+    return;
+  }
+  // Tuner updates: patch:Set floats — note (MIDI number, -1 = none) and cents.
+  if (value->type != state->atomFloat || value->size != sizeof(float)) return;
+  const float v = *reinterpret_cast<const float*>(value + 1);
+  if (propertyId == state->tunerNoteURID)
+    state->lastTunerNote = v;
+  else if (propertyId == state->tunerCentsURID)
+    state->lastTunerCents = v;
+  else
+    return;
+  state->updateTunerDisplay();
 }
 
 const void* extensionData(const char*) { return nullptr; }
