@@ -44,14 +44,13 @@ struct RigUIState;
 
 // Knob configuration — port-index order matches display order in the footer
 // strip. Atom ports (0/1) and the stage toggles (7–10) are handled separately.
-constexpr size_t kRigKnobCount = 7;
-const std::array<uint32_t, kRigKnobCount> kRigKnobPorts{15, 4, 6, 5, 12, 13, 14};
+constexpr size_t kRigKnobCount = 6;
+const std::array<uint32_t, kRigKnobCount> kRigKnobPorts{15, 4, 5, 12, 13, 14};
 
 static NSString* rigKnobValueText(uint32_t port, float value) {
   switch (port) {
     case 4:  return [NSString stringWithFormat:@"%+.1f dB", value];
     case 5:  return [NSString stringWithFormat:@"%+.1f dB", value];
-    case 6:  return [NSString stringWithFormat:@"%.0f%%", value * 100.0f];
     case 12: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 13: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 14: return [NSString stringWithFormat:@"%+.1f dB", value];
@@ -2379,13 +2378,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->zoomControl.heightAnchor constraintEqualToConstant:28] setActive:YES];
 
     NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
-    NSArray<NSString*>* knobNames = @[@"GATE", @"INPUT", @"QUALITY", @"OUTPUT", @"BASS", @"MID", @"TREBLE"];
-    NSArray<NSString*>* knobValues = @[@"OFF", @"+0.0 dB", @"100%", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB"];
-    const std::array<double, kRigKnobCount> defaults{-80.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0};
-    const std::array<double, kRigKnobCount> mins{-80.0, -20.0, 0.0, -20.0, -12.0, -12.0, -12.0};
-    const std::array<double, kRigKnobCount> maxes{0.0, 20.0, 1.0, 20.0, 12.0, 12.0, 12.0};
+    // Quality is fixed at 100% — no knob, the DSP never scales model quality.
+    NSArray<NSString*>* knobNames = @[@"GATE", @"INPUT", @"OUTPUT", @"BASS", @"MID", @"TREBLE"];
+    NSArray<NSString*>* knobValues = @[@"OFF", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB"];
+    const std::array<double, kRigKnobCount> defaults{-80.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    const std::array<double, kRigKnobCount> mins{-80.0, -20.0, -20.0, -12.0, -12.0, -12.0};
+    const std::array<double, kRigKnobCount> maxes{0.0, 20.0, 20.0, 12.0, 12.0, 12.0};
 
-    // Global INPUT / QUALITY / OUTPUT strip — these are scoped to the whole
+    // Global INPUT / OUTPUT strip — these are scoped to the whole
     // signal chain (not per stage), so they live in a shared footer row.
     NSStackView* knobRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     knobRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;

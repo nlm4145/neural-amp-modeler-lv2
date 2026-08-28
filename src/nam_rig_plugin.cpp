@@ -240,7 +240,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
 
 void Plugin::process(uint32_t sampleCount) noexcept {
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
-      !ports.input_level || !ports.output_level || !ports.quality_scale ||
+      !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab)
     return;
 
@@ -252,8 +252,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       writePath(static_cast<Stage>(i));
       notifyPending[i] = false;
     }
-    if (*ports.quality_scale != loaders[i].GetDefaultQualityScaleFactor())
-      loaders[i].SetDefaultQualityScaleFactor(*ports.quality_scale);
+    // quality_scale port is fixed at 1.0 — never touch the loaders' quality
+    // (NeuralAudio's DEFAULT_QUALITY_SCALE of 1.0 = full quality at all times).
   }
 
   LV2_ATOM_SEQUENCE_FOREACH(ports.control, event) {
@@ -333,8 +333,6 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     if (!model)
       continue;
-    if (model->GetQualityScaleFactor() != *ports.quality_scale)
-      model->SetQualityScaleFactor(*ports.quality_scale);
 
     const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
     if (pre != 1.0f)

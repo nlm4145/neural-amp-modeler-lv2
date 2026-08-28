@@ -77,7 +77,7 @@ public:
     float* audio_out;
     float* input_level;
     float* output_level;
-    float* quality_scale;
+    float* quality_scale;   // fixed at 1.0 (layout-compat only; DSP ignores it)
     float* pedal_enabled;
     float* amp_enabled;
     float* cab_enabled;
