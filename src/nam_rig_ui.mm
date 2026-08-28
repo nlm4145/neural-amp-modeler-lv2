@@ -566,6 +566,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   [v addSubview:_favButton];
 
   self.view = v;
+  [self attachTone3000Menu];
 }
 - (void)setRepresentedObject:(id)representedObject {
   [super setRepresentedObject:representedObject];
@@ -631,6 +632,28 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 }
 - (IBAction)favClicked:(id)sender {
   if (self.onFavToggle && self.representedObject) self.onFavToggle((ToneItem*)self.representedObject);
+}
+// Right-click on the card offers "View on Tone3000" — opens the tone's page
+// (https://www.tone3000.com/tones/<id>) in the default browser. Works for both
+// search results and local-library cards: toneItem() builds toneURL with an
+// id-based fallback when the manifest doesn't carry one. The menu is attached
+// to the card's root view; right-clicks on any subview (art, title, star) with
+// no menu of their own climb the responder chain to it.
+- (void)attachTone3000Menu {
+  if (!self.view) return;
+  NSMenu *m = [[NSMenu alloc] init];
+  NSMenuItem *openItem = [[NSMenuItem alloc] initWithTitle:@"View on Tone3000"
+                                                   action:@selector(openTone3000:)
+                                            keyEquivalent:@""];
+  openItem.target = self;  // reads self.representedObject at click time
+  [m addItem:openItem];
+  self.view.menu = m;
+}
+- (IBAction)openTone3000:(id)sender {
+  ToneItem *item = (ToneItem *)self.representedObject;
+  if (![item isKindOfClass:[ToneItem class]] || !item.toneURL.length) return;
+  NSURL *url = [NSURL URLWithString:item.toneURL];
+  if (url) [[NSWorkspace sharedWorkspace] openURL:url];
 }
 @end
 
