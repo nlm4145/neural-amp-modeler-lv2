@@ -356,6 +356,17 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 
 - (void)dealloc {
   [self logTone3000:@"ToneBrowserController dealloc"];
+  // Teardown hygiene: the repeating connect timer is retained by the main run
+  // loop (not by self) — without invalidation every plugin-window recreation
+  // leaks one zombie timer that fires forever. Same for a pending login timer.
+  [self.connectTimer invalidate];
+  self.connectTimer = nil;
+  [self.oauthTimer invalidate];
+  self.oauthTimer = nil;
+  // Explicit (the bounds-change observer for infinite scroll). Modern macOS
+  // auto-unregisters deallocated observers, but that is an implementation
+  // kindness, not a contract — remove it deterministically.
+  [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 - (instancetype)init {
   if ((self = [super init])) {

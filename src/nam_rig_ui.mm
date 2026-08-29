@@ -16,6 +16,7 @@
 #define NAM_RIG_URI "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig"
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
+#define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
 
 #include <array>
 #include <cmath>
@@ -388,6 +389,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->atomFloat = map->map(map->handle, LV2_ATOM__Float);
     state->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
     state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
+    state->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
     for (size_t i = 0; i < 3; ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
@@ -429,23 +431,16 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->uiController = [[NAMRigUIController alloc] init];
     state->uiController.state = state;
 
-    NSTextField* title = [[NSTextField alloc] initWithFrame:NSZeroRect];
-    title.stringValue = @"NAM OVERSAMPLED RIG"; title.editable = NO; title.selectable = NO; title.drawsBackground = NO; title.bordered = NO;
-    title.font = [NSFont boldSystemFontOfSize:21.0]; title.textColor = rigText();
+    // Invisible layout anchor replacing the old title/chain labels: the
+    // tuner button, tuner panel, input meter and the tile row all pin to it,
+    // so it keeps their exact geometry with no visible text.
+    NSView* title = [[NSView alloc] initWithFrame:NSZeroRect];
     title.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:title];
     [[title.leadingAnchor constraintEqualToAnchor:topView.leadingAnchor constant:24] setActive:YES];
     [[title.topAnchor constraintEqualToAnchor:topView.topAnchor constant:10] setActive:YES];
     [[title.heightAnchor constraintEqualToConstant:26] setActive:YES];
-
-    NSTextField* chain = [[NSTextField alloc] initWithFrame:NSZeroRect];
-    chain.stringValue = @"PEDAL   →   AMP   →   CAB"; chain.editable = NO; chain.selectable = NO; chain.drawsBackground = NO; chain.bordered = NO;
-    chain.font = [NSFont monospacedSystemFontOfSize:14.0 weight:NSFontWeightMedium]; chain.textColor = rigDimText();
-    chain.alignment = NSTextAlignmentRight; chain.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:chain];
-    [[chain.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-170] setActive:YES];
-    [[chain.topAnchor constraintEqualToAnchor:topView.topAnchor constant:14] setActive:YES];
-    [[chain.widthAnchor constraintEqualToConstant:300] setActive:YES];
+    [[title.widthAnchor constraintEqualToConstant:10] setActive:YES];
 
     // Tuner toggle (title bar) — flat icon button, dim when off, bright when on.
     state->tunerButton = [[NSButton alloc] initWithFrame:NSZeroRect];
@@ -535,6 +530,63 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       constant:0];
     needleLeading.active = YES;
     state->tunerNeedleLeading = needleLeading;
+
+    // Input level meter (title bar, always visible): dBFS readout + bar.
+    // DSP publishes the raw input peak via change-gated patch:Set atoms.
+    NSView* mp = [[NSView alloc] initWithFrame:NSZeroRect];
+    mp.wantsLayer = YES;
+    mp.layer.backgroundColor = rigPanelBG().CGColor;
+    mp.layer.cornerRadius = 8;
+    mp.layer.borderWidth = 1.0;
+    mp.layer.borderColor = rigPanelBorder().CGColor;
+    mp.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:mp];
+    [[mp.leadingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:16] setActive:YES];
+    [[mp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[mp.widthAnchor constraintEqualToConstant:180] setActive:YES];
+    [[mp.heightAnchor constraintEqualToConstant:34] setActive:YES];
+
+    NSTextField* dbL = addLabel(mp, @"  —  dB", NSZeroRect,
+                                [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],
+                                rigDimText(), NSTextAlignmentCenter);
+    dbL.translatesAutoresizingMaskIntoConstraints = NO;
+    state->inDbLabel = dbL;
+    [[dbL.leadingAnchor constraintEqualToAnchor:mp.leadingAnchor constant:10] setActive:YES];
+    [[dbL.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
+    [[dbL.widthAnchor constraintEqualToConstant:56] setActive:YES];
+
+    // Track: dark slot; the fill bar width is set at update time (-60..0 dB).
+    NSView* slot = [[NSView alloc] initWithFrame:NSZeroRect];
+    slot.wantsLayer = YES;
+    slot.layer.backgroundColor = rigRaised().CGColor;
+    slot.layer.cornerRadius = 2;
+    slot.translatesAutoresizingMaskIntoConstraints = NO;
+    [mp addSubview:slot];
+    [[slot.leadingAnchor constraintEqualToAnchor:dbL.trailingAnchor constant:8] setActive:YES];
+    [[slot.trailingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:-10] setActive:YES];
+    [[slot.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
+    [[slot.heightAnchor constraintEqualToConstant:8] setActive:YES];
+
+    NSView* fill = [[NSView alloc] initWithFrame:NSZeroRect];
+    fill.wantsLayer = YES;
+    fill.layer.backgroundColor = rigAccent().CGColor;
+    fill.layer.cornerRadius = 2;
+    fill.translatesAutoresizingMaskIntoConstraints = NO;
+    [slot addSubview:fill];
+    [[fill.leadingAnchor constraintEqualToAnchor:slot.leadingAnchor] setActive:YES];
+    [[fill.centerYAnchor constraintEqualToAnchor:slot.centerYAnchor] setActive:YES];
+    [[fill.heightAnchor constraintEqualToConstant:8] setActive:YES];
+    NSLayoutConstraint* fillW =
+        [NSLayoutConstraint constraintWithItem:fill
+                                     attribute:NSLayoutAttributeWidth
+                                     relatedBy:NSLayoutRelationEqual
+                                        toItem:nil
+                                     attribute:NSLayoutAttributeNotAnAttribute
+                                    multiplier:1.0
+                                      constant:0];
+    fillW.active = YES;
+    state->inDbBar = fill;
+    state->inDbBarWidth = fillW;
 
     state->zoomControl = [[NSComboBox alloc] initWithFrame:NSZeroRect];
     state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
@@ -784,9 +836,14 @@ void portEvent(LV2UI_Handle handle,
     state->lastTunerNote = v;
   else if (propertyId == state->tunerCentsURID)
     state->lastTunerCents = v;
+  else if (propertyId == state->inputDbURID)
+    state->lastInputDb = v;
   else
     return;
-  state->updateTunerDisplay();
+  if (propertyId == state->inputDbURID)
+    state->updateInputDbDisplay();
+  else
+    state->updateTunerDisplay();
 }
 
 const void* extensionData(const char*) { return nullptr; }

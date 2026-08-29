@@ -154,6 +154,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.atomFloat = map->map(map->handle, LV2_ATOM__Float);
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
+  uris.inputDb = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
 
   for (auto& loader : loaders)
     loader.SetExternalSampleRate(static_cast<int>(rate));
@@ -322,6 +323,39 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         schedule->schedule_work(schedule->handle, sizeof(message), &message);
         break;
       }
+    }
+  }
+
+  // ---- Input level meter (raw input, before any processing) ----
+  // Peak over the block, converted to dBFS, smoothed with a fast-attack /
+  // slow-decay ballistics so the meter reads like hardware. Published as a
+  // change-gated patch:Set atom (same channel as the tuner) — the UI can
+  // show it without the host polling anything.
+  {
+    float blockPeak = 0.0f;
+    for (uint32_t i = 0; i < sampleCount; ++i) {
+      const float a = std::fabs(ports.audio_in[i]);
+      if (a > blockPeak) blockPeak = a;
+    }
+    const float blockDb = blockPeak > 1e-9f ? 20.0f * std::log10(blockPeak) : -120.0f;
+    // Attack: jump up immediately. Release: fall ~20 dB/s (per-block decay
+    // scaled by block duration).
+    const float releasePerBlock = 20.0f * (float)sampleCount / (float)sampleRate;
+    if (blockDb > meter.lastDb)
+      meter.lastDb = blockDb;
+    else
+      meter.lastDb = std::max(blockDb, meter.lastDb - releasePerBlock);
+    // Change-gate: send only on >=0.5 dB drift so the notify stream stays quiet.
+    if (std::fabs(meter.lastDb - meter.sentDb) >= 0.5f) {
+      meter.sentDb = meter.lastDb;
+      LV2_Atom_Forge_Frame frame;
+      lv2_atom_forge_frame_time(&forge, 0);
+      lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+      lv2_atom_forge_key(&forge, uris.patchProperty);
+      lv2_atom_forge_urid(&forge, uris.inputDb);
+      lv2_atom_forge_key(&forge, uris.patchValue);
+      lv2_atom_forge_float(&forge, meter.lastDb);
+      lv2_atom_forge_pop(&forge, &frame);
     }
   }
 

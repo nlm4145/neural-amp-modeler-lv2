@@ -25,6 +25,7 @@
 #define NAM_RIG_CAB_URI NAM_RIG_URI "-cab-model"
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
+#define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
 
 namespace NAMRig {
 class WavIR;
@@ -150,6 +151,7 @@ private:
     LV2_URID atomFloat;
     LV2_URID tunerNote;
     LV2_URID tunerCents;
+    LV2_URID inputDb;
   } uris{};
 
   LV2_Atom_Forge forge{};
@@ -190,6 +192,13 @@ private:
     int decimFactor = 1;
     float decimRate = 12000.0f;
   } tuner;
+
+  // Input level meter: raw input peak (dBFS) with fast-attack / ~20 dB/s
+  // release ballistics; published to the UI change-gated (>=0.5 dB drift).
+  struct Meter {
+    float lastDb = -120.0f;
+    float sentDb = -999.0f;
+  } meter;
   void tunerSetRates(double rate);
 };
 } // namespace NAMRig

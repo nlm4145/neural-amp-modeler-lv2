@@ -45,6 +45,13 @@ struct RigUIState {
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
+  LV2_URID inputDbURID = 0;
+
+  // Input level meter (title bar): dBFS readout + bar with peak-hold color.
+  __strong NSTextField* inDbLabel = nil;
+  __strong NSView* inDbBar = nil;
+  __strong NSLayoutConstraint* inDbBarWidth = nil;
+  float lastInputDb = -120.0f;
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;
@@ -79,6 +86,25 @@ struct RigUIState {
       NSView* meter = tunerNeedle.superview;
       const CGFloat w = meter.bounds.size.width - 6.0;
       tunerNeedleLeading.constant = 3.0 + (lastTunerCents + 50.0f) / 100.0f * w;
+    });
+  }
+
+  // Redraw the input meter from lastInputDb. Called on the main thread
+  // from portEvent. Scale: -60..0 dBFS mapped across the bar; color shifts
+  // to orange above -6 dB (hot) and red above -1 dB (clip risk).
+  void updateInputDbDisplay() {
+    const float db = lastInputDb;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!inDbLabel) return;
+      const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
+      inDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
+          : [NSString stringWithFormat:@"%+.1f dB", db];
+      const CGFloat frac = (clamped + 60.0f) / 60.0f;
+      inDbBarWidth.constant = 110.0 * frac;
+      NSColor* fill = db > -1.0f ? [NSColor colorWithSRGBRed:0.92 green:0.26 blue:0.21 alpha:1.0]
+                    : db > -6.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.55 blue:0.25 alpha:1.0]
+                                  : rigAccent();
+      inDbBar.layer.backgroundColor = fill.CGColor;
     });
   }
 
@@ -318,7 +344,10 @@ struct RigUIState {
     // Last resort: fetch the tone's online artwork.
     if (imageURL.length) {
       NSURL* url = [NSURL URLWithString:imageURL];
-      __unsafe_unretained NSImageView* iv = stageImages[s];
+      // __weak (zeroing): if the UI is torn down before the download lands,
+      // iv becomes nil and the guard below actually works. __unsafe_unretained
+      // would leave a dangling non-nil pointer -> use-after-free on close.
+      __weak NSImageView* iv = stageImages[s];
       [[[NSURLSession sharedSession] dataTaskWithURL:url
                                    completionHandler:^(NSData* data, NSURLResponse*, NSError*) {
         if (!data.length) return;
