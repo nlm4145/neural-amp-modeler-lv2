@@ -53,8 +53,9 @@ struct RigUIState {
   __strong NSLayoutConstraint* inDbBarWidth = nil;
   float lastInputDb = -120.0f;
 
-  // Oversample 2x toggle (title bar, next to the tuner icon).
-  __strong NSButton* osButton = nil;
+  // Oversample mode dropdown (title bar, next to the tuner icon):
+  // 0 Off / 1 Legacy dilation / 2 True 2x.
+  __strong NSPopUpButton* osPopup = nil;
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;
@@ -370,8 +371,9 @@ struct RigUIState {
       dispatch_async(dispatch_get_main_queue(), ^{ powerButtons[port - 7].state = value >= 0.5f; powerButtons[port - 7].needsDisplay = YES; });
       return;
     }
-    if (port == 19) {   // oversample toggle — keep the button state in sync
-      dispatch_async(dispatch_get_main_queue(), ^{ osButton.state = value >= 0.5f ? NSControlStateValueOn : NSControlStateValueOff; osButton.contentTintColor = value >= 0.5f ? rigText() : rigDimText(); osButton.needsDisplay = YES; });
+    if (port == 19) {   // oversample mode (0/1/2) — keep the dropdown in sync
+      const int idx = value < 0.5f ? 0 : (value < 1.5f ? 1 : 2);
+      dispatch_async(dispatch_get_main_queue(), ^{ [osPopup selectItemAtIndex:idx]; });
       return;
     }
     // Map the port to its knob index (ports 10/11 are auto-cab, no-ops in UI).

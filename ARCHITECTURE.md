@@ -56,17 +56,25 @@ is no resampler. Consequences:
 - Even when it engages, the model's nonlinearity still fires once per
   host-rate sample — aliasing from the distortion is reduced, not eliminated.
 
-**TRUE 2x oversampling (port 19, `oversample_enable`)** lifts that ceiling:
-the pedal + amp stages (and `.nam` cab models) run inside a genuine
-oversampled domain — UP(2x) → model → DOWN(1x) via a half-band polyphase
-pair in `src/oversample.{h,cpp}`. Toolbar icon toggle (waveform symbol),
-off by default:
+**Oversampling (port 19, `oversample_mode`, 0/1/2)** is a 3-mode dropdown
+in the toolbar (Off / Legacy / True 2x, default Legacy):
+
+- **Mode 0 — Off**: models load with external rate pinned to 48000, so
+  NeuralAudio's dilation is a no-op. A/B reference only — a 48k model in
+  a 96k session sounds detuned, which is exactly what a non-rate-adapted
+  model does with no compensation.
+- **Mode 1 — Legacy** (default): models load at the session rate — the
+  long-standing dilation behavior, unchanged from before this feature.
+- **Mode 2 — True 2x**: the pedal + amp stages (and `.nam` cab models)
+  run inside a genuine oversampled domain — UP(2x) → model → DOWN(1x)
+  via a half-band polyphase pair in `src/oversample.{h,cpp}`:
 
 - 47-tap Kaiser half-band prototype (β=9, ~100 dB stopband), exact identity
   phase, exact DC gains, ~98 dB imaging rejection, <0.1 dB passband ripple.
 - Models are re-created at `2*sampleRate` external rate (worker thread) when
-  the toggle flips — dilation scaling then matches the 2x domain, so a 48k
-  model in a 96k session runs 4x-dilated inside the oversampled region.
+  the mode switches to True 2x — dilation scaling then matches the 2x
+  domain, so a 48k model in a 96k session runs 4x-dilated inside the
+  oversampled region.
 - The cab IR and the 3-band EQ are LINEAR and stay at base rate (linear
   stages cannot alias). Measured: **21 dB less alias clutter** through a
   hard-clipper than base-rate processing (tests/verify_oversample_cpp.cpp).

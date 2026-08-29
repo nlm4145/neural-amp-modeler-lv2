@@ -215,13 +215,20 @@ private:
   Up2x osUp2;
   Down2x osDown2;
   std::vector<float> osBuffer2;
-  bool oversampleOn = false;    // models match this domain (true = 2x)
+  int oversampleApplied = 1;    // last-applied mode (models match this; 1 = TTL default)
 
-  // True 2x oversampling wanted? (port 19 toggle). Worker consults this to
-  // pick the loader external rate; process() consults oversampleOn for the
-  // domain.
-  bool oversampleWanted() const {
-    return ports.oversample_enable && *ports.oversample_enable >= 0.5f;
+  // 0 = OFF (no dilation — loader external rate pinned to 48000 so the
+  //         dilation math is a no-op for common rates; A/B reference only,
+  //         a non-48k model at a non-multiple session rate runs wrong),
+  // 1 = LEGACY dilation oversampling (NeuralAudio's hostRate/modelRate
+  //         dilation — the long-standing behavior),
+  // 2 = TRUE 2x oversampling (UP/model@2x/DOWN half-band pipeline).
+  // Worker consults this to pick the loader external rate; process()
+  // consults oversampleApplied for the domain.
+  int oversampleMode() const {
+    if (!ports.oversample_enable) return 1;   // port not connected: keep Legacy
+    const float v = *ports.oversample_enable;
+    return v < 0.5f ? 0 : (v < 1.5f ? 1 : 2);
   }
 
   // Re-load all currently-loaded model paths at the new rate domain. Called

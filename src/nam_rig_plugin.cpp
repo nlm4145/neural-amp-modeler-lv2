@@ -222,16 +222,41 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       if (message->stage == Stage::Cab && endsWithWav(message->path)) {
         response.ir = WavIR::load(message->path, rig->sampleRate, rig->maxBufferSize).release();
       } else {
-        // True 2x oversampling: when ON, models are created with external
-        // rate = 2x session rate so the dilation scaling matches the 2x
-        // oversampled domain. When OFF, models load at the session rate
-        // (NeuralAudio's classic dilation behavior).
-        const int loaderRate = static_cast<int>(rig->sampleRate);
-        const int modelRate = rig->oversampleWanted() ? loaderRate * 2 : loaderRate;
+        // Oversample mode decides the loader external rate, which controls
+        // NeuralAudio's dilation scaling (baked in at load time):
+        //   mode 0 (OFF):    48000 — equals the common model rate, so the
+        //                    dilation math is a no-op; non-48k models with a
+        //                    non-divisible ratio also skip dilation.
+        //   mode 1 (LEGACY): session rate — the classic dilation behavior.
+        //   mode 2 (TRUE 2x): 2x session rate — models are dilated to match
+        //                    the oversampled domain.
+        const int sessionRate = static_cast<int>(rig->sampleRate);
+        const int mode = rig->oversampleMode();
+        const int modelRate = mode == 2 ? sessionRate * 2
+                            : mode == 1 ? sessionRate
+                                        : 48000;
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
         response.model = loader.CreateFromFile(message->path);
-        loader.SetExternalSampleRate(loaderRate);
+        loader.SetExternalSampleRate(sessionRate);
+        // The model must be sized for the largest block it will ever be fed.
+        // NeuralAudio sizes internal buffers (WaveNet Eigen matrices, ring
+        // buffers) from the loader's DefaultMaxAudioBufferSize at load time;
+        // classic WaveNet does NOT chunk in Process (its
+        // num_frames <= maxBufferSize assert is compiled out in Release), so
+        // a block larger than the sizing overruns those buffers and corrupts
+        // the heap. Size for 2x blocks in EVERY mode (not just True 2x):
+        // right after a switch to True 2x the re-loaded models have not
+        // landed yet, and the still-running OLD models are fed 2x-rate
+        // blocks immediately — they must already be sized for them.
+        if (response.model)
+          response.model->SetMaxAudioBufferSize(2 * rig->maxBufferSize);
+        if (mode == 0)
+          lv2_log_warning(&rig->logger,
+                          "Oversampling OFF (A/B mode): model '%s' runs without rate "
+                          "adaptation — a non-48k model at this session rate will "
+                          "sound detuned.\n",
+                          message->path);
       }
       if (message->stage == Stage::Amp)
         response.fullRig = isFullRigModel(message->path);
@@ -241,8 +266,9 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // model to the host rate when hostRate % modelRate == 0. Otherwise the
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
       if (response.model) {
-        const double domainRate = rig->oversampleWanted() ? rig->sampleRate * 2.0
-                                                          : rig->sampleRate;
+        const double domainRate = rig->oversampleMode() == 2 ? rig->sampleRate * 2.0
+                             : rig->oversampleMode() == 1 ? rig->sampleRate
+                                                          : 48000.0;
         const double modelRate = response.model->GetSampleRate();
         if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
@@ -567,13 +593,13 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = (*ports.auto_cab >= 0.5f && ampIsFullRig) ? 1.0f : 0.0f;
 
-  // Oversample toggle change: models must be re-created for the new rate
+  // Oversample mode change: models must be re-created for the new rate
   // domain (dilation scaling is baked in at load time). Schedule reloads;
   // until they land the stages keep running whatever they have.
   {
-    const bool want = oversampleWanted();
-    if (want != oversampleOn) {
-      oversampleOn = want;
+    const int mode = oversampleMode();
+    if (mode != oversampleApplied) {
+      oversampleApplied = mode;
       reloadModelsForOversample();
       osUp.reset();
       osDown.reset();
@@ -584,11 +610,11 @@ void Plugin::process(uint32_t sampleCount) noexcept {
 
   // ---- Stage processing, optionally in a 2x-oversampled domain ----
   // The nonlinear stages (pedal, amp) are the only aliasing sources; when
-  // oversampleOn, they run inside UP -> Process -> DOWN with the models
+  // oversampleApplied == 2, they run inside UP -> Process -> DOWN with the models
   // loaded at 2*rate. The cab IR and the EQ are linear and stay at base
   // rate (linear stages cannot alias). Models not yet re-loaded for the
   // 2x domain still run — the pipeline is rate-agnostic per stage.
-  const bool osRun = oversampleOn;
+  const bool osRun = oversampleApplied == 2;
   bool osActive = false;   // any pedal/amp stage actually ran oversampled
 
   if (osRun) {

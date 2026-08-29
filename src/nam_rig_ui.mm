@@ -49,7 +49,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)controlChanged:(NSSlider*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
-- (void)oversampleToggled:(NSButton*)sender;
+- (void)oversampleModeChanged:(NSPopUpButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -157,14 +157,12 @@ constexpr std::array<const char*, 3> kPathURIs{
   }
 }
 
-// Oversample 2x toggle: sends 0/1 to port 19. The DSP re-creates the loaded
-// models for the new rate domain in its worker and swaps them in.
-- (void)oversampleToggled:(NSButton*)sender {
+// Oversample mode: Off / Legacy (dilation) / True 2x. Sends the selected
+// index as the port value; the DSP re-creates the loaded models for the new
+// rate domain in its worker and swaps them in.
+- (void)oversampleModeChanged:(NSPopUpButton*)sender {
   if (!_state) return;
-  const BOOL on = sender.state == NSControlStateValueOn;
-  _state->sendControl(19, on ? 1.0f : 0.0f);
-  sender.contentTintColor = on ? rigText() : rigDimText();
-  sender.needsDisplay = YES;
+  _state->sendControl(19, (float)sender.indexOfSelectedItem);
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -470,23 +468,25 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->tunerButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
     [[state->tunerButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-    // Oversample 2x toggle (title bar, next to the tuner icon) — flat icon
-    // button like the tuner: dim when off, bright when on.
-    state->osButton = [[NSButton alloc] initWithFrame:NSZeroRect];
-    state->osButton.bordered = NO;
-    state->osButton.imagePosition = NSImageOnly;
-    state->osButton.image = [NSImage imageWithSystemSymbolName:@"waveform.3.right"
-                                          accessibilityDescription:@"Oversample 2x"];
-    state->osButton.contentTintColor = rigDimText();
-    [state->osButton setButtonType:NSButtonTypeToggle];
-    state->osButton.target = state->uiController;
-    state->osButton.action = @selector(oversampleToggled:);
-    state->osButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:state->osButton];
-    [[state->osButton.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:8] setActive:YES];
-    [[state->osButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[state->osButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
-    [[state->osButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    // Oversample mode dropdown (title bar, next to the tuner icon) — A/B
+    // the oversampling implementations (and a raw off mode):
+    //   Off     : no rate adaptation (A/B reference; may sound detuned)
+    //   Legacy  : NeuralAudio dilation oversampling (previous behavior)
+    //   True 2x : genuine UP/model/DOWN 2x domain (measured ~21 dB less
+    //             alias clutter on hard-clipped material)
+    state->osPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [state->osPopup addItemsWithTitles:@[@"Off", @"Legacy", @"True 2x"]];
+    state->osPopup.controlSize = NSControlSizeSmall;
+    state->osPopup.target = state->uiController;
+    state->osPopup.action = @selector(oversampleModeChanged:);
+    state->osPopup.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:state->osPopup];
+    [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:10] setActive:YES];
+    [[state->osPopup.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[state->osPopup.widthAnchor constraintEqualToConstant:96] setActive:YES];
+    [[state->osPopup.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    // Default to Legacy so a fresh insert matches the long-standing behavior.
+    [state->osPopup selectItemAtIndex:1];
 
     // Tuner readout panel — hidden until the toggle is on. Note name, detune
     // in cents, and a needle meter across ±50 cents. Styled like the tiles
