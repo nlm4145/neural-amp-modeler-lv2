@@ -29,9 +29,10 @@ class Up2x {
   void reset();
   // n = the largest input block you will ever feed process(). Must be
   // called before the first process() (and before reset() to size the
-  // initial allocation).
+  // initial allocation). Scratch holds hist + input + a conv-output tail
+  // (up to n dots) for the batched formulation.
   void setMaxBlockSize(size_t n) {
-    const size_t want = kHist + n;
+    const size_t want = kHist + 2 * n;
     if (want != scratchSize_) {
       delete[] scratch_;
       scratch_ = new float[want];
@@ -56,9 +57,11 @@ class Down2x {
  public:
   static constexpr size_t maxOutput(size_t n2x) { return n2x / 2; }
   void reset();
-  // n2x = the largest 2x-rate block you will ever feed process().
+  // n2x = the largest 2x-rate block you will ever feed process(). Scratch
+  // holds hist + input + a conv-output tail (up to n2x dots) for the batched
+  // formulation.
   void setMaxBlockSize(size_t n2x) {
-    const size_t want = kHist + n2x;
+    const size_t want = kHist + 2 * n2x;
     if (want != scratchSize_) {
       delete[] scratch_;
       scratch_ = new float[want];

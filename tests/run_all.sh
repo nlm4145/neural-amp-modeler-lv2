@@ -16,6 +16,13 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
+  echo "== tests/verify_oversample_batched.cpp (old vs batched vDSP_conv) =="
+  if clang++ -O2 -std=c++17 -framework Accelerate -Isrc src/oversample.cpp \
+      tests/verify_oversample_batched.cpp -o /tmp/verify_osb 2>/dev/null; then
+    /tmp/verify_osb || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
 fi
 
 for t in tests/test_*.py; do

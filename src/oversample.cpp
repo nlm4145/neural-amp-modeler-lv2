@@ -70,30 +70,44 @@ void Up2x::reset() {
 size_t Up2x::process(const float* in, size_t n, float* out) {
   const float* P = halfBandInterp();
   const size_t total = kHist + n;
-  if (total > scratchSize_) return 0;  // block larger than promised; refuse
+  // Refuse if input AND the m conv outputs (m <= n) would exceed scratch.
+  if (total + n > scratchSize_) return 0;  // block larger than promised
   float* scr = scratch_;
   std::memcpy(scr, hist_, kHist * sizeof(float));
   std::memcpy(scr + kHist, in, n * sizeof(float));
-  // scr[i] = absolute base position (provided_ - kHist) + i? No: hist_ holds
-  // the LAST 23 provided samples, i.e. absolute positions
+  // scr[i] = absolute base position (provided_ - kHist) + i; hist_ holds the
+  // LAST 23 provided samples, i.e. absolute positions
   // [provided_-23, provided_). scr[kHist + j] = in[j] = position provided_+j.
-  // Window of position p starts at scr index (p - kLeft) - (provided_ - kHist).
-  // Emittable p: p >= kLeft (window start >= 0) and p + kRight < provided_ + n
-  // (window end within provided data).
-  const long base = (long)provided_ - (long)kHist;  // abs pos of scr[0]
+  // A position p is emittable when its 24-tap window [p-11, p+12] lies fully
+  // within PROVIDED data [0, provided_+n). The emittable positions form a
+  // contiguous run [pStart, pEnd]:
+  //   window start index (p-11)-base >= 0   -> p >= base + 11
+  //   window start index + 24 <= total      -> p <= base + total - 13
+  // (base = absolute position of scr[0] = provided_ - kHist.)
+  const long base = (long)provided_ - (long)kHist;
   long p = (long)next_;
-  size_t emitted = 0;
-  while (true) {
-    const long wStartIdx = (p - 11) - base;   // scr index of window start
-    if (wStartIdx < 0) { ++p; continue; }     // shouldn't happen (next_ >= 11)
-    if (wStartIdx + 24 > (long)total) break;  // window exceeds provided data
-    const size_t j = (size_t)wStartIdx;
-    out[2 * emitted] = scr[j + 11];           // the sample at p itself
-    vDSP_dotpr(scr + j, 1, P, 1, out + 2 * emitted + 1, 24);
-    ++emitted;
-    p += 1;
+  if (p < base + 11) p = base + 11;            // defensive; mirrors the old
+                                               // skip-loop for pre-window p
+  const long pEnd = base + (long)total - 13;  // last emittable, inclusive
+  size_t m = 0;
+  if (pEnd >= p) m = (size_t)(pEnd - p + 1);
+  if (m > 0) {
+    const size_t j0 = (size_t)((p - 11) - base);  // scr index of first window
+    // Batching formulation (benchmark-chosen): one contiguous vDSP_conv of
+    // ALL m 24-tap dots into scratch (unit strides = vDSP fast path), then
+    // interleave with the pass-through even samples. Same dots as the old
+    // per-sample loop — output-stride-2 writes and strided-input convs were
+    // both measured SLOWER than the old code; only this shape vectorizes.
+    // In-bounds by the same guarantee that made each position emittable:
+    // (m-1) + 24 <= total - j0.
+    float* dst = scr + total;        // scratch tail: never aliases in/out
+    vDSP_conv(scr + j0, 1, P, 1, dst, 1, m, 24);
+    for (size_t i = 0; i < m; ++i) {
+      out[2 * i] = scr[j0 + 11 + i];
+      out[2 * i + 1] = dst[i];
+    }
   }
-  next_ = (size_t)p;
+  next_ = (size_t)(p + (long)m);
   provided_ += n;
   // hist_ <- last 23 provided samples (tail of scr, possibly including
   // fewer than 23 if the stream is shorter than that).
@@ -101,7 +115,7 @@ size_t Up2x::process(const float* in, size_t n, float* out) {
     std::memcpy(hist_, scr + total - kHist, kHist * sizeof(float));
   else
     std::memcpy(hist_, scr, total * sizeof(float));  // very first tiny block
-  return 2 * emitted;
+  return 2 * m;
 }
 
 // ---- Down2x ----
@@ -118,23 +132,41 @@ void Down2x::reset() {
 size_t Down2x::process(const float* in, size_t n, float* out) {
   const float* H = halfBandProto();
   const size_t total = kHist + n;
-  if (total > scratchSize_) return 0;
+  // Refuse if input AND the 2m conv outputs (2m <= n) would exceed scratch.
+  if (total + n > scratchSize_) return 0;
   float* scr = scratch_;
   std::memcpy(scr, hist_, kHist * sizeof(float));
   std::memcpy(scr + kHist, in, n * sizeof(float));
   // scr[i] = absolute 2x position (consumed_ - kHist) + i.
+  // Output positions are even absolute 2x indices a whose 47-tap window
+  // [a-23, a+23] lies fully in provided data. The old per-sample loop's
+  // skip (window before stream start) and break (window beyond data) reduce
+  // to a closed-form range:
+  //   window start index (a-23)-base >= 0  -> a >= base + 23
+  //   window start index + 47 <= total     -> a <= base + total - 24
+  //   (47 taps starting at (a-23)-base: (a-23)-base+47 <= total
+  //    => a <= base + total - 24; NOT -47 — the window START is offset by
+  //    the 23-tap left context.)
+  // with a even and a >= 2*emitted_ (the next unemitted output position).
   const long base = (long)consumed_ - (long)kHist;
-  size_t emitted = 0;
-  long a = 2 * (long)emitted_;  // next even absolute output position
-  while (true) {
-    const long wStartIdx = (a - 23) - base;
-    if (wStartIdx < 0) { a += 2; continue; }   // window before stream start
-    if (wStartIdx + 47 > (long)total) break;   // window beyond provided data
-    vDSP_dotpr(scr + wStartIdx, 1, H, 1, out + emitted, 47);
-    ++emitted;
-    a += 2;
+  long a = 2 * (long)emitted_;                 // even
+  const long aMin = base + 23;                 // first non-skipped position
+  if (a < aMin) a = aMin + ((aMin - a) & 1);   // next even >= max(a, aMin)
+  const long aEnd = base + (long)total - 24;   // last emittable, inclusive
+  size_t m = 0;
+  if (aEnd >= a) m = (size_t)((aEnd - a) / 2 + 1);
+  if (m > 0) {
+    const size_t j0 = (size_t)((a - 23) - base);  // scr index of 1st window
+    // Batching formulation (benchmark-chosen): contiguous vDSP_conv computes
+    // the 2m consecutive 47-tap windows starting at j0 (unit strides = fast
+    // path; strided-input conv was measured 5x SLOWER), then keep every
+    // other one — exactly the dots the per-sample loop computed at stride 2.
+    // In-bounds: 2(m-1) + 47 <= total - j0 by the emittability guarantee.
+    float* dst = scr + total;        // scratch tail: never aliases in/out
+    vDSP_conv(scr + j0, 1, H, 1, dst, 1, 2 * m, 47);
+    for (size_t i = 0; i < m; ++i) out[i] = dst[2 * i];
   }
-  emitted_ += emitted;
+  emitted_ += m;
   consumed_ += n;
   // hist_ = last kHist samples of scr — with kHist = 46 (full window width)
   // this always covers the next output's entire window.
@@ -142,7 +174,7 @@ size_t Down2x::process(const float* in, size_t n, float* out) {
     std::memcpy(hist_, scr + total - kHist, kHist * sizeof(float));
   else
     std::memcpy(hist_, scr, total * sizeof(float));
-  return emitted;
+  return m;
 }
 
 }  // namespace NAMRig
