@@ -15,6 +15,8 @@
 #include <lv2/state/state.h>
 #include <lv2/units/units.h>
 #include <lv2/urid/urid.h>
+
+#include "oversample.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -93,6 +95,7 @@ public:
     float* tuner_enable;    // in:  UI toggle (0/1)
     float* tuner_note;      // out: MIDI note number, -1 = no pitch
     float* tuner_cents;     // out: detune in cents [-50, +50]
+    float* oversample_enable;  // in: 2x-oversample the pedal+amp stages (0/1)
   };
 
   Ports ports = {};
@@ -199,6 +202,32 @@ private:
     float lastDb = -120.0f;
     float sentDb = -999.0f;
   } meter;
+
+  // True 2x oversampling of the nonlinear (model) stages. When ON, pedal+amp
+  // models run at 2*sampleRate (models are loaded with that external rate in
+  // the worker); the signal is upsampled, processed, and decimated around
+  // them. Cab IRs + EQ stay at the base rate (linear stages cannot alias).
+  Up2x osUp;
+  Down2x osDown;
+  std::vector<float> osBuffer;   // 2x-rate scratch (sized on buffer-size set)
+  // Second, independent pipeline for the cab stage (.nam cab models run
+  // after the pedal/amp pipeline has already been drained).
+  Up2x osUp2;
+  Down2x osDown2;
+  std::vector<float> osBuffer2;
+  bool oversampleOn = false;    // models match this domain (true = 2x)
+
+  // True 2x oversampling wanted? (port 19 toggle). Worker consults this to
+  // pick the loader external rate; process() consults oversampleOn for the
+  // domain.
+  bool oversampleWanted() const {
+    return ports.oversample_enable && *ports.oversample_enable >= 0.5f;
+  }
+
+  // Re-load all currently-loaded model paths at the new rate domain. Called
+  // on the AUDIO thread when the toggle flips (schedules worker loads; the
+  // old models keep processing until each swap lands).
+  void reloadModelsForOversample();
   void tunerSetRates(double rate);
 };
 } // namespace NAMRig

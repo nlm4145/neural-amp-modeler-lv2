@@ -162,6 +162,12 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
 
   if (options)
     optionsSet(this, options);
+
+  // Size the oversampler scratch UNCONDITIONALLY: not every host sends the
+  // maxBlockLength option, and a null scratch_ would crash on first use.
+  // The default (512) is generous for typical blocks; if a host later
+  // reports a larger block via optionsSet, it grows.
+  setMaxBufferSize(static_cast<int>(maxBufferSize));
   return true;
 }
 
@@ -169,6 +175,17 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   maxBufferSize = size;
   for (auto& loader : loaders)
     loader.SetDefaultMaxAudioBufferSize(size);
+  // Oversampler scratch: max block in, max 2x block out, decimator input.
+  osUp.setMaxBlockSize(static_cast<size_t>(size));
+  osDown.setMaxBlockSize(static_cast<size_t>(2 * size));
+  osUp2.setMaxBlockSize(static_cast<size_t>(size));
+  osDown2.setMaxBlockSize(static_cast<size_t>(2 * size));
+  osUp.reset();
+  osDown.reset();
+  osUp2.reset();
+  osDown2.reset();
+  osBuffer.assign(static_cast<size_t>(2 * size) + 64, 0.0f);
+  osBuffer2.assign(static_cast<size_t>(2 * size) + 64, 0.0f);
 }
 
 LV2_Worker_Status Plugin::work(LV2_Handle instance,
@@ -202,10 +219,20 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
 
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
-      if (message->stage == Stage::Cab && endsWithWav(message->path))
+      if (message->stage == Stage::Cab && endsWithWav(message->path)) {
         response.ir = WavIR::load(message->path, rig->sampleRate, rig->maxBufferSize).release();
-      else
-        response.model = rig->loaders[stageIndex(message->stage)].CreateFromFile(message->path);
+      } else {
+        // True 2x oversampling: when ON, models are created with external
+        // rate = 2x session rate so the dilation scaling matches the 2x
+        // oversampled domain. When OFF, models load at the session rate
+        // (NeuralAudio's classic dilation behavior).
+        const int loaderRate = static_cast<int>(rig->sampleRate);
+        const int modelRate = rig->oversampleWanted() ? loaderRate * 2 : loaderRate;
+        auto& loader = rig->loaders[stageIndex(message->stage)];
+        loader.SetExternalSampleRate(modelRate);
+        response.model = loader.CreateFromFile(message->path);
+        loader.SetExternalSampleRate(loaderRate);
+      }
       if (message->stage == Stage::Amp)
         response.fullRig = isFullRigModel(message->path);
       if (response.model || response.ir)
@@ -214,12 +241,14 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // model to the host rate when hostRate % modelRate == 0. Otherwise the
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
       if (response.model) {
+        const double domainRate = rig->oversampleWanted() ? rig->sampleRate * 2.0
+                                                          : rig->sampleRate;
         const double modelRate = response.model->GetSampleRate();
-        if (modelRate > 0.0 && std::fmod(rig->sampleRate, modelRate) > 1e-6)
+        if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
-                          "Model rate %.0f Hz does not evenly divide session rate %.0f Hz — "
+                          "Model rate %.0f Hz does not evenly divide processing rate %.0f Hz — "
                           "it will run at the wrong rate (detuned). Model: '%s'\n",
-                          modelRate, rig->sampleRate, message->path);
+                          modelRate, domainRate, message->path);
       }
     }
   } catch (...) {
@@ -279,7 +308,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
       !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
-      !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents)
+      !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents ||
+      !ports.oversample_enable)
     return;
 
   lv2_atom_forge_set_buffer(&forge, reinterpret_cast<uint8_t*>(ports.notify), ports.notify->atom.size);
@@ -537,26 +567,109 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = (*ports.auto_cab >= 0.5f && ampIsFullRig) ? 1.0f : 0.0f;
 
-  for (size_t stage = 0; stage < kStageCount; ++stage) {
-    if (!enabled[stage]) continue;
-    auto* model = models[stage];
-    auto* ir = irs[stage];
-    if (ir) {
-      ir->process(ports.audio_out, sampleCount);
-      continue;
+  // Oversample toggle change: models must be re-created for the new rate
+  // domain (dilation scaling is baked in at load time). Schedule reloads;
+  // until they land the stages keep running whatever they have.
+  {
+    const bool want = oversampleWanted();
+    if (want != oversampleOn) {
+      oversampleOn = want;
+      reloadModelsForOversample();
+      osUp.reset();
+      osDown.reset();
+      osUp2.reset();
+      osDown2.reset();
     }
-    if (!model)
-      continue;
+  }
 
-    const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
-    if (pre != 1.0f)
-      for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] *= pre;
+  // ---- Stage processing, optionally in a 2x-oversampled domain ----
+  // The nonlinear stages (pedal, amp) are the only aliasing sources; when
+  // oversampleOn, they run inside UP -> Process -> DOWN with the models
+  // loaded at 2*rate. The cab IR and the EQ are linear and stay at base
+  // rate (linear stages cannot alias). Models not yet re-loaded for the
+  // 2x domain still run — the pipeline is rate-agnostic per stage.
+  const bool osRun = oversampleOn;
+  bool osActive = false;   // any pedal/amp stage actually ran oversampled
 
-    model->Process(ports.audio_out, ports.audio_out, sampleCount);
+  if (osRun) {
+    // Upsample the post-gate/trim signal ONCE; pedal and amp consume the
+    // same 2x buffer in series.
+    const size_t n2 = osUp.process(ports.audio_out, sampleCount, osBuffer.data());
+    if (n2 > 0 && n2 + 64 <= osBuffer.size()) {
+      osActive = true;
+      // pedal + amp in the 2x domain
+      for (size_t stage = 0; stage < 2; ++stage) {   // Pedal, Amp
+        if (!enabled[stage]) continue;
+        auto* model = models[stage];
+        if (!model) continue;
+        const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
+        if (pre != 1.0f)
+          for (size_t i = 0; i < n2; ++i) osBuffer[i] *= pre;
+        model->Process(osBuffer.data(), osBuffer.data(), n2);
+        const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
+        if (post != 1.0f)
+          for (size_t i = 0; i < n2; ++i) osBuffer[i] *= post;
+      }
+      // Decimate back to base rate into the output. The converters carry a
+      // fixed pipeline latency, so the first block(s) after a mode switch
+      // emit slightly fewer samples than the host asked for — fill the tail
+      // with the last valid sample so the output is never stale garbage
+      // (a ~24-sample constant-value tail once, inaudible).
+      const size_t nBack = osDown.process(osBuffer.data(), n2, ports.audio_out);
+      if (nBack < sampleCount) {
+        const float fill = nBack > 0 ? ports.audio_out[nBack - 1] : 0.0f;
+        for (size_t i = nBack; i < sampleCount; ++i) ports.audio_out[i] = fill;
+      }
+    }
+  }
 
-    const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
-    if (post != 1.0f)
-      for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] *= post;
+  if (!osActive) {
+    // Base-rate path (oversampling off, or the upsample produced nothing).
+    for (size_t stage = 0; stage < kStageCount; ++stage) {
+      if (!enabled[stage]) continue;
+      auto* model = models[stage];
+      auto* ir = irs[stage];
+      if (ir) {
+        ir->process(ports.audio_out, sampleCount);
+        continue;
+      }
+      if (!model) continue;
+      const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
+      if (pre != 1.0f)
+        for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] *= pre;
+      model->Process(ports.audio_out, ports.audio_out, sampleCount);
+      const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
+      if (post != 1.0f)
+        for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] *= post;
+    }
+  } else {
+    // Oversampled path ran pedal+amp; the cab (linear IR) still runs at
+    // base rate on the decimated output.
+    if (enabled[2]) {
+      auto* ir = irs[2];
+      auto* cabModel = models[2];
+      if (ir) {
+        ir->process(ports.audio_out, sampleCount);
+      } else if (cabModel) {
+        // .nam cab models are linear-ish captures but still nonlinear DSP —
+        // run them oversampled too for consistency.
+        const size_t n2 = osUp2.process(ports.audio_out, sampleCount, osBuffer2.data());
+        if (n2 > 0) {
+          const float pre = dbToLinear(cabModel->GetRecommendedInputDBAdjustment());
+          if (pre != 1.0f)
+            for (size_t i = 0; i < n2; ++i) osBuffer2[i] *= pre;
+          cabModel->Process(osBuffer2.data(), osBuffer2.data(), n2);
+          const float post = dbToLinear(cabModel->GetRecommendedOutputDBAdjustment());
+          if (post != 1.0f)
+            for (size_t i = 0; i < n2; ++i) osBuffer2[i] *= post;
+          const size_t nBack = osDown2.process(osBuffer2.data(), n2, ports.audio_out);
+          if (nBack < sampleCount) {
+            const float fill = nBack > 0 ? ports.audio_out[nBack - 1] : 0.0f;
+            for (size_t i = nBack; i < sampleCount; ++i) ports.audio_out[i] = fill;
+          }
+        }
+      }
+    }
   }
 
   // 3-band EQ (post: after the stages, before the output trim). Each band is
@@ -590,6 +703,21 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     ports.audio_out[i] *= gain;
   }
   smoothedOutputLevel = gain;
+}
+
+void Plugin::reloadModelsForOversample() {
+  // Re-send every loaded model path through the worker so the models are
+  // re-created with the loader external rate matching the new domain.
+  for (size_t i = 0; i < kStageCount; ++i) {
+    if (models[i] && !modelPaths[i].empty()) {
+      LV2LoadModelMsg message{kWorkTypeLoad, static_cast<Stage>(i), {}};
+      const size_t len = modelPaths[i].size();
+      if (len < MAX_FILE_NAME) {
+        std::memcpy(message.path, modelPaths[i].c_str(), len + 1);
+        schedule->schedule_work(schedule->handle, sizeof(message), &message);
+      }
+    }
+  }
 }
 
 void Plugin::writePath(Stage stage) {

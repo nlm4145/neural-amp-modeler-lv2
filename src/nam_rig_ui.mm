@@ -49,6 +49,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)controlChanged:(NSSlider*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
+- (void)oversampleToggled:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -154,6 +155,16 @@ constexpr std::array<const char*, 3> kPathURIs{
     _state->tunerCentsLabel.stringValue = @"";
     _state->tunerNeedle.hidden = YES;
   }
+}
+
+// Oversample 2x toggle: sends 0/1 to port 19. The DSP re-creates the loaded
+// models for the new rate domain in its worker and swaps them in.
+- (void)oversampleToggled:(NSButton*)sender {
+  if (!_state) return;
+  const BOOL on = sender.state == NSControlStateValueOn;
+  _state->sendControl(19, on ? 1.0f : 0.0f);
+  sender.contentTintColor = on ? rigText() : rigDimText();
+  sender.needsDisplay = YES;
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -458,6 +469,24 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->tunerButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[state->tunerButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
     [[state->tunerButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+    // Oversample 2x toggle (title bar, next to the tuner icon) — flat icon
+    // button like the tuner: dim when off, bright when on.
+    state->osButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+    state->osButton.bordered = NO;
+    state->osButton.imagePosition = NSImageOnly;
+    state->osButton.image = [NSImage imageWithSystemSymbolName:@"waveform.3.right"
+                                          accessibilityDescription:@"Oversample 2x"];
+    state->osButton.contentTintColor = rigDimText();
+    [state->osButton setButtonType:NSButtonTypeToggle];
+    state->osButton.target = state->uiController;
+    state->osButton.action = @selector(oversampleToggled:);
+    state->osButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:state->osButton];
+    [[state->osButton.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:8] setActive:YES];
+    [[state->osButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[state->osButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
+    [[state->osButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
     // Tuner readout panel — hidden until the toggle is on. Note name, detune
     // in cents, and a needle meter across ±50 cents. Styled like the tiles
@@ -805,7 +834,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 15) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 19) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

@@ -42,6 +42,38 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 New ports go AFTER index 18. Saved Element sessions restore by index —
 renumbering breaks them.
 
+## "Oversampling" reality — and TRUE oversampling (2x, optional)
+
+**NeuralAudio's built-in "oversampling" is dilation scaling**, not resampling.
+It multiplies WaveNet dilations by `hostRate/modelRate` at LOAD time. There
+is no resampler. Consequences:
+
+- Only `architecture == "WaveNet"` models are rate-adapted; **LSTM models never are**.
+- Only works when `hostRate % modelRate == 0`; otherwise the model silently
+  runs at the wrong rate (detuned). `modelRate` defaults to 48000 if absent.
+- Changing host rate requires reloading every model
+  (`loader.SetExternalSampleRate()` must precede `CreateFromFile()`).
+- Even when it engages, the model's nonlinearity still fires once per
+  host-rate sample — aliasing from the distortion is reduced, not eliminated.
+
+**TRUE 2x oversampling (port 19, `oversample_enable`)** lifts that ceiling:
+the pedal + amp stages (and `.nam` cab models) run inside a genuine
+oversampled domain — UP(2x) → model → DOWN(1x) via a half-band polyphase
+pair in `src/oversample.{h,cpp}`. Toolbar icon toggle (waveform symbol),
+off by default:
+
+- 47-tap Kaiser half-band prototype (β=9, ~100 dB stopband), exact identity
+  phase, exact DC gains, ~98 dB imaging rejection, <0.1 dB passband ripple.
+- Models are re-created at `2*sampleRate` external rate (worker thread) when
+  the toggle flips — dilation scaling then matches the 2x domain, so a 48k
+  model in a 96k session runs 4x-dilated inside the oversampled region.
+- The cab IR and the 3-band EQ are LINEAR and stay at base rate (linear
+  stages cannot alias). Measured: **21 dB less alias clutter** through a
+  hard-clipper than base-rate processing (tests/verify_oversample_cpp.cpp).
+- The DSP→UI input meter (`#rig-input-db`) is unrelated to this toggle.
+- Spec + validation: `tests/test_oversample_2x.py` (Python reference) and
+  `tests/verify_oversample_cpp.cpp` (C++ harness, run by run_all.sh).
+
 ## DSP→UI messaging
 
 - **Continuous/host-polled values** (e.g. `cab_auto_bypassed`, tuner ports):
