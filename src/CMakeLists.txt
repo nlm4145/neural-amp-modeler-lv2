@@ -116,7 +116,13 @@ if (APPLE)
 		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 	)
 
-	add_library(neural_amp_modeler_rig_ui MODULE nam_rig_ui.mm)
+	add_library(neural_amp_modeler_rig_ui MODULE
+		nam_rig_ui.mm
+		rig_theme.h rig_theme.mm
+		rig_knobs.h rig_knobs.cpp
+		rig_tone_api.h rig_tone_api.mm
+		rig_tone_browser.h rig_tone_browser.mm
+		rig_ui_state.h)
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
 	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)

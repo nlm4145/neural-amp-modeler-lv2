@@ -27,8 +27,13 @@ cmake --build "$BUILD_DIR" -j"$JOBS"
 
 echo "== 3/4 Installing bundle -> $INSTALL_BUNDLE"
 mkdir -p "$LV2_DIR"
+# Atomic swap: copy to a temp sibling first, then move into place. A failed
+# copy mid-way must never leave the user without an installed plugin.
+STAGING="$LV2_DIR/.staging-$$"
+rm -rf "$STAGING"
+cp -R "$BUNDLE" "$STAGING" || { rm -rf "$STAGING"; echo "install copy failed"; exit 1; }
 rm -rf "$INSTALL_BUNDLE"
-cp -R "$BUNDLE" "$INSTALL_BUNDLE"
+mv "$STAGING" "$INSTALL_BUNDLE" || { rm -rf "$STAGING"; echo "install move failed"; exit 1; }
 codesign --force --deep -s - "$INSTALL_BUNDLE" >/dev/null 2>&1 || true
 
 echo "== 4/4 dlopen check"

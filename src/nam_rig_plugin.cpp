@@ -209,6 +209,17 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         response.fullRig = isFullRigModel(message->path);
       if (response.model || response.ir)
         std::memcpy(response.path, message->path, length + 1);
+      // NeuralAudio "oversampling" is dilation scaling: it only adapts the
+      // model to the host rate when hostRate % modelRate == 0. Otherwise the
+      // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
+      if (response.model) {
+        const double modelRate = response.model->GetSampleRate();
+        if (modelRate > 0.0 && std::fmod(rig->sampleRate, modelRate) > 1e-6)
+          lv2_log_warning(&rig->logger,
+                          "Model rate %.0f Hz does not evenly divide session rate %.0f Hz — "
+                          "it will run at the wrong rate (detuned). Model: '%s'\n",
+                          modelRate, rig->sampleRate, message->path);
+      }
     }
   } catch (...) {
     response.model = nullptr;

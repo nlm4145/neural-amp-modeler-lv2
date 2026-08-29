@@ -3,10 +3,43 @@ name: Build
 on:
   [workflow_dispatch, push, pull_request]
 
-env:
-  BUILD_TYPE: Release
-  
 jobs:
+  build-macos:
+    name: Build macOS (incl. rig UI) + dlopen check
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Build Plugin
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+    - name: dlopen smoke check (every .so must export lv2 descriptors)
+      run: |
+        set -e
+        # One process per binary: the two NeuralAudio-backed .so both register
+        # a global LSTM config parser; dlopening both in ONE process aborts.
+        for so in build/neural_amp_modeler.lv2/*.so; do
+          python3 - "$so" <<'PY'
+        import ctypes, sys
+        lib = ctypes.CDLL(sys.argv[1])
+        if 'rig_ui' in sys.argv[1] or sys.argv[1].endswith('_ui.so'):
+            getattr(lib, 'lv2ui_descriptor')
+        else:
+            getattr(lib, 'lv2_descriptor')
+        print('   OK   ', sys.argv[1])
+        PY
+        done
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: neural_amp_modeler.lv2-macos
+        path: ${{github.workspace}}/build/neural_amp_modeler.lv2
+
   build-ubuntu:
     name: Build Ubuntu
     runs-on: ubuntu-latest

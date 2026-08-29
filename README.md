@@ -37,6 +37,26 @@ The expected input level to the plugin is 12dBu. For models that include input l
 
 If you run at a sample rate that is an even multiple of the model sample rate, the model will be correctly oversampled to behave as expected. So, if the model sample rate is 48kHz (which they typically are), and you are running at 96kHz, the model will be 2x oversampled. This also means that if your DAW supports oversampling, you can safely use it. Running oversampled comes with a signficant performance cost, but can be useful for reducing aliasing.
 
+## Testing
+
+Pre-compile DSP validators (Python, numpy) — run before `./build.sh` when
+touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
+
+```bash
+./tests/run_all.sh
+```
+
+- `tests/test_wav_ir_resample.py` — mirrors `WavIR` resampling/normalization
+  exactly (DC gain, bandlimited impulse area, equal-rate identity, round-trip
+  RMSE, 80 ms truncation, unity energy). The length test pins the
+  count/position ratio distinction that once produced a 1/4-length output.
+- `tests/test_tuner_mpm.py` — mirrors the tuner's McLeod NSDF pipeline and
+  asserts pitch accuracy (<5¢) on synthetic guitar tones at 48k and 96k,
+  including low E (the 96 kHz case that broke v1) and palm mute.
+
+See `ARCHITECTURE.md` for the DSP↔UI port contract, worker model-swap chain,
+and the Tone3000 API/OAuth rules.
+
 ## Building
 
 First clone the repository:
