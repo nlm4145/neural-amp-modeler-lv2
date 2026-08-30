@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "rig_knobs.h"
+#include "oversample_modes.h"
 #import "rig_theme.h"
 
 @class NAMRigUIController;
@@ -55,7 +56,7 @@ struct RigUIState {
 
   // Oversample mode dropdowns. The title-bar popup is the MASTER (sets both
   // stages); the pedal and amp tiles each have their own per-stage popup
-  // (ports 20/21, 7 modes: None / Legacy 2x-4x-8x / True 2x-4x-8x). The cab
+  // (ports 20/21, five modes: None / Legacy / True 2x-4x-8x). The cab
   // has none — a WAV IR is linear and cannot alias; a .nam cab follows the
   // amp's mode.
   __strong NSPopUpButton* osPopup = nil;               // master (title bar)
@@ -378,7 +379,8 @@ struct RigUIState {
     if (port == 20 || port == 21) {   // per-stage oversample mode (0..6)
       NSPopUpButton* popup = stageOsPopup[port - 20];
       if (popup) {
-        const int idx = (int)(value + 0.5f);
+        const int mode = (int)(value + 0.5f);
+        const int idx = NAMRig::oversampleMenuIndexFromMode(mode);
         dispatch_async(dispatch_get_main_queue(), ^{
           if (idx >= 0 && idx < popup.itemArray.count)
             [popup selectItemAtIndex:idx];

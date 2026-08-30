@@ -18,6 +18,7 @@
 #include <lv2/urid/urid.h>
 
 #include "oversample.h"
+#include "oversample_modes.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -42,12 +43,16 @@ enum LV2WorkType : uint32_t { kWorkTypeLoad, kWorkTypeSwitch, kWorkTypeFree };
 struct LV2LoadModelMsg {
   LV2WorkType type;
   Stage stage;
+  int32_t oversampleMode;
+  uint64_t generation;
   char path[MAX_FILE_NAME];
 };
 
 struct LV2SwitchModelMsg {
   LV2WorkType type;
   Stage stage;
+  int32_t oversampleMode;
+  uint64_t generation;
   char path[MAX_FILE_NAME];
   NeuralAudio::NeuralModel* model;
   WavIR* ir;
@@ -231,6 +236,11 @@ private:
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
   std::array<int, kStageCount> osApplied = {kOsLegacy2, kOsLegacy2, kOsLegacy2};
+  // Latest port modes requested by the host. osApplied changes only when the
+  // corresponding worker response lands, so an old model is never pushed
+  // through a newly-selected rate domain during an asynchronous reload.
+  std::array<int, 2> osRequested = {kOsLegacy2, kOsLegacy2};
+  std::array<uint64_t, kStageCount> loadGeneration{};
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
   //             dilation is a no-op for common rates; a non-48k model at a
@@ -280,14 +290,20 @@ private:
     const int n = 1 << (mode - kOsTrue2 + 1);          // 2 / 4 / 8
     if (incomingRate <= 0.0) return n;
     const double want = kTrueBaseRate * n / incomingRate;
-    const int f = (int)std::lround(want);
-    return f < 1 ? 1 : f;
+    // The implementation is a cascade of 2x stages, so never return an
+    // unsupported factor such as 3 or 16. The latter would otherwise be
+    // misinterpreted as a single 2x level by process().
+    if (want < 1.5) return 1;
+    if (want < 3.0) return 2;
+    if (want < 6.0) return 4;
+    return 8;
   }
 
   // Re-load all currently-loaded model paths at the new rate domain. Called
   // on the AUDIO thread when the toggle flips (schedules worker loads; the
   // old models keep processing until each swap lands).
   void reloadModelsForOversample();
+  void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
   void tunerSetRates(double rate);
 };
 } // namespace NAMRig

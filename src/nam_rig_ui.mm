@@ -39,6 +39,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 
 #import "rig_theme.h"
 #include "rig_knobs.h"
+#include "oversample_modes.h"
 #include "rig_ui_state.h"
 #import "rig_tone_browser.h"
 
@@ -164,18 +165,22 @@ constexpr std::array<const char*, 3> kPathURIs{
 // new rate domain in its worker and swaps them in.
 - (void)oversampleModeChanged:(NSPopUpButton*)sender {
   if (!_state) return;
-  // Master indexes 0/1/2 -> port values 0 (None) / 1 (Legacy 2x) / 4 (True 2x)
-  static const float kMasterMap[3] = {0.0f, 1.0f, 4.0f};
+  // Master indexes 0/1/2 -> port values 0 (None) / 1 (Legacy) / 4 (True 2x).
   const NSInteger i = sender.indexOfSelectedItem;
-  const float mode = (i >= 0 && i < 3) ? kMasterMap[i] : 1.0f;
+  const float mode = (i >= 0 && i < 3)
+      ? static_cast<float>(NAMRig::oversampleModeFromMenuIndex((int)i))
+      : static_cast<float>(NAMRig::kOversampleLegacy);
   _state->sendControl(20, mode);
   _state->sendControl(21, mode);
 }
 
-// Per-stage oversample control (pedal/amp tiles): ports 20/21, 7 modes.
+// Per-stage oversample control (pedal/amp tiles): ports 20/21, five visible
+// modes mapped onto the sparse LV2 values 0, 1, 4, 5, 6.
 - (void)stageOversampleChanged:(NSPopUpButton*)sender {
   if (!_state) return;
-  _state->sendControl((uint32_t)sender.tag, (float)sender.indexOfSelectedItem);
+  const int mode = NAMRig::oversampleModeFromMenuIndex(
+      static_cast<int>(sender.indexOfSelectedItem));
+  _state->sendControl((uint32_t)sender.tag, static_cast<float>(mode));
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -785,7 +790,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
       // Per-stage oversample dropdown (pedal + amp only — a WAV cab IR is
       // linear and cannot alias; a .nam cab follows the amp's mode). Sits
-      // left of the ON button, 7 modes: None / Legacy 2x-4x-8x / True 2x-4x-8x.
+      // left of the ON button, five modes: None / Legacy / True 2x-4x-8x.
       if (i < 2) {
         NSPopUpButton* so = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         [so addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",

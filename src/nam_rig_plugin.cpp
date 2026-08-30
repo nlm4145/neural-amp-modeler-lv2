@@ -219,8 +219,12 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
   if (!validStage(message->stage))
     return LV2_WORKER_ERR_UNKNOWN;
 
-  LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage, {}, nullptr, nullptr, false};
+  LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
+                             message->oversampleMode, message->generation,
+                             {}, nullptr, nullptr, false};
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
+  const int requestedMode = Plugin::decodeOversample(
+      static_cast<float>(message->oversampleMode));
 
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
@@ -236,18 +240,18 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         // TRUE Nx (4..6): Nx * session rate — the model is created for the
         //                    genuine pipeline domain it will process in.
         const int sessionRate = static_cast<int>(rig->sampleRate);
-        const int mode = rig->stageOversample(stageIndex(message->stage));
+        const int mode = requestedMode;
         // TRUE: absolute target = kTrueBaseRate * N (96k session pinned),
         // immune to the Element wrapper — the model is created for the
         // domain the pipeline will actually run, which is what the incoming
         // rate still lacks (see truePipelineFactor). LEGACY: dilation from
         // the incoming rate — the Element menu keeps affecting it (user
         // decision, 2026-08-29). NONE: pinned 48k.
-        const int trueN = mode >= Plugin::kOsTrue2
-                              ? (1 << (mode - Plugin::kOsTrue2 + 1)) : 0;
+        const int pipelineFactor = Plugin::truePipelineFactor(mode, rig->sampleRate);
         const int modelRate = mode == Plugin::kOsNone ? 48000
-                              : trueN ? static_cast<int>(Plugin::kTrueBaseRate) * trueN
-                                      : sessionRate;
+                              : pipelineFactor > 0 ? static_cast<int>(
+                                    std::lround(rig->sampleRate * pipelineFactor))
+                                                   : sessionRate;
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
         response.model = loader.CreateFromFile(message->path);
@@ -282,12 +286,13 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // model to the host rate when hostRate % modelRate == 0. Otherwise the
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
       if (response.model) {
-        const int stageMode = rig->stageOversample(stageIndex(message->stage));
-        const int trueN2 = stageMode >= Plugin::kOsTrue2
-                               ? (1 << (stageMode - Plugin::kOsTrue2 + 1)) : 0;
+        const int stageMode = requestedMode;
+        const int pipelineFactor2 = Plugin::truePipelineFactor(stageMode,
+                                                                rig->sampleRate);
         const double domainRate = stageMode == Plugin::kOsNone ? 48000.0
-                                 : trueN2 ? Plugin::kTrueBaseRate * trueN2
-                                          : rig->sampleRate;
+                                 : pipelineFactor2 > 0
+                                       ? rig->sampleRate * pipelineFactor2
+                                       : rig->sampleRate;
         const double modelRate = response.model->GetSampleRate();
         if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
@@ -317,11 +322,34 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
 
   auto* rig = static_cast<Plugin*>(instance);
   const size_t index = stageIndex(message->stage);
+  if (message->generation != rig->loadGeneration[index]) {
+    // A newer path or oversampling request superseded this load while it was
+    // running. Dispose of the stale result on the worker thread.
+    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
+    rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
+    return LV2_WORKER_SUCCESS;
+  }
+  const int desiredMode = index == 0 ? rig->osRequested[0]
+                                     : rig->osRequested[1];
+  if (Plugin::decodeOversample((float)message->oversampleMode) != desiredMode) {
+    // The mode changed while an initial/path load was in flight, before
+    // reloadModelsForOversample() had an installed model to reschedule.
+    // Reuse the completed response's path and load it for the latest domain.
+    const size_t length = strnlen(message->path, MAX_FILE_NAME);
+    rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
+    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
+    rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
+    return LV2_WORKER_SUCCESS;
+  }
   LV2FreeModelMsg freeMessage{kWorkTypeFree, rig->models[index], rig->irs[index]};
   rig->models[index] = message->model;
   rig->irs[index] = message->ir;
   if (message->stage == Stage::Amp) rig->ampIsFullRig = message->fullRig;
   rig->modelPaths[index] = message->path;
+  rig->osApplied[index] = Plugin::decodeOversample(
+      static_cast<float>(message->oversampleMode));
+  for (auto& up : rig->osUp[index]) up.reset();
+  for (auto& down : rig->osDown[index]) down.reset();
   assert(rig->modelPaths[index].capacity() >= MAX_FILE_NAME + 1);
   rig->notifyPending[index] = true;
   rig->schedule->schedule_work(rig->schedule->handle, sizeof(freeMessage), &freeMessage);
@@ -396,9 +424,10 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
     for (size_t i = 0; i < kStageCount; ++i) {
       if (propertyId == uris.stagePath[i]) {
-        LV2LoadModelMsg message{kWorkTypeLoad, static_cast<Stage>(i), {}};
-        std::memcpy(message.path, path + 1, path->size);
-        schedule->schedule_work(schedule->handle, sizeof(message), &message);
+        const Stage stage = static_cast<Stage>(i);
+        const int mode = stageOversample(i);
+        scheduleModelLoad(stage, reinterpret_cast<const char*>(path + 1),
+                          path->size - 1, mode);
         break;
       }
     }
@@ -623,21 +652,19 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor
   // and/or created at Nx * sessionRate), so any mode change re-sends the
-  // loaded paths through the worker. Until a swap lands, the stage keeps
-  // running whatever it has — the pipeline is rate-agnostic per stage.
+  // loaded paths through the worker. Until a matching swap lands, osApplied
+  // keeps the stage and its old model in their existing processing domain.
   // The cab (index 2) rides the amp's domain, so only pedal/amp are watched.
+  bool oversampleChanged = false;
   for (size_t st = 0; st < 2; ++st) {
     const int mode = stageOversample(st);
-    if (mode != osApplied[st]) {
-      osApplied[st] = mode;
-      reloadModelsForOversample();
-      for (auto& stageUp : osUp)
-        for (auto& up : stageUp) up.reset();
-      for (auto& stageDown : osDown)
-        for (auto& down : stageDown) down.reset();
-      break;
+    if (mode != osRequested[st]) {
+      osRequested[st] = mode;
+      oversampleChanged = true;
     }
   }
+  if (oversampleChanged)
+    reloadModelsForOversample();
 
   // ---- Stage processing with per-stage oversample domains ----
   // TRUE-Nx stages run inside a genuine UP -> model@Nx -> DOWN cascade
@@ -655,7 +682,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // (factor * 24 samples per cascade), so after them, later base-rate
   // stages see delayed audio — the converters fill their short tails with
   // the last valid sample so the output never contains stale garbage.
-  const int cabFactor = truePipelineFactor(osApplied[1], sampleRate);   // cab follows amp
+  const int cabFactor = truePipelineFactor(osApplied[2], sampleRate);
 
   // Process ONE model stage either at base rate or inside a TRUE cascade.
   // Returns the number of base-rate samples written to `dst` (may be < count
@@ -668,8 +695,13 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       return count;
     }
     const int f = truePipelineFactor(osApplied[st], sampleRate);
-    if (f <= 0) {
-      // Base-rate stage (NONE or LEGACY): process in place.
+    if (f <= 1) {
+      // Base-rate stage (NONE or LEGACY), or a TRUE stage COASTING (f == 1:
+      // the Element wrapper already supplies the target rate). Both process
+      // the model directly at the incoming rate, no converters — running a
+      // cascade here would DOUBLE the rate on top of the wrapper (the bug
+      // behind "True 2x and True 4x cost the same"). The models are created
+      // for exactly this effective processing rate by the worker.
       (void)inPlace;
       const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
       if (dst != src || pre != 1.0f) {
@@ -749,7 +781,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     auto* cabModel = models[2];
     if (ir) {
       ir->process(ports.audio_out, sampleCount);
-    } else if (cabModel && cabFactor > 0) {
+    } else if (cabModel && cabFactor > 1) {
+      // (cabFactor == 1 means the amp coasted — the cab rides at base rate
+      // via the plain branch below.)
       // Same cascade shape as the amp (per-level converters, ping-pong
       // scratch), on the post-amp signal.
       const size_t cabLevels = cabFactor == 8 ? 3 : (cabFactor == 4 ? 2 : 1);
@@ -821,14 +855,24 @@ void Plugin::reloadModelsForOversample() {
   // re-created with the loader external rate matching the new domain.
   for (size_t i = 0; i < kStageCount; ++i) {
     if (models[i] && !modelPaths[i].empty()) {
-      LV2LoadModelMsg message{kWorkTypeLoad, static_cast<Stage>(i), {}};
       const size_t len = modelPaths[i].size();
-      if (len < MAX_FILE_NAME) {
-        std::memcpy(message.path, modelPaths[i].c_str(), len + 1);
-        schedule->schedule_work(schedule->handle, sizeof(message), &message);
-      }
+      const int mode = i == 0 ? osRequested[0] : osRequested[1];
+      if (len < MAX_FILE_NAME)
+        scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(), len, mode);
     }
   }
+}
+
+void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
+                               int mode) {
+  if (!validStage(stage) || !path || length >= MAX_FILE_NAME)
+    return;
+  const size_t index = stageIndex(stage);
+  LV2LoadModelMsg message{kWorkTypeLoad, stage, decodeOversample((float)mode),
+                          ++loadGeneration[index], {}};
+  std::memcpy(message.path, path, length);
+  message.path[length] = '\0';
+  schedule->schedule_work(schedule->handle, sizeof(message), &message);
 }
 
 void Plugin::writePath(Stage stage) {
@@ -915,9 +959,9 @@ LV2_State_Status Plugin::restore(LV2_Handle instance,
     char* absolutePath = mapPath->absolute_path(mapPath->handle, static_cast<const char*>(value));
     const size_t length = std::strlen(absolutePath);
     if (length < MAX_FILE_NAME) {
-      LV2LoadModelMsg message{kWorkTypeLoad, static_cast<Stage>(i), {}};
-      std::memcpy(message.path, absolutePath, length + 1);
-      rig->schedule->schedule_work(rig->schedule->handle, sizeof(message), &message);
+      const Stage stage = static_cast<Stage>(i);
+      rig->scheduleModelLoad(stage, absolutePath, length,
+                             rig->stageOversample(i));
       rig->modelPaths[i] = absolutePath;
     }
     if (freePath) freePath->free_path(freePath->handle, absolutePath);

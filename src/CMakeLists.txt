@@ -46,7 +46,8 @@ set(RIG_SOURCES nam_rig_lv2.cpp
 	wav_ir.cpp
 	wav_ir.h
 	oversample.cpp
-	oversample.h)
+	oversample.h
+	oversample_modes.h)
 
 add_library(neural_amp_modeler_rig SHARED ${RIG_SOURCES} ${NA_SOURCES})
 
