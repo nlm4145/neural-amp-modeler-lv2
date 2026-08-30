@@ -175,17 +175,22 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   maxBufferSize = size;
   for (auto& loader : loaders)
     loader.SetDefaultMaxAudioBufferSize(size);
-  // Oversampler scratch: max block in, max 2x block out, decimator input.
-  osUp.setMaxBlockSize(static_cast<size_t>(size));
-  osDown.setMaxBlockSize(static_cast<size_t>(2 * size));
-  osUp2.setMaxBlockSize(static_cast<size_t>(size));
-  osDown2.setMaxBlockSize(static_cast<size_t>(2 * size));
-  osUp.reset();
-  osDown.reset();
-  osUp2.reset();
-  osDown2.reset();
-  osBuffer.assign(static_cast<size_t>(2 * size) + 64, 0.0f);
-  osBuffer2.assign(static_cast<size_t>(2 * size) + 64, 0.0f);
+  // Per-stage, per-level converter sizing. Level L of a True-2^L cascade sees
+  // a block of 2^L * size samples: level 0 (2x) sees 2x, level 1 (4x) sees
+  // 4x, level 2 (8x) sees 8x. Every level is sized for the worst case (8x)
+  // so any mode change is safe with no host callback; the domain scratch and
+  // the pedal->amp chain buffer are sized for 8x too.
+  for (size_t st = 0; st < kStageCount; ++st) {
+    for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
+      osUp[st][lvl].setMaxBlockSize(static_cast<size_t>(8 * size));
+      osDown[st][lvl].setMaxBlockSize(static_cast<size_t>(8 * size));
+      osUp[st][lvl].reset();
+      osDown[st][lvl].reset();
+    }
+    osScratch[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+    osScratch2[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+  }
+  osChain.assign(static_cast<size_t>(8 * size) + 64, 0.0f);
 }
 
 LV2_Worker_Status Plugin::work(LV2_Handle instance,
@@ -222,19 +227,20 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       if (message->stage == Stage::Cab && endsWithWav(message->path)) {
         response.ir = WavIR::load(message->path, rig->sampleRate, rig->maxBufferSize).release();
       } else {
-        // Oversample mode decides the loader external rate, which controls
-        // NeuralAudio's dilation scaling (baked in at load time):
-        //   mode 0 (OFF):    48000 — equals the common model rate, so the
-        //                    dilation math is a no-op; non-48k models with a
-        //                    non-divisible ratio also skip dilation.
-        //   mode 1 (LEGACY): session rate — the classic dilation behavior.
-        //   mode 2 (TRUE 2x): 2x session rate — models are dilated to match
-        //                    the oversampled domain.
+        // The stage's oversample mode decides the loader external rate.
+        // NONE (0): 48000 — dilation is a no-op for common-rate models.
+        // LEGACY Nx (1..3): session rate — dilation = hostRate/modelRate
+        //                    (NeuralAudio stretches the model's dilations;
+        //                    a "4x" Legacy model runs the SAME math per
+        //                    sample, just reaches further back in time).
+        // TRUE Nx (4..6): Nx * session rate — the model is created for the
+        //                    genuine pipeline domain it will process in.
         const int sessionRate = static_cast<int>(rig->sampleRate);
-        const int mode = rig->oversampleMode();
-        const int modelRate = mode == 2 ? sessionRate * 2
-                            : mode == 1 ? sessionRate
-                                        : 48000;
+        const int mode = rig->stageOversample(stageIndex(message->stage));
+        const int factor = mode >= Plugin::kOsTrue2
+                               ? (1 << (mode - Plugin::kOsTrue2 + 1)) : 1;
+        const int modelRate = mode == Plugin::kOsNone ? 48000
+                                                      : sessionRate * factor;
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
         response.model = loader.CreateFromFile(message->path);
@@ -245,15 +251,18 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         // classic WaveNet does NOT chunk in Process (its
         // num_frames <= maxBufferSize assert is compiled out in Release), so
         // a block larger than the sizing overruns those buffers and corrupts
-        // the heap. Size for 2x blocks in EVERY mode (not just True 2x):
-        // right after a switch to True 2x the re-loaded models have not
-        // landed yet, and the still-running OLD models are fed 2x-rate
-        // blocks immediately — they must already be sized for them.
+        // the heap. The transient window after ANY mode click is the danger:
+        // the audio thread flips its pipeline immediately while the OLD
+        // (just replaced) or NEW models keep processing whatever block shape
+        // the pipeline now feeds. Size for the worst case (8x = 4096 samples
+        // at a 512 max block) in EVERY mode — a few MB per model, no CPU.
+        // Do NOT make this mode-conditional; that re-opens the 2026-08-29
+        // click-crash (verified via unified-log forensics).
         if (response.model)
-          response.model->SetMaxAudioBufferSize(2 * rig->maxBufferSize);
-        if (mode == 0)
+          response.model->SetMaxAudioBufferSize(8 * rig->maxBufferSize);
+        if (mode == Plugin::kOsNone)
           lv2_log_warning(&rig->logger,
-                          "Oversampling OFF (A/B mode): model '%s' runs without rate "
+                          "Oversampling NONE: model '%s' runs without rate "
                           "adaptation — a non-48k model at this session rate will "
                           "sound detuned.\n",
                           message->path);
@@ -266,9 +275,11 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // model to the host rate when hostRate % modelRate == 0. Otherwise the
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
       if (response.model) {
-        const double domainRate = rig->oversampleMode() == 2 ? rig->sampleRate * 2.0
-                             : rig->oversampleMode() == 1 ? rig->sampleRate
-                                                          : 48000.0;
+        const int stageMode = rig->stageOversample(stageIndex(message->stage));
+        const int stageFactor = stageMode >= Plugin::kOsTrue2
+                                    ? (1 << (stageMode - Plugin::kOsTrue2 + 1)) : 1;
+        const double domainRate = stageMode == Plugin::kOsNone ? 48000.0
+                                 : rig->sampleRate * (double)stageFactor;
         const double modelRate = response.model->GetSampleRate();
         if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
@@ -335,8 +346,11 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
       !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents ||
-      !ports.oversample_enable)
+      !ports.pedal_oversample || !ports.amp_oversample)
     return;
+  // NOTE: ports.oversample_mode_legacy (port 19) is intentionally unused —
+  // the per-stage ports 20/21 supersede it. It exists only for positional
+  // alignment (see the header comment) and session-compat in the TTL.
 
   lv2_atom_forge_set_buffer(&forge, reinterpret_cast<uint8_t*>(ports.notify), ports.notify->atom.size);
   lv2_atom_forge_sequence_head(&forge, &sequenceFrame, uris.unitsFrame);
@@ -593,108 +607,166 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = (*ports.auto_cab >= 0.5f && ampIsFullRig) ? 1.0f : 0.0f;
 
-  // Oversample mode change: models must be re-created for the new rate
-  // domain (dilation scaling is baked in at load time). Schedule reloads;
-  // until they land the stages keep running whatever they have.
-  {
-    const int mode = oversampleMode();
-    if (mode != oversampleApplied) {
-      oversampleApplied = mode;
+  // ---- Oversample mode change detection (per stage) ----
+  // Models carry their rate domain baked in at load time (dilation factor
+  // and/or created at Nx * sessionRate), so any mode change re-sends the
+  // loaded paths through the worker. Until a swap lands, the stage keeps
+  // running whatever it has — the pipeline is rate-agnostic per stage.
+  // The cab (index 2) rides the amp's domain, so only pedal/amp are watched.
+  for (size_t st = 0; st < 2; ++st) {
+    const int mode = stageOversample(st);
+    if (mode != osApplied[st]) {
+      osApplied[st] = mode;
       reloadModelsForOversample();
-      osUp.reset();
-      osDown.reset();
-      osUp2.reset();
-      osDown2.reset();
+      for (auto& stageUp : osUp)
+        for (auto& up : stageUp) up.reset();
+      for (auto& stageDown : osDown)
+        for (auto& down : stageDown) down.reset();
+      break;
     }
   }
 
-  // ---- Stage processing, optionally in a 2x-oversampled domain ----
-  // The nonlinear stages (pedal, amp) are the only aliasing sources; when
-  // oversampleApplied == 2, they run inside UP -> Process -> DOWN with the models
-  // loaded at 2*rate. The cab IR and the EQ are linear and stay at base
-  // rate (linear stages cannot alias). Models not yet re-loaded for the
-  // 2x domain still run — the pipeline is rate-agnostic per stage.
-  const bool osRun = oversampleApplied == 2;
-  bool osActive = false;   // any pedal/amp stage actually ran oversampled
+  // ---- Stage processing with per-stage oversample domains ----
+  // TRUE-Nx stages run inside a genuine UP -> model@Nx -> DOWN cascade
+  // (chain of 2x half-band pairs). NONE and LEGACY stages run at base rate
+  // (Legacy dilation stretches the model's reach inside NeuralAudio; no
+  // pipeline involved). The nonlinear stages are the aliasing sources, so
+  // only they get TRUE domains; the cab WAV IR and EQ stay at base rate
+  // (linear stages cannot alias). A .nam cab model follows the AMP's TRUE
+  // factor, preserving the old shared-domain behavior.
+  //
+  // Mixed-domain chaining: stages that precede the first TRUE stage run at
+  // base rate on the raw buffer; the TRUE stage(s) run inside their cascade;
+  // stages after the last TRUE stage run at base rate on its decimated
+  // output. Latency note: TRUE stages hold back a fixed pipeline delay
+  // (factor * 24 samples per cascade), so after them, later base-rate
+  // stages see delayed audio — the converters fill their short tails with
+  // the last valid sample so the output never contains stale garbage.
+  const int cabFactor = trueFactor(osApplied[1]);   // cab follows amp
 
-  if (osRun) {
-    // Upsample the post-gate/trim signal ONCE; pedal and amp consume the
-    // same 2x buffer in series.
-    const size_t n2 = osUp.process(ports.audio_out, sampleCount, osBuffer.data());
-    if (n2 > 0 && n2 + 64 <= osBuffer.size()) {
-      osActive = true;
-      // pedal + amp in the 2x domain
-      for (size_t stage = 0; stage < 2; ++stage) {   // Pedal, Amp
-        if (!enabled[stage]) continue;
-        auto* model = models[stage];
-        if (!model) continue;
-        const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
-        if (pre != 1.0f)
-          for (size_t i = 0; i < n2; ++i) osBuffer[i] *= pre;
-        model->Process(osBuffer.data(), osBuffer.data(), n2);
-        const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
-        if (post != 1.0f)
-          for (size_t i = 0; i < n2; ++i) osBuffer[i] *= post;
-      }
-      // Decimate back to base rate into the output. The converters carry a
-      // fixed pipeline latency, so the first block(s) after a mode switch
-      // emit slightly fewer samples than the host asked for — fill the tail
-      // with the last valid sample so the output is never stale garbage
-      // (a ~24-sample constant-value tail once, inaudible).
-      const size_t nBack = osDown.process(osBuffer.data(), n2, ports.audio_out);
-      if (nBack < sampleCount) {
-        const float fill = nBack > 0 ? ports.audio_out[nBack - 1] : 0.0f;
-        for (size_t i = nBack; i < sampleCount; ++i) ports.audio_out[i] = fill;
-      }
+  // Process ONE model stage either at base rate or inside a TRUE cascade.
+  // Returns the number of base-rate samples written to `dst` (may be < count
+  // on the first block(s) after a reset; caller fills the tail).
+  auto processStage = [&](size_t st, const float* src, float* dst,
+                          uint32_t count, bool inPlace) -> uint32_t {
+    auto* model = models[st];
+    if (!model) {
+      if (dst != src) std::memcpy(dst, src, count * sizeof(float));
+      return count;
     }
-  }
-
-  if (!osActive) {
-    // Base-rate path (oversampling off, or the upsample produced nothing).
-    for (size_t stage = 0; stage < kStageCount; ++stage) {
-      if (!enabled[stage]) continue;
-      auto* model = models[stage];
-      auto* ir = irs[stage];
-      if (ir) {
-        ir->process(ports.audio_out, sampleCount);
-        continue;
-      }
-      if (!model) continue;
+    const int f = trueFactor(osApplied[st]);
+    if (f <= 0) {
+      // Base-rate stage (NONE or LEGACY): process in place.
+      (void)inPlace;
       const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
-      if (pre != 1.0f)
-        for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] *= pre;
-      model->Process(ports.audio_out, ports.audio_out, sampleCount);
+      if (dst != src || pre != 1.0f) {
+        if (dst != src) std::memcpy(dst, src, count * sizeof(float));
+        if (pre != 1.0f)
+          for (uint32_t i = 0; i < count; ++i) dst[i] *= pre;
+      }
+      model->Process(dst, dst, count);
       const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
       if (post != 1.0f)
-        for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] *= post;
+        for (uint32_t i = 0; i < count; ++i) dst[i] *= post;
+      return count;
     }
+    // TRUE-Nx cascade: 2x = 1 level, 4x = 2, 8x = 3. Each level is its OWN
+    // converter instance (own streaming history); sharing one across levels
+    // corrupts the stream — that was the 2026-08-29 True-4x/8x bug. Levels
+    // PING-PONG between two scratch buffers: neither Up2x nor Down2x is
+    // in-place safe (each writes outputs into indices that later outputs'
+    // windows still read). The model processes ~count * f samples at Nx,
+    // which is exactly why the CPU meter must climb with the factor.
+    const size_t levels = f == 8 ? 3 : (f == 4 ? 2 : 1);
+    float* bufs[2] = {osScratch[st].data(), osScratch2[st].data()};
+    size_t n = osUp[st][0].process(src, count, bufs[0]);
+    for (size_t c = 1; c < levels && n > 0; ++c)
+      n = osUp[st][c].process(bufs[(c - 1) % 2], n, bufs[c % 2]);
+    float* domain = bufs[(levels - 1) % 2];
+    if (n == 0 || n + 64 > osScratch[st].size()) {
+      if (dst != src) std::memcpy(dst, src, count * sizeof(float));
+      return count;
+    }
+    const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
+    if (pre != 1.0f)
+      for (size_t i = 0; i < n; ++i) domain[i] *= pre;
+    model->Process(domain, domain, n);
+    const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
+    if (post != 1.0f)
+      for (size_t i = 0; i < n; ++i) domain[i] *= post;
+    // Decimate back down the same chain (reversed), ping-ponging between
+    // the two scratch buffers; the last level lands in dst.
+    size_t back = n;
+    const float* dnIn = domain;
+    for (size_t c = levels; c-- > 0;) {
+      float* dnOut = (c == 0) ? dst : bufs[(c - 1) % 2];
+      back = osDown[st][c].process(dnIn, back, dnOut);
+      dnIn = dnOut;
+    }
+    if (back < count) {
+      const float fill = back > 0 ? dst[back - 1]
+                                  : (src ? src[0] : 0.0f);
+      for (size_t i = back; i < count; ++i) dst[i] = fill;
+    }
+    return static_cast<uint32_t>(back);
+  };
+
+  // ---- Chain pedal -> amp through their (possibly different) domains ----
+  float* chain = osChain.data();
+  if (osChain.size() < (size_t)sampleCount + 64) {
+    // Should not happen (sized for 8x); guard anyway.
+    for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] = 0.0f;
   } else {
-    // Oversampled path ran pedal+amp; the cab (linear IR) still runs at
-    // base rate on the decimated output.
-    if (enabled[2]) {
-      auto* ir = irs[2];
-      auto* cabModel = models[2];
-      if (ir) {
-        ir->process(ports.audio_out, sampleCount);
-      } else if (cabModel) {
-        // .nam cab models are linear-ish captures but still nonlinear DSP —
-        // run them oversampled too for consistency.
-        const size_t n2 = osUp2.process(ports.audio_out, sampleCount, osBuffer2.data());
-        if (n2 > 0) {
-          const float pre = dbToLinear(cabModel->GetRecommendedInputDBAdjustment());
-          if (pre != 1.0f)
-            for (size_t i = 0; i < n2; ++i) osBuffer2[i] *= pre;
-          cabModel->Process(osBuffer2.data(), osBuffer2.data(), n2);
-          const float post = dbToLinear(cabModel->GetRecommendedOutputDBAdjustment());
-          if (post != 1.0f)
-            for (size_t i = 0; i < n2; ++i) osBuffer2[i] *= post;
-          const size_t nBack = osDown2.process(osBuffer2.data(), n2, ports.audio_out);
-          if (nBack < sampleCount) {
-            const float fill = nBack > 0 ? ports.audio_out[nBack - 1] : 0.0f;
-            for (size_t i = nBack; i < sampleCount; ++i) ports.audio_out[i] = fill;
-          }
+    std::memcpy(chain, ports.audio_out, sampleCount * sizeof(float));
+    uint32_t n = sampleCount;
+    for (size_t st = 0; st < 2; ++st) {
+      if (!enabled[st]) continue;
+      n = processStage(st, chain, chain, n, true);
+      // NOTE: a TRUE stage's pipeline delay means `n` can trail `sampleCount`
+      // on the first blocks; later stages then process fewer samples for a
+      // few blocks until the delay buffer fills. The cab IR below still gets
+      // the full sampleCount (tail-filled by processStage).
+    }
+    std::memcpy(ports.audio_out, chain, sampleCount * sizeof(float));
+  }
+
+  // ---- Cab: WAV IR at base rate; .nam cab rides the amp's TRUE factor ----
+  if (enabled[2]) {
+    auto* ir = irs[2];
+    auto* cabModel = models[2];
+    if (ir) {
+      ir->process(ports.audio_out, sampleCount);
+    } else if (cabModel && cabFactor > 0) {
+      // Same cascade shape as the amp (per-level converters, ping-pong
+      // scratch), on the post-amp signal.
+      const size_t cabLevels = cabFactor == 8 ? 3 : (cabFactor == 4 ? 2 : 1);
+      float* cabBufs[2] = {osScratch[2].data(), osScratch2[2].data()};
+      size_t n2 = osUp[2][0].process(ports.audio_out, sampleCount, cabBufs[0]);
+      for (size_t c = 1; c < cabLevels && n2 > 0; ++c)
+        n2 = osUp[2][c].process(cabBufs[(c - 1) % 2], n2, cabBufs[c % 2]);
+      float* domain = cabBufs[(cabLevels - 1) % 2];
+      if (n2 > 0 && n2 + 64 <= osScratch[2].size()) {
+        const float pre = dbToLinear(cabModel->GetRecommendedInputDBAdjustment());
+        if (pre != 1.0f)
+          for (size_t i = 0; i < n2; ++i) domain[i] *= pre;
+        cabModel->Process(domain, domain, n2);
+        const float post = dbToLinear(cabModel->GetRecommendedOutputDBAdjustment());
+        if (post != 1.0f)
+          for (size_t i = 0; i < n2; ++i) domain[i] *= post;
+        size_t nBack = n2;
+        const float* dnIn = domain;
+        for (size_t c = cabLevels; c-- > 0;) {
+          float* dnOut = (c == 0) ? ports.audio_out : cabBufs[(c - 1) % 2];
+          nBack = osDown[2][c].process(dnIn, nBack, dnOut);
+          dnIn = dnOut;
+        }
+        if (nBack < sampleCount) {
+          const float fill = nBack > 0 ? ports.audio_out[nBack - 1] : 0.0f;
+          for (size_t i = nBack; i < sampleCount; ++i) ports.audio_out[i] = fill;
         }
       }
+    } else if (cabModel) {
+      cabModel->Process(ports.audio_out, ports.audio_out, sampleCount);
     }
   }
 

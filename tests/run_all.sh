@@ -23,6 +23,13 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
+  echo "== tests/verify_oversample_cascade.cpp (True 4x/8x per-level chains) =="
+  if clang++ -O2 -std=c++17 -framework Accelerate -Isrc src/oversample.cpp \
+      tests/verify_oversample_cascade.cpp -o /tmp/verify_voc 2>/dev/null; then
+    /tmp/verify_voc || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
 fi
 
 for t in tests/test_*.py; do

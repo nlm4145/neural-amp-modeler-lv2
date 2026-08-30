@@ -95,7 +95,16 @@ public:
     float* tuner_enable;    // in:  UI toggle (0/1)
     float* tuner_note;      // out: MIDI note number, -1 = no pitch
     float* tuner_cents;     // out: detune in cents [-50, +50]
-    float* oversample_enable;  // in: 2x-oversample the pedal+amp stages (0/1)
+    float* oversample_mode_legacy;  // in: port 19, old global mode — IGNORED by
+                                    //     the DSP (kept so the TTL's port list
+                                    //     matches this struct POSITIONALLY:
+                                    //     connectPort writes field N from port
+                                    //     N, so this placeholder MUST stay at
+                                    //     index 19 or every port after it
+                                    //     shifts — that bug silently ate the
+                                    //     amp mode and corrupted sampleRate)
+    float* pedal_oversample;   // in: port 20, pedal mode (0..6, decodeOversample)
+    float* amp_oversample;     // in: port 21, amp mode (0..6); cab follows amp
   };
 
   Ports ports = {};
@@ -203,32 +212,54 @@ private:
     float sentDb = -999.0f;
   } meter;
 
-  // True 2x oversampling of the nonlinear (model) stages. When ON, pedal+amp
-  // models run at 2*sampleRate (models are loaded with that external rate in
-  // the worker); the signal is upsampled, processed, and decimated around
-  // them. Cab IRs + EQ stay at the base rate (linear stages cannot alias).
-  Up2x osUp;
-  Down2x osDown;
-  std::vector<float> osBuffer;   // 2x-rate scratch (sized on buffer-size set)
-  // Second, independent pipeline for the cab stage (.nam cab models run
-  // after the pedal/amp pipeline has already been drained).
-  Up2x osUp2;
-  Down2x osDown2;
-  std::vector<float> osBuffer2;
-  int oversampleApplied = 1;    // last-applied mode (models match this; 1 = TTL default)
+  // TRUE oversampling cascades. Each factor is a CHAIN of 2x half-band
+  // pairs: 2x = 1 pair, 4x = 2, 8x = 3. Every level needs its OWN converter
+  // instance — a level's streaming history belongs to that level's rate
+  // (sharing one instance across levels corrupts the stream state; that was
+  // the 2026-08-29 True-4x/8x bug). osUp[stage][level] / osDown[stage][level];
+  // stage 2 (cab .nam) rides the amp's factor. osScratch[st] is the stage's
+  // Nx-rate domain buffer; osChain is the base-rate pedal->amp work buffer.
+  // Cab WAV IR + EQ stay at the base rate (linear stages cannot alias).
+  static constexpr size_t kMaxOsLevels = 3;    // 2x, 4x, 8x
+  std::array<std::array<Up2x, kMaxOsLevels>, kStageCount> osUp;
+  std::array<std::array<Down2x, kMaxOsLevels>, kStageCount> osDown;
+  std::array<std::vector<float>, kStageCount> osScratch;   // domain buffer A
+  std::array<std::vector<float>, kStageCount> osScratch2;  // domain buffer B (ping-pong)
+  std::vector<float> osChain;
 
-  // 0 = OFF (no dilation — loader external rate pinned to 48000 so the
-  //         dilation math is a no-op for common rates; A/B reference only,
-  //         a non-48k model at a non-multiple session rate runs wrong),
-  // 1 = LEGACY dilation oversampling (NeuralAudio's hostRate/modelRate
-  //         dilation — the long-standing behavior),
-  // 2 = TRUE 2x oversampling (UP/model@2x/DOWN half-band pipeline).
-  // Worker consults this to pick the loader external rate; process()
-  // consults oversampleApplied for the domain.
-  int oversampleMode() const {
-    if (!ports.oversample_enable) return 1;   // port not connected: keep Legacy
-    const float v = *ports.oversample_enable;
-    return v < 0.5f ? 0 : (v < 1.5f ? 1 : 2);
+  // Last-applied mode per stage (models were loaded for this domain). Index 2
+  // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
+  std::array<int, kStageCount> osApplied = {kOsLegacy2, kOsLegacy2, kOsLegacy2};
+  // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
+  // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
+  //             dilation is a no-op for common rates; a non-48k model at a
+  //             non-multiple session rate runs wrong, warning is logged),
+  // 1/2/3 = LEGACY 2x/4x/8x (NeuralAudio dilation scaling: hostRate/modelRate
+  //             baked in at load time — cheap, stretches the model's memory),
+  // 4/5/6 = TRUE 2x/4x/8x (genuine UP -> model@Nx -> DOWN pipeline in this
+  //             plugin; the aliasing fix).
+  // The stage ports supersede the old global port 19 (kept in the TTL for
+  // session-compat; process() ignores it).
+  static constexpr int kOsNone = 0, kOsLegacy2 = 1, kOsLegacy4 = 2,
+                       kOsLegacy8 = 3, kOsTrue2 = 4, kOsTrue4 = 5, kOsTrue8 = 6;
+
+  static int decodeOversample(float v) {
+    const int i = static_cast<int>(v + 0.5f);
+    return i < 0 ? 0 : (i > 6 ? 6 : i);
+  }
+
+  int stageOversample(size_t stage) const {
+    // stage 0 = pedal, 1 = amp (2 = cab: follows amp in process()).
+    const float* port = stage == 0 ? ports.pedal_oversample
+                                    : ports.amp_oversample;
+    if (!port) return kOsLegacy2;   // port not connected: keep 2x defaults
+    return decodeOversample(*port);
+  }
+
+  // Is this stage in a TRUE (pipeline) domain, and at what factor?
+  // Legacy modes use NeuralAudio's dilation (no pipeline); NONE runs raw.
+  static int trueFactor(int mode) {
+    return mode >= kOsTrue2 ? (1 << (mode - kOsTrue2 + 1)) : 0;  // 2/4/8 or 0
   }
 
   // Re-load all currently-loaded model paths at the new rate domain. Called
