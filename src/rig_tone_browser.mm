@@ -26,7 +26,48 @@
 #import "rig_theme.h"
 #import "rig_tone_api.h"
 #import "rig_tone_browser.h"
+#import "rig_widgets.h"
 #include "rig_ui_state.h"
+
+// Card root view: layer-styled hover + selection states. Cheap — style
+// changes only swap layer colors, no redraw of the subtree.
+@interface RigCardView : NSView
+@property(nonatomic) BOOL hovered;
+@property(nonatomic) BOOL showsSelection;
+@end
+@implementation RigCardView {
+  NSTrackingArea* _hoverArea;
+}
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.wantsLayer = YES;
+    self.layer.cornerRadius = 10.0;
+    self.layer.borderWidth = 1.0;
+    [self refreshStyle];
+  }
+  return self;
+}
+- (void)refreshStyle {
+  self.layer.backgroundColor = (_hovered ? rigRaised() : rigPanelBG()).CGColor;
+  NSColor* border = _showsSelection ? rigAccent()
+      : (_hovered ? [rigAccent() colorWithAlphaComponent:0.5] : rigPanelBorder());
+  self.layer.borderColor = border.CGColor;
+}
+- (void)setHovered:(BOOL)hovered { _hovered = hovered; [self refreshStyle]; }
+- (void)setShowsSelection:(BOOL)shows { _showsSelection = shows; [self refreshStyle]; }
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (_hoverArea) [self removeTrackingArea:_hoverArea];
+  _hoverArea = [[NSTrackingArea alloc]
+      initWithRect:self.bounds
+           options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow
+             owner:self
+          userInfo:nil];
+  [self addTrackingArea:_hoverArea];
+}
+- (void)mouseEntered:(NSEvent*)event { self.hovered = YES; }
+- (void)mouseExited:(NSEvent*)event { self.hovered = NO; }
+@end
 
 // Shared image cache so tone cards don't re-read artwork from disk on every layout.
 static NSCache<NSString*, NSImage*>* artworkCache(void) {
@@ -51,23 +92,22 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   NSButton *_favButton;
 }
 - (void)loadView {
-  NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 190, 74)];
-  v.wantsLayer = YES;
-  v.layer.backgroundColor = rigRaised().CGColor;
-  v.layer.cornerRadius = 8;
+  RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 190, 74)];
 
   _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(6, 7, 60, 60)];
   _artView.imageScaling = NSImageScaleProportionallyUpOrDown;
   _artView.wantsLayer = YES;
-  _artView.layer.cornerRadius = 6;
+  _artView.layer.cornerRadius = 7;
   _artView.layer.masksToBounds = YES;
+  _artView.layer.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.25].CGColor;
   [v addSubview:_artView];
 
   _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(72, 42, 92, 16)];
-  _titleField.font = [NSFont boldSystemFontOfSize:11];
+  _titleField.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
   _titleField.textColor = rigText();
   _titleField.lineBreakMode = NSLineBreakByTruncatingTail;
   _titleField.editable = NO; _titleField.selectable = NO; _titleField.drawsBackground = NO; _titleField.bordered = NO;
+  _titleField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_titleField];
 
   _detailField = [[NSTextField alloc] initWithFrame:NSMakeRect(72, 24, 112, 14)];
@@ -75,6 +115,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _detailField.textColor = rigDimText();
   _detailField.lineBreakMode = NSLineBreakByTruncatingTail;
   _detailField.editable = NO; _detailField.selectable = NO; _detailField.drawsBackground = NO; _detailField.bordered = NO;
+  _detailField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_detailField];
 
   // Favorite star (top-right). Clicking reports to the browser controller;
@@ -84,10 +125,15 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _favButton.imagePosition = NSImageOnly;
   _favButton.target = self;
   _favButton.action = @selector(favClicked:);
+  _favButton.autoresizingMask = NSViewMinXMargin;
   [v addSubview:_favButton];
 
   self.view = v;
   [self attachTone3000Menu];
+}
+- (void)setSelected:(BOOL)selected {
+  [super setSelected:selected];
+  ((RigCardView *)self.view).showsSelection = selected;
 }
 - (void)setRepresentedObject:(id)representedObject {
   [super setRepresentedObject:representedObject];
@@ -100,19 +146,22 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 
   // Placeholder immediately; load real artwork asynchronously from cache or disk.
   _artView.image = [NSImage imageWithSystemSymbolName:@"guitars" accessibilityDescription:nil];
+  _artView.contentTintColor = rigDimText();
 
   // Resolution order: downloaded artwork file → NAM Rig's cached PNG → online JPEG.
   NSString *path = item.artworkPath;
   if (!path.length || ![[NSFileManager defaultManager] fileExistsAtPath:path])
     path = artworkForTone(item.toneId, item.stage);
 
+  // Decode at card size (60pt @2x): scrolling cost stays flat no matter how
+  // large the artwork on disk is.
   __weak NSImageView *weakArt = _artView;
   if (path.length) {
     NSImage *cached = [artworkCache() objectForKey:path];
     if (cached) { _artView.image = cached; return; }
     NSString *capturedPath = [path copy];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      NSImage *img = [[NSImage alloc] initWithContentsOfFile:capturedPath];
+      NSImage *img = rigThumbnailFromFile(capturedPath, 120.0);
       if (!img) return;
       [artworkCache() setObject:img forKey:capturedPath];
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -136,9 +185,11 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:capturedURL]];
     if (!data.length) return;
-    NSImage *img = [[NSImage alloc] initWithData:data];
+    NSImage *img = rigThumbnailFromData(data, 120.0);
     if (!img) return;
-    // Persist to NAM Rig's artwork cache directory.
+    // Persist the ORIGINAL bytes to NAM Rig's artwork cache directory (the
+    // stage tiles read the same file at a larger size); cache the decoded
+    // card-size thumbnail in memory.
     NSError *dirErr = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:cacheName.stringByDeletingLastPathComponent
                               withIntermediateDirectories:YES attributes:nil error:&dirErr];
@@ -177,38 +228,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   if (url) [[NSWorkspace sharedWorkspace] openURL:url];
 }
 @end
-@implementation RigButton
-- (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
-- (void)drawRect:(NSRect)dirty {
-  NSRect r = NSInsetRect(self.bounds, 0.5, 0.5);
-  NSBezierPath* p = [NSBezierPath bezierPathWithRoundedRect:r xRadius:5 yRadius:5];
-  NSColor* fill;
-  if (self.primary) {
-    fill = (self.state == NSControlStateValueOn) ? rigAccent() : rigAccentDim();
-  } else {
-    BOOL on = self.state == NSControlStateValueOn;
-    fill = on ? [rigAccent() colorWithAlphaComponent:0.32]
-              : (self.isHighlighted ? rigRaised() : rigPanelBG());
-  }
-  [fill setFill]; [p fill];
-  NSColor* border = self.primary ? rigAccent() : (self.state == NSControlStateValueOn
-      ? [rigAccent() colorWithAlphaComponent:0.7] : rigPanelBorder());
-  border = self.isHighlighted ? rigAccent() : border;
-  [border setStroke]; p.lineWidth = 1.0; [p stroke];
-  NSString* title = self.title;
-  if (title.length) {
-    NSMutableParagraphStyle* ps = [NSMutableParagraphStyle new];
-    ps.alignment = NSTextAlignmentCenter; ps.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSColor* tc = self.primary ? rigText() : (self.isHighlighted || self.state == NSControlStateValueOn ? rigText() : rigDimText());
-    if (self.enabled == NO) tc = [rigDimText() colorWithAlphaComponent:0.5];
-    NSDictionary* attrs = @{NSFontAttributeName: [NSFont boldSystemFontOfSize:11],
-                            NSForegroundColorAttributeName: tc,
-                            NSParagraphStyleAttributeName: ps};
-    NSRect tr = NSInsetRect(self.bounds, 4, 0);
-    [title drawInRect:tr withAttributes:attrs];
-  }
-}
-@end
+// RigButton moved to rig_widgets.mm (shared with the simple NAM UI).
 
 // Computes the on-disk artwork cache path for a tone (shared with NAM Rig's
 // "Tone3000 State Artwork" cache so thumbnails persist across launches).
@@ -1343,13 +1363,18 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 }
 
 // Populate the selected stage's tile selector and load the first model.
+// Routes to whichever slot that stage's tile "A"/"B" toggle currently
+// targets (defaults to slot A — matches pre-blend-feature behavior exactly
+// when the toggle is never touched).
 - (void)showModelsForItem:(ToneItem *)item andLoad:(BOOL)load {
-  if (self.state)
-    self.state->setStageModels((size_t)item.stage, item.models);
+  if (!self.state) return;
+  const uint32_t slot = self.state->browserTargetSlot[(size_t)item.stage];
+  self.state->setStageModels((size_t)item.stage, slot, item.models);
   if (item.models.count > 0) {
-    if (load && self.state) {
-      self.state->sendPath((size_t)item.stage, item.models.firstObject.fileSystemRepresentation);
-      self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
+    if (load) {
+      self.state->sendPath((size_t)item.stage, slot, item.models.firstObject.fileSystemRepresentation);
+      if (slot == 0)
+        self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
       self.status.stringValue = [NSString stringWithFormat:@"%lu models — loaded", (unsigned long)item.models.count];
     }
   }
@@ -1457,10 +1482,12 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   item.models = paths; item.local = YES;
   self.status.stringValue = [NSString stringWithFormat:@"%ld models ready — %@", (long)paths.count, item.title];
   if (self.state) {
-    self.state->setStageModels((size_t)item.stage, item.models);
+    const uint32_t slot = self.state->browserTargetSlot[(size_t)item.stage];
+    self.state->setStageModels((size_t)item.stage, slot, item.models);
     if (paths.count) {
-      self.state->sendPath((size_t)item.stage, paths.firstObject.fileSystemRepresentation);
-      self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
+      self.state->sendPath((size_t)item.stage, slot, paths.firstObject.fileSystemRepresentation);
+      if (slot == 0)
+        self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
     }
   }
 }

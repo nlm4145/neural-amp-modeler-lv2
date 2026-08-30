@@ -6,6 +6,8 @@
 #include <cstring>
 #include <fstream>
 
+#include <Accelerate/Accelerate.h>
+
 #include <lv2/core/lv2_util.h>
 #include "dynamics.h"
 #include "wav_ir.h"
@@ -131,18 +133,23 @@ static void setLowPass(Biquad& f, float freq, double sampleRate) {
 } // namespace
 
 Plugin::Plugin() {
-  for (auto& path : modelPaths)
-    path.reserve(MAX_FILE_NAME + 1);
+  for (auto& stagePaths : modelPaths)
+    for (auto& path : stagePaths)
+      path.reserve(MAX_FILE_NAME + 1);
 }
 
 Plugin::~Plugin() {
-  for (auto* model : models)
-    delete model;
-  for (auto* ir : irs)
-    delete ir;
-  for (auto& pending : pendingSwitches) {
-    delete pending.model;
-    delete pending.ir;
+  for (auto& stageModels : models)
+    for (auto* model : stageModels)
+      delete model;
+  for (auto& stageIrs : irs)
+    for (auto* ir : stageIrs)
+      delete ir;
+  for (auto& stagePending : pendingSwitches) {
+    for (auto& pending : stagePending) {
+      delete pending.model;
+      delete pending.ir;
+    }
   }
 }
 
@@ -180,14 +187,20 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.stagePath[0] = map->map(map->handle, NAM_RIG_PEDAL_URI);
   uris.stagePath[1] = map->map(map->handle, NAM_RIG_AMP_URI);
   uris.stagePath[2] = map->map(map->handle, NAM_RIG_CAB_URI);
+  uris.stagePathB[0] = map->map(map->handle, NAM_RIG_PEDAL_B_URI);
+  uris.stagePathB[1] = map->map(map->handle, NAM_RIG_AMP_B_URI);
+  uris.stagePathB[2] = map->map(map->handle, NAM_RIG_CAB_B_URI);
   uris.atomFloat = map->map(map->handle, LV2_ATOM__Float);
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
   uris.inputDb = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
 
-  for (auto& loader : loaders)
-    loader.SetExternalSampleRate(static_cast<int>(rate));
+  for (auto& stageLoaders : loaders)
+    for (auto& loader : stageLoaders)
+      loader.SetExternalSampleRate(static_cast<int>(rate));
   tunerSetRates(rate);
+  trimSmoothCoeff = 1.0f - std::exp(-1.0f / static_cast<float>(rate * 0.002));
+  dcBlocker.r = std::exp(static_cast<float>(-2.0 * kPi * 5.0 / rate));
 
   if (options)
     optionsSet(this, options);
@@ -202,8 +215,9 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
 
 void Plugin::setMaxBufferSize(int size) noexcept {
   maxBufferSize = size;
-  for (auto& loader : loaders)
-    loader.SetDefaultMaxAudioBufferSize(size);
+  for (auto& stageLoaders : loaders)
+    for (auto& loader : stageLoaders)
+      loader.SetDefaultMaxAudioBufferSize(size);
   // Per-stage, per-level converter sizing. Level L of a True-2^L cascade sees
   // a block of 2^L * size samples: level 0 (2x) sees 2x, level 1 (4x) sees
   // 4x, level 2 (8x) sees 8x. Every level is sized for the worst case (8x)
@@ -218,6 +232,8 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     }
     osScratch[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
     osScratch2[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+    // Slot-B model output lives in the same worst-case domain size as slot A.
+    blendScratch[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
   }
   osChain.assign(static_cast<size_t>(8 * size) + 64, 0.0f);
 }
@@ -248,7 +264,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
   if (!validStage(message->stage))
     return LV2_WORKER_ERR_UNKNOWN;
 
-  LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
+  LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage, message->slot,
                              message->oversampleMode, message->generation,
                              {}, nullptr, nullptr, false};
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
@@ -281,7 +297,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                               : pipelineFactor > 0 ? static_cast<int>(
                                     std::lround(rig->sampleRate * pipelineFactor))
                                                    : sessionRate;
-        auto& loader = rig->loaders[stageIndex(message->stage)];
+        auto& loader = rig->loaders[stageIndex(message->stage)][message->slot];
         loader.SetExternalSampleRate(modelRate);
         response.model = loader.CreateFromFile(message->path);
         loader.SetExternalSampleRate(sessionRate);
@@ -351,7 +367,8 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
 
   auto* rig = static_cast<Plugin*>(instance);
   const size_t index = stageIndex(message->stage);
-  if (message->generation != rig->loadGeneration[index]) {
+  const uint32_t slot = message->slot < kSlotCount ? message->slot : 0;
+  if (message->generation != rig->loadGeneration[index][slot]) {
     // A newer path or oversampling request superseded this load while it was
     // running. Dispose of the stale result on the worker thread.
     LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
@@ -365,12 +382,12 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
     // reloadModelsForOversample() had an installed model to reschedule.
     // Reuse the completed response's path and load it for the latest domain.
     const size_t length = strnlen(message->path, MAX_FILE_NAME);
-    rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
+    rig->scheduleModelLoad(message->stage, slot, message->path, length, desiredMode);
     LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
   }
-  auto& pending = rig->pendingSwitches[index];
+  auto& pending = rig->pendingSwitches[index][slot];
   if (pending.ready) {
     LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir};
     rig->schedule->schedule_work(rig->schedule->handle,
@@ -387,15 +404,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   // Fade the current chain to zero before changing model pointers or rate
   // domains, then fade the new chain in. This avoids discontinuities without
   // running two heavyweight recurrent model graphs in parallel.
-  if (rig->transitionPhase == TransitionPhase::Steady) {
-    rig->transitionPhase = TransitionPhase::FadeOut;
-    rig->transitionPosition = 0;
-  } else if (rig->transitionPhase == TransitionPhase::FadeIn) {
-    const float g = std::max(0.0f, std::min(1.0f, rig->transitionGain));
-    rig->transitionPhase = TransitionPhase::FadeOut;
-    rig->transitionPosition = static_cast<uint32_t>(
-        std::acos(g) * 2.0 / kPi * std::max(1.0, rig->sampleRate * 0.005));
-  }
+  rig->startTransitionFadeOut();
   return LV2_WORKER_SUCCESS;
 }
 
@@ -437,9 +446,11 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   lv2_atom_forge_sequence_head(&forge, &sequenceFrame, uris.unitsFrame);
 
   for (size_t i = 0; i < kStageCount; ++i) {
-    if (notifyPending[i]) {
-      writePath(static_cast<Stage>(i));
-      notifyPending[i] = false;
+    for (size_t slot = 0; slot < kSlotCount; ++slot) {
+      if (notifyPending[i][slot]) {
+        writePath(static_cast<Stage>(i), static_cast<uint32_t>(slot));
+        notifyPending[i][slot] = false;
+      }
     }
     // quality_scale port is fixed at 1.0 — never touch the loaders' quality
     // (NeuralAudio's DEFAULT_QUALITY_SCALE of 1.0 = full quality at all times).
@@ -468,10 +479,11 @@ void Plugin::process(uint32_t sampleCount) noexcept {
 
     const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
     for (size_t i = 0; i < kStageCount; ++i) {
-      if (propertyId == uris.stagePath[i]) {
+      if (propertyId == uris.stagePath[i] || propertyId == uris.stagePathB[i]) {
         const Stage stage = static_cast<Stage>(i);
+        const uint32_t slot = propertyId == uris.stagePathB[i] ? 1 : 0;
         const int mode = stageOversample(i);
-        scheduleModelLoad(stage, reinterpret_cast<const char*>(path + 1),
+        scheduleModelLoad(stage, slot, reinterpret_cast<const char*>(path + 1),
                           path->size - 1, mode);
         break;
       }
@@ -522,6 +534,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       tuner.lastNote = -1.0f;
       tuner.lastCents = 0.0f;
       tuner.histLen = 0;
+      tuner.histIdx = 0;
+      tuner.missCount = 0;
+      tuner.samplesSinceAnalysis = 0;
     }
     tuner.wasEnabled = tunerOn;
     if (tunerOn) {
@@ -534,13 +549,15 @@ void Plugin::process(uint32_t sampleCount) noexcept {
           if (tuner.filled < Tuner::kBuf) ++tuner.filled;
         }
       }
-      if (tuner.cooldown > 0) {
-        --tuner.cooldown;
-      } else if (tuner.filled >= Tuner::kBuf) {
-        tuner.cooldown = 3;   // re-analyze every few blocks; UI stays smooth
+      // Analyze on a ~30 ms hop — rate- and block-size-independent cadence —
+      // as soon as the ring holds one window+lag span (no full-ring wait).
+      const int span = Tuner::kWindow + Tuner::kMaxTau;
+      const int hop = (int)(sampleRate * 0.030);
+      tuner.samplesSinceAnalysis += (int)sampleCount;
+      if (tuner.samplesSinceAnalysis >= hop && tuner.filled >= span) {
+        tuner.samplesSinceAnalysis = 0;
         // Unwrap the most recent window (+ max lag) into linear scratch.
         float* win = tuner.scratch;
-        const int span = Tuner::kWindow + Tuner::kMaxTau;
         const int start = (tuner.ringPos - span + 2 * Tuner::kBuf) % Tuner::kBuf;
         for (int i = 0; i < span; ++i)
           win[i] = tuner.ring[(size_t)((start + i) % Tuner::kBuf)];
@@ -548,20 +565,38 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         float energy = 0.0f;
         for (int i = 0; i < Tuner::kWindow; ++i) energy += win[i] * win[i];
         const float rms = std::sqrt(energy / Tuner::kWindow);
-        if (rms < 0.003f) {           // silence — show "no signal"
-          tuner.lastNote = -1.0f;
-          tuner.histLen = 0;
+        if (rms < 0.003f) {
+          // Silence: hold the last reading through short dropouts (pluck
+          // transients, damped re-plucks) so the display doesn't blank and
+          // re-latch; clear only after kMissLimit consecutive misses.
+          if (++tuner.missCount >= Tuner::kMissLimit) {
+            tuner.lastNote = -1.0f;
+            tuner.histLen = 0;
+            tuner.histIdx = 0;
+          }
         } else {
           // NSDF (McLeod): nsdf[tau] = 2*acf[tau] / m[tau], in [-1, 1].
-          for (int tau = Tuner::kMinTau; tau <= Tuner::kMaxTau; ++tau) {
-            float acf = 0.0f, m = 0.0f;
-            for (int i = 0; i < Tuner::kWindow; ++i) {
-              const float a = win[i];
-              const float b = win[i + tau];
-              acf += a * b;
-              m += a * a + b * b;
+          // Vectorized: one vDSP_conv (window as signal AND filter) yields
+          // acf for every lag at once, and m[tau] = E[0,W) + E[tau,tau+W)
+          // comes from a prefix sum of squares — the old O(W * tauMax)
+          // scalar burst on the audio thread collapses to one fast conv.
+          // vDSP_conv needs signal length (kMaxTau+1) + kWindow - 1 = span.
+          vDSP_conv(win, 1, win, 1, tuner.acf, 1,
+                    (vDSP_Length)(Tuner::kMaxTau + 1),
+                    (vDSP_Length)Tuner::kWindow);
+          {
+            double c = 0.0;
+            tuner.sqPrefix[0] = 0.0;
+            for (int i = 0; i < span; ++i) {
+              c += (double)win[i] * win[i];
+              tuner.sqPrefix[i + 1] = c;
             }
-            tuner.nsdf[tau] = (m > 0.0f) ? (2.0f * acf / m) : 0.0f;
+          }
+          const double e0 = tuner.sqPrefix[Tuner::kWindow];
+          for (int tau = Tuner::kMinTau; tau <= Tuner::kMaxTau; ++tau) {
+            const double m = e0 + tuner.sqPrefix[tau + Tuner::kWindow] -
+                             tuner.sqPrefix[tau];
+            tuner.nsdf[tau] = m > 0.0 ? (float)(2.0 * tuner.acf[tau] / m) : 0.0f;
           }
           // Local maxima after the first positive zero-crossing; take the
           // FIRST peak within 90% of the best (avoids sub-octave picks).
@@ -604,17 +639,23 @@ void Plugin::process(uint32_t sampleCount) noexcept {
               midi = 69.0f + 12.0f * std::log2(freq / 440.0f);
           }
           if (midi < 0.0f) {
-            tuner.lastNote = -1.0f;
-            tuner.histLen = 0;
+            // No confident pitch this frame: same short hold as silence.
+            if (++tuner.missCount >= Tuner::kMissLimit) {
+              tuner.lastNote = -1.0f;
+              tuner.histLen = 0;
+              tuner.histIdx = 0;
+            }
           } else {
+            tuner.missCount = 0;
             // Median-of-3 display filter kills single-frame octave jumps.
-            tuner.noteHist[tuner.histLen % 3] = midi;
+            // The write slot ROLLS — a clamped index froze slots 1/2 at the
+            // note's onset values, latching the display until silence.
+            tuner.noteHist[tuner.histIdx] = midi;
+            tuner.histIdx = (tuner.histIdx + 1) % 3;
             tuner.histLen = std::min(tuner.histLen + 1, 3);
             if (tuner.histLen >= 3) {
               const float a = tuner.noteHist[0], b = tuner.noteHist[1], c = tuner.noteHist[2];
               tuner.lastNote = std::max(std::min(a, b), std::min(std::max(a, b), c));
-            } else if (tuner.lastNote < 0.0f) {
-              tuner.lastNote = -1.0f;   // need 3 consistent frames before showing
             }
           }
           if (tuner.lastNote >= 0.0f) {
@@ -628,9 +669,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     // Publish results: output ports for host polling, plus patch:Set atom
     // events on the notify port for the UI — only when something actually
-    // changed (note change or >=2-cent drift) to keep notify traffic low.
+    // changed (note change or >=1-cent drift) to keep notify traffic low.
     const int noteI = (int)tuner.lastNote;
-    const int centsQ = (int)std::lround(tuner.lastCents / 2.0f);
+    const int centsQ = (int)std::lround(tuner.lastCents);
     if (noteI != (int)tuner.sentNote || centsQ != (int)tuner.sentCentsQ) {
       tuner.sentNote = tuner.lastNote;
       tuner.sentCentsQ = (float)centsQ;
@@ -702,7 +743,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       in *= gateGain;
     }
     gain = std::fabs(desiredInput - gain) > kSmoothEpsilon
-             ? 0.99f * gain + 0.01f * desiredInput
+             ? gain + (desiredInput - gain) * trimSmoothCoeff
              : desiredInput;
     ports.audio_out[i] = in * gain;
   }
@@ -745,12 +786,29 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // cab_enabled — full-rig amp captures no longer silently disconnect the
   // cab stage. The auto_cab port and the cab_auto_bypassed output keep their
   // meanings (cab_auto_bypassed now stays 0) for session/UI compatibility.
-  const bool enabled[kStageCount] = {
+  const bool desiredEnabled[kStageCount] = {
       *ports.pedal_enabled >= 0.5f,
       *ports.amp_enabled >= 0.5f,
       *ports.cab_enabled >= 0.5f};
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
+
+  // An enable toggle switches a (possibly high-gain) stage in or out mid
+  // waveform — a click. Latch the toggles through the same equal-power fade
+  // as a model swap: fade out, apply at the zero crossing, fade back in.
+  if (!enabledLatched) {
+    for (size_t st = 0; st < kStageCount; ++st)
+      appliedEnabled[st] = desiredEnabled[st];
+    enabledLatched = true;
+  } else {
+    for (size_t st = 0; st < kStageCount; ++st) {
+      if (desiredEnabled[st] != appliedEnabled[st]) {
+        startTransitionFadeOut();
+        break;
+      }
+    }
+  }
+  const auto& enabled = appliedEnabled;
 
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor
@@ -769,15 +827,27 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   if (oversampleChanged)
     reloadModelsForOversample();
 
+  // Per-stage A/B blend target (0..1); slot B only has an audible effect
+  // when a same-type secondary capture is loaded (see applyModel() and the
+  // Cab WAV post-block below). Optional ports (older hosts / pre-negotiation).
+  const float blendTarget[kStageCount] = {
+      ports.pedal_blend ? std::max(0.0f, std::min(1.0f, *ports.pedal_blend * 0.01f)) : 0.0f,
+      ports.amp_blend   ? std::max(0.0f, std::min(1.0f, *ports.amp_blend * 0.01f))   : 0.0f,
+      ports.cab_blend   ? std::max(0.0f, std::min(1.0f, *ports.cab_blend * 0.01f))   : 0.0f,
+  };
+
   // Converter histories belong to a particular grouping of active stages.
   // If bypass, model presence, cab type, or an applied factor changes, a
   // group may acquire a different owner bank; reset all histories instead of
   // reusing stale samples from the last time that bank happened to run.
+  // Only slot A (the "is this stage active" signal) affects group topology —
+  // slot B blends inside applyModel()/the Cab WAV block without touching the
+  // up/down converter groups.
   uint64_t topology = 0;
   for (size_t st = 0; st < kStageCount; ++st) {
     const uint64_t state = (enabled[st] ? 1u : 0u)
-                         | (models[st] ? 2u : 0u)
-                         | (irs[st] ? 4u : 0u)
+                         | (models[st][0] ? 2u : 0u)
+                         | (irs[st][0] ? 4u : 0u)
                          | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3);
     topology |= state << (st * 8);
   }
@@ -805,8 +875,25 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // (factor * 24 samples per cascade), so after them, later base-rate
   // stages see delayed audio — the converters fill their short tails with
   // the last valid sample so the output never contains stale garbage.
-  auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
-                        float* samples, size_t count, double domainRate) {
+  // Runs one loaded model over `buf` in place: NAM's own recommended
+  // input/output dB trims bracket the Process() call, exactly as before
+  // slot B existed.
+  auto runModel = [&](NeuralAudio::NeuralModel* model, float* buf, size_t count) {
+    const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
+    if (pre != 1.0f)
+      for (size_t i = 0; i < count; ++i) buf[i] *= pre;
+    model->Process(buf, buf, count);
+    const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
+    if (post != 1.0f)
+      for (size_t i = 0; i < count; ++i) buf[i] *= post;
+  };
+
+  // Slot A always runs (today's exact behavior). When slot B is loaded and
+  // this stage's blend > 0, slot B runs too (into a scratch copy) and the
+  // two outputs are mixed with a blend ratio that RAMPS LINEARLY across the
+  // block — from the last block's applied value to this block's target —
+  // so even a full 0->100% knob jump between blocks never steps.
+  auto applyModel = [&](size_t stage, float* samples, size_t count, double domainRate) {
     if (stage == 1) {
       const float target = dbToLinear(*ports.amp_drive);
       const float coeff = 1.0f - std::exp(-1.0f /
@@ -816,13 +903,28 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         samples[i] *= smoothedAmpDrive;
       }
     }
-    const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
-    if (pre != 1.0f)
-      for (size_t i = 0; i < count; ++i) samples[i] *= pre;
-    model->Process(samples, samples, count);
-    const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
-    if (post != 1.0f)
-      for (size_t i = 0; i < count; ++i) samples[i] *= post;
+    auto* modelA = models[stage][0];
+    auto* modelB = models[stage][1];
+    const float blendFrom = blendApplied[stage];
+    const float blendTo = blendTarget[stage];
+    if (!modelB || (blendFrom <= 0.0005f && blendTo <= 0.0005f)) {
+      runModel(modelA, samples, count);
+    } else {
+      float* tmp = blendScratch[stage].data();
+      std::memcpy(tmp, samples, count * sizeof(float));
+      runModel(modelA, samples, count);
+      runModel(modelB, tmp, count);
+      for (size_t i = 0; i < count; ++i) {
+        const float t = count > 1 ? static_cast<float>(i) / static_cast<float>(count - 1) : 1.0f;
+        const float b = blendFrom + (blendTo - blendFrom) * t;
+        samples[i] += (tmp[i] - samples[i]) * b;
+      }
+    }
+    // The chain loop below may call applyModel() again for this SAME stage
+    // in a later slice of the same process() call (sampleCount > maxBufferSize):
+    // landing on blendTo here means that next call ramps blendTo -> blendTo
+    // (flat, correct) instead of re-running the whole ramp from the old value.
+    blendApplied[stage] = blendTo;
   };
 
   // Process one or more consecutive models inside ONE TRUE domain. Keeping
@@ -842,7 +944,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     if (n == 0 || n + 64 > osScratch[owner].size())
       return count;
     for (size_t i = 0; i < stageCount; ++i)
-      applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f);
+      applyModel(stages[i], domain, n, sampleRate * f);
 
     // Decimate back down the same chain (reversed), ping-ponging between
     // the two scratch buffers; the last level lands in the chain buffer.
@@ -861,24 +963,33 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   };
 
   // ---- Chain NAM stages, merging adjacent compatible TRUE domains ----
+  // Models and converter scratch are sized from maxBufferSize; a host that
+  // exceeds the negotiated maxBlockLength (or never sent it, leaving the 512
+  // default) would overrun NeuralAudio's fixed internal buffers — classic
+  // WaveNet does not chunk in Process. So the chain runs in maxBufferSize
+  // slices; the converters' streaming state carries across slices, so the
+  // output is identical to one full-size pass.
   float* chain = osChain.data();
   bool cabProcessed = false;
-  if (osChain.size() < (size_t)sampleCount + 64) {
-    // Should not happen (sized for 8x); guard anyway.
-    for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] = 0.0f;
-  } else {
-    std::memcpy(chain, ports.audio_out, sampleCount * sizeof(float));
-    uint32_t n = sampleCount;
+  bool modelProcessed = false;
+  uint32_t latencyFrames = 0;
+  const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
+  for (uint32_t off = 0; off < sampleCount; off += sliceMax) {
+    const uint32_t sliceLen = std::min(sliceMax, sampleCount - off);
+    float* io = ports.audio_out + off;
+    std::memcpy(chain, io, sliceLen * sizeof(float));
+    uint32_t n = sliceLen;
     for (size_t st = 0; st < kStageCount;) {
-      const bool isWavCab = st == 2 && irs[2] != nullptr;
-      if (!enabled[st] || !models[st] || isWavCab) {
+      const bool isWavCab = st == 2 && irs[2][0] != nullptr;
+      if (!enabled[st] || !models[st][0] || isWavCab) {
         ++st;
         continue;
       }
 
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
-        applyModel(st, models[st], chain, n, sampleRate);
+        applyModel(st, chain, n, sampleRate);
+        modelProcessed = true;
         if (st == 2) cabProcessed = true;
         ++st;
         continue;
@@ -889,26 +1000,65 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       size_t next = st + 1;
       // Only merge genuinely adjacent active NAM stages. A bypassed/missing
       // stage or WAV cab ends the domain, as does a different True factor.
-      while (next < kStageCount && enabled[next] && models[next] &&
-             !(next == 2 && irs[2]) &&
+      while (next < kStageCount && enabled[next] && models[next][0] &&
+             !(next == 2 && irs[2][0]) &&
              truePipelineFactor(osApplied[next], sampleRate) == f) {
         group[groupCount++] = next++;
       }
       n = processTrueGroup(st, group, groupCount, chain, n, f);
+      modelProcessed = true;
+      if (off == 0) latencyFrames += cascadeLatencyFrames(f);
       if (group[groupCount - 1] == 2) cabProcessed = true;
       st = next;
     }
-    std::memcpy(ports.audio_out, chain, sampleCount * sizeof(float));
+    std::memcpy(io, chain, sliceLen * sizeof(float));
   }
+  // Report the True cascades' fixed pipeline delay for host delay
+  // compensation (0 when every active stage runs at base rate).
+  if (ports.latency)
+    *ports.latency = static_cast<float>(latencyFrames);
 
   // A WAV cab remains at base rate. A .nam cab was processed in the chain
   // above, sharing the amp's domain whenever their applied factors match.
+  // Slot B only blends here when it is ALSO a WAV IR (same-type constraint —
+  // a mismatched-type slot B, e.g. a .nam secondary on a WAV primary, loads
+  // without error but has no audible effect until replaced with a matching
+  // type; applyModel() above is the mirror case for a .nam primary).
   if (enabled[2]) {
-    auto* ir = irs[2];
+    auto* ir = irs[2][0];
+    auto* irB = irs[2][1];
     if (ir) {
       const int norm = std::max(0, std::min(2,
           static_cast<int>(*ports.ir_normalization + 0.5f)));
-      ir->process(ports.audio_out, sampleCount, norm);
+      const float blendFrom = blendApplied[2];
+      const float blendTo = blendTarget[2];
+      if (!irB || (blendFrom <= 0.0005f && blendTo <= 0.0005f)) {
+        ir->process(ports.audio_out, sampleCount, norm);
+      } else {
+        // osChain is free again here (the stage chain above already copied
+        // its result back to ports.audio_out) but is only sized for
+        // maxBufferSize (8x, for the True cascades' worst case) — NOT for
+        // sampleCount, which routinely exceeds it (that's why the stage
+        // chain above slices). Slice this loop the same way; the ramp
+        // still spans the full sampleCount (mirrors applyModel's `count`
+        // there being the SLICE length, not sampleCount, for the same
+        // reason).
+        float* tmp = osChain.data();
+        for (uint32_t off = 0; off < sampleCount; off += sliceMax) {
+          const uint32_t n = std::min(sliceMax, sampleCount - off);
+          float* out = ports.audio_out + off;
+          std::memcpy(tmp, out, n * sizeof(float));
+          ir->process(out, n, norm);
+          irB->process(tmp, n, norm);
+          for (uint32_t i = 0; i < n; ++i) {
+            const float t = sampleCount > 1
+                ? static_cast<float>(off + i) / static_cast<float>(sampleCount - 1) : 1.0f;
+            const float b = blendFrom + (blendTo - blendFrom) * t;
+            out[i] += (tmp[i] - out[i]) * b;
+          }
+        }
+      }
+      blendApplied[2] = blendTo;
       cabProcessed = true;
     }
   }
@@ -939,6 +1089,18 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     cabHighCutEq.reset();
   }
 
+  // DC blocker (~5 Hz). NAM models routinely emit a small DC offset and the
+  // True converters pass DC at exactly unity gain; unchecked, the offset
+  // eats headroom and gets amplified by a bass-shelf boost. Runs only when a
+  // model actually processed this block, so a model-free chain stays
+  // bit-transparent.
+  if (modelProcessed) {
+    for (uint32_t i = 0; i < sampleCount; ++i)
+      ports.audio_out[i] = dcBlocker.process(ports.audio_out[i]);
+  } else {
+    dcBlocker.reset();
+  }
+
   // 3-band EQ (post: after the stages, before the output trim). Each band is
   // only processed when its gain is non-zero and the whole section is skipped
   // at neutral, so a flat EQ is bit-transparent.
@@ -965,7 +1127,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   gain = smoothedOutputLevel;
   for (uint32_t i = 0; i < sampleCount; ++i) {
     gain = std::fabs(desiredOutput - gain) > kSmoothEpsilon
-             ? 0.99f * gain + 0.01f * desiredOutput
+             ? gain + (desiredOutput - gain) * trimSmoothCoeff
              : desiredOutput;
     ports.audio_out[i] *= gain;
   }
@@ -1006,6 +1168,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     if (commitAfterBlock) {
       commitPendingSwitches();
+      for (size_t st = 0; st < kStageCount; ++st)
+        appliedEnabled[st] = desiredEnabled[st];
       transitionPhase = TransitionPhase::FadeIn;
       transitionPosition = 0;
       transitionGain = 0.0f;
@@ -1013,47 +1177,88 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   }
 }
 
+void Plugin::startTransitionFadeOut() {
+  if (transitionPhase == TransitionPhase::FadeOut)
+    return;
+  if (transitionPhase == TransitionPhase::Steady) {
+    transitionPhase = TransitionPhase::FadeOut;
+    transitionPosition = 0;
+    return;
+  }
+  // Mid-FadeIn: pick the fade-out position whose cosine gain equals the
+  // current fade-in gain, so the gain curve stays continuous.
+  const float g = std::max(0.0f, std::min(1.0f, transitionGain));
+  transitionPhase = TransitionPhase::FadeOut;
+  transitionPosition = static_cast<uint32_t>(
+      std::acos(g) * 2.0 / kPi * std::max(1.0, sampleRate * 0.005));
+}
+
 void Plugin::commitPendingSwitches() {
   for (size_t index = 0; index < kStageCount; ++index) {
-    auto& pending = pendingSwitches[index];
-    if (!pending.ready) continue;
-    LV2FreeModelMsg old{kWorkTypeFree, models[index], irs[index]};
-    models[index] = pending.model;
-    irs[index] = pending.ir;
-    pending.model = nullptr;
-    pending.ir = nullptr;
-    if (index == stageIndex(Stage::Amp)) ampIsFullRig = pending.fullRig;
-    modelPaths[index] = pending.path;
-    osApplied[index] = pending.oversampleMode;
-    assert(modelPaths[index].capacity() >= MAX_FILE_NAME + 1);
-    notifyPending[index] = true;
-    pending.ready = false;
-    for (auto& up : osUp[index]) up.reset();
-    for (auto& down : osDown[index]) down.reset();
-    schedule->schedule_work(schedule->handle, sizeof(old), &old);
+    bool anyApplied = false;
+    for (size_t slot = 0; slot < kSlotCount; ++slot) {
+      auto& pending = pendingSwitches[index][slot];
+      if (!pending.ready) continue;
+      anyApplied = true;
+      LV2FreeModelMsg old{kWorkTypeFree, models[index][slot], irs[index][slot]};
+      // Cab slot B only blends when it matches slot A's type (model vs IR);
+      // a mismatched type loads fine but stays silent — surface that once,
+      // here, where both slots' current types are known race-free (audio
+      // thread only).
+      if (index == stageIndex(Stage::Cab) && slot == 1) {
+        const bool aIsModel = models[index][0] != nullptr;
+        const bool aIsIr = irs[index][0] != nullptr;
+        const bool bIsModel = pending.model != nullptr;
+        const bool bIsIr = pending.ir != nullptr;
+        if ((aIsModel && bIsIr) || (aIsIr && bIsModel))
+          lv2_log_warning(&logger,
+              "Cab slot B ('%s') is a different capture type (.nam vs .wav) "
+              "than slot A — the blend knob will have no audible effect "
+              "until both slots match.\n", pending.path);
+      }
+      models[index][slot] = pending.model;
+      irs[index][slot] = pending.ir;
+      pending.model = nullptr;
+      pending.ir = nullptr;
+      if (index == stageIndex(Stage::Amp) && slot == 0) ampIsFullRig = pending.fullRig;
+      modelPaths[index][slot] = pending.path;
+      if (slot == 0) osApplied[index] = pending.oversampleMode;
+      assert(modelPaths[index][slot].capacity() >= MAX_FILE_NAME + 1);
+      notifyPending[index][slot] = true;
+      pending.ready = false;
+      schedule->schedule_work(schedule->handle, sizeof(old), &old);
+    }
+    if (anyApplied) {
+      for (auto& up : osUp[index]) up.reset();
+      for (auto& down : osDown[index]) down.reset();
+    }
   }
   osTopologySignature = ~uint64_t{0};
 }
 
 void Plugin::reloadModelsForOversample() {
   // Re-send every loaded model path through the worker so the models are
-  // re-created with the loader external rate matching the new domain.
+  // re-created with the loader external rate matching the new domain. Both
+  // slots of a stage always share one target domain.
   for (size_t i = 0; i < kStageCount; ++i) {
-    if (models[i] && !modelPaths[i].empty()) {
-      const size_t len = modelPaths[i].size();
-      const int mode = i == 0 ? osRequested[0] : osRequested[1];
-      if (len < MAX_FILE_NAME)
-        scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(), len, mode);
+    const int mode = i == 0 ? osRequested[0] : osRequested[1];
+    for (size_t slot = 0; slot < kSlotCount; ++slot) {
+      if (models[i][slot] && !modelPaths[i][slot].empty()) {
+        const size_t len = modelPaths[i][slot].size();
+        if (len < MAX_FILE_NAME)
+          scheduleModelLoad(static_cast<Stage>(i), static_cast<uint32_t>(slot),
+                            modelPaths[i][slot].c_str(), len, mode);
+      }
     }
   }
 }
 
-void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
-                               int mode) {
-  if (!validStage(stage) || !path || length >= MAX_FILE_NAME)
+void Plugin::scheduleModelLoad(Stage stage, uint32_t slot, const char* path,
+                               size_t length, int mode) {
+  if (!validStage(stage) || slot >= kSlotCount || !path || length >= MAX_FILE_NAME)
     return;
   const size_t index = stageIndex(stage);
-  auto& pending = pendingSwitches[index];
+  auto& pending = pendingSwitches[index][slot];
   if (pending.ready) {
     LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir};
     schedule->schedule_work(schedule->handle, sizeof(superseded), &superseded);
@@ -1061,30 +1266,32 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
     pending.ir = nullptr;
     pending.ready = false;
   }
-  LV2LoadModelMsg message{kWorkTypeLoad, stage, decodeOversample((float)mode),
-                          ++loadGeneration[index], {}};
+  LV2LoadModelMsg message{kWorkTypeLoad, stage, slot, decodeOversample((float)mode),
+                          ++loadGeneration[index][slot], {}};
   std::memcpy(message.path, path, length);
   message.path[length] = '\0';
   schedule->schedule_work(schedule->handle, sizeof(message), &message);
 }
 
-void Plugin::writePath(Stage stage) {
+void Plugin::writePath(Stage stage, uint32_t slot) {
   const size_t index = stageIndex(stage);
+  if (slot >= kSlotCount) return;
   LV2_Atom_Forge_Frame frame;
   lv2_atom_forge_frame_time(&forge, 0);
   lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
   lv2_atom_forge_key(&forge, uris.patchProperty);
-  lv2_atom_forge_urid(&forge, uris.stagePath[index]);
+  lv2_atom_forge_urid(&forge, slot == 0 ? uris.stagePath[index] : uris.stagePathB[index]);
   lv2_atom_forge_key(&forge, uris.patchValue);
   lv2_atom_forge_path(&forge,
-                      modelPaths[index].c_str(),
-                      static_cast<uint32_t>(modelPaths[index].size() + 1));
+                      modelPaths[index][slot].c_str(),
+                      static_cast<uint32_t>(modelPaths[index][slot].size() + 1));
   lv2_atom_forge_pop(&forge, &frame);
 }
 
 void Plugin::writeAllPaths() {
   for (size_t i = 0; i < kStageCount; ++i)
-    writePath(static_cast<Stage>(i));
+    for (uint32_t slot = 0; slot < kSlotCount; ++slot)
+      writePath(static_cast<Stage>(i), slot);
 }
 
 uint32_t Plugin::optionsGet(LV2_Handle, LV2_Options_Option*) {
@@ -1114,19 +1321,21 @@ LV2_State_Status Plugin::save(LV2_Handle instance,
   auto* freePath = static_cast<LV2_State_Free_Path*>(lv2_features_data(features, LV2_STATE__freePath));
 
   for (size_t i = 0; i < kStageCount; ++i) {
-    if ((!rig->models[i] && !rig->irs[i]) || rig->modelPaths[i].empty())
-      continue;
-    char* abstractPath = mapPath->abstract_path(mapPath->handle, rig->modelPaths[i].c_str());
-    store(handle,
-          rig->uris.stagePath[i],
-          abstractPath,
-          std::strlen(abstractPath) + 1,
-          rig->uris.atomPath,
-          LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
-    if (freePath) freePath->free_path(freePath->handle, abstractPath);
+    for (size_t slot = 0; slot < kSlotCount; ++slot) {
+      if ((!rig->models[i][slot] && !rig->irs[i][slot]) || rig->modelPaths[i][slot].empty())
+        continue;
+      char* abstractPath = mapPath->abstract_path(mapPath->handle, rig->modelPaths[i][slot].c_str());
+      store(handle,
+            slot == 0 ? rig->uris.stagePath[i] : rig->uris.stagePathB[i],
+            abstractPath,
+            std::strlen(abstractPath) + 1,
+            rig->uris.atomPath,
+            LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
+      if (freePath) freePath->free_path(freePath->handle, abstractPath);
 #ifndef _WIN32
-    else std::free(abstractPath);
+      else std::free(abstractPath);
 #endif
+    }
   }
   return LV2_STATE_SUCCESS;
 }
@@ -1143,24 +1352,27 @@ LV2_State_Status Plugin::restore(LV2_Handle instance,
   auto* freePath = static_cast<LV2_State_Free_Path*>(lv2_features_data(features, LV2_STATE__freePath));
 
   for (size_t i = 0; i < kStageCount; ++i) {
-    size_t size = 0;
-    uint32_t type = 0;
-    uint32_t flags = 0;
-    const void* value = retrieve(handle, rig->uris.stagePath[i], &size, &type, &flags);
-    if (!value || type != rig->uris.atomPath)
-      continue;
-    char* absolutePath = mapPath->absolute_path(mapPath->handle, static_cast<const char*>(value));
-    const size_t length = std::strlen(absolutePath);
-    if (length < MAX_FILE_NAME) {
-      const Stage stage = static_cast<Stage>(i);
-      rig->scheduleModelLoad(stage, absolutePath, length,
-                             rig->stageOversample(i));
-      rig->modelPaths[i] = absolutePath;
-    }
-    if (freePath) freePath->free_path(freePath->handle, absolutePath);
+    for (size_t slot = 0; slot < kSlotCount; ++slot) {
+      size_t size = 0;
+      uint32_t type = 0;
+      uint32_t flags = 0;
+      const LV2_URID uri = slot == 0 ? rig->uris.stagePath[i] : rig->uris.stagePathB[i];
+      const void* value = retrieve(handle, uri, &size, &type, &flags);
+      if (!value || type != rig->uris.atomPath)
+        continue;
+      char* absolutePath = mapPath->absolute_path(mapPath->handle, static_cast<const char*>(value));
+      const size_t length = std::strlen(absolutePath);
+      if (length < MAX_FILE_NAME) {
+        const Stage stage = static_cast<Stage>(i);
+        rig->scheduleModelLoad(stage, static_cast<uint32_t>(slot), absolutePath,
+                               length, rig->stageOversample(i));
+        rig->modelPaths[i][slot] = absolutePath;
+      }
+      if (freePath) freePath->free_path(freePath->handle, absolutePath);
 #ifndef _WIN32
-    else std::free(absolutePath);
+      else std::free(absolutePath);
 #endif
+    }
   }
   return LV2_STATE_SUCCESS;
 }

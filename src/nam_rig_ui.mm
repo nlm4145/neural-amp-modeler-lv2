@@ -36,8 +36,13 @@ constexpr std::array<const char*, 3> kPathURIs{
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model"};
+constexpr std::array<const char*, 3> kPathBURIs{
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model-b",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model-b",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model-b"};
 
 #import "rig_theme.h"
+#import "rig_widgets.h"
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
@@ -55,6 +60,8 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
+- (void)stageModelBChanged:(NSPopUpButton*)sender;
+- (void)browserTargetChanged:(RigButton*)sender;
 @end
 @implementation NAMRigUIController
 - (void)chooseModel:(NSButton*)sender {
@@ -70,12 +77,12 @@ constexpr std::array<const char*, 3> kPathURIs{
       ? @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel", @"wav"]
       : @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel"];
   if ([panel runModal] == NSModalResponseOK)
-    _state->sendPath((size_t)sender.tag, panel.URL.path.fileSystemRepresentation);
+    _state->sendPath((size_t)sender.tag, 0, panel.URL.path.fileSystemRepresentation);
 }
 
 - (void)clearModel:(NSButton*)sender {
   if (_state && sender.tag >= 0 && sender.tag <= 2) {
-    _state->sendPath((size_t)sender.tag, "");
+    _state->sendPath((size_t)sender.tag, 0, "");
     _state->setStageThumb((size_t)sender.tag, nil, 0, nil);  // revert to placeholder
   }
 }
@@ -213,8 +220,30 @@ constexpr std::array<const char*, 3> kPathURIs{
   NSMenuItem* item = sender.selectedItem;
   NSString* path = item.representedObject;
   if (path.length) {
-    _state->sendPath((size_t)sender.tag, path.fileSystemRepresentation);
+    _state->sendPath((size_t)sender.tag, 0, path.fileSystemRepresentation);
   }
+}
+
+// Secondary (slot B) model selector — same picker mechanics as the primary,
+// just routed to slot 1's patch:Set property.
+- (void)stageModelBChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  NSMenuItem* item = sender.selectedItem;
+  NSString* path = item.representedObject;
+  if (path.length) {
+    _state->sendPath((size_t)sender.tag, 1, path.fileSystemRepresentation);
+  }
+}
+
+// Per-tile "A"/"B" toggle: which slot the Tone3000 browser's next load for
+// THIS stage lands in. Purely a UI routing choice — doesn't touch the DSP.
+- (void)browserTargetChanged:(RigButton*)sender {
+  if (!_state || sender.tag < 0 || sender.tag > 5) return;
+  const NSInteger stage = sender.tag / 2;
+  const uint32_t slot = (uint32_t)(sender.tag % 2);
+  _state->browserTargetSlot[(size_t)stage] = slot;
+  for (RigButton* b : _state->browserTargetButtons[(size_t)stage])
+    b.state = (b == sender) ? NSControlStateValueOn : NSControlStateValueOff;
 }
 @end
 static NSTextField* addLabel(NSView* parent,
@@ -239,27 +268,24 @@ static NSSlider* addKnob(NSView* parent,
                          double maximum,
                          NSPoint origin,
                          id target) {
-  NSSlider* knob = [NSSlider sliderWithValue:value minValue:minimum maxValue:maximum
-                                      target:target action:@selector(controlChanged:)];
-  knob.sliderType = NSSliderTypeCircular;
+  RigKnob* knob = [[RigKnob alloc] initWithFrame:NSMakeRect(origin.x, origin.y, 64, 64)];
+  knob.minValue = minimum;
+  knob.maxValue = maximum;
+  knob.doubleValue = value;
+  knob.defaultValue = value;
+  knob.target = target;
+  knob.action = @selector(controlChanged:);
   knob.continuous = YES;
   knob.tag = port;
-  knob.frame = NSMakeRect(origin.x, origin.y, 64, 64);
   [parent addSubview:knob];
   return knob;
 }
 
-// Styled NAM Rig-style panel box.
-static NSBox* addPanel(NSView* parent, NSRect frame) {
-  NSBox* box = [[NSBox alloc] initWithFrame:frame];
-  box.boxType = NSBoxCustom;
-  box.borderType = NSLineBorder;
-  box.borderWidth = 1.0;
-  box.cornerRadius = 10.0;
-  box.borderColor = rigPanelBorder();
-  box.fillColor = rigPanelBG();
-  [parent addSubview:box];
-  return box;
+// Styled NAM Rig-style panel (gradient fill + hairline border).
+static RigPanel* addPanel(NSView* parent, NSRect frame) {
+  RigPanel* panel = [[RigPanel alloc] initWithFrame:frame];
+  [parent addSubview:panel];
+  return panel;
 }
 
 // Flat dark button using the custom RigButton drawing.
@@ -284,9 +310,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 static void addToneBrowser(RigUIState* state, NSView* content) {
   const CGFloat pad = 24.0;
-  NSBox* browser = [[NSBox alloc] initWithFrame:NSZeroRect];
-  browser.boxType = NSBoxCustom; browser.cornerRadius = 10.0; browser.borderWidth = 1.0;
-  browser.borderColor = rigPanelBorder(); browser.fillColor = rigPanelBG();
+  RigPanel* browser = [[RigPanel alloc] initWithFrame:NSZeroRect];
   browser.translatesAutoresizingMaskIntoConstraints = NO;
   // Pin below the topView (which is the previous subview of `content`).
   NSView* topView = content.subviews.count ? content.subviews.firstObject : content;
@@ -424,6 +448,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
     state->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
     for (size_t i = 0; i < 3; ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
+    for (size_t i = 0; i < 3; ++i) state->pathURIDsB[i] = map->map(map->handle, kPathBURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
     const CGFloat baseW = 1280.0, baseH = 830.0;
@@ -656,18 +681,23 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
     // Display names indexed by kRigKnobPorts order; cells are laid out in
     // signal order via kRigKnobDisplayOrder.
+    // Indices 12/13/14 are the per-tile A/B BLEND knobs (ports 30/31/32) —
+    // see rig_knobs.cpp's kRigKnobDisplayOrder for how each lands as its
+    // tile's 5th knob.
     NSArray<NSString*>* knobNames = @[@"GATE", @"RELEASE", @"INPUT", @"COMP",
                                       @"DRIVE", @"BASS", @"MID", @"TREBLE",
-                                      @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT"];
+                                      @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT",
+                                      @"BLEND", @"BLEND", @"BLEND"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
-                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB"];
+                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB",
+                                       @"OFF", @"OFF", @"OFF"];
     const std::array<double, kRigKnobCount> defaults{
-        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0};
+        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> mins{
-        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0};
+        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
-        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0};
+        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0, 100.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -675,9 +705,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // knobs stay exactly within the tile's footprint at any width/zoom.
     NSView* knobGroups[3] = {nil, nil, nil};
 
-    // Display slots grouped per tile in signal-flow order.
-    const size_t groupSlots[3][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}};
-    const size_t groupCounts[3] = {4, 4, 4};
+    // Display slots grouped per tile in signal-flow order. kRigKnobDisplayOrder
+    // is laid out contiguously 5-per-tile (each tile's blend knob is its last
+    // slot), so these are just the three contiguous position ranges.
+    const size_t groupSlots[3][5] = {{0, 1, 2, 3, 4}, {5, 6, 7, 8, 9}, {10, 11, 12, 13, 14}};
+    const size_t groupCounts[3] = {5, 5, 5};
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -717,7 +749,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
 
         NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
-                                      [NSFont boldSystemFontOfSize:10.5], rigDimText(), NSTextAlignmentCenter);
+                                      [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+                                      rigDimText(), NSTextAlignmentCenter);
+        rigApplyTracking(kname, 1.1);
         kname.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(kname, cell, 0);
         [[kname.bottomAnchor constraintEqualToAnchor:knob.topAnchor constant:-8] setActive:YES];
@@ -730,7 +764,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         NSTextField* kval = state->valueLabels[k];
         kval.editable = YES;
         kval.selectable = YES;   // editable alone is NOT enough on label-created fields
-        kval.bordered = YES;
+        kval.bordered = NO;
+        kval.wantsLayer = YES;
+        kval.layer.cornerRadius = 4.0;
+        kval.layer.masksToBounds = YES;
         kval.drawsBackground = YES;
         kval.backgroundColor = rigRaised();
         kval.textColor = rigText();
@@ -759,7 +796,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.bottomAnchor constraintEqualToAnchor:knobGroups[0].topAnchor constant:-12] setActive:YES];
 
     for (NSInteger i = 0; i < 3; ++i) {
-      NSBox* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
+      RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
 
       NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
       header.translatesAutoresizingMaskIntoConstraints = NO;
@@ -780,7 +817,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
       NSTextField* nmL = [[NSTextField alloc] initWithFrame:NSZeroRect];
       nmL.stringValue = names[(NSUInteger)i]; nmL.editable = NO; nmL.selectable = NO; nmL.drawsBackground = NO; nmL.bordered = NO;
-      nmL.font = [NSFont boldSystemFontOfSize:14]; nmL.textColor = rigText();
+      nmL.font = [NSFont systemFontOfSize:13 weight:NSFontWeightBold]; nmL.textColor = rigText();
+      rigApplyTracking(nmL, 0.8);
       nmL.translatesAutoresizingMaskIntoConstraints = NO;
       [header addSubview:nmL];
       [[nmL.leadingAnchor constraintEqualToAnchor:numL.trailingAnchor constant:8] setActive:YES];
@@ -849,7 +887,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[thumb.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[thumb.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14] setActive:YES];
-      [[thumb.heightAnchor constraintEqualToConstant:140] setActive:YES];
+      // Shrunk from 140 to make room for the secondary (slot B) picker row
+      // below — exact numbers are a first pass; verify visually in Element.
+      [[thumb.heightAnchor constraintEqualToConstant:100] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
 
       // The dropdown is the tile's model control/display — always visible. The
@@ -868,6 +908,55 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
       [[mp.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+      // Secondary (slot B) model row: a compact picker (same list contents as
+      // the primary, populated separately) plus a 2-button "A"/"B" toggle
+      // that routes the Tone3000 browser's NEXT load for this stage — the
+      // browser has no per-stage UI of its own, so the toggle lives here.
+      // "A" is the default/steady state (matches today's behavior exactly).
+      // mpB's OWN top/height fix its vertical position first; the buttons
+      // then follow mpB.centerY (never the reverse — avoids an
+      // under-constrained/ambiguous AutoLayout pass).
+      state->modelPickersB[(size_t)i] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+      NSPopUpButton* mpB = state->modelPickersB[(size_t)i];
+      mpB.translatesAutoresizingMaskIntoConstraints = NO;
+      mpB.controlSize = NSControlSizeSmall;
+      mpB.tag = (NSInteger)i;
+      mpB.target = state->uiController;
+      mpB.action = @selector(stageModelBChanged:);
+      [mpB addItemWithTitle:@"No secondary"];
+      mpB.enabled = NO;
+      [box addSubview:mpB];
+      [[mpB.topAnchor constraintEqualToAnchor:mp.bottomAnchor constant:6] setActive:YES];
+      [[mpB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+      RigButton* btnA = rigButton(box, @"A", state->uiController,
+                                  @selector(browserTargetChanged:), NSZeroRect);
+      btnA.tag = (NSInteger)i * 2;
+      btnA.buttonType = NSButtonTypeToggle;
+      btnA.check = YES;
+      btnA.state = NSControlStateValueOn;
+      btnA.translatesAutoresizingMaskIntoConstraints = NO;
+      [[btnA.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+      [[btnA.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
+      [[btnA.widthAnchor constraintEqualToConstant:22] setActive:YES];
+      [[btnA.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+      RigButton* btnB = rigButton(box, @"B", state->uiController,
+                                  @selector(browserTargetChanged:), NSZeroRect);
+      btnB.tag = (NSInteger)i * 2 + 1;
+      btnB.buttonType = NSButtonTypeToggle;
+      btnB.check = YES;
+      btnB.state = NSControlStateValueOff;
+      btnB.translatesAutoresizingMaskIntoConstraints = NO;
+      [[btnB.trailingAnchor constraintEqualToAnchor:btnA.leadingAnchor constant:-4] setActive:YES];
+      [[btnB.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
+      [[btnB.widthAnchor constraintEqualToConstant:22] setActive:YES];
+      [[btnB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+      state->browserTargetButtons[(size_t)i] = {btnA, btnB};
+
+      [[mpB.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+      [[mpB.trailingAnchor constraintEqualToAnchor:btnB.leadingAnchor constant:-6] setActive:YES];
 
       // Pin this tile's knob group exactly to the tile's footprint: the
       // group's leading/trailing edges match the box (which insets itself
@@ -904,7 +993,10 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 21) {
+  // Range was previously 4..21 (stale even before this pass — it already
+  // missed ports 22-29). Extended to cover every control port through the
+  // new blend knobs (32) so host-driven automation refreshes the UI.
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 32) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }
@@ -923,9 +1015,12 @@ void portEvent(LV2UI_Handle handle,
   if (!property || property->type != state->atomURID || !value) return;
   const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
   if (value->type == state->atomPath && value->size > 0) {
-    for (size_t i = 0; i < 3; ++i)
+    for (size_t i = 0; i < 3; ++i) {
       if (propertyId == state->pathURIDs[i])
-        state->displayPath(i, reinterpret_cast<const char*>(value + 1));
+        state->displayPath(i, 0, reinterpret_cast<const char*>(value + 1));
+      else if (propertyId == state->pathURIDsB[i])
+        state->displayPath(i, 1, reinterpret_cast<const char*>(value + 1));
+    }
     return;
   }
   // Tuner updates: patch:Set floats — note (MIDI number, -1 = none) and cents.

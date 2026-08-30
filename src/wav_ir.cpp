@@ -110,11 +110,8 @@ std::vector<float> resample(const std::vector<float>& input, double from, double
 }
 }
 
-WavIR::WavIR(std::vector<float> taps, int maxBlockSize)
-    : reversedTaps(taps.rbegin(), taps.rend()),
-      historyAndInput(taps.size() - 1 + std::max(1, maxBlockSize), 0.0f),
-      output(std::max(1, maxBlockSize), 0.0f),
-      maxBlock(static_cast<uint32_t>(std::max(1, maxBlockSize))) {
+WavIR::WavIR(std::vector<float> taps, int maxBlockSize) {
+  (void)maxBlockSize;  // chunking is internal (kBlock); any call size works
   double energy = 0.0;
   float peak = 0.0f;
   for (float tap : taps) {
@@ -123,15 +120,61 @@ WavIR::WavIR(std::vector<float> taps, int maxBlockSize)
   }
   if (peak > 0.0f) peakScale = 1.0f / peak;
   if (energy > 0.0) loudnessScale = static_cast<float>(1.0 / std::sqrt(energy));
+
+  const size_t headLen = std::min<size_t>(taps.size(), kBlock);
+  reversedHead.assign(taps.rbegin() + (taps.size() - headLen), taps.rend());
+  historyAndInput.assign(headLen - 1 + kBlock, 0.0f);
+  headOut.assign(kBlock, 0.0f);
+
+  if (taps.size() <= kBlock) return;
+  partitions = static_cast<uint32_t>((taps.size() - kBlock + kBlock - 1) / kBlock);
+  fftSetup = vDSP_create_fftsetup(kLog2Fft, kFFTRadix2);
+  tailSpectra.assign(static_cast<size_t>(partitions) * 2 * kBins, 0.0f);
+  tailNyq.assign(partitions, 0.0f);
+  fdl.assign(static_cast<size_t>(partitions) * 2 * kBins, 0.0f);
+  fdlNyq.assign(partitions, 0.0f);
+  fillBuf.assign(kBlock, 0.0f);
+  ring.assign(kRing, 0.0f);
+  fftTime.assign(kFft, 0.0f);
+  accRe.assign(kBins, 0.0f);
+  accIm.assign(kBins, 0.0f);
+  const float scale = 1.0f / (4.0f * static_cast<float>(kFft));
+  for (uint32_t p = 0; p < partitions; ++p) {
+    const size_t start = kBlock + static_cast<size_t>(p) * kBlock;
+    const size_t len = std::min<size_t>(kBlock, taps.size() - start);
+    std::memset(fftTime.data(), 0, kFft * sizeof(float));
+    std::memcpy(fftTime.data(), taps.data() + start, len * sizeof(float));
+    DSPSplitComplex sp{tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins,
+                       tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins + kBins};
+    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(fftTime.data()), 2, &sp, 1, kBins);
+    vDSP_fft_zrip(fftSetup, &sp, 1, kLog2Fft, kFFTDirection_Forward);
+    tailNyq[p] = sp.imagp[0] * scale;
+    sp.imagp[0] = 0.0f;
+    vDSP_vsmul(sp.realp, 1, &scale, sp.realp, 1, kBins);
+    vDSP_vsmul(sp.imagp, 1, &scale, sp.imagp, 1, kBins);
+  }
 }
-WavIR::~WavIR() = default;
+
+WavIR::~WavIR() {
+  if (fftSetup) vDSP_destroy_fftsetup(fftSetup);
+}
 
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlockSize) {
   uint32_t sourceRate = 0;
   auto taps = resample(readWav(path, sourceRate), sourceRate, hostRate);
-  // Guitar cabinet IR energy is concentrated near the start. Keeping 80 ms
-  // gives natural tails while keeping direct convolution inexpensive at 96 kHz.
-  if (taps.size() > static_cast<size_t>(hostRate * 0.08)) taps.resize(static_cast<size_t>(hostRate * 0.08));
+  // Guitar cabinet IR energy is concentrated near the start; 80 ms keeps
+  // natural tails. A hard cut rings (truncation ripple in the transfer
+  // function), so the last ~5 ms taper with a raised cosine.
+  const size_t maxTaps = static_cast<size_t>(hostRate * 0.08);
+  if (maxTaps > 0 && taps.size() > maxTaps) {
+    taps.resize(maxTaps);
+    const size_t fade = std::min(taps.size(),
+        static_cast<size_t>(std::llround(hostRate * 0.005)));
+    for (size_t i = 0; i < fade; ++i) {
+      const double t = static_cast<double>(i + 1) / static_cast<double>(fade);
+      taps[taps.size() - fade + i] *= static_cast<float>(0.5 * (1.0 + std::cos(kPi * t)));
+    }
+  }
   if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
 
   // Keep the resampled capture level intact. WavIR stores peak and energy
@@ -140,22 +183,81 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlo
   return std::unique_ptr<WavIR>(new WavIR(std::move(taps), maxBlockSize));
 }
 
+// Completed kBlock input block: FFT it into the delay line, accumulate
+// Y = sum_p X[newest-p] * H[p] (one complex MAC pass per partition), IFFT,
+// and overlap-add the kFft result into the ring starting at the CURRENT
+// read position — which is exactly the first output sample the tail may
+// touch (see the header comment).
+void WavIR::flushBlock() noexcept {
+  std::memcpy(fftTime.data(), fillBuf.data(), kBlock * sizeof(float));
+  std::memset(fftTime.data() + kBlock, 0, kBlock * sizeof(float));
+  fdlNewest = fdlNewest + 1 == partitions ? 0 : fdlNewest + 1;
+  DSPSplitComplex x{fdl.data() + static_cast<size_t>(fdlNewest) * 2 * kBins,
+                    fdl.data() + static_cast<size_t>(fdlNewest) * 2 * kBins + kBins};
+  vDSP_ctoz(reinterpret_cast<const DSPComplex*>(fftTime.data()), 2, &x, 1, kBins);
+  vDSP_fft_zrip(fftSetup, &x, 1, kLog2Fft, kFFTDirection_Forward);
+  fdlNyq[fdlNewest] = x.imagp[0];
+  x.imagp[0] = 0.0f;
+
+  std::memset(accRe.data(), 0, kBins * sizeof(float));
+  std::memset(accIm.data(), 0, kBins * sizeof(float));
+  DSPSplitComplex acc{accRe.data(), accIm.data()};
+  float nyqAcc = 0.0f;
+  for (uint32_t p = 0; p < partitions; ++p) {
+    const uint32_t slot = fdlNewest >= p ? fdlNewest - p
+                                         : fdlNewest + partitions - p;
+    DSPSplitComplex xs{fdl.data() + static_cast<size_t>(slot) * 2 * kBins,
+                       fdl.data() + static_cast<size_t>(slot) * 2 * kBins + kBins};
+    DSPSplitComplex hs{tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins,
+                       tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins + kBins};
+    vDSP_zvma(&xs, 1, &hs, 1, &acc, 1, &acc, 1, kBins);
+    nyqAcc += fdlNyq[slot] * tailNyq[p];
+  }
+  accIm[0] = nyqAcc;
+  vDSP_fft_zrip(fftSetup, &acc, 1, kLog2Fft, kFFTDirection_Inverse);
+  vDSP_ztoc(&acc, 1, reinterpret_cast<DSPComplex*>(fftTime.data()), 2, kBins);
+
+  const uint32_t first = std::min(kFft, kRing - ringPos);
+  vDSP_vadd(ring.data() + ringPos, 1, fftTime.data(), 1,
+            ring.data() + ringPos, 1, first);
+  if (first < kFft)
+    vDSP_vadd(ring.data(), 1, fftTime.data() + first, 1, ring.data(), 1,
+              kFft - first);
+  fillPos = 0;
+}
+
 void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexcept {
-  const size_t history = reversedTaps.size() - 1;
   const float scale = normalizationMode <= 0 ? 1.0f
                     : normalizationMode == 1 ? peakScale
                                              : loudnessScale;
+  const uint32_t headLen = static_cast<uint32_t>(reversedHead.size());
+  const uint32_t history = headLen - 1;
   uint32_t done = 0;
   while (done < count) {
-    const uint32_t block = std::min(maxBlock, count - done);
-    std::memcpy(historyAndInput.data() + history, samples + done, block * sizeof(float));
-    vDSP_conv(historyAndInput.data(), 1, reversedTaps.data(), 1,
-              output.data(), 1, block, reversedTaps.size());
-    for (uint32_t i = 0; i < block; ++i)
-      samples[done + i] = output[i] * scale;
-    if (history) std::memmove(historyAndInput.data(), historyAndInput.data() + block,
+    // Sub-chunks end exactly on kBlock input boundaries so a completed
+    // block always flushes before the sample that first needs its tail.
+    const uint32_t t = partitions
+        ? std::min(count - done, kBlock - fillPos)
+        : std::min(count - done, kBlock);
+    std::memcpy(historyAndInput.data() + history, samples + done, t * sizeof(float));
+    vDSP_conv(historyAndInput.data(), 1, reversedHead.data(), 1,
+              headOut.data(), 1, t, headLen);
+    if (history) std::memmove(historyAndInput.data(), historyAndInput.data() + t,
                               history * sizeof(float));
-    done += block;
+    if (partitions) {
+      std::memcpy(fillBuf.data() + fillPos, samples + done, t * sizeof(float));
+      fillPos += t;
+      for (uint32_t i = 0; i < t; ++i) {
+        const uint32_t rp = (ringPos + i) & kRingMask;
+        samples[done + i] = (headOut[i] + ring[rp]) * scale;
+        ring[rp] = 0.0f;
+      }
+      ringPos = (ringPos + t) & kRingMask;
+      if (fillPos == kBlock) flushBlock();
+    } else {
+      for (uint32_t i = 0; i < t; ++i) samples[done + i] = headOut[i] * scale;
+    }
+    done += t;
   }
 }
 }

@@ -29,6 +29,9 @@
 #define NAM_RIG_PEDAL_URI NAM_RIG_URI "-pedal-model"
 #define NAM_RIG_AMP_URI NAM_RIG_URI "-amp-model"
 #define NAM_RIG_CAB_URI NAM_RIG_URI "-cab-model"
+#define NAM_RIG_PEDAL_B_URI NAM_RIG_URI "-pedal-model-b"
+#define NAM_RIG_AMP_B_URI NAM_RIG_URI "-amp-model-b"
+#define NAM_RIG_CAB_B_URI NAM_RIG_URI "-cab-model-b"
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 #define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
@@ -39,12 +42,19 @@ static constexpr unsigned int MAX_FILE_NAME = 1024;
 
 enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Count = 3 };
 static constexpr size_t kStageCount = static_cast<size_t>(Stage::Count);
+// Each stage holds two independently-loadable captures: slot 0 (A, the
+// stage's long-standing single model/IR) and slot 1 (B, a second capture a
+// per-stage blend knob crossfades toward). Blend runs in the OUTPUT domain
+// (mix the two fully-processed signals), so the True-oversampling cascade,
+// WAV IR convolution, and Legacy dilation paths are unchanged per slot.
+static constexpr size_t kSlotCount = 2;
 
 enum LV2WorkType : uint32_t { kWorkTypeLoad, kWorkTypeSwitch, kWorkTypeFree };
 
 struct LV2LoadModelMsg {
   LV2WorkType type;
   Stage stage;
+  uint32_t slot;
   int32_t oversampleMode;
   uint64_t generation;
   char path[MAX_FILE_NAME];
@@ -53,6 +63,7 @@ struct LV2LoadModelMsg {
 struct LV2SwitchModelMsg {
   LV2WorkType type;
   Stage stage;
+  uint32_t slot;
   int32_t oversampleMode;
   uint64_t generation;
   char path[MAX_FILE_NAME];
@@ -65,6 +76,21 @@ struct LV2FreeModelMsg {
   LV2WorkType type;
   NeuralAudio::NeuralModel* model;
   WavIR* ir;
+};
+
+// One-pole DC blocker (~5 Hz high-pass). NAM models routinely emit a small
+// DC offset, and the oversampling converters pass DC at exactly unity gain,
+// so the offset survives to the output unless a stage removes it.
+struct DcBlocker {
+  float r = 0.9993f;  // exp(-2*pi*5/rate), set at initialize()
+  float x1 = 0.0f, y1 = 0.0f;
+  float process(float x) {
+    const float y = x - x1 + r * y1;
+    x1 = x;
+    y1 = y;
+    return y;
+  }
+  void reset() { x1 = 0.0f; y1 = 0.0f; }
 };
 
 // Second-order biquad (transposed direct form II). At zero gain the caller
@@ -120,10 +146,16 @@ public:
     float* cab_low_cut;        // in: port 26, Hz (0 = off)
     float* cab_high_cut;       // in: port 27, Hz (20 kHz = off)
     float* compressor;         // in: port 28, one-knob amount (0..100%)
+    float* latency;            // out: port 29, lv2:latency (frames, for host PDC)
+    float* pedal_blend;        // in: port 30, pedal slot A/B blend (0..100%)
+    float* amp_blend;          // in: port 31, amp slot A/B blend (0..100%)
+    float* cab_blend;          // in: port 32, cab slot A/B blend (0..100%)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
   static_assert(offsetof(Ports, compressor) == 28 * sizeof(void*));
+  static_assert(offsetof(Ports, latency) == 29 * sizeof(void*));
+  static_assert(offsetof(Ports, cab_blend) == 32 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -131,11 +163,14 @@ public:
   LV2_Log_Logger logger = {};
   LV2_Worker_Schedule* schedule = nullptr;
 
-  std::array<NeuralAudio::NeuralModelLoader, kStageCount> loaders;
-  std::array<NeuralAudio::NeuralModel*, kStageCount> models{};
-  std::array<WavIR*, kStageCount> irs{};
-  std::array<std::string, kStageCount> modelPaths;
-  bool ampIsFullRig = false;
+  // loaders[stage][slot]: each slot needs its own NeuralModelLoader instance
+  // (SetExternalSampleRate/SetDefaultMaxAudioBufferSize are loader-instance
+  // state, and A/B loads can be in flight for the same stage at once).
+  std::array<std::array<NeuralAudio::NeuralModelLoader, kSlotCount>, kStageCount> loaders;
+  std::array<std::array<NeuralAudio::NeuralModel*, kSlotCount>, kStageCount> models{};
+  std::array<std::array<WavIR*, kSlotCount>, kStageCount> irs{};
+  std::array<std::array<std::string, kSlotCount>, kStageCount> modelPaths;
+  bool ampIsFullRig = false;  // tracks slot A only (see ARCHITECTURE.md)
 
   Plugin();
   ~Plugin();
@@ -143,7 +178,7 @@ public:
   bool initialize(double rate, const LV2_Feature* const* features) noexcept;
   void setMaxBufferSize(int size) noexcept;
   void process(uint32_t sampleCount) noexcept;
-  void writePath(Stage stage);
+  void writePath(Stage stage, uint32_t slot);
   void writeAllPaths();
 
   static uint32_t optionsGet(LV2_Handle instance, LV2_Options_Option* options);
@@ -177,7 +212,8 @@ private:
     LV2_URID patchProperty;
     LV2_URID patchValue;
     LV2_URID unitsFrame;
-    std::array<LV2_URID, kStageCount> stagePath;
+    std::array<LV2_URID, kStageCount> stagePath;    // slot A (unchanged URIs)
+    std::array<LV2_URID, kStageCount> stagePathB;   // slot B ("...-model-b")
     LV2_URID atomFloat;
     LV2_URID tunerNote;
     LV2_URID tunerCents;
@@ -186,11 +222,15 @@ private:
 
   LV2_Atom_Forge forge{};
   LV2_Atom_Forge_Frame sequenceFrame{};
-  std::array<bool, kStageCount> notifyPending{};
+  std::array<std::array<bool, kSlotCount>, kStageCount> notifyPending{};
   float smoothedInputLevel = 1.0f;
   float smoothedOutputLevel = 1.0f;
   float smoothedAmpDrive = 1.0f;
   float smoothedCabLevel = 1.0f;
+  // Rate-independent ~2 ms one-pole coefficient for the input/output trims
+  // (a fixed per-sample constant would halve the time constant at 96 kHz).
+  float trimSmoothCoeff = 0.01f;
+  DcBlocker dcBlocker;
   Biquad bassEq, midEq, trebleEq;
   Biquad cabLowCutEq, cabHighCutEq;
   float gateDetector = 0.0f;
@@ -209,22 +249,27 @@ private:
   // runs while tuner_enable is on.
   struct Tuner {
     static constexpr int kBuf = 3072;        // decimated-domain ring length
-    static constexpr int kWindow = 2048;     // NSDF correlation window
+    static constexpr int kWindow = 1024;     // NSDF correlation window (matches tests/test_tuner_mpm.py)
     static constexpr int kMinTau = 8;        // ~1500 Hz top
     static constexpr int kMaxTau = 300;      // 12k/300 = 40 Hz floor
+    static constexpr int kMissLimit = 8;     // failed analyses before the display clears (~240 ms)
     std::array<float, kBuf> ring{};
     int ringPos = 0;
     int filled = 0;
     bool wasEnabled = false;
-    int cooldown = 0;               // blocks to skip between analyses
+    int samplesSinceAnalysis = 0;   // raw-sample hop counter (rate-independent cadence)
     int decimPhase = 0;             // raw-sample counter for decimation
     float lastNote = -1.0f, lastCents = 0.0f;
     float sentNote = -99.0f;        // last values pushed over notify (change gate)
     float sentCentsQ = -99.0f;
-    float noteHist[3] = {-1.f, -1.f, -1.f};   // median-3 display filter
+    float noteHist[3] = {-1.f, -1.f, -1.f};   // median-3 display filter (rolling)
+    int histIdx = 0;                // next write slot — MUST roll, not clamp
     int histLen = 0;
+    int missCount = 0;              // consecutive analyses with no pitch
     float nsdf[kMaxTau + 2] = {};
     float scratch[kWindow + kMaxTau] = {};   // unwrapped NSDF window
+    float acf[kMaxTau + 1] = {};             // vDSP_conv output (all lags)
+    double sqPrefix[kWindow + kMaxTau + 1] = {};  // prefix sums of squares
     Biquad lp1, lp2;                // anti-alias front end
     int decimFactor = 1;
     float decimRate = 12000.0f;
@@ -253,14 +298,25 @@ private:
   std::vector<float> osChain;
   uint64_t osTopologySignature = ~uint64_t{0};
 
+  // Slot-B model output, at whatever domain rate applyModel() is currently
+  // running its stage in (base rate or a True cascade's Nx domain) — sized
+  // like osScratch, reassigned alongside it in setMaxBufferSize(). Only
+  // touched while a stage's blend > 0 and a slot-B model is loaded.
+  std::array<std::vector<float>, kStageCount> blendScratch;
+  // Per-stage blend, ramped linearly across each block from the last block's
+  // applied value to the current port target — so even a full 0->100% knob
+  // jump between blocks never steps (see applyModel() in the .cpp).
+  std::array<float, kStageCount> blendApplied{0.0f, 0.0f, 0.0f};
+
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
+  // Both slots of a stage always share this one target domain.
   std::array<int, kStageCount> osApplied = {kOsLegacy2, kOsLegacy2, kOsLegacy2};
   // Latest port modes requested by the host. osApplied changes only when the
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
   std::array<int, 2> osRequested = {kOsLegacy2, kOsLegacy2};
-  std::array<uint64_t, kStageCount> loadGeneration{};
+  std::array<std::array<uint64_t, kSlotCount>, kStageCount> loadGeneration{};
 
   struct PendingSwitch {
     NeuralAudio::NeuralModel* model = nullptr;
@@ -270,11 +326,17 @@ private:
     bool ready = false;
     char path[MAX_FILE_NAME] = {};
   };
-  std::array<PendingSwitch, kStageCount> pendingSwitches{};
+  std::array<std::array<PendingSwitch, kSlotCount>, kStageCount> pendingSwitches{};
   enum class TransitionPhase { Steady, FadeOut, FadeIn };
   TransitionPhase transitionPhase = TransitionPhase::Steady;
   uint32_t transitionPosition = 0;
   float transitionGain = 1.0f;
+  // Stage enables are LATCHED: a toggle rides the same fade-out -> apply ->
+  // fade-in path as a model swap, so flipping a stage on/off never puts a
+  // waveform discontinuity on the output. appliedEnabled is what process()
+  // actually runs; port changes only land at the fade's zero crossing.
+  std::array<bool, kStageCount> appliedEnabled{true, true, true};
+  bool enabledLatched = false;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
   //             dilation is a no-op for common rates; a non-48k model at a
@@ -317,6 +379,15 @@ private:
   // incoming rate, so the Element menu keeps affecting them (user decision).
   static constexpr double kTrueBaseRate = 96000.0;   // Element session rate
 
+  // Fixed pipeline delay of one True cascade, in base-rate frames, measured
+  // impulse-through (block-size independent): each 2x pair holds back 23
+  // samples at ITS input rate, so 2x = 23, 4x = 23 + 12, 8x = 23 + 12 + 6.
+  // Summed per active group and reported on the lv2:latency port so the
+  // host's delay compensation keeps parallel paths phase-aligned.
+  static uint32_t cascadeLatencyFrames(int factor) {
+    return factor == 2 ? 23u : factor == 4 ? 35u : factor == 8 ? 41u : 0u;
+  }
+
   // 0 = not a TRUE mode (base-rate path). Otherwise the pipeline factor for
   // this mode at this incoming rate (1 = coast: wrapper already covers it).
   static int truePipelineFactor(int mode, double incomingRate) {
@@ -337,8 +408,11 @@ private:
   // on the AUDIO thread when the toggle flips (schedules worker loads; the
   // old models keep processing until each swap lands).
   void reloadModelsForOversample();
-  void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
+  void scheduleModelLoad(Stage stage, uint32_t slot, const char* path, size_t length, int mode);
   void commitPendingSwitches();
+  // Enter FadeOut from Steady or mid-FadeIn (gain-continuous); no-op if a
+  // fade-out is already running.
+  void startTransitionFadeOut();
   void tunerSetRates(double rate);
 };
 } // namespace NAMRig

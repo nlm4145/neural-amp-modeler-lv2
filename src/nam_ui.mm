@@ -12,6 +12,9 @@
 #include <string>
 #include <vector>
 
+#import "rig_theme.h"
+#import "rig_widgets.h"
+
 constexpr const char* kPluginURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2";
 constexpr const char* kUIURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#cocoa-ui";
 constexpr const char* kModelURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model";
@@ -188,15 +191,15 @@ static NSSlider* addKnob(NSView* parent,
                          double maximum,
                          NSPoint origin,
                          id target) {
-  NSSlider* knob = [NSSlider sliderWithValue:value
-                                   minValue:minimum
-                                   maxValue:maximum
-                                     target:target
-                                     action:@selector(controlChanged:)];
-  knob.sliderType = NSSliderTypeCircular;
+  RigKnob* knob = [[RigKnob alloc] initWithFrame:NSMakeRect(origin.x, origin.y, 64, 64)];
+  knob.minValue = minimum;
+  knob.maxValue = maximum;
+  knob.doubleValue = value;
+  knob.defaultValue = value;
+  knob.target = target;
+  knob.action = @selector(controlChanged:);
   knob.continuous = YES;
   knob.tag = port;
-  knob.frame = NSMakeRect(origin.x, origin.y, 64, 64);
   [parent addSubview:knob];
   return knob;
 }
@@ -248,28 +251,37 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     state->view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 720, 258)];
     state->view.wantsLayer = YES;
-    state->view.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+    state->view.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    state->view.layer.backgroundColor = rigBG().CGColor;
 
-    NSTextField* title = [NSTextField labelWithString:@"Neural Amp Modeler"];
-    title.font = [NSFont boldSystemFontOfSize:17.0];
-    title.frame = NSMakeRect(18, 218, 300, 24);
+    NSTextField* title = [NSTextField labelWithString:@"NEURAL AMP MODELER"];
+    title.font = [NSFont systemFontOfSize:15.0 weight:NSFontWeightBold];
+    title.textColor = rigText();
+    rigApplyTracking(title, 1.6);
+    title.frame = NSMakeRect(18, 218, 340, 24);
     title.alignment = NSTextAlignmentLeft;
     [state->view addSubview:title];
 
     state->pathLabel = [NSTextField labelWithString:@"No model loaded"];
     state->pathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    state->pathLabel.textColor = rigDimText();
+    state->pathLabel.font = [NSFont systemFontOfSize:12.0];
     state->pathLabel.frame = NSMakeRect(18, 180, 455, 24);
     [state->view addSubview:state->pathLabel];
 
     state->uiController = [[NAMUIController alloc] init];
     state->uiController.state = state;
 
-    NSButton* choose = [NSButton buttonWithTitle:@"Choose NAM Model…"
-                                           target:state->uiController
-                                           action:@selector(chooseModel:)];
-    choose.bezelStyle = NSBezelStyleRounded;
-    choose.frame = NSMakeRect(540, 176, 162, 30);
+    RigButton* choose = [[RigButton alloc] initWithFrame:NSMakeRect(540, 176, 162, 30)];
+    choose.title = @"Choose NAM Model…";
+    choose.bordered = NO;
+    choose.primary = YES;
+    choose.target = state->uiController;
+    choose.action = @selector(chooseModel:);
     [state->view addSubview:choose];
+
+    RigPanel* panel = [[RigPanel alloc] initWithFrame:NSMakeRect(18, 26, 684, 130)];
+    [state->view addSubview:panel];
 
     state->inputSlider = addKnob(state->view, 4, 0.0, -20.0, 20.0,
                                  NSMakePoint(112, 78), state->uiController);
@@ -278,26 +290,27 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->outputSlider = addKnob(state->view, 5, 0.0, -20.0, 20.0,
                                   NSMakePoint(544, 78), state->uiController);
 
-    addText(state->view, @"INPUT", NSMakeRect(92, 54, 104, 18),
-            [NSFont boldSystemFontOfSize:11.0], NSColor.secondaryLabelColor);
-    addText(state->view, @"QUALITY", NSMakeRect(308, 54, 104, 18),
-            [NSFont boldSystemFontOfSize:11.0], NSColor.secondaryLabelColor);
-    addText(state->view, @"OUTPUT", NSMakeRect(524, 54, 104, 18),
-            [NSFont boldSystemFontOfSize:11.0], NSColor.secondaryLabelColor);
+    NSFont* nameFont = [NSFont systemFontOfSize:10.0 weight:NSFontWeightSemibold];
+    rigApplyTracking(addText(state->view, @"INPUT", NSMakeRect(92, 54, 104, 18),
+                             nameFont, rigDimText()), 1.1);
+    rigApplyTracking(addText(state->view, @"QUALITY", NSMakeRect(308, 54, 104, 18),
+                             nameFont, rigDimText()), 1.1);
+    rigApplyTracking(addText(state->view, @"OUTPUT", NSMakeRect(524, 54, 104, 18),
+                             nameFont, rigDimText()), 1.1);
 
     state->inputValue = addText(state->view, @"+0.0 dB", NSMakeRect(92, 34, 104, 18),
                                 [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular],
-                                NSColor.labelColor);
+                                rigText());
     state->qualityValue = addText(state->view, @"100%", NSMakeRect(308, 34, 104, 18),
                                   [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular],
-                                  NSColor.labelColor);
+                                  rigText());
     state->outputValue = addText(state->view, @"+0.0 dB", NSMakeRect(524, 34, 104, 18),
                                  [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular],
-                                 NSColor.labelColor);
+                                 rigText());
 
     NSTextField* note = [NSTextField labelWithString:
         @"Set Element's sample rate before loading (96 kHz = 2× for a 48 kHz model)."];
-    note.textColor = NSColor.secondaryLabelColor;
+    note.textColor = rigDimText();
     note.font = [NSFont systemFontOfSize:11.0];
     note.alignment = NSTextAlignmentCenter;
     note.frame = NSMakeRect(18, 8, 684, 18);

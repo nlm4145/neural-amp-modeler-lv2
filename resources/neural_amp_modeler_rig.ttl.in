@@ -16,6 +16,12 @@
 	a lv2:Parameter ; rdfs:label "Amp Model" ; rdfs:range atom:Path .
 <@NAM_RIG_LV2_ID@-cab-model>
 	a lv2:Parameter ; rdfs:label "Cab Model" ; rdfs:range atom:Path .
+<@NAM_RIG_LV2_ID@-pedal-model-b>
+	a lv2:Parameter ; rdfs:label "Pedal Model B" ; rdfs:range atom:Path .
+<@NAM_RIG_LV2_ID@-amp-model-b>
+	a lv2:Parameter ; rdfs:label "Amp Model B" ; rdfs:range atom:Path .
+<@NAM_RIG_LV2_ID@-cab-model-b>
+	a lv2:Parameter ; rdfs:label "Cab Model B" ; rdfs:range atom:Path .
 
 <@NAM_RIG_LV2_ID@>
 	a lv2:Plugin, lv2:SimulatorPlugin, doap:Project ;
@@ -29,7 +35,10 @@
 	patch:writable
 		<@NAM_RIG_LV2_ID@-pedal-model>,
 		<@NAM_RIG_LV2_ID@-amp-model>,
-		<@NAM_RIG_LV2_ID@-cab-model> ;
+		<@NAM_RIG_LV2_ID@-cab-model>,
+		<@NAM_RIG_LV2_ID@-pedal-model-b>,
+		<@NAM_RIG_LV2_ID@-amp-model-b>,
+		<@NAM_RIG_LV2_ID@-cab-model-b> ;
 
 	lv2:port [
 		a atom:AtomPort, lv2:InputPort ; atom:bufferType atom:Sequence ;
@@ -154,5 +163,23 @@
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 28 ;
 					lv2:symbol "compressor" ; lv2:name "Compressor" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
+				], [
+					a lv2:ControlPort, lv2:OutputPort ; lv2:index 29 ;
+					lv2:symbol "latency" ; lv2:name "Latency" ;
+					lv2:designation lv2:latency ;
+					lv2:portProperty lv2:reportsLatency, lv2:integer ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 256.0 ; units:unit units:frame
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 30 ;
+					lv2:symbol "pedal_blend" ; lv2:name "Pedal Blend" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 31 ;
+					lv2:symbol "amp_blend" ; lv2:name "Amp Blend" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 32 ;
+					lv2:symbol "cab_blend" ; lv2:name "Cab Blend" ;
 					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
 				] .

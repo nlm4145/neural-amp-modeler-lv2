@@ -26,6 +26,7 @@
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #import "rig_theme.h"
+#import "rig_widgets.h"
 
 @class NAMRigUIController;
 @class ToneBrowserController;
@@ -43,7 +44,8 @@ struct RigUIState {
   LV2_URID patchSet = 0;
   LV2_URID patchProperty = 0;
   LV2_URID patchValue = 0;
-  std::array<LV2_URID, 3> pathURIDs{};
+  std::array<LV2_URID, 3> pathURIDs{};    // slot A ("...-model")
+  std::array<LV2_URID, 3> pathURIDsB{};   // slot B ("...-model-b")
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
@@ -81,6 +83,7 @@ struct RigUIState {
       if (!tunerPanel || tunerPanel.hidden) return;
       if (lastTunerNote < 0) {
         tunerNoteLabel.stringValue = @"—";
+        tunerNoteLabel.textColor = rigText();
         tunerCentsLabel.stringValue = @"";
         tunerNeedle.hidden = YES;
         return;
@@ -92,6 +95,9 @@ struct RigUIState {
                                     kNames[((n % 12) + 12) % 12], n / 12 - 1];
       tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢",
                                      (int)std::lround(lastTunerCents)];
+      const bool inTune = std::fabs(lastTunerCents) <= 5.0f;
+      tunerNoteLabel.textColor = inTune ? rigGreen() : rigText();
+      tunerNeedle.layer.backgroundColor = (inTune ? rigGreen() : rigOrange()).CGColor;
       tunerNeedle.hidden = NO;
       // Needle across ±50 cents: middle of the meter = in tune.
       NSView* meter = tunerNeedle.superview;
@@ -133,6 +139,14 @@ struct RigUIState {
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
   std::array<__strong NSPopUpButton*, 3> modelPickers{};  // per-stage model selector in each tile
+  std::array<__strong NSPopUpButton*, 3> modelPickersB{}; // per-stage SECONDARY (slot B) selector
+  // Which slot the tone browser loads into for a given stage, next click.
+  // Defaults to slot A (0) for every stage; the tile's "A"/"B" toggle flips
+  // it for that stage only — it does not persist across the toggle itself.
+  std::array<uint32_t, 3> browserTargetSlot{0, 0, 0};
+  // The two toggle buttons ([A, B]) per stage, so browserTargetChanged: can
+  // update the non-clicked sibling's highlight.
+  std::array<std::array<__strong RigButton*, 2>, 3> browserTargetButtons{};
   LV2UI_Resize* hostResize = nullptr;
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
@@ -145,6 +159,9 @@ struct RigUIState {
   std::array<std::string, 3> selectedPaths{};
   std::array<std::string, 3> selectedImageURLs{};   // thumbnail metadata (persisted)
   std::array<long, 3> selectedToneIds{};            // key into NAM Rig's artwork cache
+  // Slot B: path only — no thumbnail widget for the secondary capture (the
+  // tile's thumbnail stays tied to slot A to keep the tile's footprint small).
+  std::array<std::string, 3> selectedPathsB{};
   static std::string uiPersistFile() {
     const char* home = std::getenv("HOME");
     std::string dir = home ? std::string(home) : std::string(".");
@@ -160,6 +177,10 @@ struct RigUIState {
       out << selectedPaths[i] << "\n"
           << selectedImageURLs[i] << "\n"
           << selectedToneIds[i] << "\n";
+    // Slot B, appended at the tail: a pre-existing 9-line file (no slot-B
+    // lines) is still a valid prefix, so old sessions restore unchanged.
+    for (size_t i = 0; i < 3; ++i)
+      out << selectedPathsB[i] << "\n";
   }
   // Re-send any previously selected model paths (and re-apply thumbnails) so the
   // rig comes back after a plugin-window/instance recreation.
@@ -169,7 +190,7 @@ struct RigUIState {
     if (!in) return;
     for (size_t i = 0; i < 3 && i < selectedPaths.size(); ++i) {
       std::string path, imageURL, toneIdStr;
-      if (!std::getline(in, path)) break;
+      if (!std::getline(in, path)) return;
       std::getline(in, imageURL);
       std::getline(in, toneIdStr);
       path.erase(path.find_last_not_of("\r\n") + 1);
@@ -180,16 +201,29 @@ struct RigUIState {
       selectedImageURLs[i] = imageURL;
       selectedToneIds[i] = toneId;
       if (path.empty() && imageURL.empty() && toneId <= 0) continue;
-      if (!path.empty()) { sendPath(i, path.c_str()); displayPath(i, path.c_str()); }
+      if (!path.empty()) { sendPath(i, 0, path.c_str()); displayPath(i, 0, path.c_str()); }
       if (imageURL.length() || toneId > 0)
         setStageThumb(i, nil, toneId, imageURL.length() ? [NSString stringWithUTF8String:imageURL.c_str()] : nil);
     }
+    // Slot B: path-only lines, absent entirely on a pre-blend-feature file —
+    // getline failing just leaves selectedPathsB at its default (empty).
+    for (size_t i = 0; i < 3 && i < selectedPathsB.size(); ++i) {
+      std::string path;
+      if (!std::getline(in, path)) return;
+      path.erase(path.find_last_not_of("\r\n") + 1);
+      selectedPathsB[i] = path;
+      if (!path.empty()) { sendPath(i, 1, path.c_str()); displayPath(i, 1, path.c_str()); }
+    }
   }
-  void sendPath(size_t stage, const char* path) {
-    if (stage >= pathURIDs.size() || !path) return;
+  void sendPath(size_t stage, uint32_t slot, const char* path) {
+    if (stage >= pathURIDs.size() || slot > 1 || !path) return;
     // Remember + persist the selection so it survives a UI/instance recreation.
-    selectedPaths[stage] = path;
-    if (path[0] == '\0') { selectedImageURLs[stage].clear(); selectedToneIds[stage] = 0; }  // clearing a model clears its thumb
+    if (slot == 0) {
+      selectedPaths[stage] = path;
+      if (path[0] == '\0') { selectedImageURLs[stage].clear(); selectedToneIds[stage] = 0; }  // clearing a model clears its thumb
+    } else {
+      selectedPathsB[stage] = path;
+    }
     persistSelectedPaths();
     const size_t length = std::strlen(path) + 1;
     std::vector<uint8_t> buffer(length + 256);
@@ -198,12 +232,12 @@ struct RigUIState {
     auto* message = reinterpret_cast<LV2_Atom*>(lv2_atom_forge_object(&forge, &frame, 0, patchSet));
     if (!message) return;
     lv2_atom_forge_key(&forge, patchProperty);
-    lv2_atom_forge_urid(&forge, pathURIDs[stage]);
+    lv2_atom_forge_urid(&forge, slot == 0 ? pathURIDs[stage] : pathURIDsB[stage]);
     lv2_atom_forge_key(&forge, patchValue);
     lv2_atom_forge_path(&forge, path, static_cast<uint32_t>(length));
     lv2_atom_forge_pop(&forge, &frame);
     write(controller, 0, lv2_atom_total_size(message), eventTransfer, message);
-    displayPath(stage, path);
+    displayPath(stage, slot, path);
   }
   // Zoom scales the WHOLE UI as one unit with a pure layer transform: rigContent
   // is laid out once at base (1280x830) and pinned there, and we scale its layer
@@ -240,11 +274,12 @@ struct RigUIState {
     write(controller, port, sizeof(value), 0, &value);
   }
 
-  void displayPath(size_t stage, const char* path) {
-    if (stage >= modelPickers.size() || !modelPickers[stage]) return;
+  void displayPath(size_t stage, uint32_t slot, const char* path) {
+    if (stage >= modelPickers.size()) return;
+    NSPopUpButton* picker = slot == 0 ? modelPickers[stage] : modelPickersB[stage];
+    if (!picker) return;
     const std::string copy = path ? path : "";
     dispatch_async(dispatch_get_main_queue(), ^{
-      NSPopUpButton* picker = modelPickers[stage];
       if (copy.empty()) {
         [picker removeAllItems];
         [picker addItemWithTitle:@"No model loaded"];
@@ -280,9 +315,10 @@ struct RigUIState {
   // Populate a tile's model selector with the models available for that stage.
   // The dropdown is the tile's model control, so it's always visible once a
   // stage has models; the old filename text label is redundant and removed.
-  void setStageModels(size_t stage, NSArray<NSString*>* paths) {
-    if (stage >= modelPickers.size() || !modelPickers[stage]) return;
-    NSPopUpButton* picker = modelPickers[stage];
+  void setStageModels(size_t stage, uint32_t slot, NSArray<NSString*>* paths) {
+    if (stage >= modelPickers.size()) return;
+    NSPopUpButton* picker = slot == 0 ? modelPickers[stage] : modelPickersB[stage];
+    if (!picker) return;
     [picker removeAllItems];
     for (NSString* p in paths) {
       NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:(p.length ? p.lastPathComponent : @"—")

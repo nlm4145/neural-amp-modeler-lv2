@@ -8,8 +8,11 @@
 //     taps rescaled so the prototype sums to EXACTLY 1.
 //   UP 2x: even outputs = input samples verbatim; odd outputs = centered
 //     24-tap FIR (P = 2*h[odd offsets], DC gain exactly 1).
-//   DOWN 2x: full 47-tap prototype FIR at the 2x rate, centered, even
-//     absolute positions only.
+//   DOWN 2x: 47-tap prototype at even absolute positions only, computed
+//     polyphase: the prototype's even offsets are sinc zeros except the
+//     center (exactly 0.5), so each output = 0.5 * (window center + 24-tap
+//     interp-branch dot over the window's odd positions). Same values as
+//     the full 47-tap FIR, half the multiplies.
 //   Streaming: Up2x keeps the last 23 base samples as context and tracks the
 //     next position to emit; Down2x keeps the last 23 2x-samples and tracks
 //     absolute even output positions. Block boundaries can never flip
@@ -33,7 +36,7 @@ class Up2x {
   // (up to n dots) for the batched formulation.
   void setMaxBlockSize(size_t n) {
     const size_t want = kHist + 2 * n;
-    if (want != scratchSize_) {
+    if (want != scratchSize_ || !scratch_) {
       delete[] scratch_;
       scratch_ = new float[want];
       scratchSize_ = want;
@@ -58,11 +61,12 @@ class Down2x {
   static constexpr size_t maxOutput(size_t n2x) { return n2x / 2; }
   void reset();
   // n2x = the largest 2x-rate block you will ever feed process(). Scratch
-  // holds hist + input + a conv-output tail (up to n2x dots) for the batched
-  // formulation.
+  // holds hist + input, the m odd-branch conv outputs, and the two
+  // deinterleaved branches (m + 23 floats each, m <= n2x/2 + 1) for the
+  // polyphase formulation; 3*n2x + 128 covers all of it with slack.
   void setMaxBlockSize(size_t n2x) {
-    const size_t want = kHist + 2 * n2x;
-    if (want != scratchSize_) {
+    const size_t want = kHist + 3 * n2x + 128;
+    if (want != scratchSize_ || !scratch_) {
       delete[] scratch_;
       scratch_ = new float[want];
       scratchSize_ = want;
@@ -77,7 +81,7 @@ class Down2x {
   // regardless of how the next block lands.
   static constexpr size_t kHist = 46;
   float hist_[kHist] = {};
-  size_t scratchSize_ = 46 + 16384;
+  size_t scratchSize_ = 46 + 3 * 8192 + 128;
   float* scratch_ = nullptr;
   size_t consumed_ = 0;  // absolute 2x samples fed
   size_t emitted_ = 0;   // absolute base positions emitted

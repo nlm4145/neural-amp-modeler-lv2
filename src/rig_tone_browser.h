@@ -101,11 +101,5 @@ struct RigUIState;
 @interface ToneCardItem : NSCollectionViewItem
 @property(nonatomic, copy) void (^onFavToggle)(ToneItem*);
 @end
-// A flat, NAM Rig-style rounded button drawn in dark theme. "primary" renders
-// with an accent fill; otherwise a dark fill + subtle border. Highlight state
-// brightens the fill so the active mode button reads as selected.
-@interface RigButton : NSButton
-@property(nonatomic) BOOL primary;
-@property(nonatomic) BOOL check;
-@end
+// RigButton lives in rig_widgets.h (shared with the simple NAM UI).
 #endif

@@ -6,7 +6,7 @@
 
 // Knob configuration — index order matches the LV2 port list in nam_rig_plugin.ttl.
 // strip. Atom ports (0/1) and the stage toggles (7-10) are handled separately.
-constexpr size_t kRigKnobCount = 12;
+constexpr size_t kRigKnobCount = 15;
 extern const std::array<uint32_t, kRigKnobCount> kRigKnobPorts;
 // Footer display order follows the SIGNAL CHAIN, not the port list:
 // GATE -> INPUT -> [pedal/amp/cab stages] -> BASS -> MID -> TREBLE -> OUTPUT.
