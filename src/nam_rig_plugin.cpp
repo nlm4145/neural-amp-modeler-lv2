@@ -600,12 +600,17 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   }
   smoothedInputLevel = gain;
 
+  // Auto-cab bypass DISABLED (user decision, 2026-08-29): the user manages
+  // cab on/off themselves with the ON button, so the cab now always follows
+  // cab_enabled — full-rig amp captures no longer silently disconnect the
+  // cab stage. The auto_cab port and the cab_auto_bypassed output keep their
+  // meanings (cab_auto_bypassed now stays 0) for session/UI compatibility.
   const bool enabled[kStageCount] = {
       *ports.pedal_enabled >= 0.5f,
       *ports.amp_enabled >= 0.5f,
-      *ports.cab_enabled >= 0.5f && !(*ports.auto_cab >= 0.5f && ampIsFullRig)};
+      *ports.cab_enabled >= 0.5f};
   if (ports.cab_auto_bypassed)
-    *ports.cab_auto_bypassed = (*ports.auto_cab >= 0.5f && ampIsFullRig) ? 1.0f : 0.0f;
+    *ports.cab_auto_bypassed = 0.0f;
 
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor

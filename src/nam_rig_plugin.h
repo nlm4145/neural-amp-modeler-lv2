@@ -245,7 +245,13 @@ private:
 
   static int decodeOversample(float v) {
     const int i = static_cast<int>(v + 0.5f);
-    return i < 0 ? 0 : (i > 6 ? 6 : i);
+    if (i < 0) return kOsNone;
+    if (i > kOsTrue8) return kOsTrue8;
+    // Legacy 4x/8x (values 2/3) are aliases of Legacy (1): dilation's factor
+    // is set by the incoming rate, not the tile — the collapsed UI options
+    // keep old session values mapping onto the one real Legacy behavior.
+    if (i == kOsLegacy4 || i == kOsLegacy8) return kOsLegacy2;
+    return i;
   }
 
   int stageOversample(size_t stage) const {

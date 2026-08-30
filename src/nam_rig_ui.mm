@@ -49,6 +49,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)controlChanged:(NSSlider*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
+- (void)oversampleModeChanged:(NSPopUpButton*)sender;      // master (title bar)
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
@@ -155,6 +156,20 @@ constexpr std::array<const char*, 3> kPathURIs{
     _state->tunerCentsLabel.stringValue = @"";
     _state->tunerNeedle.hidden = YES;
   }
+}
+
+// Master oversample control (title bar): applies the chosen mode to BOTH
+// stages (ports 20 + 21). Kept for quick global A/B; per-stage popups in the
+// tiles override individually. The DSP re-creates the loaded models for the
+// new rate domain in its worker and swaps them in.
+- (void)oversampleModeChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  // Master indexes 0/1/2 -> port values 0 (None) / 1 (Legacy 2x) / 4 (True 2x)
+  static const float kMasterMap[3] = {0.0f, 1.0f, 4.0f};
+  const NSInteger i = sender.indexOfSelectedItem;
+  const float mode = (i >= 0 && i < 3) ? kMasterMap[i] : 1.0f;
+  _state->sendControl(20, mode);
+  _state->sendControl(21, mode);
 }
 
 // Per-stage oversample control (pedal/amp tiles): ports 20/21, 7 modes.
@@ -466,6 +481,26 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->tunerButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
     [[state->tunerButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
+    // Oversample mode dropdown (title bar, next to the tuner icon) — A/B
+    // the oversampling implementations (and a raw off mode):
+    //   None    : no rate adaptation (A/B reference; may sound detuned)
+    //   Legacy  : NeuralAudio dilation oversampling (previous behavior)
+    //   True 2x : genuine UP/model/DOWN 2x domain (measured ~21 dB less
+    //             alias clutter on hard-clipped material)
+    state->osPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [state->osPopup addItemsWithTitles:@[@"None", @"Legacy", @"True 2x"]];
+    state->osPopup.controlSize = NSControlSizeSmall;
+    state->osPopup.target = state->uiController;
+    state->osPopup.action = @selector(oversampleModeChanged:);
+    state->osPopup.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:state->osPopup];
+    [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:10] setActive:YES];
+    [[state->osPopup.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[state->osPopup.widthAnchor constraintEqualToConstant:96] setActive:YES];
+    [[state->osPopup.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    // Default to Legacy so a fresh insert matches the long-standing behavior.
+    [state->osPopup selectItemAtIndex:1];
+
     // Tuner readout panel — hidden until the toggle is on. Note name, detune
     // in cents, and a needle meter across ±50 cents. Styled like the tiles
     // (panel bg, subtle border, accent highlights).
@@ -753,8 +788,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       // left of the ON button, 7 modes: None / Legacy 2x-4x-8x / True 2x-4x-8x.
       if (i < 2) {
         NSPopUpButton* so = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [so addItemsWithTitles:@[@"None", @"Legacy 2x", @"Legacy 4x", @"Legacy 8x",
-                                 @"True 2x", @"True 4x", @"True 8x"]];
+        [so addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",
+                                 @"True 8x"]];
         so.controlSize = NSControlSizeSmall;
         so.tag = 20 + i;                 // port 20 = pedal, 21 = amp
         so.target = state->uiController;

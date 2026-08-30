@@ -53,9 +53,12 @@ struct RigUIState {
   __strong NSLayoutConstraint* inDbBarWidth = nil;
   float lastInputDb = -120.0f;
 
-  // Per-stage oversample dropdowns (pedal + amp tiles; ports 20/21, 7 modes:
-  // None / Legacy 2x-4x-8x / True 2x-4x-8x). The cab has none — a WAV IR is
-  // linear and cannot alias; a .nam cab follows the amp's mode.
+  // Oversample mode dropdowns. The title-bar popup is the MASTER (sets both
+  // stages); the pedal and amp tiles each have their own per-stage popup
+  // (ports 20/21, 7 modes: None / Legacy 2x-4x-8x / True 2x-4x-8x). The cab
+  // has none — a WAV IR is linear and cannot alias; a .nam cab follows the
+  // amp's mode.
+  __strong NSPopUpButton* osPopup = nil;               // master (title bar)
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
@@ -381,6 +384,11 @@ struct RigUIState {
             [popup selectItemAtIndex:idx];
         });
       }
+      return;
+    }
+    if (port == 19) {   // legacy global mode: reflect onto the master popup
+      const int idx = value < 0.5f ? 0 : (value < 1.5f ? 1 : 2);
+      dispatch_async(dispatch_get_main_queue(), ^{ [osPopup selectItemAtIndex:idx]; });
       return;
     }
     // Map the port to its knob index (ports 10/11 are auto-cab, no-ops in UI).
