@@ -209,20 +209,23 @@ private:
   // runs while tuner_enable is on.
   struct Tuner {
     static constexpr int kBuf = 3072;        // decimated-domain ring length
-    static constexpr int kWindow = 2048;     // NSDF correlation window
+    static constexpr int kWindow = 1024;     // NSDF correlation window (matches tests/test_tuner_mpm.py)
     static constexpr int kMinTau = 8;        // ~1500 Hz top
     static constexpr int kMaxTau = 300;      // 12k/300 = 40 Hz floor
+    static constexpr int kMissLimit = 8;     // failed analyses before the display clears (~240 ms)
     std::array<float, kBuf> ring{};
     int ringPos = 0;
     int filled = 0;
     bool wasEnabled = false;
-    int cooldown = 0;               // blocks to skip between analyses
+    int samplesSinceAnalysis = 0;   // raw-sample hop counter (rate-independent cadence)
     int decimPhase = 0;             // raw-sample counter for decimation
     float lastNote = -1.0f, lastCents = 0.0f;
     float sentNote = -99.0f;        // last values pushed over notify (change gate)
     float sentCentsQ = -99.0f;
-    float noteHist[3] = {-1.f, -1.f, -1.f};   // median-3 display filter
+    float noteHist[3] = {-1.f, -1.f, -1.f};   // median-3 display filter (rolling)
+    int histIdx = 0;                // next write slot — MUST roll, not clamp
     int histLen = 0;
+    int missCount = 0;              // consecutive analyses with no pitch
     float nsdf[kMaxTau + 2] = {};
     float scratch[kWindow + kMaxTau] = {};   // unwrapped NSDF window
     Biquad lp1, lp2;                // anti-alias front end

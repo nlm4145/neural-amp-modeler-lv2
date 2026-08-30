@@ -38,6 +38,7 @@ constexpr std::array<const char*, 3> kPathURIs{
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model"};
 
 #import "rig_theme.h"
+#import "rig_widgets.h"
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
@@ -239,27 +240,24 @@ static NSSlider* addKnob(NSView* parent,
                          double maximum,
                          NSPoint origin,
                          id target) {
-  NSSlider* knob = [NSSlider sliderWithValue:value minValue:minimum maxValue:maximum
-                                      target:target action:@selector(controlChanged:)];
-  knob.sliderType = NSSliderTypeCircular;
+  RigKnob* knob = [[RigKnob alloc] initWithFrame:NSMakeRect(origin.x, origin.y, 64, 64)];
+  knob.minValue = minimum;
+  knob.maxValue = maximum;
+  knob.doubleValue = value;
+  knob.defaultValue = value;
+  knob.target = target;
+  knob.action = @selector(controlChanged:);
   knob.continuous = YES;
   knob.tag = port;
-  knob.frame = NSMakeRect(origin.x, origin.y, 64, 64);
   [parent addSubview:knob];
   return knob;
 }
 
-// Styled NAM Rig-style panel box.
-static NSBox* addPanel(NSView* parent, NSRect frame) {
-  NSBox* box = [[NSBox alloc] initWithFrame:frame];
-  box.boxType = NSBoxCustom;
-  box.borderType = NSLineBorder;
-  box.borderWidth = 1.0;
-  box.cornerRadius = 10.0;
-  box.borderColor = rigPanelBorder();
-  box.fillColor = rigPanelBG();
-  [parent addSubview:box];
-  return box;
+// Styled NAM Rig-style panel (gradient fill + hairline border).
+static RigPanel* addPanel(NSView* parent, NSRect frame) {
+  RigPanel* panel = [[RigPanel alloc] initWithFrame:frame];
+  [parent addSubview:panel];
+  return panel;
 }
 
 // Flat dark button using the custom RigButton drawing.
@@ -284,9 +282,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 static void addToneBrowser(RigUIState* state, NSView* content) {
   const CGFloat pad = 24.0;
-  NSBox* browser = [[NSBox alloc] initWithFrame:NSZeroRect];
-  browser.boxType = NSBoxCustom; browser.cornerRadius = 10.0; browser.borderWidth = 1.0;
-  browser.borderColor = rigPanelBorder(); browser.fillColor = rigPanelBG();
+  RigPanel* browser = [[RigPanel alloc] initWithFrame:NSZeroRect];
   browser.translatesAutoresizingMaskIntoConstraints = NO;
   // Pin below the topView (which is the previous subview of `content`).
   NSView* topView = content.subviews.count ? content.subviews.firstObject : content;
@@ -717,7 +713,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
 
         NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
-                                      [NSFont boldSystemFontOfSize:10.5], rigDimText(), NSTextAlignmentCenter);
+                                      [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+                                      rigDimText(), NSTextAlignmentCenter);
+        rigApplyTracking(kname, 1.1);
         kname.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(kname, cell, 0);
         [[kname.bottomAnchor constraintEqualToAnchor:knob.topAnchor constant:-8] setActive:YES];
@@ -730,7 +728,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         NSTextField* kval = state->valueLabels[k];
         kval.editable = YES;
         kval.selectable = YES;   // editable alone is NOT enough on label-created fields
-        kval.bordered = YES;
+        kval.bordered = NO;
+        kval.wantsLayer = YES;
+        kval.layer.cornerRadius = 4.0;
+        kval.layer.masksToBounds = YES;
         kval.drawsBackground = YES;
         kval.backgroundColor = rigRaised();
         kval.textColor = rigText();
@@ -759,7 +760,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.bottomAnchor constraintEqualToAnchor:knobGroups[0].topAnchor constant:-12] setActive:YES];
 
     for (NSInteger i = 0; i < 3; ++i) {
-      NSBox* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
+      RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
 
       NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
       header.translatesAutoresizingMaskIntoConstraints = NO;
@@ -780,7 +781,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
       NSTextField* nmL = [[NSTextField alloc] initWithFrame:NSZeroRect];
       nmL.stringValue = names[(NSUInteger)i]; nmL.editable = NO; nmL.selectable = NO; nmL.drawsBackground = NO; nmL.bordered = NO;
-      nmL.font = [NSFont boldSystemFontOfSize:14]; nmL.textColor = rigText();
+      nmL.font = [NSFont systemFontOfSize:13 weight:NSFontWeightBold]; nmL.textColor = rigText();
+      rigApplyTracking(nmL, 0.8);
       nmL.translatesAutoresizingMaskIntoConstraints = NO;
       [header addSubview:nmL];
       [[nmL.leadingAnchor constraintEqualToAnchor:numL.trailingAnchor constant:8] setActive:YES];

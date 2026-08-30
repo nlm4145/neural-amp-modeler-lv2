@@ -109,11 +109,15 @@ if (APPLE)
 	find_library(AUTHENTICATIONSERVICES_FRAMEWORK AuthenticationServices REQUIRED)
 	find_library(SECURITY_FRAMEWORK Security REQUIRED)
 	find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+	find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
 
-	add_library(neural_amp_modeler_ui MODULE nam_ui.mm)
+	add_library(neural_amp_modeler_ui MODULE
+		nam_ui.mm
+		rig_theme.h rig_theme.mm
+		rig_widgets.h rig_widgets.mm)
 	target_include_directories(neural_amp_modeler_ui PRIVATE ../deps/lv2/include)
-	target_link_libraries(neural_amp_modeler_ui PRIVATE ${COCOA_FRAMEWORK})
+	target_link_libraries(neural_amp_modeler_ui PRIVATE ${COCOA_FRAMEWORK} ${IMAGEIO_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_ui PRIVATE -fobjc-arc)
 	set_target_properties(neural_amp_modeler_ui PROPERTIES
 		PREFIX ""
@@ -123,12 +127,13 @@ if (APPLE)
 	add_library(neural_amp_modeler_rig_ui MODULE
 		nam_rig_ui.mm
 		rig_theme.h rig_theme.mm
+		rig_widgets.h rig_widgets.mm
 		rig_knobs.h rig_knobs.cpp
 		rig_tone_api.h rig_tone_api.mm
 		rig_tone_browser.h rig_tone_browser.mm
 		rig_ui_state.h)
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
-	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK})
+	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
 	set_target_properties(neural_amp_modeler_rig_ui PROPERTIES
 		PREFIX ""

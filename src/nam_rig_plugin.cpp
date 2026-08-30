@@ -522,6 +522,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       tuner.lastNote = -1.0f;
       tuner.lastCents = 0.0f;
       tuner.histLen = 0;
+      tuner.histIdx = 0;
+      tuner.missCount = 0;
+      tuner.samplesSinceAnalysis = 0;
     }
     tuner.wasEnabled = tunerOn;
     if (tunerOn) {
@@ -534,13 +537,15 @@ void Plugin::process(uint32_t sampleCount) noexcept {
           if (tuner.filled < Tuner::kBuf) ++tuner.filled;
         }
       }
-      if (tuner.cooldown > 0) {
-        --tuner.cooldown;
-      } else if (tuner.filled >= Tuner::kBuf) {
-        tuner.cooldown = 3;   // re-analyze every few blocks; UI stays smooth
+      // Analyze on a ~30 ms hop — rate- and block-size-independent cadence —
+      // as soon as the ring holds one window+lag span (no full-ring wait).
+      const int span = Tuner::kWindow + Tuner::kMaxTau;
+      const int hop = (int)(sampleRate * 0.030);
+      tuner.samplesSinceAnalysis += (int)sampleCount;
+      if (tuner.samplesSinceAnalysis >= hop && tuner.filled >= span) {
+        tuner.samplesSinceAnalysis = 0;
         // Unwrap the most recent window (+ max lag) into linear scratch.
         float* win = tuner.scratch;
-        const int span = Tuner::kWindow + Tuner::kMaxTau;
         const int start = (tuner.ringPos - span + 2 * Tuner::kBuf) % Tuner::kBuf;
         for (int i = 0; i < span; ++i)
           win[i] = tuner.ring[(size_t)((start + i) % Tuner::kBuf)];
@@ -548,9 +553,15 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         float energy = 0.0f;
         for (int i = 0; i < Tuner::kWindow; ++i) energy += win[i] * win[i];
         const float rms = std::sqrt(energy / Tuner::kWindow);
-        if (rms < 0.003f) {           // silence — show "no signal"
-          tuner.lastNote = -1.0f;
-          tuner.histLen = 0;
+        if (rms < 0.003f) {
+          // Silence: hold the last reading through short dropouts (pluck
+          // transients, damped re-plucks) so the display doesn't blank and
+          // re-latch; clear only after kMissLimit consecutive misses.
+          if (++tuner.missCount >= Tuner::kMissLimit) {
+            tuner.lastNote = -1.0f;
+            tuner.histLen = 0;
+            tuner.histIdx = 0;
+          }
         } else {
           // NSDF (McLeod): nsdf[tau] = 2*acf[tau] / m[tau], in [-1, 1].
           for (int tau = Tuner::kMinTau; tau <= Tuner::kMaxTau; ++tau) {
@@ -604,17 +615,23 @@ void Plugin::process(uint32_t sampleCount) noexcept {
               midi = 69.0f + 12.0f * std::log2(freq / 440.0f);
           }
           if (midi < 0.0f) {
-            tuner.lastNote = -1.0f;
-            tuner.histLen = 0;
+            // No confident pitch this frame: same short hold as silence.
+            if (++tuner.missCount >= Tuner::kMissLimit) {
+              tuner.lastNote = -1.0f;
+              tuner.histLen = 0;
+              tuner.histIdx = 0;
+            }
           } else {
+            tuner.missCount = 0;
             // Median-of-3 display filter kills single-frame octave jumps.
-            tuner.noteHist[tuner.histLen % 3] = midi;
+            // The write slot ROLLS — a clamped index froze slots 1/2 at the
+            // note's onset values, latching the display until silence.
+            tuner.noteHist[tuner.histIdx] = midi;
+            tuner.histIdx = (tuner.histIdx + 1) % 3;
             tuner.histLen = std::min(tuner.histLen + 1, 3);
             if (tuner.histLen >= 3) {
               const float a = tuner.noteHist[0], b = tuner.noteHist[1], c = tuner.noteHist[2];
               tuner.lastNote = std::max(std::min(a, b), std::min(std::max(a, b), c));
-            } else if (tuner.lastNote < 0.0f) {
-              tuner.lastNote = -1.0f;   // need 3 consistent frames before showing
             }
           }
           if (tuner.lastNote >= 0.0f) {
@@ -628,9 +645,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     // Publish results: output ports for host polling, plus patch:Set atom
     // events on the notify port for the UI — only when something actually
-    // changed (note change or >=2-cent drift) to keep notify traffic low.
+    // changed (note change or >=1-cent drift) to keep notify traffic low.
     const int noteI = (int)tuner.lastNote;
-    const int centsQ = (int)std::lround(tuner.lastCents / 2.0f);
+    const int centsQ = (int)std::lround(tuner.lastCents);
     if (noteI != (int)tuner.sentNote || centsQ != (int)tuner.sentCentsQ) {
       tuner.sentNote = tuner.lastNote;
       tuner.sentCentsQ = (float)centsQ;

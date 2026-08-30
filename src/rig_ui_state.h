@@ -81,6 +81,7 @@ struct RigUIState {
       if (!tunerPanel || tunerPanel.hidden) return;
       if (lastTunerNote < 0) {
         tunerNoteLabel.stringValue = @"—";
+        tunerNoteLabel.textColor = rigText();
         tunerCentsLabel.stringValue = @"";
         tunerNeedle.hidden = YES;
         return;
@@ -92,6 +93,9 @@ struct RigUIState {
                                     kNames[((n % 12) + 12) % 12], n / 12 - 1];
       tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢",
                                      (int)std::lround(lastTunerCents)];
+      const bool inTune = std::fabs(lastTunerCents) <= 5.0f;
+      tunerNoteLabel.textColor = inTune ? rigGreen() : rigText();
+      tunerNeedle.layer.backgroundColor = (inTune ? rigGreen() : rigOrange()).CGColor;
       tunerNeedle.hidden = NO;
       // Needle across ±50 cents: middle of the meter = in tune.
       NSView* meter = tunerNeedle.superview;
