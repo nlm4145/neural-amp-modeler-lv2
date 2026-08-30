@@ -19,6 +19,12 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 13: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 14: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 15: return value < -79.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f dB", value];
+    case 22: return [NSString stringWithFormat:@"%+.1f dB", value];
+    case 23: return [NSString stringWithFormat:@"%.0f ms", value];
+    case 25: return [NSString stringWithFormat:@"%+.1f dB", value];
+    case 26: return value < 1.0f ? @"OFF" : [NSString stringWithFormat:@"%.0f Hz", value];
+    case 27: return value > 19990.0f ? @"OFF" : [NSString stringWithFormat:@"%.0f Hz", value];
+    case 28: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     default: return @"";
   }
 }

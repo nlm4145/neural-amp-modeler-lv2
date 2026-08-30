@@ -9,6 +9,13 @@ status=0
 # C++ oversampler verification (built ad hoc; skipped silently if clang++
 # is unavailable or the build fails).
 if command -v clang++ >/dev/null 2>&1; then
+  echo "== tests/verify_compressor.cpp =="
+  if clang++ -O2 -std=c++17 -Isrc tests/verify_compressor.cpp \
+      -o /tmp/verify_compressor 2>/dev/null; then
+    /tmp/verify_compressor || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
   echo "== tests/verify_oversample_modes.cpp =="
   if clang++ -O2 -std=c++17 -Isrc tests/verify_oversample_modes.cpp \
       -o /tmp/verify_os_modes 2>/dev/null; then
@@ -16,10 +23,24 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
+  echo "== tests/verify_oversample_shared.cpp =="
+  if clang++ -O2 -std=c++17 -framework Accelerate -Isrc src/oversample.cpp \
+      tests/verify_oversample_shared.cpp -o /tmp/verify_os_shared 2>/dev/null; then
+    /tmp/verify_os_shared || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
   echo "== tests/verify_oversample_cpp.cpp =="
   if clang++ -O2 -std=c++20 -framework Accelerate -Isrc src/oversample.cpp \
       tests/verify_oversample_cpp.cpp -o /tmp/verify_os 2>/dev/null; then
     /tmp/verify_os || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
+  echo "== tests/verify_transition_fade.cpp =="
+  if clang++ -O2 -std=c++17 tests/verify_transition_fade.cpp \
+      -o /tmp/verify_transition_fade 2>/dev/null; then
+    /tmp/verify_transition_fade || status=1
   else
     echo "  (skipped: harness build failed)"
   fi

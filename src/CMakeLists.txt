@@ -43,6 +43,7 @@ add_library(neural_amp_modeler SHARED ${SOURCES} ${NA_SOURCES})
 set(RIG_SOURCES nam_rig_lv2.cpp
 	nam_rig_plugin.cpp
 	nam_rig_plugin.h
+	dynamics.h
 	wav_ir.cpp
 	wav_ir.h
 	oversample.cpp

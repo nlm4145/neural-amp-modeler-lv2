@@ -114,7 +114,16 @@ WavIR::WavIR(std::vector<float> taps, int maxBlockSize)
     : reversedTaps(taps.rbegin(), taps.rend()),
       historyAndInput(taps.size() - 1 + std::max(1, maxBlockSize), 0.0f),
       output(std::max(1, maxBlockSize), 0.0f),
-      maxBlock(static_cast<uint32_t>(std::max(1, maxBlockSize))) {}
+      maxBlock(static_cast<uint32_t>(std::max(1, maxBlockSize))) {
+  double energy = 0.0;
+  float peak = 0.0f;
+  for (float tap : taps) {
+    energy += static_cast<double>(tap) * tap;
+    peak = std::max(peak, std::fabs(tap));
+  }
+  if (peak > 0.0f) peakScale = 1.0f / peak;
+  if (energy > 0.0) loudnessScale = static_cast<float>(1.0 / std::sqrt(energy));
+}
 WavIR::~WavIR() = default;
 
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlockSize) {
@@ -125,29 +134,25 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlo
   if (taps.size() > static_cast<size_t>(hostRate * 0.08)) taps.resize(static_cast<size_t>(hostRate * 0.08));
   if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
 
-  // Normalize to unity energy (sqrt(sum h^2) = 1) so the cab stage sits at
-  // roughly unity gain, matching the .nam stages whose recommended input and
-  // output trims the plugin applies. A raw full-scale IR keeps ~2.5x energy
-  // gain, running the cab stage ~8 dB hot and clipping on hot post-amp
-  // material. Level-invariant loading also makes quiet captures usable.
-  double energy = 0.0;
-  for (float t : taps) energy += static_cast<double>(t) * t;
-  if (energy > 0.0) {
-    const double scale = 1.0 / std::sqrt(energy);
-    for (float& t : taps) t = static_cast<float>(t * scale);
-  }
+  // Keep the resampled capture level intact. WavIR stores peak and energy
+  // scales so the user can change normalization instantly without reloading
+  // or destructively altering the taps. Mode 2 preserves the old default.
   return std::unique_ptr<WavIR>(new WavIR(std::move(taps), maxBlockSize));
 }
 
-void WavIR::process(float* samples, uint32_t count) noexcept {
+void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexcept {
   const size_t history = reversedTaps.size() - 1;
+  const float scale = normalizationMode <= 0 ? 1.0f
+                    : normalizationMode == 1 ? peakScale
+                                             : loudnessScale;
   uint32_t done = 0;
   while (done < count) {
     const uint32_t block = std::min(maxBlock, count - done);
     std::memcpy(historyAndInput.data() + history, samples + done, block * sizeof(float));
     vDSP_conv(historyAndInput.data(), 1, reversedTaps.data(), 1,
               output.data(), 1, block, reversedTaps.size());
-    std::memcpy(samples + done, output.data(), block * sizeof(float));
+    for (uint32_t i = 0; i < block; ++i)
+      samples[done + i] = output[i] * scale;
     if (history) std::memmove(historyAndInput.data(), historyAndInput.data() + block,
                               history * sizeof(float));
     done += block;

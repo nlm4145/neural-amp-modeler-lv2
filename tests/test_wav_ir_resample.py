@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Unit tests for WavIR resampling + IR level normalization.
+"""Unit tests for WavIR resampling + selectable IR level normalization.
 
 These mirror the EXACT algorithms in src/wav_ir.cpp (windowed-sinc resample,
-80 ms truncation, unity-energy normalization) so any change to the C++ can be
+80 ms truncation, preserve/peak/energy scales) so any change to the C++ can be
 validated in seconds, before compiling — the discipline that caught the
 count/position ratio inversion (a 1/4-length output) during development.
 
@@ -57,17 +57,22 @@ def resample(input_sig, from_rate, to_rate):
 
 def wav_ir_load_taps(x, source_rate, host_rate):
     """The tap-processing chain in WavIR::load (after WAV decode):
-    resample -> 80 ms truncation -> unity-energy normalization."""
+    resample -> 80 ms truncation. Normalization is now a runtime output scale."""
     taps = np.asarray(resample(x, source_rate, host_rate), dtype=np.float64)
     max_len = int(host_rate * 0.08)
     if taps.size > max_len:
         taps = taps[:max_len]
     if taps.size == 0:
         raise ValueError("empty IR")
-    energy = float(np.sum(taps * taps))
-    if energy > 0.0:
-        taps = taps * (1.0 / math.sqrt(energy))
     return taps
+
+
+def normalization_scales(taps):
+    peak = float(np.max(np.abs(taps)))
+    energy = float(np.sum(taps * taps))
+    return (1.0,
+            1.0 / peak if peak > 0.0 else 1.0,
+            1.0 / math.sqrt(energy) if energy > 0.0 else 1.0)
 
 
 def test_equal_rate_is_identity():
@@ -171,15 +176,18 @@ def test_round_trip_near_lossless():
     assert rmse < 0.01, f"round-trip RMSE {rmse}"
 
 
-def test_unity_energy_normalization():
-    """After WavIR::load's chain, sqrt(sum h^2) == 1 regardless of input level."""
+def test_selectable_normalization():
+    """Preserve is untouched; peak and historical loudness modes hit unity."""
     rng = random.Random(23)
     n = 732
     for peak in (1.0, 0.1, 0.01):
         ir = np.array([rng.uniform(-1, 1) for _ in range(n)], dtype=np.float32) * peak
-        taps = wav_ir_load_taps(ir, 48000, 48000)  # equal rate: only normalize runs
-        energy = float(np.sum(taps * taps))
-        assert abs(math.sqrt(energy) - 1.0) < 1e-4, f"peak {peak}: RMS gain {math.sqrt(energy)}"
+        taps = wav_ir_load_taps(ir, 48000, 48000)
+        preserve, peak_scale, loudness_scale = normalization_scales(taps)
+        assert preserve == 1.0 and np.array_equal(taps, ir)
+        assert abs(float(np.max(np.abs(taps * peak_scale))) - 1.0) < 1e-5
+        energy = float(np.sum((taps * loudness_scale) ** 2))
+        assert abs(math.sqrt(energy) - 1.0) < 1e-4, f"input peak {peak}: energy {energy}"
 
 
 def test_wav_decode_roundtrip_smoke():

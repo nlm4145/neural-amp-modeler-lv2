@@ -12,6 +12,7 @@
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -61,6 +62,7 @@ struct RigUIState {
   // amp's mode.
   __strong NSPopUpButton* osPopup = nil;               // master (title bar)
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
+  __strong NSPopUpButton* irNormPopup = nil;
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;
@@ -391,6 +393,13 @@ struct RigUIState {
     if (port == 19) {   // legacy global mode: reflect onto the master popup
       const int idx = value < 0.5f ? 0 : (value < 1.5f ? 1 : 2);
       dispatch_async(dispatch_get_main_queue(), ^{ [osPopup selectItemAtIndex:idx]; });
+      return;
+    }
+    if (port == 24) {
+      const int idx = std::max(0, std::min(2, (int)(value + 0.5f)));
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (irNormPopup) [irNormPopup selectItemAtIndex:idx];
+      });
       return;
     }
     // Map the port to its knob index (ports 10/11 are auto-cab, no-ops in UI).

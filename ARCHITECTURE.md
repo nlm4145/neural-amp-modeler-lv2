@@ -35,6 +35,13 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 11 | `cab_auto_bypassed` | out | 1 when amp is a full-rig model |
 | 12/13/14 | `bass`/`mid`/`treble` | in | dB |
 | 15 | `gate_threshold` | in | dB, −80 = OFF |
+| 22 | `amp_drive` | in | dB between pedal and amp |
+| 23 | `gate_release` | in | expander release, ms |
+| 24 | `ir_normalization` | in | Preserve / Peak / Loudness |
+| 25 | `cab_level` | in | post-cab dB trim |
+| 26 | `cab_low_cut` | in | Hz, 0 = OFF |
+| 27 | `cab_high_cut` | in | Hz, 20 kHz = OFF |
+| 28 | `compressor` | in | one-knob amount, 0–100% |
 | 16 | `tuner_enable` | in | toggle |
 | 17 | `tuner_note` | out | MIDI note, −1 = none |
 | 18 | `tuner_cents` | out | ±50 |
@@ -81,6 +88,12 @@ in the toolbar (Off / Legacy / True 2x, default Legacy):
 - The DSP→UI input meter (`#rig-input-db`) is unrelated to this toggle.
 - Spec + validation: `tests/test_oversample_2x.py` (Python reference) and
   `tests/verify_oversample_cpp.cpp` (C++ harness, run by run_all.sh).
+
+Adjacent enabled NAM stages using the same True factor share one oversampled
+domain (`UP -> pedal -> amp -> optional .nam cab -> DOWN`). This avoids
+redundant converter filtering and lets ultrasonic products from an upstream
+nonlinear stage participate in the next model's response. Mixed factors and
+WAV cab IRs form domain boundaries.
 
 ## DSP→UI messaging
 

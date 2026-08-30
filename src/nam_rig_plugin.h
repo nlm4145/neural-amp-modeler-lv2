@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
@@ -111,7 +113,17 @@ public:
                                     //     amp mode and corrupted sampleRate)
     float* pedal_oversample;   // in: port 20, pedal mode (0..6, decodeOversample)
     float* amp_oversample;     // in: port 21, amp mode (0..6); cab follows amp
+    float* amp_drive;          // in: port 22, gain between pedal and amp (dB)
+    float* gate_release;       // in: port 23, expander release time (ms)
+    float* ir_normalization;   // in: port 24, 0 preserve / 1 peak / 2 loudness
+    float* cab_level;          // in: port 25, post-cab trim (dB)
+    float* cab_low_cut;        // in: port 26, Hz (0 = off)
+    float* cab_high_cut;       // in: port 27, Hz (20 kHz = off)
+    float* compressor;         // in: port 28, one-knob amount (0..100%)
   };
+  static_assert(std::is_standard_layout_v<Ports>);
+  static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
+  static_assert(offsetof(Ports, compressor) == 28 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -177,9 +189,16 @@ private:
   std::array<bool, kStageCount> notifyPending{};
   float smoothedInputLevel = 1.0f;
   float smoothedOutputLevel = 1.0f;
+  float smoothedAmpDrive = 1.0f;
+  float smoothedCabLevel = 1.0f;
   Biquad bassEq, midEq, trebleEq;
+  Biquad cabLowCutEq, cabHighCutEq;
   float gateDetector = 0.0f;
   float gateGain = 1.0f;
+  bool gateOpen = true;
+  uint32_t gateHoldRemaining = 0;
+  float compressorEnvelope = 0.0f;
+  float compressorGain = 1.0f;
   int32_t maxBufferSize = 512;
 
   // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).
@@ -232,6 +251,7 @@ private:
   std::array<std::vector<float>, kStageCount> osScratch;   // domain buffer A
   std::array<std::vector<float>, kStageCount> osScratch2;  // domain buffer B (ping-pong)
   std::vector<float> osChain;
+  uint64_t osTopologySignature = ~uint64_t{0};
 
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
@@ -241,6 +261,20 @@ private:
   // through a newly-selected rate domain during an asynchronous reload.
   std::array<int, 2> osRequested = {kOsLegacy2, kOsLegacy2};
   std::array<uint64_t, kStageCount> loadGeneration{};
+
+  struct PendingSwitch {
+    NeuralAudio::NeuralModel* model = nullptr;
+    WavIR* ir = nullptr;
+    int oversampleMode = kOsLegacy2;
+    bool fullRig = false;
+    bool ready = false;
+    char path[MAX_FILE_NAME] = {};
+  };
+  std::array<PendingSwitch, kStageCount> pendingSwitches{};
+  enum class TransitionPhase { Steady, FadeOut, FadeIn };
+  TransitionPhase transitionPhase = TransitionPhase::Steady;
+  uint32_t transitionPosition = 0;
+  float transitionGain = 1.0f;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
   //             dilation is a no-op for common rates; a non-48k model at a
@@ -304,6 +338,7 @@ private:
   // old models keep processing until each swap lands).
   void reloadModelsForOversample();
   void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
+  void commitPendingSwitches();
   void tunerSetRates(double rate);
 };
 } // namespace NAMRig

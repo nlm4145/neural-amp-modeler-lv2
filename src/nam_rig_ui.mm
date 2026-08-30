@@ -52,6 +52,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)tunerToggled:(NSButton*)sender;
 - (void)oversampleModeChanged:(NSPopUpButton*)sender;      // master (title bar)
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
+- (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -181,6 +182,11 @@ constexpr std::array<const char*, 3> kPathURIs{
   const int mode = NAMRig::oversampleModeFromMenuIndex(
       static_cast<int>(sender.indexOfSelectedItem));
   _state->sendControl((uint32_t)sender.tag, static_cast<float>(mode));
+}
+
+- (void)irNormalizationChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  _state->sendControl(24, (float)sender.indexOfSelectedItem);
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -650,11 +656,18 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
     // Display names indexed by kRigKnobPorts order; cells are laid out in
     // signal order via kRigKnobDisplayOrder.
-    NSArray<NSString*>* knobNames = @[@"GATE", @"INPUT", @"OUTPUT", @"BASS", @"MID", @"TREBLE"];
-    NSArray<NSString*>* knobValues = @[@"OFF", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB"];
-    const std::array<double, kRigKnobCount> defaults{-80.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    const std::array<double, kRigKnobCount> mins{-80.0, -20.0, -20.0, -12.0, -12.0, -12.0};
-    const std::array<double, kRigKnobCount> maxes{0.0, 20.0, 20.0, 12.0, 12.0, 12.0};
+    NSArray<NSString*>* knobNames = @[@"GATE", @"RELEASE", @"INPUT", @"COMP",
+                                      @"DRIVE", @"BASS", @"MID", @"TREBLE",
+                                      @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT"];
+    NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
+                                       @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
+                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB"];
+    const std::array<double, kRigKnobCount> defaults{
+        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0};
+    const std::array<double, kRigKnobCount> mins{
+        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0};
+    const std::array<double, kRigKnobCount> maxes{
+        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -662,10 +675,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // knobs stay exactly within the tile's footprint at any width/zoom.
     NSView* knobGroups[3] = {nil, nil, nil};
 
-    // Display slots (indices into kRigKnobDisplayOrder, i.e. signal order)
-    // grouped per tile: PEDAL {GATE, INPUT}, AMP {BASS, MID, TREBLE}, CAB {OUTPUT}.
-    const size_t groupSlots[3][3] = {{0, 1}, {2, 3, 4}, {5}};
-    const size_t groupCounts[3] = {2, 3, 1};
+    // Display slots grouped per tile in signal-flow order.
+    const size_t groupSlots[3][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}};
+    const size_t groupCounts[3] = {4, 4, 4};
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -809,6 +821,22 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         state->stageOsPopup[(size_t)i] = so;
         // Keep the stage name label clear of the popup.
         [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
+                                                      constant:-8] setActive:YES];
+      } else {
+        NSPopUpButton* norm = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+        [norm addItemsWithTitles:@[@"Preserve", @"Peak", @"Loudness"]];
+        norm.controlSize = NSControlSizeSmall;
+        norm.target = state->uiController;
+        norm.action = @selector(irNormalizationChanged:);
+        norm.translatesAutoresizingMaskIntoConstraints = NO;
+        [header addSubview:norm];
+        [[norm.trailingAnchor constraintEqualToAnchor:onBtn.leadingAnchor constant:-8] setActive:YES];
+        [[norm.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
+        [[norm.widthAnchor constraintEqualToConstant:104] setActive:YES];
+        [[norm.heightAnchor constraintEqualToConstant:24] setActive:YES];
+        [norm selectItemAtIndex:2];
+        state->irNormPopup = norm;
+        [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:norm.leadingAnchor
                                                       constant:-8] setActive:YES];
       }
 

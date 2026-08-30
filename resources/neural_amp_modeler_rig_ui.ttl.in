@@ -37,4 +37,18 @@
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "treble" ; ui:notifyType atom:Float
 	], [
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "gate_threshold" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "amp_drive" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "gate_release" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "ir_normalization" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_level" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_low_cut" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_high_cut" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "compressor" ; ui:notifyType atom:Float
 	] .
