@@ -12,13 +12,14 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 |---|---|
 | `src/nam_rig_lv2.cpp` | LV2 descriptor: instantiate/run/cleanup, extension data (options, state, worker) |
 | `src/nam_rig_plugin.{h,cpp}` | Rig DSP: 3 serial stages (Pedal/Amp/Cab), EQ, tuner, worker model-swap chain |
-| `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: direct `vDSP_conv` convolution, load-time normalize + windowed-sinc resample |
+| `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: zero-latency hybrid convolution (direct head + uniform partitioned FFT tail), load-time normalize + windowed-sinc resample + truncation fade |
 | `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
-| `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigOrange`) + `rigKnobValueText` |
+| `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
+| `src/rig_widgets.{h,mm}` | Shared custom controls: `RigKnob` (arc knob), `RigPanel` (gradient panel), `RigButton`, ImageIO thumbnail decode helpers. Used by BOTH UI targets |
 | `src/rig_knobs.{h,cpp}` | `kRigKnobPorts` / `kRigKnobDisplayOrder` (display order = signal chain, not port order) |
 | `src/rig_tone_api.{h,mm}` | Tone3000 API base URL, OAuth/PKCE, keychain sessions, gear/stage mapping |
-| `src/rig_tone_browser.{h,mm}` | Tone Explorer: `ToneItem`, `ToneCardItem`, `RigButton`, `ToneBrowserController` (search pagination, disk cache, downloads, favorites) |
+| `src/rig_tone_browser.{h,mm}` | Tone Explorer: `ToneItem`, `ToneCardItem`, `ToneBrowserController` (search pagination, disk cache, downloads, favorites) |
 
 ## Port map (rig plugin) — APPEND-ONLY, never renumber
 
@@ -45,9 +46,10 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 16 | `tuner_enable` | in | toggle |
 | 17 | `tuner_note` | out | MIDI note, −1 = none |
 | 18 | `tuner_cents` | out | ±50 |
+| 29 | `latency` | out | frames, `lv2:latency` for host PDC (True cascade delay: 2x=23, 4x=35, 8x=41 per group; 0 at base rate) |
 
-New ports go AFTER index 18. Saved Element sessions restore by index —
-renumbering breaks them.
+New ports go AFTER the highest existing index. Saved Element sessions restore
+by index — renumbering breaks them.
 
 ## "Oversampling" reality — and TRUE oversampling (2x, optional)
 
@@ -95,6 +97,21 @@ redundant converter filtering and lets ultrasonic products from an upstream
 nonlinear stage participate in the next model's response. Mixed factors and
 WAV cab IRs form domain boundaries.
 
+Related DSP-chain guarantees:
+
+- Each True cascade delays by a fixed, block-size-independent amount
+  (2x = 23, 4x = 35, 8x = 41 base frames); the sum over active groups is
+  reported on port 29 (`lv2:latency`) every block for host PDC.
+- A ~5 Hz DC blocker runs after the stages whenever a model processed the
+  block (NAM models emit DC; the converters pass DC at unity). Model-free
+  chains skip it and stay bit-transparent.
+- Stage enable toggles are LATCHED through the 5 ms equal-power fade (same
+  path as model swaps) — they apply at the fade's zero crossing, never
+  mid-waveform.
+- `process()` slices the stage chain into `maxBufferSize` blocks, so a host
+  that exceeds (or never negotiated) `maxBlockLength` cannot overrun
+  NeuralAudio's fixed model buffers.
+
 ## DSP→UI messaging
 
 - **Continuous/host-polled values** (e.g. `cab_auto_bypassed`, tuner ports):
@@ -104,7 +121,7 @@ WAV cab IRs form domain boundaries.
   `…#rig-tuner-note` / `…#rig-tuner-cents` (defined in BOTH
   `nam_rig_plugin.h` and mirrored as `#define`s in `nam_rig_ui.mm` — the UI
   target must NOT include the DSP header, it drags NeuralAudio in).
-  Sends are CHANGE-GATED (only on note change / ≥2¢ drift) so the notify
+  Sends are CHANGE-GATED (only on note change / ≥1¢ drift) so the notify
   stream never floods.
 - **UI→DSP**: `patch:Set` with `atom:Path` on properties
   `…#rig-{pedal,amp,cab}-model`, scheduled onto the worker thread.

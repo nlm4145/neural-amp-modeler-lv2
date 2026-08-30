@@ -155,4 +155,10 @@
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 28 ;
 					lv2:symbol "compressor" ; lv2:name "Compressor" ;
 					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
+				], [
+					a lv2:ControlPort, lv2:OutputPort ; lv2:index 29 ;
+					lv2:symbol "latency" ; lv2:name "Latency" ;
+					lv2:designation lv2:latency ;
+					lv2:portProperty lv2:reportsLatency, lv2:integer ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 256.0 ; units:unit units:frame
 				] .

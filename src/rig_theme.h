@@ -9,6 +9,8 @@
 // ---- NAM Rig-style theme (dark, near-black + blue accent) ----
 NSColor* rigBG(void);
 NSColor* rigPanelBG(void);
+NSColor* rigPanelTop(void);      // gradient panels: top / bottom stops
+NSColor* rigPanelBottom(void);
 NSColor* rigPanelBorder(void);
 NSColor* rigRaised(void);
 NSColor* rigText(void);
@@ -16,6 +18,7 @@ NSColor* rigDimText(void);
 NSColor* rigAccent(void);
 NSColor* rigAccentDim(void);
 NSColor* rigOrange(void);
+NSColor* rigGreen(void);
 
 // Knob value formatting (dB / OFF) — port numbers match the LV2 port list.
 NSString* rigKnobValueText(uint32_t port, float value);
