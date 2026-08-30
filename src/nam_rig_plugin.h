@@ -67,6 +67,21 @@ struct LV2FreeModelMsg {
   WavIR* ir;
 };
 
+// One-pole DC blocker (~5 Hz high-pass). NAM models routinely emit a small
+// DC offset, and the oversampling converters pass DC at exactly unity gain,
+// so the offset survives to the output unless a stage removes it.
+struct DcBlocker {
+  float r = 0.9993f;  // exp(-2*pi*5/rate), set at initialize()
+  float x1 = 0.0f, y1 = 0.0f;
+  float process(float x) {
+    const float y = x - x1 + r * y1;
+    x1 = x;
+    y1 = y;
+    return y;
+  }
+  void reset() { x1 = 0.0f; y1 = 0.0f; }
+};
+
 // Second-order biquad (transposed direct form II). At zero gain the caller
 // bypasses the filter entirely, so neutral EQ stays bit-transparent.
 struct Biquad {
@@ -120,10 +135,12 @@ public:
     float* cab_low_cut;        // in: port 26, Hz (0 = off)
     float* cab_high_cut;       // in: port 27, Hz (20 kHz = off)
     float* compressor;         // in: port 28, one-knob amount (0..100%)
+    float* latency;            // out: port 29, lv2:latency (frames, for host PDC)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
   static_assert(offsetof(Ports, compressor) == 28 * sizeof(void*));
+  static_assert(offsetof(Ports, latency) == 29 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -191,6 +208,10 @@ private:
   float smoothedOutputLevel = 1.0f;
   float smoothedAmpDrive = 1.0f;
   float smoothedCabLevel = 1.0f;
+  // Rate-independent ~2 ms one-pole coefficient for the input/output trims
+  // (a fixed per-sample constant would halve the time constant at 96 kHz).
+  float trimSmoothCoeff = 0.01f;
+  DcBlocker dcBlocker;
   Biquad bassEq, midEq, trebleEq;
   Biquad cabLowCutEq, cabHighCutEq;
   float gateDetector = 0.0f;
@@ -228,6 +249,8 @@ private:
     int missCount = 0;              // consecutive analyses with no pitch
     float nsdf[kMaxTau + 2] = {};
     float scratch[kWindow + kMaxTau] = {};   // unwrapped NSDF window
+    float acf[kMaxTau + 1] = {};             // vDSP_conv output (all lags)
+    double sqPrefix[kWindow + kMaxTau + 1] = {};  // prefix sums of squares
     Biquad lp1, lp2;                // anti-alias front end
     int decimFactor = 1;
     float decimRate = 12000.0f;
@@ -278,6 +301,12 @@ private:
   TransitionPhase transitionPhase = TransitionPhase::Steady;
   uint32_t transitionPosition = 0;
   float transitionGain = 1.0f;
+  // Stage enables are LATCHED: a toggle rides the same fade-out -> apply ->
+  // fade-in path as a model swap, so flipping a stage on/off never puts a
+  // waveform discontinuity on the output. appliedEnabled is what process()
+  // actually runs; port changes only land at the fade's zero crossing.
+  std::array<bool, kStageCount> appliedEnabled{true, true, true};
+  bool enabledLatched = false;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
   //             dilation is a no-op for common rates; a non-48k model at a
@@ -320,6 +349,15 @@ private:
   // incoming rate, so the Element menu keeps affecting them (user decision).
   static constexpr double kTrueBaseRate = 96000.0;   // Element session rate
 
+  // Fixed pipeline delay of one True cascade, in base-rate frames, measured
+  // impulse-through (block-size independent): each 2x pair holds back 23
+  // samples at ITS input rate, so 2x = 23, 4x = 23 + 12, 8x = 23 + 12 + 6.
+  // Summed per active group and reported on the lv2:latency port so the
+  // host's delay compensation keeps parallel paths phase-aligned.
+  static uint32_t cascadeLatencyFrames(int factor) {
+    return factor == 2 ? 23u : factor == 4 ? 35u : factor == 8 ? 41u : 0u;
+  }
+
   // 0 = not a TRUE mode (base-rate path). Otherwise the pipeline factor for
   // this mode at this incoming rate (1 = coast: wrapper already covers it).
   static int truePipelineFactor(int mode, double incomingRate) {
@@ -342,6 +380,9 @@ private:
   void reloadModelsForOversample();
   void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
   void commitPendingSwitches();
+  // Enter FadeOut from Steady or mid-FadeIn (gain-continuous); no-op if a
+  // fade-out is already running.
+  void startTransitionFadeOut();
   void tunerSetRates(double rate);
 };
 } // namespace NAMRig

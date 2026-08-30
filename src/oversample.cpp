@@ -130,10 +130,11 @@ void Down2x::reset() {
 }
 
 size_t Down2x::process(const float* in, size_t n, float* out) {
-  const float* H = halfBandProto();
+  const float* P = halfBandInterp();
   const size_t total = kHist + n;
-  // Refuse if input AND the 2m conv outputs (2m <= n) would exceed scratch.
-  if (total + n > scratchSize_) return 0;
+  // Refuse if hist + input + the polyphase work areas (m conv outputs plus
+  // two m+23 branches) would exceed scratch; mirrors setMaxBlockSize.
+  if (kHist + 3 * n + 128 > scratchSize_) return 0;
   float* scr = scratch_;
   std::memcpy(scr, hist_, kHist * sizeof(float));
   std::memcpy(scr + kHist, in, n * sizeof(float));
@@ -157,14 +158,25 @@ size_t Down2x::process(const float* in, size_t n, float* out) {
   if (aEnd >= a) m = (size_t)((aEnd - a) / 2 + 1);
   if (m > 0) {
     const size_t j0 = (size_t)((a - 23) - base);  // scr index of 1st window
-    // Batching formulation (benchmark-chosen): contiguous vDSP_conv computes
-    // the 2m consecutive 47-tap windows starting at j0 (unit strides = fast
-    // path; strided-input conv was measured 5x SLOWER), then keep every
-    // other one — exactly the dots the per-sample loop computed at stride 2.
-    // In-bounds: 2(m-1) + 47 <= total - j0 by the emittability guarantee.
+    // Polyphase formulation: the prototype's even offsets are all sinc zeros
+    // except the center tap (exactly 0.5), so each output needs only the
+    // window center plus a 24-tap dot over the window's odd positions. One
+    // vDSP_ctoz deinterleaves the m windows' shared samples (realp[t] =
+    // scr[j0+2t] = odd offsets, imagp[t] = scr[j0+2t+1]; the center of
+    // window i is imagp[i+11]); one unit-stride vDSP_conv (fast path) then
+    // computes all m odd-branch dots. halfBandInterp() = 2 * the odd-offset
+    // taps, so out = 0.5 * (center + dot). Half the multiplies of running
+    // the full 47-tap FIR across every 2x position.
+    // In-bounds: 2(m-1) + 47 <= total - j0 by the emittability guarantee;
+    // ctoz reads at most one float past that, still inside the allocation.
     float* dst = scr + total;        // scratch tail: never aliases in/out
-    vDSP_conv(scr + j0, 1, H, 1, dst, 1, 2 * m, 47);
-    for (size_t i = 0; i < m; ++i) out[i] = dst[2 * i];
+    float* oddB = dst + m;
+    float* evenB = oddB + (m + 23);
+    DSPSplitComplex split{oddB, evenB};
+    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(scr + j0), 2, &split, 1,
+              m + 23);
+    vDSP_conv(oddB, 1, P, 1, dst, 1, m, 24);
+    for (size_t i = 0; i < m; ++i) out[i] = 0.5f * (evenB[i + 11] + dst[i]);
   }
   emitted_ += m;
   consumed_ += n;

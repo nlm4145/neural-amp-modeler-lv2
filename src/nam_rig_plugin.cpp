@@ -6,6 +6,8 @@
 #include <cstring>
 #include <fstream>
 
+#include <Accelerate/Accelerate.h>
+
 #include <lv2/core/lv2_util.h>
 #include "dynamics.h"
 #include "wav_ir.h"
@@ -188,6 +190,8 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   for (auto& loader : loaders)
     loader.SetExternalSampleRate(static_cast<int>(rate));
   tunerSetRates(rate);
+  trimSmoothCoeff = 1.0f - std::exp(-1.0f / static_cast<float>(rate * 0.002));
+  dcBlocker.r = std::exp(static_cast<float>(-2.0 * kPi * 5.0 / rate));
 
   if (options)
     optionsSet(this, options);
@@ -387,15 +391,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   // Fade the current chain to zero before changing model pointers or rate
   // domains, then fade the new chain in. This avoids discontinuities without
   // running two heavyweight recurrent model graphs in parallel.
-  if (rig->transitionPhase == TransitionPhase::Steady) {
-    rig->transitionPhase = TransitionPhase::FadeOut;
-    rig->transitionPosition = 0;
-  } else if (rig->transitionPhase == TransitionPhase::FadeIn) {
-    const float g = std::max(0.0f, std::min(1.0f, rig->transitionGain));
-    rig->transitionPhase = TransitionPhase::FadeOut;
-    rig->transitionPosition = static_cast<uint32_t>(
-        std::acos(g) * 2.0 / kPi * std::max(1.0, rig->sampleRate * 0.005));
-  }
+  rig->startTransitionFadeOut();
   return LV2_WORKER_SUCCESS;
 }
 
@@ -564,15 +560,27 @@ void Plugin::process(uint32_t sampleCount) noexcept {
           }
         } else {
           // NSDF (McLeod): nsdf[tau] = 2*acf[tau] / m[tau], in [-1, 1].
-          for (int tau = Tuner::kMinTau; tau <= Tuner::kMaxTau; ++tau) {
-            float acf = 0.0f, m = 0.0f;
-            for (int i = 0; i < Tuner::kWindow; ++i) {
-              const float a = win[i];
-              const float b = win[i + tau];
-              acf += a * b;
-              m += a * a + b * b;
+          // Vectorized: one vDSP_conv (window as signal AND filter) yields
+          // acf for every lag at once, and m[tau] = E[0,W) + E[tau,tau+W)
+          // comes from a prefix sum of squares — the old O(W * tauMax)
+          // scalar burst on the audio thread collapses to one fast conv.
+          // vDSP_conv needs signal length (kMaxTau+1) + kWindow - 1 = span.
+          vDSP_conv(win, 1, win, 1, tuner.acf, 1,
+                    (vDSP_Length)(Tuner::kMaxTau + 1),
+                    (vDSP_Length)Tuner::kWindow);
+          {
+            double c = 0.0;
+            tuner.sqPrefix[0] = 0.0;
+            for (int i = 0; i < span; ++i) {
+              c += (double)win[i] * win[i];
+              tuner.sqPrefix[i + 1] = c;
             }
-            tuner.nsdf[tau] = (m > 0.0f) ? (2.0f * acf / m) : 0.0f;
+          }
+          const double e0 = tuner.sqPrefix[Tuner::kWindow];
+          for (int tau = Tuner::kMinTau; tau <= Tuner::kMaxTau; ++tau) {
+            const double m = e0 + tuner.sqPrefix[tau + Tuner::kWindow] -
+                             tuner.sqPrefix[tau];
+            tuner.nsdf[tau] = m > 0.0 ? (float)(2.0 * tuner.acf[tau] / m) : 0.0f;
           }
           // Local maxima after the first positive zero-crossing; take the
           // FIRST peak within 90% of the best (avoids sub-octave picks).
@@ -719,7 +727,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       in *= gateGain;
     }
     gain = std::fabs(desiredInput - gain) > kSmoothEpsilon
-             ? 0.99f * gain + 0.01f * desiredInput
+             ? gain + (desiredInput - gain) * trimSmoothCoeff
              : desiredInput;
     ports.audio_out[i] = in * gain;
   }
@@ -762,12 +770,29 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // cab_enabled — full-rig amp captures no longer silently disconnect the
   // cab stage. The auto_cab port and the cab_auto_bypassed output keep their
   // meanings (cab_auto_bypassed now stays 0) for session/UI compatibility.
-  const bool enabled[kStageCount] = {
+  const bool desiredEnabled[kStageCount] = {
       *ports.pedal_enabled >= 0.5f,
       *ports.amp_enabled >= 0.5f,
       *ports.cab_enabled >= 0.5f};
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
+
+  // An enable toggle switches a (possibly high-gain) stage in or out mid
+  // waveform — a click. Latch the toggles through the same equal-power fade
+  // as a model swap: fade out, apply at the zero crossing, fade back in.
+  if (!enabledLatched) {
+    for (size_t st = 0; st < kStageCount; ++st)
+      appliedEnabled[st] = desiredEnabled[st];
+    enabledLatched = true;
+  } else {
+    for (size_t st = 0; st < kStageCount; ++st) {
+      if (desiredEnabled[st] != appliedEnabled[st]) {
+        startTransitionFadeOut();
+        break;
+      }
+    }
+  }
+  const auto& enabled = appliedEnabled;
 
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor
@@ -878,14 +903,22 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   };
 
   // ---- Chain NAM stages, merging adjacent compatible TRUE domains ----
+  // Models and converter scratch are sized from maxBufferSize; a host that
+  // exceeds the negotiated maxBlockLength (or never sent it, leaving the 512
+  // default) would overrun NeuralAudio's fixed internal buffers — classic
+  // WaveNet does not chunk in Process. So the chain runs in maxBufferSize
+  // slices; the converters' streaming state carries across slices, so the
+  // output is identical to one full-size pass.
   float* chain = osChain.data();
   bool cabProcessed = false;
-  if (osChain.size() < (size_t)sampleCount + 64) {
-    // Should not happen (sized for 8x); guard anyway.
-    for (uint32_t i = 0; i < sampleCount; ++i) ports.audio_out[i] = 0.0f;
-  } else {
-    std::memcpy(chain, ports.audio_out, sampleCount * sizeof(float));
-    uint32_t n = sampleCount;
+  bool modelProcessed = false;
+  uint32_t latencyFrames = 0;
+  const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
+  for (uint32_t off = 0; off < sampleCount; off += sliceMax) {
+    const uint32_t sliceLen = std::min(sliceMax, sampleCount - off);
+    float* io = ports.audio_out + off;
+    std::memcpy(chain, io, sliceLen * sizeof(float));
+    uint32_t n = sliceLen;
     for (size_t st = 0; st < kStageCount;) {
       const bool isWavCab = st == 2 && irs[2] != nullptr;
       if (!enabled[st] || !models[st] || isWavCab) {
@@ -896,6 +929,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
         applyModel(st, models[st], chain, n, sampleRate);
+        modelProcessed = true;
         if (st == 2) cabProcessed = true;
         ++st;
         continue;
@@ -912,11 +946,17 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         group[groupCount++] = next++;
       }
       n = processTrueGroup(st, group, groupCount, chain, n, f);
+      modelProcessed = true;
+      if (off == 0) latencyFrames += cascadeLatencyFrames(f);
       if (group[groupCount - 1] == 2) cabProcessed = true;
       st = next;
     }
-    std::memcpy(ports.audio_out, chain, sampleCount * sizeof(float));
+    std::memcpy(io, chain, sliceLen * sizeof(float));
   }
+  // Report the True cascades' fixed pipeline delay for host delay
+  // compensation (0 when every active stage runs at base rate).
+  if (ports.latency)
+    *ports.latency = static_cast<float>(latencyFrames);
 
   // A WAV cab remains at base rate. A .nam cab was processed in the chain
   // above, sharing the amp's domain whenever their applied factors match.
@@ -956,6 +996,18 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     cabHighCutEq.reset();
   }
 
+  // DC blocker (~5 Hz). NAM models routinely emit a small DC offset and the
+  // True converters pass DC at exactly unity gain; unchecked, the offset
+  // eats headroom and gets amplified by a bass-shelf boost. Runs only when a
+  // model actually processed this block, so a model-free chain stays
+  // bit-transparent.
+  if (modelProcessed) {
+    for (uint32_t i = 0; i < sampleCount; ++i)
+      ports.audio_out[i] = dcBlocker.process(ports.audio_out[i]);
+  } else {
+    dcBlocker.reset();
+  }
+
   // 3-band EQ (post: after the stages, before the output trim). Each band is
   // only processed when its gain is non-zero and the whole section is skipped
   // at neutral, so a flat EQ is bit-transparent.
@@ -982,7 +1034,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   gain = smoothedOutputLevel;
   for (uint32_t i = 0; i < sampleCount; ++i) {
     gain = std::fabs(desiredOutput - gain) > kSmoothEpsilon
-             ? 0.99f * gain + 0.01f * desiredOutput
+             ? gain + (desiredOutput - gain) * trimSmoothCoeff
              : desiredOutput;
     ports.audio_out[i] *= gain;
   }
@@ -1023,11 +1075,29 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     if (commitAfterBlock) {
       commitPendingSwitches();
+      for (size_t st = 0; st < kStageCount; ++st)
+        appliedEnabled[st] = desiredEnabled[st];
       transitionPhase = TransitionPhase::FadeIn;
       transitionPosition = 0;
       transitionGain = 0.0f;
     }
   }
+}
+
+void Plugin::startTransitionFadeOut() {
+  if (transitionPhase == TransitionPhase::FadeOut)
+    return;
+  if (transitionPhase == TransitionPhase::Steady) {
+    transitionPhase = TransitionPhase::FadeOut;
+    transitionPosition = 0;
+    return;
+  }
+  // Mid-FadeIn: pick the fade-out position whose cosine gain equals the
+  // current fade-in gain, so the gain curve stays continuous.
+  const float g = std::max(0.0f, std::min(1.0f, transitionGain));
+  transitionPhase = TransitionPhase::FadeOut;
+  transitionPosition = static_cast<uint32_t>(
+      std::acos(g) * 2.0 / kPi * std::max(1.0, sampleRate * 0.005));
 }
 
 void Plugin::commitPendingSwitches() {

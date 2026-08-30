@@ -12,7 +12,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 |---|---|
 | `src/nam_rig_lv2.cpp` | LV2 descriptor: instantiate/run/cleanup, extension data (options, state, worker) |
 | `src/nam_rig_plugin.{h,cpp}` | Rig DSP: 3 serial stages (Pedal/Amp/Cab), EQ, tuner, worker model-swap chain |
-| `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: direct `vDSP_conv` convolution, load-time normalize + windowed-sinc resample |
+| `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: zero-latency hybrid convolution (direct head + uniform partitioned FFT tail), load-time normalize + windowed-sinc resample + truncation fade |
 | `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
@@ -46,9 +46,10 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 16 | `tuner_enable` | in | toggle |
 | 17 | `tuner_note` | out | MIDI note, −1 = none |
 | 18 | `tuner_cents` | out | ±50 |
+| 29 | `latency` | out | frames, `lv2:latency` for host PDC (True cascade delay: 2x=23, 4x=35, 8x=41 per group; 0 at base rate) |
 
-New ports go AFTER index 18. Saved Element sessions restore by index —
-renumbering breaks them.
+New ports go AFTER the highest existing index. Saved Element sessions restore
+by index — renumbering breaks them.
 
 ## "Oversampling" reality — and TRUE oversampling (2x, optional)
 
@@ -95,6 +96,21 @@ domain (`UP -> pedal -> amp -> optional .nam cab -> DOWN`). This avoids
 redundant converter filtering and lets ultrasonic products from an upstream
 nonlinear stage participate in the next model's response. Mixed factors and
 WAV cab IRs form domain boundaries.
+
+Related DSP-chain guarantees:
+
+- Each True cascade delays by a fixed, block-size-independent amount
+  (2x = 23, 4x = 35, 8x = 41 base frames); the sum over active groups is
+  reported on port 29 (`lv2:latency`) every block for host PDC.
+- A ~5 Hz DC blocker runs after the stages whenever a model processed the
+  block (NAM models emit DC; the converters pass DC at unity). Model-free
+  chains skip it and stay bit-transparent.
+- Stage enable toggles are LATCHED through the 5 ms equal-power fade (same
+  path as model swaps) — they apply at the fade's zero crossing, never
+  mid-waveform.
+- `process()` slices the stage chain into `maxBufferSize` blocks, so a host
+  that exceeds (or never negotiated) `maxBlockLength` cannot overrun
+  NeuralAudio's fixed model buffers.
 
 ## DSP→UI messaging
 
