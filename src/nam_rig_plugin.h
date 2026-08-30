@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -262,10 +263,25 @@ private:
     return decodeOversample(*port);
   }
 
-  // Is this stage in a TRUE (pipeline) domain, and at what factor?
-  // Legacy modes use NeuralAudio's dilation (no pipeline); NONE runs raw.
-  static int trueFactor(int mode) {
-    return mode >= kOsTrue2 ? (1 << (mode - kOsTrue2 + 1)) : 0;  // 2/4/8 or 0
+  // TRUE modes target an ABSOLUTE domain rate pinned to the user's session
+  // rate, NOT the incoming rate: the Element host wrapper (Options >
+  // Oversampling) feeds the plugin a multiplied stream, and True must not
+  // stack on top of it. True Nx means "N x 96 kHz". The pipeline factor is
+  // what's still MISSING: factor = base*N / incoming, clamped to >= 1 —
+  // if the wrapper already supplied part (or all) of it, the plugin coasts.
+  // Legacy tiles are deliberately the exception: dilation is defined by the
+  // incoming rate, so the Element menu keeps affecting them (user decision).
+  static constexpr double kTrueBaseRate = 96000.0;   // Element session rate
+
+  // 0 = not a TRUE mode (base-rate path). Otherwise the pipeline factor for
+  // this mode at this incoming rate (1 = coast: wrapper already covers it).
+  static int truePipelineFactor(int mode, double incomingRate) {
+    if (mode < kOsTrue2) return 0;
+    const int n = 1 << (mode - kOsTrue2 + 1);          // 2 / 4 / 8
+    if (incomingRate <= 0.0) return n;
+    const double want = kTrueBaseRate * n / incomingRate;
+    const int f = (int)std::lround(want);
+    return f < 1 ? 1 : f;
   }
 
   // Re-load all currently-loaded model paths at the new rate domain. Called

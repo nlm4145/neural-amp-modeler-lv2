@@ -237,10 +237,17 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         //                    genuine pipeline domain it will process in.
         const int sessionRate = static_cast<int>(rig->sampleRate);
         const int mode = rig->stageOversample(stageIndex(message->stage));
-        const int factor = mode >= Plugin::kOsTrue2
-                               ? (1 << (mode - Plugin::kOsTrue2 + 1)) : 1;
+        // TRUE: absolute target = kTrueBaseRate * N (96k session pinned),
+        // immune to the Element wrapper — the model is created for the
+        // domain the pipeline will actually run, which is what the incoming
+        // rate still lacks (see truePipelineFactor). LEGACY: dilation from
+        // the incoming rate — the Element menu keeps affecting it (user
+        // decision, 2026-08-29). NONE: pinned 48k.
+        const int trueN = mode >= Plugin::kOsTrue2
+                              ? (1 << (mode - Plugin::kOsTrue2 + 1)) : 0;
         const int modelRate = mode == Plugin::kOsNone ? 48000
-                                                      : sessionRate * factor;
+                              : trueN ? static_cast<int>(Plugin::kTrueBaseRate) * trueN
+                                      : sessionRate;
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
         response.model = loader.CreateFromFile(message->path);
@@ -276,10 +283,11 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
       if (response.model) {
         const int stageMode = rig->stageOversample(stageIndex(message->stage));
-        const int stageFactor = stageMode >= Plugin::kOsTrue2
-                                    ? (1 << (stageMode - Plugin::kOsTrue2 + 1)) : 1;
+        const int trueN2 = stageMode >= Plugin::kOsTrue2
+                               ? (1 << (stageMode - Plugin::kOsTrue2 + 1)) : 0;
         const double domainRate = stageMode == Plugin::kOsNone ? 48000.0
-                                 : rig->sampleRate * (double)stageFactor;
+                                 : trueN2 ? Plugin::kTrueBaseRate * trueN2
+                                          : rig->sampleRate;
         const double modelRate = response.model->GetSampleRate();
         if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
@@ -647,7 +655,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // (factor * 24 samples per cascade), so after them, later base-rate
   // stages see delayed audio — the converters fill their short tails with
   // the last valid sample so the output never contains stale garbage.
-  const int cabFactor = trueFactor(osApplied[1]);   // cab follows amp
+  const int cabFactor = truePipelineFactor(osApplied[1], sampleRate);   // cab follows amp
 
   // Process ONE model stage either at base rate or inside a TRUE cascade.
   // Returns the number of base-rate samples written to `dst` (may be < count
@@ -659,7 +667,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       if (dst != src) std::memcpy(dst, src, count * sizeof(float));
       return count;
     }
-    const int f = trueFactor(osApplied[st]);
+    const int f = truePipelineFactor(osApplied[st], sampleRate);
     if (f <= 0) {
       // Base-rate stage (NONE or LEGACY): process in place.
       (void)inPlace;
