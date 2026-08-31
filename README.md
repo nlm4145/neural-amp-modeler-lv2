@@ -83,6 +83,20 @@ Note - you'll have to change the Visual Studio version if you are using a differ
 
 After building, the plugin will be in **build/neural_amp_modeler.lv2**.
 
+### Native macOS standalone app
+
+The rig can also run directly against the system's selected audio input and
+output, without a DAW or LV2 host:
+
+```bash
+./build-standalone.sh
+```
+
+This builds and launches `build-standalone/src/NAM Oversampled Rig.app`. On its
+first launch, macOS asks for microphone permission. Select the desired guitar
+interface as the system input and output before launching. To build without
+launching, pass `--no-launch`.
+
 ## CMake Options
 
 ```-DUSE_NATIVE_ARCH=ON```: If you have a relatively modern x64 processor, you can pass ```-DUSE_NATIVE_ARCH=ON``` on your cmake command line to enable certain processor-specific optimizations.

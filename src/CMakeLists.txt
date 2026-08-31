@@ -139,4 +139,32 @@ if (APPLE)
 		PREFIX ""
 		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 	)
+
+	option(BUILD_NAM_STANDALONE "Build the native macOS standalone rig app" OFF)
+	if (BUILD_NAM_STANDALONE)
+		find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
+		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
+		add_executable(nam_oversampled_rig_standalone MACOSX_BUNDLE
+			standalone_main.mm
+			nam_rig_plugin.cpp nam_rig_plugin.h
+			wav_ir.cpp wav_ir.h
+			oversample.cpp oversample.h oversample_modes.h
+			nam_rig_ui.mm
+			rig_theme.h rig_theme.mm
+			rig_widgets.h rig_widgets.mm
+			rig_knobs.h rig_knobs.cpp
+			rig_tone_api.h rig_tone_api.mm
+			rig_tone_browser.h rig_tone_browser.mm
+			rig_ui_state.h)
+		target_include_directories(nam_oversampled_rig_standalone PRIVATE
+			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+		target_link_libraries(nam_oversampled_rig_standalone PRIVATE NeuralAudio
+			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
+			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
+			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK})
+		target_compile_options(nam_oversampled_rig_standalone PRIVATE -fobjc-arc)
+		set_target_properties(nam_oversampled_rig_standalone PROPERTIES
+			OUTPUT_NAME "NAM Oversampled Rig"
+			MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/resources/standalone-Info.plist.in")
+	endif()
 endif()
