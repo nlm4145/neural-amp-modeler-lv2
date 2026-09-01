@@ -92,10 +92,11 @@ output, without a DAW or LV2 host:
 ./build-standalone.sh
 ```
 
-This builds and launches `build-standalone/src/NAM Oversampled Rig.app`. On its
-first launch, macOS asks for microphone permission. Select the desired guitar
-interface as the system input and output before launching. To build without
-launching, pass `--no-launch`.
+This builds the app, installs it as `/Applications/NAM Oversampled Rig.app`, and
+launches it. On its first launch, macOS asks for microphone permission. Select
+the desired guitar interface as the system input and output before launching.
+To build and install without launching, pass `--no-launch`. For a non-system
+destination, set `INSTALL_DIR` when invoking the script.
 
 ## CMake Options
 
