@@ -27,4 +27,13 @@ constexpr int oversampleMenuIndexFromMode(int mode) {
                                   : 4;
 }
 
+// True modes are conventional factors relative to the incoming stream rate.
+// Legacy and None do not create an explicit up/model/down domain.
+constexpr int trueOversampleFactorFromMode(int mode) {
+  return mode < kOversampleTrue2 ? 0
+       : mode == kOversampleTrue2 ? 2
+       : mode == kOversampleTrue4 ? 4
+                                  : 8;
+}
+
 } // namespace NAMRig

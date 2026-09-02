@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +22,7 @@
 
 #include "oversample.h"
 #include "oversample_modes.h"
+#include "phase_lanes.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -36,6 +38,16 @@
 namespace NAMRig {
 class WavIR;
 static constexpr unsigned int MAX_FILE_NAME = 1024;
+static constexpr size_t kMaxPhaseCount = 8;
+
+// Optional real-time dispatcher supplied by the standalone host. LV2 hosts do
+// not receive one: they run the exact same phase-lane algorithm serially and
+// remain free to schedule plugin instances using their own worker topology.
+class RealtimeJobDispatcher {
+public:
+  virtual ~RealtimeJobDispatcher() = default;
+  virtual bool tryPublish(void (*function)(void*), void* context) noexcept = 0;
+};
 
 enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Count = 3 };
 static constexpr size_t kStageCount = static_cast<size_t>(Stage::Count);
@@ -57,6 +69,8 @@ struct LV2SwitchModelMsg {
   uint64_t generation;
   char path[MAX_FILE_NAME];
   NeuralAudio::NeuralModel* model;
+  std::array<NeuralAudio::NeuralModel*, kMaxPhaseCount - 1> phaseModels;
+  uint32_t phaseCount;
   WavIR* ir;
   bool fullRig;
 };
@@ -64,6 +78,7 @@ struct LV2SwitchModelMsg {
 struct LV2FreeModelMsg {
   LV2WorkType type;
   NeuralAudio::NeuralModel* model;
+  std::array<NeuralAudio::NeuralModel*, kMaxPhaseCount - 1> phaseModels;
   WavIR* ir;
 };
 
@@ -150,6 +165,10 @@ public:
 
   std::array<NeuralAudio::NeuralModelLoader, kStageCount> loaders;
   std::array<NeuralAudio::NeuralModel*, kStageCount> models{};
+  std::array<std::array<NeuralAudio::NeuralModel*, kMaxPhaseCount - 1>,
+             kStageCount> phaseModels{};
+  std::array<uint32_t, kStageCount> modelPhaseCounts{1, 1, 1};
+  std::array<uint32_t, kStageCount> modelPhaseCursors{};
   std::array<WavIR*, kStageCount> irs{};
   std::array<std::string, kStageCount> modelPaths;
   bool ampIsFullRig = false;
@@ -159,6 +178,15 @@ public:
 
   bool initialize(double rate, const LV2_Feature* const* features) noexcept;
   void setMaxBufferSize(int size) noexcept;
+  void setRealtimeJobDispatcher(RealtimeJobDispatcher* dispatcher) noexcept {
+    realtimeDispatcher = dispatcher;
+  }
+  void setMultiCoreEnabled(bool enabled) noexcept {
+    multiCoreEnabled.store(enabled, std::memory_order_release);
+  }
+  bool isMultiCoreEnabled() const noexcept {
+    return multiCoreEnabled.load(std::memory_order_acquire);
+  }
   void process(uint32_t sampleCount) noexcept;
   void writePath(Stage stage);
   void writeAllPaths();
@@ -290,6 +318,8 @@ private:
 
   struct PendingSwitch {
     NeuralAudio::NeuralModel* model = nullptr;
+    std::array<NeuralAudio::NeuralModel*, kMaxPhaseCount - 1> phaseModels{};
+    uint32_t phaseCount = 1;
     WavIR* ir = nullptr;
     int oversampleMode = kOsLegacy2;
     bool fullRig = false;
@@ -297,6 +327,28 @@ private:
     char path[MAX_FILE_NAME] = {};
   };
   std::array<PendingSwitch, kStageCount> pendingSwitches{};
+
+  // TONE3000-style polyphase NAM execution. A True-Nx model owns N persistent
+  // recurrent instances. The Nx-rate stream is deinterleaved by phase, every
+  // instance processes one base-rate lane, and the lanes are interleaved
+  // again before decimation. Multicore changes only where the lane calls run;
+  // the sample graph and persistent states are identical when it is disabled.
+  std::array<std::vector<float>, kMaxPhaseCount> phaseInput;
+  std::array<std::vector<float>, kMaxPhaseCount> phaseOutput;
+  struct PhaseJob {
+    NeuralAudio::NeuralModel* model = nullptr;
+    float* input = nullptr;
+    float* output = nullptr;
+    size_t count = 0;
+    std::atomic<uint32_t>* remaining = nullptr;
+  };
+  std::array<PhaseJob, kMaxPhaseCount> phaseJobs{};
+  std::atomic<uint32_t> phaseJobsRemaining{0};
+  std::atomic<bool> multiCoreEnabled{false};
+  RealtimeJobDispatcher* realtimeDispatcher = nullptr;
+  static void runPhaseJob(void* context) noexcept;
+  void processModelPhases(size_t stage, float* samples, size_t count,
+                          uint32_t factor) noexcept;
   enum class TransitionPhase { Steady, FadeOut, FadeIn };
   TransitionPhase transitionPhase = TransitionPhase::Steady;
   uint32_t transitionPosition = 0;
@@ -313,8 +365,8 @@ private:
   //             non-multiple session rate runs wrong, warning is logged),
   // 1/2/3 = LEGACY 2x/4x/8x (NeuralAudio dilation scaling: hostRate/modelRate
   //             baked in at load time — cheap, stretches the model's memory),
-  // 4/5/6 = TRUE 2x/4x/8x (genuine UP -> model@Nx -> DOWN pipeline in this
-  //             plugin; the aliasing fix).
+  // 4/5/6 = TRUE 2x/4x/8x (genuine UP -> N phase-model clones -> DOWN
+  //             pipeline; the aliasing fix and multicore path).
   // The stage ports supersede the old global port 19 (kept in the TTL for
   // session-compat; process() ignores it).
   static constexpr int kOsNone = 0, kOsLegacy2 = 1, kOsLegacy4 = 2,
@@ -339,16 +391,6 @@ private:
     return decodeOversample(*port);
   }
 
-  // TRUE modes target an ABSOLUTE domain rate pinned to the user's session
-  // rate, NOT the incoming rate: the Element host wrapper (Options >
-  // Oversampling) feeds the plugin a multiplied stream, and True must not
-  // stack on top of it. True Nx means "N x 96 kHz". The pipeline factor is
-  // what's still MISSING: factor = base*N / incoming, clamped to >= 1 —
-  // if the wrapper already supplied part (or all) of it, the plugin coasts.
-  // Legacy tiles are deliberately the exception: dilation is defined by the
-  // incoming rate, so the Element menu keeps affecting them (user decision).
-  static constexpr double kTrueBaseRate = 96000.0;   // Element session rate
-
   // Fixed pipeline delay of one True cascade, in base-rate frames, measured
   // impulse-through (block-size independent): each 2x pair holds back 23
   // samples at ITS input rate, so 2x = 23, 4x = 23 + 12, 8x = 23 + 12 + 6.
@@ -358,20 +400,10 @@ private:
     return factor == 2 ? 23u : factor == 4 ? 35u : factor == 8 ? 41u : 0u;
   }
 
-  // 0 = not a TRUE mode (base-rate path). Otherwise the pipeline factor for
-  // this mode at this incoming rate (1 = coast: wrapper already covers it).
-  static int truePipelineFactor(int mode, double incomingRate) {
-    if (mode < kOsTrue2) return 0;
-    const int n = 1 << (mode - kOsTrue2 + 1);          // 2 / 4 / 8
-    if (incomingRate <= 0.0) return n;
-    const double want = kTrueBaseRate * n / incomingRate;
-    // The implementation is a cascade of 2x stages, so never return an
-    // unsupported factor such as 3 or 16. The latter would otherwise be
-    // misinterpreted as a single 2x level by process().
-    if (want < 1.5) return 1;
-    if (want < 3.0) return 2;
-    if (want < 6.0) return 4;
-    return 8;
+  // 0 = not a TRUE mode. True factors are relative to the actual stream rate:
+  // at 48 kHz, True 2x/4x/8x process at 96/192/384 kHz respectively.
+  static int truePipelineFactor(int mode, double = 0.0) {
+    return trueOversampleFactorFromMode(mode);
   }
 
   // Re-load all currently-loaded model paths at the new rate domain. Called

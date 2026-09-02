@@ -13,6 +13,14 @@ CXX_EXTRA="${CXXFLAGS:-}"
 # C++ oversampler verification (built ad hoc; skipped silently if clang++
 # is unavailable or the build fails).
 if command -v clang++ >/dev/null 2>&1; then
+  echo "== tests/verify_phase_lanes.cpp =="
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_phase_lanes.cpp \
+      -o /tmp/verify_phase_lanes 2>/dev/null; then
+    /tmp/verify_phase_lanes || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
+
   echo "== tests/verify_compressor.cpp =="
   if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_compressor.cpp \
       -o /tmp/verify_compressor 2>/dev/null; then

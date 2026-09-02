@@ -22,6 +22,16 @@ int main() {
     std::fputs("FAIL retired legacy values did not map to Legacy\n", stderr);
     ++failures;
   }
+
+  if (NAMRig::trueOversampleFactorFromMode(0) != 0 ||
+      NAMRig::trueOversampleFactorFromMode(1) != 0 ||
+      NAMRig::trueOversampleFactorFromMode(4) != 2 ||
+      NAMRig::trueOversampleFactorFromMode(5) != 4 ||
+      NAMRig::trueOversampleFactorFromMode(6) != 8) {
+    std::puts("  FAIL  True modes map to relative 2x/4x/8x factors");
+    return 1;
+  }
+  std::puts("  PASS  True modes map to relative 2x/4x/8x factors");
   if (failures == 0)
     std::puts("  PASS  sparse oversample menu/port mapping");
   return failures == 0 ? 0 : 1;

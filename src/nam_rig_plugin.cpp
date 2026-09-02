@@ -47,6 +47,21 @@ bool isFullRigModel(const char* path) {
          header.find("\"gear_type\":\"full_rig\"") != std::string::npos;
 }
 
+void deleteModelSet(NeuralAudio::NeuralModel* primary,
+                    const std::array<NeuralAudio::NeuralModel*,
+                                     kMaxPhaseCount - 1>& phases) {
+  delete primary;
+  for (auto* model : phases)
+    delete model;
+}
+
+LV2FreeModelMsg freeMessage(
+    NeuralAudio::NeuralModel* primary,
+    const std::array<NeuralAudio::NeuralModel*, kMaxPhaseCount - 1>& phases,
+    WavIR* ir) {
+  return LV2FreeModelMsg{kWorkTypeFree, primary, phases, ir};
+}
+
 constexpr double kPi = 3.14159265358979323846;
 constexpr float kEqQ = 0.7071067811865476f;  // Q = 1/sqrt(2)
 
@@ -138,12 +153,12 @@ Plugin::Plugin() {
 }
 
 Plugin::~Plugin() {
-  for (auto* model : models)
-    delete model;
+  for (size_t stage = 0; stage < kStageCount; ++stage)
+    deleteModelSet(models[stage], phaseModels[stage]);
   for (auto* ir : irs)
     delete ir;
   for (auto& pending : pendingSwitches) {
-    delete pending.model;
+    deleteModelSet(pending.model, pending.phaseModels);
     delete pending.ir;
   }
 }
@@ -208,6 +223,14 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   maxBufferSize = size;
   for (auto& loader : loaders)
     loader.SetDefaultMaxAudioBufferSize(size);
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    if (models[stage])
+      models[stage]->SetMaxAudioBufferSize(size + 1);
+    for (auto* phaseModel : phaseModels[stage]) {
+      if (phaseModel)
+        phaseModel->SetMaxAudioBufferSize(size + 1);
+    }
+  }
   // Per-stage, per-level converter sizing. Level L of a True-2^L cascade sees
   // a block of 2^L * size samples: level 0 (2x) sees 2x, level 1 (4x) sees
   // 4x, level 2 (8x) sees 8x. Every level is sized for the worst case (8x)
@@ -222,6 +245,10 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     }
     osScratch[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
     osScratch2[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+  }
+  for (size_t phase = 0; phase < kMaxPhaseCount; ++phase) {
+    phaseInput[phase].assign(static_cast<size_t>(size) + 64, 0.0f);
+    phaseOutput[phase].assign(static_cast<size_t>(size) + 64, 0.0f);
   }
   osChain.assign(static_cast<size_t>(8 * size) + 64, 0.0f);
 }
@@ -240,7 +267,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
   if (type == kWorkTypeFree) {
     if (size < sizeof(LV2FreeModelMsg)) return LV2_WORKER_ERR_UNKNOWN;
     const auto* message = static_cast<const LV2FreeModelMsg*>(data);
-    delete message->model;
+    deleteModelSet(message->model, message->phaseModels);
     delete message->ir;
     return LV2_WORKER_SUCCESS;
   }
@@ -252,9 +279,12 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
   if (!validStage(message->stage))
     return LV2_WORKER_ERR_UNKNOWN;
 
-  LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
-                             message->oversampleMode, message->generation,
-                             {}, nullptr, nullptr, false};
+  LV2SwitchModelMsg response{};
+  response.type = kWorkTypeSwitch;
+  response.stage = message->stage;
+  response.oversampleMode = message->oversampleMode;
+  response.generation = message->generation;
+  response.phaseCount = 1;
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
   const int requestedMode = Plugin::decodeOversample(
       static_cast<float>(message->oversampleMode));
@@ -264,46 +294,39 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       if (message->stage == Stage::Cab && endsWithWav(message->path)) {
         response.ir = WavIR::load(message->path, rig->sampleRate, rig->maxBufferSize).release();
       } else {
-        // The stage's oversample mode decides the loader external rate.
-        // NONE (0): 48000 — dilation is a no-op for common-rate models.
-        // LEGACY Nx (1..3): session rate — dilation = hostRate/modelRate
-        //                    (NeuralAudio stretches the model's dilations;
-        //                    a "4x" Legacy model runs the SAME math per
-        //                    sample, just reaches further back in time).
-        // TRUE Nx (4..6): Nx * session rate — the model is created for the
-        //                    genuine pipeline domain it will process in.
+        // True-Nx uses N model clones, one for each interleaved phase of the
+        // oversampled stream. Every clone advances at the session rate, so
+        // NeuralAudio must prepare it for that rate rather than Nx * rate.
+        // This preserves each clone's physical time scale and makes the N
+        // recurrent timelines independent jobs.
         const int sessionRate = static_cast<int>(rig->sampleRate);
         const int mode = requestedMode;
-        // TRUE: absolute target = kTrueBaseRate * N (96k session pinned),
-        // immune to the Element wrapper — the model is created for the
-        // domain the pipeline will actually run, which is what the incoming
-        // rate still lacks (see truePipelineFactor). LEGACY: dilation from
-        // the incoming rate — the Element menu keeps affecting it (user
-        // decision, 2026-08-29). NONE: pinned 48k.
         const int pipelineFactor = Plugin::truePipelineFactor(mode, rig->sampleRate);
         const int modelRate = mode == Plugin::kOsNone ? 48000
-                              : pipelineFactor > 0 ? static_cast<int>(
-                                    std::lround(rig->sampleRate * pipelineFactor))
-                                                   : sessionRate;
+                                                     : sessionRate;
+        response.phaseCount = static_cast<uint32_t>(
+            std::max(1, std::min<int>(kMaxPhaseCount, pipelineFactor)));
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
         response.model = loader.CreateFromFile(message->path);
+        for (uint32_t phase = 1;
+             response.model && phase < response.phaseCount; ++phase) {
+          response.phaseModels[phase - 1] = loader.CreateFromFile(message->path);
+          if (!response.phaseModels[phase - 1]) {
+            deleteModelSet(response.model, response.phaseModels);
+            response.model = nullptr;
+            response.phaseModels.fill(nullptr);
+          }
+        }
         loader.SetExternalSampleRate(sessionRate);
-        // The model must be sized for the largest block it will ever be fed.
-        // NeuralAudio sizes internal buffers (WaveNet Eigen matrices, ring
-        // buffers) from the loader's DefaultMaxAudioBufferSize at load time;
-        // classic WaveNet does NOT chunk in Process (its
-        // num_frames <= maxBufferSize assert is compiled out in Release), so
-        // a block larger than the sizing overruns those buffers and corrupts
-        // the heap. The transient window after ANY mode click is the danger:
-        // the audio thread flips its pipeline immediately while the OLD
-        // (just replaced) or NEW models keep processing whatever block shape
-        // the pipeline now feeds. Size for the worst case (8x = 4096 samples
-        // at a 512 max block) in EVERY mode — a few MB per model, no CPU.
-        // Do NOT make this mode-conditional; that re-opens the 2026-08-29
-        // click-crash (verified via unified-log forensics).
-        if (response.model)
-          response.model->SetMaxAudioBufferSize(8 * rig->maxBufferSize);
+        // Each phase receives at most one base-rate block (+ one sample when
+        // a block boundary is not divisible by N).
+        if (response.model) {
+          response.model->SetMaxAudioBufferSize(rig->maxBufferSize + 1);
+          for (auto* phaseModel : response.phaseModels)
+            if (phaseModel)
+              phaseModel->SetMaxAudioBufferSize(rig->maxBufferSize + 1);
+        }
         if (mode == Plugin::kOsNone)
           lv2_log_warning(&rig->logger,
                           "Oversampling NONE: model '%s' runs without rate "
@@ -320,12 +343,8 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
       if (response.model) {
         const int stageMode = requestedMode;
-        const int pipelineFactor2 = Plugin::truePipelineFactor(stageMode,
-                                                                rig->sampleRate);
-        const double domainRate = stageMode == Plugin::kOsNone ? 48000.0
-                                 : pipelineFactor2 > 0
-                                       ? rig->sampleRate * pipelineFactor2
-                                       : rig->sampleRate;
+        const double domainRate = stageMode == Plugin::kOsNone
+                                      ? 48000.0 : rig->sampleRate;
         const double modelRate = response.model->GetSampleRate();
         if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
@@ -335,7 +354,9 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       }
     }
   } catch (...) {
+    deleteModelSet(response.model, response.phaseModels);
     response.model = nullptr;
+    response.phaseModels.fill(nullptr);
   }
 
   if (!response.model && !response.ir && length > 0)
@@ -358,7 +379,8 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   if (message->generation != rig->loadGeneration[index]) {
     // A newer path or oversampling request superseded this load while it was
     // running. Dispose of the stale result on the worker thread.
-    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
+    LV2FreeModelMsg stale = freeMessage(
+        message->model, message->phaseModels, message->ir);
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
   }
@@ -370,17 +392,21 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
     // Reuse the completed response's path and load it for the latest domain.
     const size_t length = strnlen(message->path, MAX_FILE_NAME);
     rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
-    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
+    LV2FreeModelMsg stale = freeMessage(
+        message->model, message->phaseModels, message->ir);
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
   }
   auto& pending = rig->pendingSwitches[index];
   if (pending.ready) {
-    LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir};
+    LV2FreeModelMsg superseded = freeMessage(
+        pending.model, pending.phaseModels, pending.ir);
     rig->schedule->schedule_work(rig->schedule->handle,
                                  sizeof(superseded), &superseded);
   }
   pending.model = message->model;
+  pending.phaseModels = message->phaseModels;
+  pending.phaseCount = message->phaseCount;
   pending.ir = message->ir;
   pending.oversampleMode = Plugin::decodeOversample(
       static_cast<float>(message->oversampleMode));
@@ -414,6 +440,58 @@ void Plugin::tunerSetRates(double rate) {
   tuner.lp2 = tuner.lp1;
   tuner.lp1.reset();
   tuner.lp2.reset();
+}
+
+void Plugin::runPhaseJob(void* context) noexcept {
+  auto* job = static_cast<PhaseJob*>(context);
+  job->model->Process(job->input, job->output, job->count);
+  job->remaining->fetch_sub(1, std::memory_order_release);
+}
+
+void Plugin::processModelPhases(size_t stage, float* samples, size_t count,
+                                uint32_t factor) noexcept {
+  if (factor <= 1 || factor > kMaxPhaseCount ||
+      modelPhaseCounts[stage] != factor) {
+    models[stage]->Process(samples, samples, count);
+    return;
+  }
+
+  const size_t startingPhase = modelPhaseCursors[stage];
+  const auto phaseLengths = deinterleavePhases(
+      samples, count, static_cast<size_t>(factor), phaseInput, startingPhase);
+
+  for (uint32_t phase = 0; phase < factor; ++phase) {
+    phaseJobs[phase].model = phase == 0
+        ? models[stage] : phaseModels[stage][phase - 1];
+    phaseJobs[phase].input = phaseInput[phase].data();
+    phaseJobs[phase].output = phaseOutput[phase].data();
+    phaseJobs[phase].count = phaseLengths[phase];
+    phaseJobs[phase].remaining = &phaseJobsRemaining;
+  }
+
+  phaseJobsRemaining.store(factor, std::memory_order_release);
+  const bool dispatch = realtimeDispatcher &&
+      multiCoreEnabled.load(std::memory_order_acquire);
+  for (uint32_t phase = 1; phase < factor; ++phase) {
+    if (!dispatch ||
+        !realtimeDispatcher->tryPublish(&Plugin::runPhaseJob,
+                                        &phaseJobs[phase]))
+      runPhaseJob(&phaseJobs[phase]);
+  }
+  runPhaseJob(&phaseJobs[0]);
+
+  while (phaseJobsRemaining.load(std::memory_order_acquire) != 0) {
+#if defined(__aarch64__) || defined(__arm64__)
+    __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+    __asm__ __volatile__("pause");
+#endif
+  }
+
+  interleavePhases(phaseOutput, samples, count,
+                   static_cast<size_t>(factor), startingPhase);
+  modelPhaseCursors[stage] = static_cast<uint32_t>(
+      (startingPhase + count) % factor);
 }
 
 void Plugin::process(uint32_t sampleCount) noexcept {
@@ -795,9 +873,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   const auto& enabled = appliedEnabled;
 
   // ---- Oversample mode change detection (per stage) ----
-  // Models carry their rate domain baked in at load time (dilation factor
-  // and/or created at Nx * sessionRate), so any mode change re-sends the
-  // loaded paths through the worker. Until a matching swap lands, osApplied
+  // Models carry their rate domain and phase count at load time, so any mode
+  // change re-sends the loaded paths through the worker. Until a matching
+  // swap lands, osApplied
   // keeps the stage and its old model in their existing processing domain.
   // The cab (index 2) rides the amp's domain, so only pedal/amp are watched.
   bool oversampleChanged = false;
@@ -825,6 +903,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   }
   if (topology != osTopologySignature) {
     osTopologySignature = topology;
+    modelPhaseCursors.fill(0);
     for (auto& stageUp : osUp)
       for (auto& up : stageUp) up.reset();
     for (auto& stageDown : osDown)
@@ -832,8 +911,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   }
 
   // ---- Stage processing with per-stage oversample domains ----
-  // TRUE-Nx stages run inside a genuine UP -> model@Nx -> DOWN cascade
-  // (chain of 2x half-band pairs). NONE and LEGACY stages run at base rate
+  // TRUE-Nx stages run inside a genuine UP -> N base-rate phase clones ->
+  // DOWN cascade (chain of 2x half-band pairs). NONE and LEGACY stages run at base rate
   // (Legacy dilation stretches the model's reach inside NeuralAudio; no
   // pipeline involved). The nonlinear stages are the aliasing sources, so
   // only they get TRUE domains; the cab WAV IR and EQ stay at base rate
@@ -848,7 +927,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // stages see delayed audio — the converters fill their short tails with
   // the last valid sample so the output never contains stale garbage.
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
-                        float* samples, size_t count, double domainRate) {
+                        float* samples, size_t count, double domainRate,
+                        uint32_t domainFactor) {
     if (stage == 1) {
       const float target = dbToLinear(*ports.amp_drive);
       const float coeff = 1.0f - std::exp(-1.0f /
@@ -861,7 +941,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
     if (pre != 1.0f)
       for (size_t i = 0; i < count; ++i) samples[i] *= pre;
-    model->Process(samples, samples, count);
+    processModelPhases(stage, samples, count, domainFactor);
     const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
     if (post != 1.0f)
       for (size_t i = 0; i < count; ++i) samples[i] *= post;
@@ -884,7 +964,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     if (n == 0 || n + 64 > osScratch[owner].size())
       return count;
     for (size_t i = 0; i < stageCount; ++i)
-      applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f);
+      applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f,
+                 static_cast<uint32_t>(f));
 
     // Decimate back down the same chain (reversed), ping-ponging between
     // the two scratch buffers; the last level lands in the chain buffer.
@@ -928,7 +1009,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
 
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
-        applyModel(st, models[st], chain, n, sampleRate);
+        applyModel(st, models[st], chain, n, sampleRate, 1);
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
         ++st;
@@ -1104,10 +1185,16 @@ void Plugin::commitPendingSwitches() {
   for (size_t index = 0; index < kStageCount; ++index) {
     auto& pending = pendingSwitches[index];
     if (!pending.ready) continue;
-    LV2FreeModelMsg old{kWorkTypeFree, models[index], irs[index]};
+    LV2FreeModelMsg old = freeMessage(models[index], phaseModels[index],
+                                      irs[index]);
     models[index] = pending.model;
+    phaseModels[index] = pending.phaseModels;
+    modelPhaseCounts[index] = pending.phaseCount;
+    modelPhaseCursors[index] = 0;
     irs[index] = pending.ir;
     pending.model = nullptr;
+    pending.phaseModels.fill(nullptr);
+    pending.phaseCount = 1;
     pending.ir = nullptr;
     if (index == stageIndex(Stage::Amp)) ampIsFullRig = pending.fullRig;
     modelPaths[index] = pending.path;
@@ -1123,8 +1210,8 @@ void Plugin::commitPendingSwitches() {
 }
 
 void Plugin::reloadModelsForOversample() {
-  // Re-send every loaded model path through the worker so the models are
-  // re-created with the loader external rate matching the new domain.
+  // Re-send every loaded model path through the worker so its external rate
+  // and number of persistent phase clones match the requested mode.
   for (size_t i = 0; i < kStageCount; ++i) {
     if (models[i] && !modelPaths[i].empty()) {
       const size_t len = modelPaths[i].size();
@@ -1142,9 +1229,12 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
   const size_t index = stageIndex(stage);
   auto& pending = pendingSwitches[index];
   if (pending.ready) {
-    LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir};
+    LV2FreeModelMsg superseded = freeMessage(
+        pending.model, pending.phaseModels, pending.ir);
     schedule->schedule_work(schedule->handle, sizeof(superseded), &superseded);
     pending.model = nullptr;
+    pending.phaseModels.fill(nullptr);
+    pending.phaseCount = 1;
     pending.ir = nullptr;
     pending.ready = false;
   }

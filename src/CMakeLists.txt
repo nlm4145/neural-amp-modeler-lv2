@@ -48,7 +48,8 @@ set(RIG_SOURCES nam_rig_lv2.cpp
 	wav_ir.h
 	oversample.cpp
 	oversample.h
-	oversample_modes.h)
+	oversample_modes.h
+	phase_lanes.h)
 
 add_library(neural_amp_modeler_rig SHARED ${RIG_SOURCES} ${NA_SOURCES})
 
@@ -148,7 +149,7 @@ if (APPLE)
 			standalone_main.mm
 			nam_rig_plugin.cpp nam_rig_plugin.h
 			wav_ir.cpp wav_ir.h
-			oversample.cpp oversample.h oversample_modes.h
+			oversample.cpp oversample.h oversample_modes.h phase_lanes.h
 			nam_rig_ui.mm
 			rig_theme.h rig_theme.mm
 			rig_widgets.h rig_widgets.mm
