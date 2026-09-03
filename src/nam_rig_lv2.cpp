@@ -9,6 +9,7 @@
 
 #include "architecture.hpp"
 #include "nam_rig_plugin.h"
+#include "rt_worker_pool.h"
 
 static LV2_Handle instantiate(const LV2_Descriptor*,
                               double rate,
@@ -16,7 +17,10 @@ static LV2_Handle instantiate(const LV2_Descriptor*,
                               const LV2_Feature* const* features) {
   try {
     auto rig = std::make_unique<NAMRig::Plugin>();
-    return rig->initialize(rate, features) ? static_cast<LV2_Handle>(rig.release()) : nullptr;
+    if (!rig->initialize(rate, features)) return nullptr;
+    rig->setRealtimeJobDispatcher(NAMRig::sharedRealtimeJobDispatcher());
+    rig->setMultiCoreEnabled(true);
+    return static_cast<LV2_Handle>(rig.release());
   } catch (...) {
     return nullptr;
   }
