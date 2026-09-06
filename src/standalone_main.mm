@@ -3,11 +3,13 @@
 #import <CoreAudio/CoreAudio.h>
 
 #include <lv2/atom/atom.h>
+#include <lv2/atom/forge.h>
 #include <lv2/atom/util.h>
 #include <lv2/buf-size/buf-size.h>
 #include <lv2/core/lv2.h>
 #include <lv2/log/log.h>
 #include <lv2/options/options.h>
+#include <lv2/patch/patch.h>
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
 #include <lv2/worker/worker.h>
@@ -15,11 +17,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -69,6 +74,12 @@ class MessageRing {
     return true;
   }
 
+  // Discard queued messages (engine restart boundary: stale atoms from the
+  // previous session must not leak into the rebuilt one).
+  void clear() noexcept {
+    read_.store(write_.load(std::memory_order_acquire), std::memory_order_relaxed);
+  }
+
  private:
   std::array<FixedMessage, kMessageCount> slots_{};
   std::atomic<size_t> read_{0};
@@ -99,13 +110,35 @@ class StandaloneHost {
 
   bool start(NSWindow* window, NSView* parent, NSString** error) {
     window_ = window;
+    parent_ = parent;
+    // Sample rate: the device's current rate, except when the user pinned a
+    // different one previously (and the device supports it) — then switch
+    // the device over before the DSP is built for it.
     sampleRate_ = defaultOutputSampleRate();
     if (sampleRate_ <= 0.0) sampleRate_ = 48000.0;
+    const double preferredRate =
+        [[NSUserDefaults standardUserDefaults] doubleForKey:@"standaloneSampleRate"];
+    if (preferredRate > 0.0 && std::fabs(preferredRate - sampleRate_) >= 0.5) {
+      for (const double rate : supportedDeviceRates())
+        if (std::fabs(rate - preferredRate) < 0.5) {
+          if (setDeviceNominalRate(preferredRate)) sampleRate_ = preferredRate;
+          break;
+        }
+    }
 
     atomSequence_ = map(LV2_ATOM__Sequence);
     eventTransfer_ = map(LV2_ATOM__eventTransfer);
     atomInt_ = map(LV2_ATOM__Int);
     maxBlockLength_ = map(LV2_BUF_SIZE__maxBlockLength);
+    // URIDs the host needs to re-send the persisted rig selection itself
+    // after an engine rebuild (the UI only re-sends on its own instantiate).
+    patchSet_ = map(LV2_PATCH__Set);
+    patchProperty_ = map(LV2_PATCH__property);
+    patchValue_ = map(LV2_PATCH__value);
+    stagePathURIDs_[0] = map(NAM_RIG_PEDAL_URI);
+    stagePathURIDs_[1] = map(NAM_RIG_AMP_URI);
+    stagePathURIDs_[2] = map(NAM_RIG_CAB_URI);
+    lv2_atom_forge_init(&forge_, &mapFeature_);
 
     maxFramesOption_ = static_cast<int32_t>(kMaxFrames);
     options_[0] = {LV2_OPTIONS_INSTANCE, 0, maxBlockLength_, sizeof(maxFramesOption_),
@@ -116,11 +149,34 @@ class StandaloneHost {
     scheduleLV2Feature_ = {LV2_WORKER__schedule, &scheduleFeature_};
     logLV2Feature_ = {LV2_LOG__log, &logFeature_};
     optionsLV2Feature_ = {LV2_OPTIONS__options, options_.data()};
+    if (!startEngine(error)) return false;
+    if (!createUI(error)) { stopEngine(); return false; }
+    if (!startAudio(error)) { stop(); return false; }
+    bufferFrames_ = currentDeviceBufferFrames();
+    applyPersistedBufferFrames();
+    uiTimer_ = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                target:[NSBlockOperation blockOperationWithBlock:^{
+                                                  this->drainUIEvents();
+                                                }]
+                                              selector:@selector(main)
+                                              userInfo:nil
+                                               repeats:YES];
+    return true;
+  }
+
+  // (Re)create the DSP engine + worker at sampleRate_. The rig DSP bakes EQ
+  // coefficients, tuner decimation and model rate-domains from the rate at
+  // initialize(), so a rate change rebuilds the engine rather than
+  // re-configuring it live. The UI is deliberately NOT part of the engine:
+  // it is rate-independent, stays on screen across a rebuild, and keeps its
+  // knobs/zoom/browser state. The caller re-feeds the persisted model
+  // selection (resendPersistedPaths) so the rebuilt DSP reloads the rig.
+  bool startEngine(NSString** error) {
     const LV2_Feature* dspFeatures[] = {&mapLV2Feature_, &scheduleLV2Feature_,
                                         &logLV2Feature_, &optionsLV2Feature_, nullptr};
-
     plugin_ = std::make_unique<NAMRig::Plugin>();
     if (!plugin_->initialize(sampleRate_, dspFeatures)) {
+      plugin_.reset();
       return fail(error, @"The rig DSP could not be initialized.");
     }
     plugin_->setRealtimeJobDispatcher(NAMRig::sharedRealtimeJobDispatcher());
@@ -140,9 +196,20 @@ class StandaloneHost {
                                  port * sizeof(void*)) = &controls_[port - 4];
     }
 
+    {
+      std::lock_guard<std::mutex> lock(workerMutex_);
+      workerStopping_ = false;
+      work_.clear();
+    }
     worker_ = std::thread([this] { workerLoop(); });
+    uiToAudio_.clear();
+    audioToUI_.clear();
+    engineRunning_.store(true, std::memory_order_release);
+    return true;
+  }
 
-    parentLV2Feature_ = {LV2_UI__parent, (__bridge void*)parent};
+  bool createUI(NSString** error) {
+    parentLV2Feature_ = {LV2_UI__parent, (__bridge void*)parent_};
     mapUILV2Feature_ = {LV2_URID__map, &mapFeature_};
     resizeLV2Feature_ = {LV2_UI__resize, &resizeFeature_};
     const LV2_Feature* uiFeatures[] = {&mapUILV2Feature_, &parentLV2Feature_,
@@ -153,16 +220,27 @@ class StandaloneHost {
     uiHandle_ = uiDescriptor_->instantiate(uiDescriptor_, NAM_RIG_URI, nullptr, uiWrite,
                                            this, &widget, uiFeatures);
     if (!uiHandle_) return fail(error, @"The native rig UI could not be created.");
-
-    if (!startAudio(error)) return false;
-    uiTimer_ = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
-                                                target:[NSBlockOperation blockOperationWithBlock:^{
-                                                  this->drainUIEvents();
-                                                }]
-                                              selector:@selector(main)
-                                              userInfo:nil
-                                               repeats:YES];
     return true;
+  }
+
+  void stopEngine() {
+    engineRunning_.store(false, std::memory_order_release);
+    {
+      // Clear pending loads too: draining stale model loads at teardown is
+      // wasted work (and they belong to the rate being left behind).
+      std::lock_guard<std::mutex> lock(workerMutex_);
+      workerStopping_ = true;
+      work_.clear();
+    }
+    workerCV_.notify_one();
+    if (worker_.joinable()) worker_.join();
+    plugin_.reset();
+    {
+      std::lock_guard<std::mutex> lock(responseMutex_);
+      responses_.clear();
+    }
+    uiToAudio_.clear();
+    audioToUI_.clear();
   }
 
   void stop() {
@@ -174,20 +252,103 @@ class StandaloneHost {
       AudioComponentInstanceDispose(audioUnit_);
       audioUnit_ = nullptr;
     }
+    stopEngine();
     if (uiDescriptor_ && uiHandle_) {
       uiDescriptor_->cleanup(uiHandle_);
       uiHandle_ = nullptr;
     }
-    {
-      std::lock_guard<std::mutex> lock(workerMutex_);
-      workerStopping_ = true;
-    }
-    workerCV_.notify_one();
-    if (worker_.joinable()) worker_.join();
-    plugin_.reset();
   }
 
   double sampleRate() const { return sampleRate_; }
+  uint32_t bufferFrames() const { return bufferFrames_; }
+
+  // Change the session sample rate. The engine is rebuilt at the new rate
+  // (see startEngine); the UI stays on screen and the persisted rig
+  // selection is re-fed to the rebuilt DSP. Audio is down for a moment
+  // while the device switches rates and the models reload.
+  bool setSampleRate(double rate, NSString** error) {
+    if (!engineRunning_.load(std::memory_order_acquire) || rate <= 0.0 ||
+        std::fabs(rate - sampleRate_) < 0.5)
+      return true;
+    const double previousRate = sampleRate_;
+    // The HAL restarts the device on a nominal-rate change. The engine must
+    // be down BEFORE the switch so a render callback cannot run old-rate DSP
+    // against the new-rate device.
+    if (audioUnit_) {
+      AudioOutputUnitStop(audioUnit_);
+      AudioUnitUninitialize(audioUnit_);
+      AudioComponentInstanceDispose(audioUnit_);
+      audioUnit_ = nullptr;
+    }
+    stopEngine();
+    if (!setDeviceNominalRate(rate)) {
+      sampleRate_ = previousRate;
+      if (!startEngine(error) || !startAudio(error)) { stop(); return false; }
+      resendPersistedPaths();
+      bufferFrames_ = currentDeviceBufferFrames();
+      applyPersistedBufferFrames();
+      return fail(error, @"The audio device refused the selected sample rate.");
+    }
+    sampleRate_ = rate;
+    if (!startEngine(error) || !startAudio(error)) { stop(); return false; }
+    resendPersistedPaths();
+    bufferFrames_ = currentDeviceBufferFrames();
+    applyPersistedBufferFrames();
+    [[NSUserDefaults standardUserDefaults] setDouble:rate forKey:@"standaloneSampleRate"];
+    return true;
+  }
+
+  // Change the Core Audio I/O buffer size (device frames). Live property —
+  // no engine rebuild; the plugin chunks internally and is block-size
+  // agnostic up to kMaxFrames.
+  bool setBufferFrames(uint32_t frames, NSString** error) {
+    if (!engineRunning_.load(std::memory_order_acquire) || frames == 0) return true;
+    const uint32_t clamped = clampDeviceBufferFrames(frames);
+    if (clamped == 0)
+      return fail(error, @"The audio device rejected the buffer size.");
+    bufferFrames_ = clamped;
+    [[NSUserDefaults standardUserDefaults] setInteger:(NSInteger)clamped
+                                               forKey:@"standaloneBufferFrames"];
+    return true;
+  }
+
+  // Apply the persisted buffer size once audio is running. Separate from
+  // setBufferFrames so startup failures stay silent instead of alerting.
+  void applyPersistedBufferFrames() {
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    const NSInteger persisted = [defaults integerForKey:@"standaloneBufferFrames"];
+    if (persisted > 0) {
+      const uint32_t clamped = clampDeviceBufferFrames((uint32_t)persisted);
+      if (clamped) bufferFrames_ = clamped;
+    }
+  }
+
+  // Sample rates the default output device supports, ascending. Empty on
+  // failure (callers fall back to the device's current rate).
+  std::vector<double> supportedDeviceRates() {
+    std::vector<double> rates;
+    AudioDeviceID device = defaultOutputDevice();
+    if (device == kAudioObjectUnknown) return rates;
+    AudioObjectPropertyAddress address{kAudioDevicePropertyAvailableNominalSampleRates,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(device, &address, 0, nullptr, &size) != noErr ||
+        size == 0)
+      return rates;
+    std::vector<AudioValueRange> ranges(size / sizeof(AudioValueRange));
+    if (AudioObjectGetPropertyData(device, &address, 0, nullptr, &size,
+                                   ranges.data()) != noErr)
+      return rates;
+    // Nominal ranges come back as single-value ranges; some drivers report
+    // one wide continuous range — take its max as the single candidate.
+    for (const AudioValueRange& range : ranges)
+      rates.push_back(range.mMinimum == range.mMaximum ? range.mMinimum : range.mMaximum);
+    std::sort(rates.begin(), rates.end());
+    rates.erase(std::unique(rates.begin(), rates.end()), rates.end());
+    return rates;
+  }
+
   bool multiCoreEnabled() const { return plugin_ && plugin_->isMultiCoreEnabled(); }
   void setMultiCoreEnabled(bool enabled) {
     if (plugin_) plugin_->setMultiCoreEnabled(enabled);
@@ -198,6 +359,113 @@ class StandaloneHost {
  private:
   struct WorkItem { std::vector<uint8_t> data; };
   struct WorkResponse { std::vector<uint8_t> data; };
+
+  static AudioDeviceID defaultOutputDevice() {
+    AudioDeviceID device = kAudioObjectUnknown;
+    UInt32 size = sizeof(device);
+    AudioObjectPropertyAddress address{kAudioHardwarePropertyDefaultOutputDevice,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, nullptr,
+                               &size, &device);
+    return device;
+  }
+
+  // Switch the default output device's nominal sample rate. Returns true
+  // only if the HAL accepts AND the device settles on the requested rate.
+  static bool setDeviceNominalRate(double rate) {
+    AudioDeviceID device = defaultOutputDevice();
+    if (device == kAudioObjectUnknown) return false;
+    AudioObjectPropertyAddress address{kAudioDevicePropertyNominalSampleRate,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    Float64 value = rate;
+    if (AudioObjectSetPropertyData(device, &address, 0, nullptr, sizeof(value),
+                                   &value) != noErr)
+      return false;
+    // Give the driver a moment to re-lock, then confirm the settled rate.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+      Float64 settled = 0.0;
+      UInt32 size = sizeof(settled);
+      if (AudioObjectGetPropertyData(device, &address, 0, nullptr, &size,
+                                     &settled) == noErr &&
+          std::fabs(settled - rate) < 0.5)
+        return true;
+      [NSThread sleepForTimeInterval:0.05];
+    }
+    return false;
+  }
+
+  static uint32_t currentDeviceBufferFrames() {
+    AudioDeviceID device = defaultOutputDevice();
+    if (device == kAudioObjectUnknown) return 0;
+    AudioObjectPropertyAddress address{kAudioDevicePropertyBufferFrameSize,
+                                       kAudioObjectPropertyScopeGlobal,
+                                       kAudioObjectPropertyElementMain};
+    UInt32 frames = 0, size = sizeof(frames);
+    return AudioObjectGetPropertyData(device, &address, 0, nullptr, &size,
+                                      &frames) == noErr ? frames : 0;
+  }
+
+  // Set the device I/O buffer size, clamped to the range the driver
+  // advertises. Returns the size actually applied, or 0 on failure.
+  static uint32_t clampDeviceBufferFrames(uint32_t frames) {
+    AudioDeviceID device = defaultOutputDevice();
+    if (device == kAudioObjectUnknown || frames == 0) return 0;
+    AudioObjectPropertyAddress rangeAddress{kAudioDevicePropertyBufferFrameSizeRange,
+                                            kAudioObjectPropertyScopeGlobal,
+                                            kAudioObjectPropertyElementMain};
+    AudioValueRange range{0.0, 0.0};
+    UInt32 size = sizeof(range);
+    if (AudioObjectGetPropertyData(device, &rangeAddress, 0, nullptr, &size,
+                                   &range) == noErr && range.mMaximum > 0.0) {
+      double clamped = frames;
+      clamped = std::max(clamped, range.mMinimum);
+      clamped = std::min(clamped, range.mMaximum);
+      frames = static_cast<uint32_t>(clamped);
+    }
+    AudioObjectPropertyAddress sizeAddress{kAudioDevicePropertyBufferFrameSize,
+                                           kAudioObjectPropertyScopeGlobal,
+                                           kAudioObjectPropertyElementMain};
+    UInt32 value = frames;
+    if (AudioObjectSetPropertyData(device, &sizeAddress, 0, nullptr,
+                                   sizeof(value), &value) != noErr)
+      return 0;
+    return currentDeviceBufferFrames();
+  }
+
+  // Re-feed the persisted rig selection (same file the UI writes and reads,
+  // see RigUIState::uiPersistFile) to the rebuilt DSP after an engine
+  // restart. The UI widget itself is rate-independent and stays alive, so
+  // its labels/thumbnails need no refresh — only the DSP needs the paths.
+  void resendPersistedPaths() {
+    const char* home = std::getenv("HOME");
+    std::string file = home ? std::string(home) : std::string(".");
+    file += "/Library/Application Support/NAM Oversampled Rig/rig-model-paths.txt";
+    std::ifstream in(file);
+    if (!in) return;
+    for (size_t stage = 0; stage < 3; ++stage) {
+      std::string path, imageURL, toneIdStr;
+      if (!std::getline(in, path)) break;
+      std::getline(in, imageURL);
+      std::getline(in, toneIdStr);
+      path.erase(path.find_last_not_of("\r\n") + 1);
+      if (path.empty()) continue;
+      std::vector<uint8_t> buffer(path.size() + 256);
+      lv2_atom_forge_set_buffer(&forge_, buffer.data(), buffer.size());
+      LV2_Atom_Forge_Frame frame{};
+      auto* message = reinterpret_cast<LV2_Atom*>(
+          lv2_atom_forge_object(&forge_, &frame, 0, patchSet_));
+      if (!message) continue;
+      lv2_atom_forge_key(&forge_, patchProperty_);
+      lv2_atom_forge_urid(&forge_, stagePathURIDs_[stage]);
+      lv2_atom_forge_key(&forge_, patchValue_);
+      lv2_atom_forge_path(&forge_, path.c_str(),
+                          static_cast<uint32_t>(path.size() + 1));
+      lv2_atom_forge_pop(&forge_, &frame);
+      uiToAudio_.push(lv2_atom_total_size(message), eventTransfer_, buffer.data());
+    }
+  }
 
   static bool fail(NSString** error, NSString* message) {
     if (error) *error = message;
@@ -359,7 +627,8 @@ class StandaloneHost {
 
   OSStatus renderAudio(AudioUnitRenderActionFlags* flags, const AudioTimeStamp* timestamp,
                        UInt32 frames, AudioBufferList* ioData) noexcept {
-    if (frames > kMaxFrames || !ioData || ioData->mNumberBuffers == 0) {
+    if (frames > kMaxFrames || !ioData || ioData->mNumberBuffers == 0 ||
+        !engineRunning_.load(std::memory_order_acquire)) {
       if (ioData)
         for (UInt32 i = 0; i < ioData->mNumberBuffers; ++i)
           if (ioData->mBuffers[i].mData)
@@ -456,9 +725,12 @@ class StandaloneHost {
   }
 
   NSWindow* __weak window_ = nil;
+  NSView* __weak parent_ = nil;
   NSTimer* __strong uiTimer_ = nil;
   AudioUnit audioUnit_ = nullptr;
   double sampleRate_ = 48000.0;
+  uint32_t bufferFrames_ = 0;
+  std::atomic<bool> engineRunning_{false};
   std::unique_ptr<NAMRig::Plugin> plugin_;
   const LV2UI_Descriptor* uiDescriptor_ = nullptr;
   LV2UI_Handle uiHandle_ = nullptr;
@@ -475,6 +747,9 @@ class StandaloneHost {
   std::deque<std::string> uris_;
   std::unordered_map<std::string, LV2_URID> urids_;
   LV2_URID atomSequence_ = 0, eventTransfer_ = 0, atomInt_ = 0, maxBlockLength_ = 0;
+  LV2_URID patchSet_ = 0, patchProperty_ = 0, patchValue_ = 0;
+  std::array<LV2_URID, 3> stagePathURIDs_{};
+  LV2_Atom_Forge forge_{};
   LV2_URID_Map mapFeature_{};
   LV2_Worker_Schedule scheduleFeature_{};
   LV2_Log_Log logFeature_{};
@@ -501,6 +776,8 @@ class StandaloneHost {
 @implementation StandaloneAppDelegate {
   NSWindow* _window;
   NSMenuItem* _multiCoreMenuItem;
+  NSMenuItem* _rateMenuItem;
+  NSMenuItem* _bufferMenuItem;
   std::unique_ptr<StandaloneHost> _host;
 }
 
@@ -522,6 +799,23 @@ class StandaloneHost {
                      action:@selector(terminate:)
               keyEquivalent:@"q"];
   appItem.submenu = appMenu;
+
+  // Audio menu: sample rate + I/O buffer size for the standalone engine.
+  NSMenuItem* audioItem = [[NSMenuItem alloc] init];
+  [menu addItem:audioItem];
+  NSMenu* audioMenu = [[NSMenu alloc] initWithTitle:@"Audio"];
+  _rateMenuItem = [[NSMenuItem alloc] initWithTitle:@"Sample Rate"
+                                             action:NULL
+                                      keyEquivalent:@""];
+  _rateMenuItem.submenu = [[NSMenu alloc] initWithTitle:@"Sample Rate"];
+  [audioMenu addItem:_rateMenuItem];
+  _bufferMenuItem = [[NSMenuItem alloc] initWithTitle:@"Buffer Size"
+                                               action:NULL
+                                        keyEquivalent:@""];
+  _bufferMenuItem.submenu = [[NSMenu alloc] initWithTitle:@"Buffer Size"];
+  [audioMenu addItem:_bufferMenuItem];
+  audioItem.submenu = audioMenu;
+
   NSApp.mainMenu = menu;
 
   _window = [[NSWindow alloc]
@@ -547,7 +841,8 @@ class StandaloneHost {
   }
   _multiCoreMenuItem.state = _host->multiCoreEnabled()
       ? NSControlStateValueOn : NSControlStateValueOff;
-  _window.subtitle = [NSString stringWithFormat:@"Live input · %.0f Hz", _host->sampleRate()];
+  [self rebuildAudioMenus];
+  [self updateWindowSubtitle];
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 }
@@ -557,6 +852,92 @@ class StandaloneHost {
   const bool enabled = !_host->multiCoreEnabled();
   _host->setMultiCoreEnabled(enabled);
   sender.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+// Populate the Sample Rate and Buffer Size submenus from what the default
+// output device supports. Each entry carries its value in representedObject.
+- (void)rebuildAudioMenus {
+  if (!_host || !_rateMenuItem || !_bufferMenuItem) return;
+  NSMenu* rateMenu = _rateMenuItem.submenu;
+  [rateMenu removeAllItems];
+  const std::vector<double> rates = _host->supportedDeviceRates();
+  // Fall back to the current rate if the device reports nothing enumerable.
+  if (rates.empty()) {
+    NSMenuItem* item = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithFormat:@"%.0f Hz", _host->sampleRate()]
+               action:@selector(changeSampleRate:)
+        keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = @(_host->sampleRate());
+    [rateMenu addItem:item];
+  }
+  for (const double rate : rates) {
+    NSMenuItem* item = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithFormat:@"%.0f Hz", rate]
+               action:@selector(changeSampleRate:)
+        keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = @(rate);
+    if (std::fabs(rate - _host->sampleRate()) < 0.5)
+      item.state = NSControlStateValueOn;
+    [rateMenu addItem:item];
+  }
+
+  NSMenu* bufferMenu = _bufferMenuItem.submenu;
+  [bufferMenu removeAllItems];
+  // 4096 is the plugin's hard ceiling (kMaxFrames); larger callbacks render
+  // silence, so nothing bigger is offered.
+  const uint32_t sizes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+  const uint32_t current = _host->bufferFrames();
+  for (const uint32_t size : sizes) {
+    NSMenuItem* item = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithFormat:@"%u", size]
+               action:@selector(changeBufferSize:)
+        keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = @(size);
+    if (size == current) item.state = NSControlStateValueOn;
+    [bufferMenu addItem:item];
+  }
+}
+
+- (void)updateWindowSubtitle {
+  if (!_host || !_window) return;
+  _window.subtitle = [NSString
+      stringWithFormat:@"Live input · %.0f Hz · %u buffer",
+                       _host->sampleRate(), (unsigned)_host->bufferFrames()];
+}
+
+- (void)changeSampleRate:(NSMenuItem*)sender {
+  if (!_host) return;
+  const double rate = [sender.representedObject doubleValue];
+  if (rate <= 0.0) return;
+  NSString* error = nil;
+  const BOOL ok = _host->setSampleRate(rate, &error) ? YES : NO;
+  if (!ok && error) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"Sample rate change failed";
+    alert.informativeText = error;
+    [alert runModal];
+  }
+  [self rebuildAudioMenus];
+  [self updateWindowSubtitle];
+}
+
+- (void)changeBufferSize:(NSMenuItem*)sender {
+  if (!_host) return;
+  const uint32_t frames = [sender.representedObject unsignedIntValue];
+  if (frames == 0) return;
+  NSString* error = nil;
+  const BOOL ok = _host->setBufferFrames(frames, &error) ? YES : NO;
+  if (!ok && error) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"Buffer size change failed";
+    alert.informativeText = error;
+    [alert runModal];
+  }
+  [self rebuildAudioMenus];
+  [self updateWindowSubtitle];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
