@@ -281,11 +281,11 @@ private:
 
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
-  std::array<int, kStageCount> osApplied = {kOsLegacy2, kOsLegacy2, kOsLegacy2};
+  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8};
   // Latest port modes requested by the host. osApplied changes only when the
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
-  std::array<int, 2> osRequested = {kOsLegacy2, kOsLegacy2};
+  std::array<int, 2> osRequested = {kOsTrue8, kOsTrue8};
   std::array<uint64_t, kStageCount> loadGeneration{};
 
   struct PendingSwitch {
@@ -335,7 +335,7 @@ private:
     // stage 0 = pedal, 1 = amp (2 = cab: follows amp in process()).
     const float* port = stage == 0 ? ports.pedal_oversample
                                     : ports.amp_oversample;
-    if (!port) return kOsLegacy2;   // port not connected: keep 2x defaults
+    if (!port) return kOsTrue8;     // unconnected host port: maximum-quality default
     return decodeOversample(*port);
   }
 

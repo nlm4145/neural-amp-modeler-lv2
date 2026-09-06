@@ -187,8 +187,12 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
   uris.inputDb = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
 
-  for (auto& loader : loaders)
+  for (auto& loader : loaders) {
     loader.SetExternalSampleRate(static_cast<int>(rate));
+    // Slimmable/A2 files contain multiple fidelity tiers. Keep the loader on
+    // the full model explicitly rather than depending on a library default.
+    loader.SetDefaultQualityScaleFactor(1.0f);
+  }
   tunerSetRates(rate);
   trimSmoothCoeff = 1.0f - std::exp(-1.0f / static_cast<float>(rate * 0.002));
   dcBlocker.r = std::exp(static_cast<float>(-2.0 * kPi * 5.0 / rate));
@@ -302,8 +306,11 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         // at a 512 max block) in EVERY mode — a few MB per model, no CPU.
         // Do NOT make this mode-conditional; that re-opens the 2026-08-29
         // click-crash (verified via unified-log forensics).
-        if (response.model)
+        if (response.model) {
           response.model->SetMaxAudioBufferSize(8 * rig->maxBufferSize);
+          // Maximum-sound policy: always select the full A2/Slimmable tier.
+          response.model->SetQualityScaleFactor(1.0f);
+        }
         if (mode == Plugin::kOsNone)
           lv2_log_warning(&rig->logger,
                           "Oversampling NONE: model '%s' runs without rate "

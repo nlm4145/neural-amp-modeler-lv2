@@ -65,14 +65,17 @@ is no resampler. Consequences:
 - Even when it engages, the model's nonlinearity still fires once per
   host-rate sample — aliasing from the distortion is reduced, not eliminated.
 
-**Oversampling (port 19, `oversample_mode`, 0/1/2)** is a 3-mode dropdown
-in the toolbar (Off / Legacy / True 2x, default Legacy):
+**Per-stage oversampling (ports 20/21)** uses the five-mode dropdown
+None / Legacy / True 2x / True 4x / True 8x. Fresh instances default both
+nonlinear stages to **True 8x** for maximum sound quality; lower modes remain
+available for live CPU/latency trade-offs. Legacy port 19 remains only for
+saved-session compatibility and is ignored by DSP:
 
 - **Mode 0 — Off**: models load with external rate pinned to 48000, so
   NeuralAudio's dilation is a no-op. A/B reference only — a 48k model in
   a 96k session sounds detuned, which is exactly what a non-rate-adapted
   model does with no compensation.
-- **Mode 1 — Legacy** (default): models load at the session rate — the
+- **Mode 1 — Legacy**: models load at the session rate — the
   long-standing dilation behavior, unchanged from before this feature.
 - **Mode 2 — True 2x**: the pedal + amp stages (and `.nam` cab models)
   run inside a genuine oversampled domain — UP(2x) → model → DOWN(1x)

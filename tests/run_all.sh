@@ -6,6 +6,9 @@ cd "$(dirname "$0")/.."
 
 status=0
 
+echo "== tests/test_max_quality_defaults.py =="
+python3 tests/test_max_quality_defaults.py || status=1
+
 # Honor the caller's CXXFLAGS (e.g. the -nostdinc++ + SDK -isystem workaround
 # for broken Command Line Tools libc++ headers).
 CXX_EXTRA="${CXXFLAGS:-}"

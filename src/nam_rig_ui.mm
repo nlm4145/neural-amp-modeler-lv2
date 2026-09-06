@@ -167,11 +167,11 @@ constexpr std::array<const char*, 3> kPathURIs{
 // new rate domain in its worker and swaps them in.
 - (void)oversampleModeChanged:(NSPopUpButton*)sender {
   if (!_state) return;
-  // Master indexes 0/1/2 -> port values 0 (None) / 1 (Legacy) / 4 (True 2x).
+  // Master indexes map to the same five sparse values as the stage menus.
   const NSInteger i = sender.indexOfSelectedItem;
-  const float mode = (i >= 0 && i < 3)
+  const float mode = (i >= 0 && i < 5)
       ? static_cast<float>(NAMRig::oversampleModeFromMenuIndex((int)i))
-      : static_cast<float>(NAMRig::kOversampleLegacy);
+      : static_cast<float>(NAMRig::kOversampleTrue8);
   _state->sendControl(20, mode);
   _state->sendControl(21, mode);
 }
@@ -495,7 +495,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     //   True 2x : genuine UP/model/DOWN 2x domain (measured ~21 dB less
     //             alias clutter on hard-clipped material)
     state->osPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [state->osPopup addItemsWithTitles:@[@"None", @"Legacy", @"True 2x"]];
+    [state->osPopup addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",
+                                          @"True 8x"]];
     state->osPopup.controlSize = NSControlSizeSmall;
     state->osPopup.target = state->uiController;
     state->osPopup.action = @selector(oversampleModeChanged:);
@@ -503,10 +504,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [topView addSubview:state->osPopup];
     [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:10] setActive:YES];
     [[state->osPopup.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[state->osPopup.widthAnchor constraintEqualToConstant:96] setActive:YES];
+    [[state->osPopup.widthAnchor constraintEqualToConstant:104] setActive:YES];
     [[state->osPopup.heightAnchor constraintEqualToConstant:26] setActive:YES];
-    // Default to Legacy so a fresh insert matches the long-standing behavior.
-    [state->osPopup selectItemAtIndex:1];
+    // Fresh instances start at the uncompromised maximum-quality setting.
+    [state->osPopup selectItemAtIndex:4];
 
     // Tuner readout panel — hidden until the toggle is on. Note name, detune
     // in cents, and a needle meter across ±50 cents. Styled like the tiles
@@ -819,7 +820,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[so.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
         [[so.widthAnchor constraintEqualToConstant:104] setActive:YES];
         [[so.heightAnchor constraintEqualToConstant:24] setActive:YES];
-        [so selectItemAtIndex:1];        // default Legacy 2x = TTL default
+        [so selectItemAtIndex:4];        // default True 8x = TTL default
         state->stageOsPopup[(size_t)i] = so;
         // Keep the stage name label clear of the popup.
         [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
