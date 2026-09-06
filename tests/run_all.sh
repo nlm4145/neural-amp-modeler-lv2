@@ -9,6 +9,9 @@ status=0
 echo "== tests/test_max_quality_defaults.py =="
 python3 tests/test_max_quality_defaults.py || status=1
 
+echo "== tests/test_a2_fast_ring_copy.py =="
+python3 tests/test_a2_fast_ring_copy.py || status=1
+
 # Honor the caller's CXXFLAGS (e.g. the -nostdinc++ + SDK -isystem workaround
 # for broken Command Line Tools libc++ headers).
 CXX_EXTRA="${CXXFLAGS:-}"
@@ -100,6 +103,10 @@ else
 fi
 
 for t in tests/test_*.py; do
+  # Source-contract guards above run without third-party dependencies.
+  case "$t" in
+    tests/test_max_quality_defaults.py|tests/test_a2_fast_ring_copy.py) continue ;;
+  esac
   echo "== $t =="
   if command -v uv >/dev/null 2>&1; then
     uv run --with numpy python3 "$t" || status=1
