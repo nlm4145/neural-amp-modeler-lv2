@@ -22,6 +22,7 @@
 #include "oversample.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
+#include "stereo_space.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -139,6 +140,8 @@ public:
     float* latency;            // out: port 29, lv2:latency (frames, for host PDC)
     float* transformer_type;   // in: port 30, output-transformer profile (0..12)
     float* audio_out_r;        // out: port 31, right channel (dual-mono foundation)
+    float* stereo_width;       // in: port 32, right-channel short delay amount (0..100%)
+    float* room;               // in: port 33, stereo early-reflection amount (0..100%)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -146,6 +149,8 @@ public:
   static_assert(offsetof(Ports, latency) == 29 * sizeof(void*));
   static_assert(offsetof(Ports, transformer_type) == 30 * sizeof(void*));
   static_assert(offsetof(Ports, audio_out_r) == 31 * sizeof(void*));
+  static_assert(offsetof(Ports, stereo_width) == 32 * sizeof(void*));
+  static_assert(offsetof(Ports, room) == 33 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -226,6 +231,7 @@ private:
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;
   OutputTransformer outputTransformer;
+  StereoSpace stereoSpace;
   int transformerRequested = OutputTransformer::kCaptured;
   int transformerApplied = OutputTransformer::kCaptured;
   bool transformerLatched = false;

@@ -196,6 +196,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   tunerSetRates(rate);
   trimSmoothCoeff = 1.0f - std::exp(-1.0f / static_cast<float>(rate * 0.002));
   dcBlocker.r = std::exp(static_cast<float>(-2.0 * kPi * 5.0 / rate));
+  stereoSpace.initialize(rate);
 
   if (options)
     optionsSet(this, options);
@@ -425,7 +426,8 @@ void Plugin::tunerSetRates(double rate) {
 
 void Plugin::process(uint32_t sampleCount) noexcept {
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
-      !ports.audio_out_r || !ports.input_level || !ports.output_level ||
+      !ports.audio_out_r || !ports.stereo_width || !ports.room ||
+      !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
       !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents ||
       !ports.pedal_oversample || !ports.amp_oversample || !ports.amp_drive ||
@@ -1118,11 +1120,11 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
   }
 
-  // Stereo foundation: preserve the established mono chain as the left
-  // channel and mirror it to the appended right output. Future stereo
-  // cabs/effects can diverge the channels without changing current sound.
-  for (uint32_t i = 0; i < sampleCount; ++i)
-    ports.audio_out_r[i] = ports.audio_out[i];
+  // Post-rig stereo section. Width is a short right-channel delay; Room adds
+  // decorrelated early reflections. With both at zero this remains exact
+  // dual mono, preserving the established sound and gain.
+  stereoSpace.process(ports.audio_out, ports.audio_out_r, sampleCount,
+                      *ports.stereo_width, *ports.room);
 }
 
 void Plugin::startTransitionFadeOut() {

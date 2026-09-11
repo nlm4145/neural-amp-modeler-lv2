@@ -50,6 +50,8 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 29 | `latency` | out | frames, `lv2:latency` for host PDC (True cascade delay: 2x=23, 4x=35, 8x=41 per group; 0 at base rate) |
 | 30 | `transformer_type` | in | Amp output-transformer profile (0..12): Captured/Off, Modern, US Vintage, UK Vintage, Small Iron, Tight Metal, Extended Range, Thrash Bite, Doom Iron, Studio Linear, Tweed Bloom, Class-A Chime, Bass Iron |
 | 31 | `output_r` | audio out | Right channel; initially mirrors port 3 exactly as the stereo-path foundation |
+| 32 | `stereo_width` | in | 0–100%; short right-channel delay (up to 12 ms), 0 = exact dual mono |
+| 33 | `room` | in | 0–100%; decorrelated stereo early reflections, 0 = off |
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.

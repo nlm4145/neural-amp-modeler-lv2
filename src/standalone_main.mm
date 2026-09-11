@@ -87,11 +87,12 @@ class StandaloneHost {
     resizeFeature_.handle = this;
     resizeFeature_.ui_resize = resizeUI;
 
-    // LV2 control defaults, in port order (ports 4..30).
+    // LV2 control defaults, in port order (ports 4..33, excluding audio port 31).
     controls_ = {0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f,
                  0.0f, 0.0f, 0.0f, -80.0f, 0.0f, -1.0f, 0.0f, 1.0f,
                  1.0f, 1.0f, 0.0f, 150.0f, 2.0f, 0.0f, 0.0f,
                  20000.0f, 0.0f, 0.0f, 0.0f};
+    stereoControls_ = {0.0f, 0.0f};
   }
 
   ~StandaloneHost() { stop(); }
@@ -134,6 +135,8 @@ class StandaloneHost {
                                  port * sizeof(void*)) = &controls_[port - 4];
     }
     plugin_->ports.audio_out_r = output_.data();
+    plugin_->ports.stereo_width = &stereoControls_[0];
+    plugin_->ports.room = &stereoControls_[1];
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -276,6 +279,10 @@ class StandaloneHost {
     auto* host = static_cast<StandaloneHost*>(controller);
     if (format == 0 && port >= 4 && port <= 30 && size == sizeof(float)) {
       host->controls_[port - 4] = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= 32 && port <= 33 && size == sizeof(float)) {
+      host->stereoControls_[port - 32] = *static_cast<const float*>(buffer);
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -455,6 +462,7 @@ class StandaloneHost {
   std::array<float, kMaxFrames> input_{};
   std::array<float, kMaxFrames> output_{};
   std::array<float, 27> controls_{};
+  std::array<float, 2> stereoControls_{};
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

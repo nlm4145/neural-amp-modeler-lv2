@@ -18,7 +18,9 @@ ports = {
 assert ports[2] == "input", "existing mono guitar input must stay at port 2"
 assert ports[3] == "output", "existing left output must stay at port 3"
 assert ports[31] == "output_r", "right output must be appended at port 31"
+assert ports[32] == "stereo_width", "width control must be append-only at port 32"
+assert ports[33] == "room", "room control must be append-only at port 33"
 assert "float* audio_out_r;" in header
 assert "offsetof(Ports, audio_out_r) == 31 * sizeof(void*)" in header
-assert "ports.audio_out_r[i] = ports.audio_out[i];" in dsp
-print("  PASS  rig exposes append-only stereo outputs with a dual-mono foundation")
+assert "stereoSpace.process(ports.audio_out, ports.audio_out_r" in dsp
+print("  PASS  rig exposes append-only stereo output, width, and room controls")

@@ -181,4 +181,12 @@
 				], [
 					a lv2:OutputPort, lv2:AudioPort ;
 					lv2:index 31 ; lv2:symbol "output_r" ; lv2:name "Output R"
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 32 ;
+					lv2:symbol "stereo_width" ; lv2:name "Stereo Width" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 33 ;
+					lv2:symbol "room" ; lv2:name "Room" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
 				] .

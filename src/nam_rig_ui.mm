@@ -744,10 +744,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // signal order via kRigKnobDisplayOrder.
     NSArray<NSString*>* knobNames = @[@"GATE", @"RELEASE", @"INPUT", @"COMP",
                                       @"DRIVE", @"BASS", @"MID", @"TREBLE",
-                                      @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT"];
+                                      @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT",
+                                      @"WIDTH", @"ROOM"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
-                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB"];
+                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Signals below this input level are gently expanded; -80 dB bypasses the gate.",
       @"Gate release time. Higher values preserve note tails longer after the signal falls below the threshold.",
@@ -760,14 +761,16 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Level trim immediately after an active cabinet model or WAV impulse response. It has no effect when the cab stage is bypassed.",
       @"Cabinet high-pass cutoff. Removes low-frequency rumble after the cab; 0 Hz bypasses the filter.",
       @"Cabinet low-pass cutoff. Softens upper fizz after the cab; 20 kHz bypasses the filter.",
-      @"Final output trim after the complete rig, cabinet processing, and EQ."
+      @"Final output trim after the complete rig, cabinet processing, and EQ.",
+      @"Stereo width from a short right-channel delay. Zero preserves exact dual mono; higher settings widen the image up to 12 ms.",
+      @"Compact stereo room ambience from decorrelated early reflections after the rig."
     ];
     const std::array<double, kRigKnobCount> defaults{
-        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0};
+        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> mins{
-        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0};
+        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
-        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0};
+        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -776,8 +779,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     NSView* knobGroups[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
-    const size_t groupSlots[3][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}};
-    const size_t groupCounts[3] = {4, 4, 4};
+    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 5, 6, 7, 0, 0}, {8, 9, 10, 11, 12, 13}};
+    const size_t groupCounts[3] = {4, 4, 6};
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -1091,7 +1094,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 30) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 33) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }
