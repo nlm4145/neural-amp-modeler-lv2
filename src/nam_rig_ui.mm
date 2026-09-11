@@ -81,6 +81,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)showSignalFlow:(NSButton*)sender;
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
 - (void)showSpeakerLoad:(NSButton*)sender;
+- (void)resetAllKnobs:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -257,6 +258,15 @@ static NSString* stageName(NSInteger stage) {
   [_state->signalFlowPopover showRelativeToRect:sender.bounds
                                          ofView:sender
                                   preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)resetAllKnobs:(NSButton*)sender {
+  (void)sender;
+  if (!_state) return;
+  for (size_t k = 0; k < kRigKnobCount; ++k) {
+    _state->sendControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
+    _state->updateControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
+  }
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -781,6 +791,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[signalFlowButton.widthAnchor constraintEqualToConstant:118] setActive:YES];
     [[signalFlowButton.heightAnchor constraintEqualToConstant:28] setActive:YES];
 
+    RigButton* resetKnobsButton = rigButton(topView, @"RESET KNOBS", state->uiController,
+                                           @selector(resetAllKnobs:), NSZeroRect);
+    resetKnobsButton.toolTip = @"Reset every knob to its factory default. Model selections, stage switches, profiles, and oversampling are unchanged.";
+    resetKnobsButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [[resetKnobsButton.trailingAnchor constraintEqualToAnchor:signalFlowButton.leadingAnchor constant:-10] setActive:YES];
+    [[resetKnobsButton.centerYAnchor constraintEqualToAnchor:signalFlowButton.centerYAnchor] setActive:YES];
+    [[resetKnobsButton.widthAnchor constraintEqualToConstant:112] setActive:YES];
+    [[resetKnobsButton.heightAnchor constraintEqualToConstant:28] setActive:YES];
+
     NSPopover* signalFlowPopover = [[NSPopover alloc] init];
     signalFlowPopover.behavior = NSPopoverBehaviorTransient;
     NSViewController* flowController = [[NSViewController alloc] init];
@@ -873,9 +892,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Nonlinear low-frequency speaker excursion.",
       @"Strength of the selected speaker impedance curve."
     ];
-    const std::array<double, kRigKnobCount> defaults{
-        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 25.0, 25.0, 50.0, 50.0};
+
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -922,7 +939,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         if (gi == groupCounts[g] - 1)
           [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor] setActive:YES];
 
-        state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k],
+        state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k],
                                   mins[k], maxes[k],
                                   NSMakePoint(0, 0), state->uiController);
         NSSlider* knob = state->knobs[k];
@@ -1179,7 +1196,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
           const size_t col = a % 3, row = a / 3;
           NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(69 + col * 127, 8 + (1 - row) * 100, 119, 100)];
           [popView addSubview:cell];
-          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
+          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
           state->knobs[k].toolTip = knobDescriptions[k];
           NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15),
               [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
@@ -1231,7 +1248,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
           const size_t k = 22 + a;
           NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + a * 127, 8, 119, 125)];
           [view addSubview:cell];
-          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
+          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
           state->knobs[k].toolTip = knobDescriptions[k];
           NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15), [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
           label.toolTip = knobDescriptions[k];

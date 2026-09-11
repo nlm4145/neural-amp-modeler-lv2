@@ -494,7 +494,7 @@ struct RigUIState {
       return;
     }
     if (port == 24) {
-      const int idx = std::max(0, std::min(2, (int)(value + 0.5f)));
+      const int idx = std::max(0, std::min(3, (int)(value + 0.5f)));
       dispatch_async(dispatch_get_main_queue(), ^{
         if (irNormPopup) {
           [irNormPopup selectItemAtIndex:idx];
