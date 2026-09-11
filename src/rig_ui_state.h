@@ -45,7 +45,7 @@ struct RigUIState {
   LV2_URID patchSet = 0;
   LV2_URID patchProperty = 0;
   LV2_URID patchValue = 0;
-  std::array<LV2_URID, 3> pathURIDs{};
+  std::array<LV2_URID, 4> pathURIDs{};
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
@@ -70,6 +70,7 @@ struct RigUIState {
   __strong NSPopover* signalFlowPopover = nil;
   __strong NSPopUpButton* speakerProfilePopup = nil;
   __strong NSPopover* speakerPopover = nil;
+  __strong NSPopover* effectsPopover = nil;
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;
@@ -134,8 +135,8 @@ struct RigUIState {
   __weak NSView* parent = nil;
   __strong NAMRigUIController* uiController = nil;
   __strong ToneBrowserController* browserController = nil;
-  std::array<__strong NSTextField*, 3> pathLabels{};
-  std::array<__strong NSButton*, 3> powerButtons{};
+  std::array<__strong NSTextField*, 4> pathLabels{};
+  std::array<__strong NSButton*, 4> powerButtons{};
   std::array<__strong NSImageView*, 3> stageImages{};
   // auto-cab is always on — no toggle or status label needed
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
@@ -143,7 +144,7 @@ struct RigUIState {
   // Editable knob value boxes: while the user is typing in one, host-driven
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
-  std::array<__strong NSPopUpButton*, 3> modelPickers{};  // per-stage model selector in each tile
+  std::array<__strong NSPopUpButton*, 4> modelPickers{};  // per-stage model selector in each tile
   LV2UI_Resize* hostResize = nullptr;
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
@@ -153,13 +154,13 @@ struct RigUIState {
   // model paths (every selection is sent via sendPath). We write them to disk on
   // change and re-send them on every instantiate, so selections survive a
   // plugin-window recreation regardless of the host's LV2-State handling.
-  std::array<std::string, 3> selectedPaths{};
-  std::array<std::string, 3> selectedImageURLs{};   // thumbnail metadata (persisted)
-  std::array<long, 3> selectedToneIds{};            // key into NAM Rig's artwork cache
+  std::array<std::string, 4> selectedPaths{};
+  std::array<std::string, 4> selectedImageURLs{};   // thumbnail metadata (persisted)
+  std::array<long, 4> selectedToneIds{};            // key into NAM Rig's artwork cache
   // Every model offered by the selected tone/pack.  Hosts such as Element may
   // tear down and recreate an LV2 UI when its window loses focus; keeping only
   // selectedPaths would then rebuild each popup with just its current item.
-  std::array<std::vector<std::string>, 3> availableModelPaths{};
+  std::array<std::vector<std::string>, 4> availableModelPaths{};
   static std::string uiPersistFile() {
     const char* home = std::getenv("HOME");
     std::string dir = home ? std::string(home) : std::string(".");
@@ -171,7 +172,7 @@ struct RigUIState {
     const std::string file = uiPersistFile();
     std::ofstream out(file, std::ios::trunc);
     if (!out) return;
-    for (size_t i = 0; i < 3; ++i)
+    for (size_t i = 0; i < selectedPaths.size(); ++i)
       out << selectedPaths[i] << "\n"
           << selectedImageURLs[i] << "\n"
           << selectedToneIds[i] << "\n";
@@ -217,7 +218,7 @@ struct RigUIState {
     const std::string file = uiPersistFile();
     std::ifstream in(file);
     if (!in) return;
-    for (size_t i = 0; i < 3 && i < selectedPaths.size(); ++i) {
+    for (size_t i = 0; i < selectedPaths.size(); ++i) {
       std::string path, imageURL, toneIdStr;
       if (!std::getline(in, path)) break;
       std::getline(in, imageURL);
@@ -295,6 +296,8 @@ struct RigUIState {
     NSString* role = stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
     NSString* behavior = stage == 2
         ? @"Select the active cabinet NAM model or WAV impulse response."
+        : stage == 3
+        ? @"Select the second cabinet (Cab B) NAM model or WAV impulse response. It runs parallel to Cab A."
         : [NSString stringWithFormat:@"Select the active %@ NAM model.", role];
     return path.length
         ? [NSString stringWithFormat:@"%@ Current file: %@", behavior, path]
@@ -463,8 +466,13 @@ struct RigUIState {
   }
 
   void updateControl(uint32_t port, float value) {
-    if (port >= 7 && port <= 9) {
-      dispatch_async(dispatch_get_main_queue(), ^{ powerButtons[port - 7].state = value >= 0.5f; powerButtons[port - 7].needsDisplay = YES; });
+    if ((port >= 7 && port <= 9) || port == 47) {
+      const size_t slot = port == 47 ? 3 : port - 7;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (!powerButtons[slot]) return;
+        powerButtons[slot].state = value >= 0.5f;
+        powerButtons[slot].needsDisplay = YES;
+      });
       return;
     }
     if (port == 20 || port == 21) {   // per-stage oversample mode (0..6)

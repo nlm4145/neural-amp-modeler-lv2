@@ -28,6 +28,22 @@ float dbToLinear(float db) {
   return std::pow(10.0f, db * 0.05f);
 }
 
+float portValue(const float* port, float fallback) {
+  return port ? *port : fallback;
+}
+
+void glideValue(float& value, float target, float coeff, float snap) {
+  value += (target - value) * coeff;
+  if (std::fabs(target - value) < snap) value = target;
+}
+
+void copyCoefficients(Biquad& dst, const Biquad& src) {
+  dst.b0 = src.b0; dst.b1 = src.b1; dst.b2 = src.b2;
+  dst.a1 = src.a1; dst.a2 = src.a2;
+}
+
+constexpr uint32_t kEqChunk = 32;
+
 bool endsWithWav(const char* path) {
   const std::string value(path ? path : "");
   if (value.size() < 4) return false;
@@ -142,9 +158,12 @@ Plugin::~Plugin() {
     delete model;
   for (auto* ir : irs)
     delete ir;
+  for (auto* ir : irsRight)
+    delete ir;
   for (auto& pending : pendingSwitches) {
     delete pending.model;
     delete pending.ir;
+    delete pending.irRight;
   }
 }
 
@@ -182,6 +201,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.stagePath[0] = map->map(map->handle, NAM_RIG_PEDAL_URI);
   uris.stagePath[1] = map->map(map->handle, NAM_RIG_AMP_URI);
   uris.stagePath[2] = map->map(map->handle, NAM_RIG_CAB_URI);
+  uris.stagePath[3] = map->map(map->handle, NAM_RIG_CAB2_URI);
   uris.atomFloat = map->map(map->handle, LV2_ATOM__Float);
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
@@ -195,8 +215,15 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   }
   tunerSetRates(rate);
   trimSmoothCoeff = 1.0f - std::exp(-1.0f / static_cast<float>(rate * 0.002));
-  dcBlocker.r = std::exp(static_cast<float>(-2.0 * kPi * 5.0 / rate));
-  stereoSpace.initialize(rate);
+  dcBlocker.setRate(rate);
+  dcBlockerR.setRate(rate);
+  for (size_t st = 0; st < kStageCount; ++st) {
+    stageDc[st].setRate(rate);
+    stageDcRate[st] = rate;
+  }
+  cab2Align.initialize(rate, 12.0);
+  delayFx.initialize(rate);
+  reverbFx.initialize(rate);
 
   if (options)
     optionsSet(this, options);
@@ -229,6 +256,12 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     osScratch2[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
   }
   osChain.assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+  const size_t post = static_cast<size_t>(std::max(1, size));
+  postL.assign(post, 0.0f);
+  postR.assign(post, 0.0f);
+  preCab.assign(post, 0.0f);
+  cabBL.assign(post, 0.0f);
+  cabBR.assign(post, 0.0f);
 }
 
 LV2_Worker_Status Plugin::work(LV2_Handle instance,
@@ -247,6 +280,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
     const auto* message = static_cast<const LV2FreeModelMsg*>(data);
     delete message->model;
     delete message->ir;
+    delete message->irRight;
     return LV2_WORKER_SUCCESS;
   }
 
@@ -259,18 +293,27 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
 
   LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
                              message->oversampleMode, message->generation,
-                             {}, nullptr, nullptr, false};
+                             {}, nullptr, nullptr, nullptr, false};
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
   const int requestedMode = Plugin::decodeOversample(
       static_cast<float>(message->oversampleMode));
 
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
-      if (message->stage == Stage::Cab && endsWithWav(message->path)) {
+      if ((message->stage == Stage::Cab || message->stage == Stage::Cab2) &&
+          endsWithWav(message->path)) {
         const bool original = rig->ports.ir_normalization &&
                               *rig->ports.ir_normalization >= 2.5f;
-        response.ir = WavIR::load(message->path, rig->sampleRate,
-                                  rig->maxBufferSize, original).release();
+        const unsigned channels = WavIR::channelCount(message->path);
+        if (channels >= 2) {
+          response.ir = WavIR::load(message->path, rig->sampleRate,
+                                    rig->maxBufferSize, original, 0).release();
+          response.irRight = WavIR::load(message->path, rig->sampleRate,
+                                         rig->maxBufferSize, original, 1).release();
+        } else {
+          response.ir = WavIR::load(message->path, rig->sampleRate,
+                                    rig->maxBufferSize, original).release();
+        }
       } else {
         // The stage's oversample mode decides the loader external rate.
         // NONE (0): 48000 — dilation is a no-op for common-rate models.
@@ -346,7 +389,11 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       }
     }
   } catch (...) {
+    delete response.ir;
+    delete response.irRight;
     response.model = nullptr;
+    response.ir = nullptr;
+    response.irRight = nullptr;
   }
 
   if (!response.model && !response.ir && length > 0)
@@ -369,30 +416,32 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   if (message->generation != rig->loadGeneration[index]) {
     // A newer path or oversampling request superseded this load while it was
     // running. Dispose of the stale result on the worker thread.
-    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
+    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir, message->irRight};
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
   }
   const int desiredMode = index == 0 ? rig->osRequested[0]
-                                     : rig->osRequested[1];
+                        : index == stageIndex(Stage::Cab2) ? Plugin::kOsLegacy2
+                                                           : rig->osRequested[1];
   if (Plugin::decodeOversample((float)message->oversampleMode) != desiredMode) {
     // The mode changed while an initial/path load was in flight, before
     // reloadModelsForOversample() had an installed model to reschedule.
     // Reuse the completed response's path and load it for the latest domain.
     const size_t length = strnlen(message->path, MAX_FILE_NAME);
     rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
-    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir};
+    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir, message->irRight};
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
   }
   auto& pending = rig->pendingSwitches[index];
   if (pending.ready) {
-    LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir};
+    LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir, pending.irRight};
     rig->schedule->schedule_work(rig->schedule->handle,
                                  sizeof(superseded), &superseded);
   }
   pending.model = message->model;
   pending.ir = message->ir;
+  pending.irRight = message->irRight;
   pending.oversampleMode = Plugin::decodeOversample(
       static_cast<float>(message->oversampleMode));
   pending.fullRig = message->fullRig;
@@ -789,7 +838,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   const bool desiredEnabled[kStageCount] = {
       *ports.pedal_enabled >= 0.5f,
       *ports.amp_enabled >= 0.5f,
-      *ports.cab_enabled >= 0.5f};
+      *ports.cab_enabled >= 0.5f,
+      portValue(ports.cab2_enabled, 0.0f) >= 0.5f};
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
 
@@ -890,20 +940,12 @@ void Plugin::process(uint32_t sampleCount) noexcept {
 
   // ---- Stage processing with per-stage oversample domains ----
   // TRUE-Nx stages run inside a genuine UP -> model@Nx -> DOWN cascade
-  // (chain of 2x half-band pairs). NONE and LEGACY stages run at base rate
-  // (Legacy dilation stretches the model's reach inside NeuralAudio; no
-  // pipeline involved). The nonlinear stages are the aliasing sources, so
-  // only they get TRUE domains; the cab WAV IR and EQ stay at base rate
-  // (linear stages cannot alias). A .nam cab model follows the AMP's TRUE
-  // factor, preserving the old shared-domain behavior.
-  //
-  // Mixed-domain chaining: stages that precede the first TRUE stage run at
-  // base rate on the raw buffer; the TRUE stage(s) run inside their cascade;
-  // stages after the last TRUE stage run at base rate on its decimated
-  // output. Latency note: TRUE stages hold back a fixed pipeline delay
-  // (factor * 24 samples per cascade), so after them, later base-rate
-  // stages see delayed audio — the converters fill their short tails with
-  // the last valid sample so the output never contains stale garbage.
+  // (chain of 2x half-band pairs). NONE and LEGACY stages run at base rate.
+  // The nonlinear stages are the aliasing sources, so only they get TRUE
+  // domains; the cab WAV IR and EQ stay at base rate. A .nam cab follows the
+  // AMP's TRUE factor while it is the only cabinet; with a second cabinet
+  // engaged both cabinets run parallel at base rate from the same tap.
+  const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
@@ -917,30 +959,23 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       ampAdvanced.processPreAmp(samples, count, domainRate,
                                 *ports.bright, *ports.input_eq);
     }
-    const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
-    if (pre != 1.0f)
-      for (size_t i = 0; i < count; ++i) samples[i] *= pre;
-    model->Process(samples, samples, count);
-    const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
-    if (post != 1.0f)
-      for (size_t i = 0; i < count; ++i) samples[i] *= post;
+    runModel(stage, model, samples, count, domainRate);
     if (stage == stageIndex(Stage::Amp)) {
-      outputTransformer.process(samples, count, domainRate, transformerApplied);
       ampAdvanced.processPostAmp(samples, count, domainRate,
                                  *ports.presence, *ports.depth, *ports.sag,
                                  *ports.bias, *ports.negative_feedback,
                                  *ports.master);
+      outputTransformer.process(samples, count, domainRate, transformerApplied);
       speakerDynamics.process(samples, count, domainRate, speakerApplied,
                               *ports.speaker_drive, *ports.speaker_compression,
-                              *ports.speaker_thump, *ports.speaker_resonance);
+                              *ports.speaker_thump, *ports.speaker_resonance,
+                              *ports.negative_feedback * 0.01f);
     }
   };
 
-  // Process one or more consecutive models inside ONE TRUE domain. Keeping
-  // pedal -> amp -> .nam cab between the same UP/DOWN pair preserves the
-  // pedal's ultrasonic products for the amp's nonlinear response and avoids
-  // redundant converter filtering. `owner` supplies this group's streaming
-  // converter state; stages[] remains in signal-chain order.
+  // Process one or more consecutive models inside ONE TRUE domain. `owner`
+  // supplies this group's streaming converter state; stages[] remains in
+  // signal-chain order.
   auto processTrueGroup = [&](size_t owner, const size_t* stages,
                               size_t stageCount, float* samples,
                               uint32_t count, int f) -> uint32_t {
@@ -955,8 +990,6 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     for (size_t i = 0; i < stageCount; ++i)
       applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f);
 
-    // Decimate back down the same chain (reversed), ping-ponging between
-    // the two scratch buffers; the last level lands in the chain buffer.
     size_t back = n;
     const float* dnIn = domain;
     for (size_t c = levels; c-- > 0;) {
@@ -972,12 +1005,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   };
 
   // ---- Chain NAM stages, merging adjacent compatible TRUE domains ----
-  // Models and converter scratch are sized from maxBufferSize; a host that
-  // exceeds the negotiated maxBlockLength (or never sent it, leaving the 512
-  // default) would overrun NeuralAudio's fixed internal buffers — classic
-  // WaveNet does not chunk in Process. So the chain runs in maxBufferSize
-  // slices; the converters' streaming state carries across slices, so the
-  // output is identical to one full-size pass.
+  // The chain runs in maxBufferSize slices so a host that exceeds the
+  // negotiated maxBlockLength cannot overrun NeuralAudio's fixed buffers.
   float* chain = osChain.data();
   bool cabProcessed = false;
   bool modelProcessed = false;
@@ -988,9 +1017,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     float* io = ports.audio_out + off;
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
-    for (size_t st = 0; st < kStageCount;) {
-      const bool isWavCab = st == 2 && irs[2] != nullptr;
-      if (!enabled[st] || !models[st] || isWavCab) {
+    for (size_t st = 0; st < kSerialStageCount;) {
+      const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);
+      if (!enabled[st] || !models[st] || deferredCab) {
         ++st;
         continue;
       }
@@ -1004,13 +1033,11 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         continue;
       }
 
-      size_t group[kStageCount] = {st, 0, 0};
+      size_t group[kSerialStageCount] = {st, 0, 0};
       size_t groupCount = 1;
       size_t next = st + 1;
-      // Only merge genuinely adjacent active NAM stages. A bypassed/missing
-      // stage or WAV cab ends the domain, as does a different True factor.
-      while (next < kStageCount && enabled[next] && models[next] &&
-             !(next == 2 && irs[2]) &&
+      while (next < kSerialStageCount && enabled[next] && models[next] &&
+             !(next == 2 && (irs[2] || parallelCabs)) &&
              truePipelineFactor(osApplied[next], sampleRate) == f) {
         group[groupCount++] = next++;
       }
@@ -1022,149 +1049,307 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     std::memcpy(io, chain, sliceLen * sizeof(float));
   }
-  // Report the True cascades' fixed pipeline delay for host delay
-  // compensation (0 when every active stage runs at base rate).
   if (ports.latency)
     *ports.latency = static_cast<float>(latencyFrames);
 
-  // A WAV cab remains at base rate. A .nam cab was processed in the chain
-  // above, sharing the amp's domain whenever their applied factors match.
-  if (enabled[2]) {
-    auto* ir = irs[2];
-    if (ir) {
-      const int norm = std::max(0, std::min(3,
-          static_cast<int>(*ports.ir_normalization + 0.5f)));
-      ir->process(ports.audio_out, sampleCount, norm);
+  processPostChain(ports.audio_out, sampleCount, cabProcessed, modelProcessed,
+                   desiredEnabled);
+}
+
+void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
+                      float* samples, size_t count, double domainRate) noexcept {
+  const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
+  if (pre != 1.0f)
+    for (size_t i = 0; i < count; ++i) samples[i] *= pre;
+  model->Process(samples, samples, count);
+  const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
+  if (post != 1.0f)
+    for (size_t i = 0; i < count; ++i) samples[i] *= post;
+  if (std::fabs(stageDcRate[stage] - domainRate) > 0.5) {
+    stageDc[stage].setRate(domainRate);
+    stageDc[stage].reset();
+    stageDcRate[stage] = domainRate;
+  }
+  for (size_t i = 0; i < count; ++i)
+    samples[i] = stageDc[stage].process(samples[i]);
+}
+
+// Everything after the serial NAM chain: the parallel cabinet pair, the cab
+// trim and cuts, DC removal, post EQ, output trim, the click-safe transition
+// fade, and the stereo effects. Runs in maxBufferSize slices on internal
+// stereo buffers, so the two output ports may alias.
+void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
+                              bool modelProcessed, const bool* desiredEnabled) noexcept {
+  const auto& enabled = appliedEnabled;
+  const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const int norm = std::max(0, std::min(3,
+      static_cast<int>(*ports.ir_normalization + 0.5f)));
+  const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
+  const float widthTarget = std::max(0.0f, std::min(1.0f, *ports.stereo_width * 0.01f));
+  const float cab2LevelTarget = dbToLinear(portValue(ports.cab2_level, 0.0f));
+  const float glide10 = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate * 0.010));
+  const float chunkGlide = 1.0f - std::exp(-static_cast<float>(kEqChunk) /
+                                            static_cast<float>(sampleRate * 0.020));
+  const float desiredOutput = dbToLinear(*ports.output_level);
+  const float targetCab = dbToLinear(*ports.cab_level);
+  const uint32_t fadeSamples = std::max<uint32_t>(1,
+      static_cast<uint32_t>(std::lround(sampleRate * 0.005)));
+  bool commitRequested = false;
+  bool cabProcessedAny = cabInChain;
+
+  if (!parallelCabs && cab2AlignActive) {
+    cab2Align.reset();
+    cab2AlignActive = false;
+  }
+
+  for (uint32_t off = 0; off < count; off += sliceMax) {
+    const uint32_t n = std::min(sliceMax, count - off);
+    float* L = postL.data();
+    float* R = postR.data();
+    std::memcpy(L, mono + off, n * sizeof(float));
+    bool cabProcessed = cabInChain;
+    bool stereoA = false;
+    if (parallelCabs) std::memcpy(preCab.data(), L, n * sizeof(float));
+
+    if (enabled[2]) {
+      if (irs[2]) {
+        if (irsRight[2]) {
+          std::memcpy(R, L, n * sizeof(float));
+          irsRight[2]->process(R, n, norm);
+          stereoA = true;
+        }
+        irs[2]->process(L, n, norm);
+        cabProcessed = true;
+      } else if (models[2] && parallelCabs) {
+        runModel(2, models[2], L, n, sampleRate);
+        cabProcessed = true;
+      }
+    }
+    if (!stereoA) std::memcpy(R, L, n * sizeof(float));
+
+    bool haveB = false;
+    if (parallelCabs) {
+      float* BL = cabBL.data();
+      float* BR = cabBR.data();
+      std::memcpy(BL, preCab.data(), n * sizeof(float));
+      if (irs[3]) {
+        if (irsRight[3]) {
+          std::memcpy(BR, BL, n * sizeof(float));
+          irsRight[3]->process(BR, n, norm);
+        }
+        irs[3]->process(BL, n, norm);
+        if (!irsRight[3]) std::memcpy(BR, BL, n * sizeof(float));
+      } else {
+        runModel(3, models[3], BL, n, sampleRate);
+        std::memcpy(BR, BL, n * sizeof(float));
+      }
+      cab2Align.process(BL, BR, n, portValue(ports.cab2_delay, 0.0f));
+      cab2AlignActive = true;
+      for (uint32_t i = 0; i < n; ++i) {
+        smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;
+        BL[i] *= smoothedCab2Level;
+        BR[i] *= smoothedCab2Level;
+      }
+      haveB = true;
       cabProcessed = true;
     }
-  }
 
-  // Post-cab trim and optional Butterworth cuts. These belong to the cab
-  // block, so bypassing or clearing the cab leaves the signal untouched.
-  if (cabProcessed) {
-    const float targetCab = dbToLinear(*ports.cab_level);
-    const float cabSmooth = 1.0f - std::exp(-1.0f / (sampleRate * 0.010));
-    const float lowCut = std::max(0.0f, *ports.cab_low_cut);
-    const float highCut = std::min(*ports.cab_high_cut,
-                                   static_cast<float>(sampleRate * 0.45));
-    const bool lowCutOn = lowCut >= 20.0f;
-    const bool highCutOn = *ports.cab_high_cut < 19990.0f;
-    if (lowCutOn) setHighPass(cabLowCutEq, lowCut, sampleRate);
-    else cabLowCutEq.reset();
-    if (highCutOn) setLowPass(cabHighCutEq, std::max(1000.0f, highCut), sampleRate);
-    else cabHighCutEq.reset();
-    for (uint32_t i = 0; i < sampleCount; ++i) {
-      smoothedCabLevel += (targetCab - smoothedCabLevel) * cabSmooth;
-      float x = ports.audio_out[i] * smoothedCabLevel;
-      if (lowCutOn) x = cabLowCutEq.process(x);
-      if (highCutOn) x = cabHighCutEq.process(x);
-      ports.audio_out[i] = x;
+    // Width: side gain of each stereo cabinet pair, then the spread between
+    // cabinet A (left) and cabinet B (right). Zero keeps exact dual mono.
+    if (haveB || stereoA || smoothedWidth != 0.0f || widthTarget != 0.0f) {
+      const float* BL = cabBL.data();
+      const float* BR = cabBR.data();
+      for (uint32_t i = 0; i < n; ++i) {
+        smoothedWidth += (widthTarget - smoothedWidth) * glide10;
+        if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
+        const float w = smoothedWidth;
+        const float midA = 0.5f * (L[i] + R[i]);
+        const float sideA = 0.5f * (L[i] - R[i]) * w;
+        float outL = midA + sideA;
+        float outR = midA - sideA;
+        if (haveB) {
+          const float midB = 0.5f * (BL[i] + BR[i]);
+          const float sideB = 0.5f * (BL[i] - BR[i]) * w;
+          const float bL = midB + sideB;
+          const float bR = midB - sideB;
+          const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - w);
+          const float near = std::cos(theta);
+          const float far = std::sin(theta);
+          outL = (midA + sideA) * near + bL * far;
+          outR = (midA - sideA) * far + bR * near;
+        }
+        L[i] = outL;
+        R[i] = outR;
+      }
     }
-  } else {
-    cabLowCutEq.reset();
-    cabHighCutEq.reset();
-  }
 
-  // DC blocker (~5 Hz). NAM models routinely emit a small DC offset and the
-  // True converters pass DC at exactly unity gain; unchecked, the offset
-  // eats headroom and gets amplified by a bass-shelf boost. Runs only when a
-  // model actually processed this block, so a model-free chain stays
-  // bit-transparent.
-  if (modelProcessed) {
-    for (uint32_t i = 0; i < sampleCount; ++i)
-      ports.audio_out[i] = dcBlocker.process(ports.audio_out[i]);
-  } else {
-    dcBlocker.reset();
-  }
-
-  // 3-band EQ (post: after the stages, before the output trim). Each band is
-  // only processed when its gain is non-zero and the whole section is skipped
-  // at neutral, so a flat EQ is bit-transparent.
-  const bool bassOn = *ports.bass != 0.0f;
-  const bool midOn = *ports.mid != 0.0f;
-  const bool trebleOn = *ports.treble != 0.0f;
-  if (bassOn) setLowShelf(bassEq, *ports.bass, 150.0f, sampleRate);
-  if (midOn) setPeaking(midEq, *ports.mid, 700.0f, sampleRate);
-  if (trebleOn) setHighShelf(trebleEq, *ports.treble, 3000.0f, sampleRate);
-  if (!bassOn) bassEq.reset();
-  if (!midOn) midEq.reset();
-  if (!trebleOn) trebleEq.reset();
-  if (bassOn || midOn || trebleOn) {
-    for (uint32_t i = 0; i < sampleCount; ++i) {
-      float x = ports.audio_out[i];
-      if (bassOn) x = bassEq.process(x);
-      if (midOn) x = midEq.process(x);
-      if (trebleOn) x = trebleEq.process(x);
-      ports.audio_out[i] = x;
-    }
-  }
-
-  const float desiredOutput = dbToLinear(*ports.output_level);
-  gain = smoothedOutputLevel;
-  for (uint32_t i = 0; i < sampleCount; ++i) {
-    gain = std::fabs(desiredOutput - gain) > kSmoothEpsilon
-             ? gain + (desiredOutput - gain) * trimSmoothCoeff
-             : desiredOutput;
-    ports.audio_out[i] *= gain;
-  }
-  smoothedOutputLevel = gain;
-
-  // Click-safe model/domain transition. A 5 ms equal-power fade on each side
-  // is short enough to feel immediate but long enough to suppress a waveform
-  // discontinuity and hide converter warm-up after the zero crossing.
-  if (transitionPhase != TransitionPhase::Steady) {
-    const uint32_t fadeSamples = std::max<uint32_t>(1,
-        static_cast<uint32_t>(std::lround(sampleRate * 0.005)));
-    bool commitAfterBlock = false;
-    for (uint32_t i = 0; i < sampleCount; ++i) {
-      if (transitionPhase == TransitionPhase::FadeOut) {
-        const float t = std::min(1.0f,
-            static_cast<float>(transitionPosition) / fadeSamples);
-        transitionGain = std::cos(0.5f * static_cast<float>(kPi) * t);
-        if (transitionPosition < fadeSamples) ++transitionPosition;
-        else commitAfterBlock = true;
-      } else {
-        const float t = std::min(1.0f,
-            static_cast<float>(transitionPosition) / fadeSamples);
-        transitionGain = std::sin(0.5f * static_cast<float>(kPi) * t);
-        if (transitionPosition < fadeSamples) {
-          ++transitionPosition;
-        } else {
-          transitionGain = 1.0f;
-          transitionPhase = TransitionPhase::Steady;
+    if (cabProcessed) {
+      cabProcessedAny = true;
+      const float lowCutTarget = std::max(0.0f, *ports.cab_low_cut);
+      const float highCutTarget = std::min(*ports.cab_high_cut,
+                                           static_cast<float>(sampleRate * 0.45));
+      for (uint32_t start = 0; start < n; start += kEqChunk) {
+        const uint32_t m = std::min<uint32_t>(kEqChunk, n - start);
+        glideValue(smoothedLowCut, lowCutTarget, chunkGlide, 0.05f);
+        glideValue(smoothedHighCut, highCutTarget, chunkGlide, 0.5f);
+        const bool lowCutOn = smoothedLowCut >= 20.0f;
+        const bool highCutOn = smoothedHighCut < 19990.0f;
+        if (smoothedLowCut != appliedLowCut) {
+          if (lowCutOn) {
+            setHighPass(cabLowCutEq, smoothedLowCut, sampleRate);
+            copyCoefficients(cabLowCutEqR, cabLowCutEq);
+          } else {
+            cabLowCutEq.reset();
+            cabLowCutEqR.reset();
+          }
+          appliedLowCut = smoothedLowCut;
+        }
+        if (smoothedHighCut != appliedHighCut) {
+          if (highCutOn) {
+            setLowPass(cabHighCutEq, std::max(1000.0f, smoothedHighCut), sampleRate);
+            copyCoefficients(cabHighCutEqR, cabHighCutEq);
+          } else {
+            cabHighCutEq.reset();
+            cabHighCutEqR.reset();
+          }
+          appliedHighCut = smoothedHighCut;
+        }
+        for (uint32_t i = start; i < start + m; ++i) {
+          smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;
+          float l = L[i] * smoothedCabLevel;
+          float r = R[i] * smoothedCabLevel;
+          if (lowCutOn) { l = cabLowCutEq.process(l); r = cabLowCutEqR.process(r); }
+          if (highCutOn) { l = cabHighCutEq.process(l); r = cabHighCutEqR.process(r); }
+          L[i] = l;
+          R[i] = r;
         }
       }
-      ports.audio_out[i] *= transitionGain;
-      if (commitAfterBlock) {
-        transitionGain = 0.0f;
-        for (uint32_t j = i + 1; j < sampleCount; ++j)
-          ports.audio_out[j] = 0.0f;
-        break;
-      }
+    } else {
+      cabLowCutEq.reset();
+      cabHighCutEq.reset();
+      cabLowCutEqR.reset();
+      cabHighCutEqR.reset();
     }
-    if (commitAfterBlock) {
-      commitPendingSwitches();
-      for (size_t st = 0; st < kStageCount; ++st)
-        appliedEnabled[st] = desiredEnabled[st];
-      if (transformerApplied != transformerRequested) {
-        transformerApplied = transformerRequested;
-        outputTransformer.reset();
-      }
-      if (speakerApplied != speakerRequested) {
-        speakerApplied = speakerRequested;
-        speakerDynamics.reset();
-      }
-      transitionPhase = TransitionPhase::FadeIn;
-      transitionPosition = 0;
-      transitionGain = 0.0f;
-    }
-  }
 
-  // Post-rig stereo section. Width is a short right-channel delay; Room adds
-  // decorrelated early reflections. With both at zero this remains exact
-  // dual mono, preserving the established sound and gain.
-  stereoSpace.process(ports.audio_out, ports.audio_out_r, sampleCount,
-                      *ports.stereo_width, *ports.room);
+    if (modelProcessed) {
+      for (uint32_t i = 0; i < n; ++i) {
+        L[i] = dcBlocker.process(L[i]);
+        R[i] = dcBlockerR.process(R[i]);
+      }
+    } else {
+      dcBlocker.reset();
+      dcBlockerR.reset();
+    }
+
+    for (uint32_t start = 0; start < n; start += kEqChunk) {
+      const uint32_t m = std::min<uint32_t>(kEqChunk, n - start);
+      glideValue(smoothedBass, *ports.bass, chunkGlide, 0.005f);
+      glideValue(smoothedMid, *ports.mid, chunkGlide, 0.005f);
+      glideValue(smoothedTreble, *ports.treble, chunkGlide, 0.005f);
+      const bool bassOn = smoothedBass != 0.0f;
+      const bool midOn = smoothedMid != 0.0f;
+      const bool trebleOn = smoothedTreble != 0.0f;
+      if (smoothedBass != appliedBass) {
+        if (bassOn) { setLowShelf(bassEq, smoothedBass, 150.0f, sampleRate); copyCoefficients(bassEqR, bassEq); }
+        else { bassEq.reset(); bassEqR.reset(); }
+        appliedBass = smoothedBass;
+      }
+      if (smoothedMid != appliedMid) {
+        if (midOn) { setPeaking(midEq, smoothedMid, 700.0f, sampleRate); copyCoefficients(midEqR, midEq); }
+        else { midEq.reset(); midEqR.reset(); }
+        appliedMid = smoothedMid;
+      }
+      if (smoothedTreble != appliedTreble) {
+        if (trebleOn) { setHighShelf(trebleEq, smoothedTreble, 3000.0f, sampleRate); copyCoefficients(trebleEqR, trebleEq); }
+        else { trebleEq.reset(); trebleEqR.reset(); }
+        appliedTreble = smoothedTreble;
+      }
+      if (!bassOn && !midOn && !trebleOn) continue;
+      for (uint32_t i = start; i < start + m; ++i) {
+        float l = L[i], r = R[i];
+        if (bassOn) { l = bassEq.process(l); r = bassEqR.process(r); }
+        if (midOn) { l = midEq.process(l); r = midEqR.process(r); }
+        if (trebleOn) { l = trebleEq.process(l); r = trebleEqR.process(r); }
+        L[i] = l;
+        R[i] = r;
+      }
+    }
+
+    float gain = smoothedOutputLevel;
+    for (uint32_t i = 0; i < n; ++i) {
+      gain = std::fabs(desiredOutput - gain) > kSmoothEpsilon
+               ? gain + (desiredOutput - gain) * trimSmoothCoeff
+               : desiredOutput;
+      L[i] *= gain;
+      R[i] *= gain;
+    }
+    smoothedOutputLevel = gain;
+
+    // Click-safe model/domain transition: a 5 ms equal-power fade on each
+    // side. The pointer swap itself happens once, after the whole call.
+    if (commitRequested) {
+      std::memset(L, 0, n * sizeof(float));
+      std::memset(R, 0, n * sizeof(float));
+    } else if (transitionPhase != TransitionPhase::Steady) {
+      for (uint32_t i = 0; i < n; ++i) {
+        if (transitionPhase == TransitionPhase::FadeOut) {
+          const float t = std::min(1.0f,
+              static_cast<float>(transitionPosition) / fadeSamples);
+          transitionGain = std::cos(0.5f * static_cast<float>(kPi) * t);
+          if (transitionPosition < fadeSamples) ++transitionPosition;
+          else commitRequested = true;
+        } else {
+          const float t = std::min(1.0f,
+              static_cast<float>(transitionPosition) / fadeSamples);
+          transitionGain = std::sin(0.5f * static_cast<float>(kPi) * t);
+          if (transitionPosition < fadeSamples) {
+            ++transitionPosition;
+          } else {
+            transitionGain = 1.0f;
+            transitionPhase = TransitionPhase::Steady;
+          }
+        }
+        L[i] *= transitionGain;
+        R[i] *= transitionGain;
+        if (commitRequested) {
+          transitionGain = 0.0f;
+          for (uint32_t j = i + 1; j < n; ++j) L[j] = R[j] = 0.0f;
+          break;
+        }
+      }
+    }
+
+    delayFx.process(L, R, n, portValue(ports.delay_time, 400.0f),
+                    portValue(ports.delay_feedback, 35.0f),
+                    portValue(ports.delay_damping, 40.0f),
+                    portValue(ports.delay_mix, 0.0f));
+    reverbFx.process(L, R, n, *ports.room, portValue(ports.reverb_mix, 0.0f),
+                     portValue(ports.reverb_decay, 50.0f),
+                     portValue(ports.reverb_size, 50.0f),
+                     portValue(ports.reverb_damping, 50.0f),
+                     portValue(ports.reverb_predelay, 10.0f));
+
+    std::memcpy(ports.audio_out + off, L, n * sizeof(float));
+    std::memcpy(ports.audio_out_r + off, R, n * sizeof(float));
+  }
+  (void)cabProcessedAny;
+
+  if (commitRequested) {
+    commitPendingSwitches();
+    for (size_t st = 0; st < kStageCount; ++st)
+      appliedEnabled[st] = desiredEnabled[st];
+    if (transformerApplied != transformerRequested) {
+      transformerApplied = transformerRequested;
+      outputTransformer.reset();
+    }
+    if (speakerApplied != speakerRequested) {
+      speakerApplied = speakerRequested;
+      speakerDynamics.reset();
+    }
+    transitionPhase = TransitionPhase::FadeIn;
+    transitionPosition = 0;
+    transitionGain = 0.0f;
+  }
 }
 
 void Plugin::startTransitionFadeOut() {
@@ -1187,11 +1372,13 @@ void Plugin::commitPendingSwitches() {
   for (size_t index = 0; index < kStageCount; ++index) {
     auto& pending = pendingSwitches[index];
     if (!pending.ready) continue;
-    LV2FreeModelMsg old{kWorkTypeFree, models[index], irs[index]};
+    LV2FreeModelMsg old{kWorkTypeFree, models[index], irs[index], irsRight[index]};
     models[index] = pending.model;
     irs[index] = pending.ir;
+    irsRight[index] = pending.irRight;
     pending.model = nullptr;
     pending.ir = nullptr;
+    pending.irRight = nullptr;
     if (index == stageIndex(Stage::Amp)) ampIsFullRig = pending.fullRig;
     modelPaths[index] = pending.path;
     osApplied[index] = pending.oversampleMode;
@@ -1208,7 +1395,7 @@ void Plugin::commitPendingSwitches() {
 void Plugin::reloadModelsForOversample() {
   // Re-send every loaded model path through the worker so the models are
   // re-created with the loader external rate matching the new domain.
-  for (size_t i = 0; i < kStageCount; ++i) {
+  for (size_t i = 0; i < kSerialStageCount; ++i) {
     if (models[i] && !modelPaths[i].empty()) {
       const size_t len = modelPaths[i].size();
       const int mode = i == 0 ? osRequested[0] : osRequested[1];
@@ -1225,10 +1412,11 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
   const size_t index = stageIndex(stage);
   auto& pending = pendingSwitches[index];
   if (pending.ready) {
-    LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir};
+    LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir, pending.irRight};
     schedule->schedule_work(schedule->handle, sizeof(superseded), &superseded);
     pending.model = nullptr;
     pending.ir = nullptr;
+    pending.irRight = nullptr;
     pending.ready = false;
   }
   LV2LoadModelMsg message{kWorkTypeLoad, stage, decodeOversample((float)mode),

@@ -19,8 +19,12 @@ namespace NAMRig {
 //     direct convolution with no lookahead.
 class WavIR {
 public:
+  // channel: -1 sums every channel to mono, otherwise selects one channel.
   static std::unique_ptr<WavIR> load(const char* path, double hostRate,
-                                     int maxBlockSize, bool original = false);
+                                     int maxBlockSize, bool original = false,
+                                     int channel = -1);
+  static unsigned channelCount(const char* path);
+  static constexpr double kMaxSeconds = 0.17;
   ~WavIR();
   // normalizationMode: 0 preserve the corrected capture's transfer gain,
   // 1 peak, 2 loudness, 3 original source taps (scale remains unity).
