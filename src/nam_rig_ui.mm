@@ -519,6 +519,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
   if (!map || !parent) return nullptr;
 
   @autoreleasepool {
+    // AppKit's default hover delay is long for dense controls. This preference
+    // affects the current process and makes explanatory subtitles appear fast.
+    [[NSUserDefaults standardUserDefaults] setObject:@150
+                                              forKey:@"NSInitialToolTipDelay"];
     auto* state = new RigUIState();
     state->write = writeFunction;
     state->controller = controller;
@@ -879,14 +883,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Final output trim after the complete rig, cabinet processing, and EQ.",
       @"Stereo width from a short right-channel delay. Zero preserves exact dual mono; higher settings widen the image up to 12 ms.",
       @"Compact stereo room ambience from decorrelated early reflections after the rig.",
-      @"Post-amp high-frequency feedback voicing. This is separate from the existing post-chain Treble control.",
-      @"Post-amp low-frequency resonance and damping. This is separate from the existing post-chain Bass control.",
-      @"Dynamic power-supply compression and recovery after the amp model.",
-      @"Shifts the virtual power-stage operating point for more symmetric or asymmetric breakup.",
-      @"Adds corrective low-frequency feedback for tighter response and reduced bloom.",
-      @"Pre-amp high-frequency lift before the NAM amp model.",
-      @"Pre-amp low-cut shaping before the NAM amp model.",
-      @"Drives the virtual post-model power stage. Zero leaves the capture untouched.",
+      @"Shapes upper frequencies after the NAM amp model, like a power-amp presence circuit. Positive values add bite and clarity; negative values soften fizz. It is separate from the post-cab Treble knob.",
+      @"Shapes low frequencies after the NAM amp model, like a power-amp depth/resonance circuit. Positive values add weight and bloom; negative values tighten the low end. It is separate from the post-cab Bass knob.",
+      @"Simulates power-supply voltage droop after loud notes. Higher settings soften peaks, add compression and sustain, and recover more slowly. Works independently of Input EQ and Master.",
+      @"Changes the symmetry of the added post-model saturation, emphasizing different even harmonics. It works independently; Master adds more drive and makes the result easier to hear.",
+      @"Applies corrective low-frequency feedback after the amp model. Higher settings tighten bass, reduce bloom and make palm mutes more controlled. Works independently of Input EQ and Master.",
+      @"Boosts upper frequencies before the NAM amp model, so the model distorts a brighter signal. Use it for extra pick attack and clarity. Works independently of Input EQ.",
+      @"Removes deep bass before the NAM amp model. Higher settings tighten palm mutes, reduce mud and keep bass from overdriving the capture. It does not enable or affect the other knobs.",
+      @"Adds a simulated power-stage drive after the NAM amp model. Higher settings add saturation, compression, sustain and flattened peaks. At 0% the captured amp is untouched; it does not enable Bias or other controls.",
       @"Frequency-dependent speaker breakup after the amp and before the cabinet.",
       @"Speaker excursion compression and recovery after the amp.",
       @"Nonlinear low-frequency speaker excursion.",
