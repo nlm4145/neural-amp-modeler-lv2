@@ -866,14 +866,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
-    // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
+    // DRIVE/PRESENCE/DEPTH and the tone controls under AMP, OUTPUT under CAB. Each group's LEADING and
     // TRAILING edges are pinned to its tile box in the tile loop below, so the
     // knobs stay exactly within the tile's footprint at any width/zoom.
     NSView* knobGroups[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
-    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 5, 6, 7, 0, 0}, {8, 9, 10, 11, 12, 13}};
-    const size_t groupCounts[3] = {4, 4, 6};
+    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {8, 9, 10, 11, 12, 13}};
+    const size_t groupCounts[3] = {4, 6, 6};
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -1154,10 +1154,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         NSTextField* advancedTitle = addLabel(popView, @"ADVANCED AMP", NSMakeRect(18, 216, 200, 18),
             [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
         rigApplyTracking(advancedTitle, 1.0);
-        for (size_t a = 0; a < 8; ++a) {
-          const size_t k = 14 + a;
-          const size_t col = a % 4, row = a / 4;
-          NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + col * 127, 8 + (1 - row) * 100, 119, 100)];
+        // Presence and Depth live in the always-visible AMP row; the popover
+        // contains only the remaining dynamic/post-model controls.
+        for (size_t a = 0; a < 6; ++a) {
+          const size_t k = 16 + a;
+          const size_t col = a % 3, row = a / 3;
+          NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(69 + col * 127, 8 + (1 - row) * 100, 119, 100)];
           [popView addSubview:cell];
           state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
           state->knobs[k].toolTip = knobDescriptions[k];
