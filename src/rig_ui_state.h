@@ -26,6 +26,7 @@
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
+#include "speaker_dynamics.h"
 #import "rig_theme.h"
 
 @class NAMRigUIController;
@@ -67,6 +68,8 @@ struct RigUIState {
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
   __strong NSPopover* ampAdvancedPopover = nil;
   __strong NSPopover* signalFlowPopover = nil;
+  __strong NSPopUpButton* speakerProfilePopup = nil;
+  __strong NSPopover* speakerPopover = nil;
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;
@@ -510,6 +513,16 @@ struct RigUIState {
         if (transformerPopup) {
           [transformerPopup selectItemAtIndex:idx];
           transformerPopup.toolTip = transformerPopup.selectedItem.toolTip;
+        }
+      });
+      return;
+    }
+    if (port == 42) {
+      const int idx = NAMRig::SpeakerDynamics::clampProfile((int)(value + 0.5f));
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (speakerProfilePopup) {
+          [speakerProfilePopup selectItemAtIndex:idx];
+          speakerProfilePopup.toolTip = speakerProfilePopup.selectedItem.toolTip;
         }
       });
       return;

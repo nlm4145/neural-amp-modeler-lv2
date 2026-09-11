@@ -79,6 +79,8 @@ static NSString* stageName(NSInteger stage) {
 - (void)transformerChanged:(NSPopUpButton*)sender;
 - (void)showAmpAdvanced:(NSButton*)sender;
 - (void)showSignalFlow:(NSButton*)sender;
+- (void)speakerProfileChanged:(NSPopUpButton*)sender;
+- (void)showSpeakerLoad:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -235,8 +237,19 @@ static NSString* stageName(NSInteger stage) {
 - (void)showAmpAdvanced:(NSButton*)sender {
   if (!_state || !_state->ampAdvancedPopover) return;
   [_state->ampAdvancedPopover showRelativeToRect:sender.bounds
-                                          ofView:sender
-                                   preferredEdge:NSRectEdgeMaxY];
+                                           ofView:sender
+                                    preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)speakerProfileChanged:(NSPopUpButton*)sender {
+  sender.toolTip = sender.selectedItem.toolTip;
+  if (_state) _state->sendControl(42, (float)sender.indexOfSelectedItem);
+}
+
+- (void)showSpeakerLoad:(NSButton*)sender {
+  if (!_state || !_state->speakerPopover) return;
+  [_state->speakerPopover showRelativeToRect:sender.bounds ofView:sender
+                               preferredEdge:NSRectEdgeMaxY];
 }
 
 - (void)showSignalFlow:(NSButton*)sender {
@@ -791,7 +804,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"↓",
       @"Output Transformer  →  Presence / Depth / Sag / Bias / Feedback / Master",
       @"↓",
-      @"Cab NAM / WAV IR  →  Cab Level  →  Low Cut / High Cut",
+      @"Speaker Dynamics / Impedance  →  Cab NAM / WAV IR  →  Cab Level  →  Low Cut / High Cut",
       @"↓",
       @"Bass / Mid / Treble   (original clean post-cab EQ)",
       @"↓",
@@ -825,12 +838,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT",
                                       @"WIDTH", @"ROOM", @"PRESENCE", @"DEPTH",
                                       @"SAG", @"BIAS", @"NEG FDBK", @"BRIGHT",
-                                      @"INPUT EQ", @"MASTER"];
+                                      @"INPUT EQ", @"MASTER", @"SPKR DRIVE", @"SPKR COMP",
+                                      @"THUMP", @"RESONANCE"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"OFF", @"+0%",
-                                       @"OFF", @"OFF", @"OFF", @"OFF"];
+                                       @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Signals below this input level are gently expanded; -80 dB bypasses the gate.",
       @"Gate release time. Higher values preserve note tails longer after the signal falls below the threshold.",
@@ -853,17 +867,21 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Adds corrective low-frequency feedback for tighter response and reduced bloom.",
       @"Pre-amp high-frequency lift before the NAM amp model.",
       @"Pre-amp low-cut shaping before the NAM amp model.",
-      @"Drives the virtual post-model power stage. Zero leaves the capture untouched."
+      @"Drives the virtual post-model power stage. Zero leaves the capture untouched.",
+      @"Frequency-dependent speaker breakup after the amp and before the cabinet.",
+      @"Speaker excursion compression and recovery after the amp.",
+      @"Nonlinear low-frequency speaker excursion.",
+      @"Strength of the selected speaker impedance curve."
     ];
     const std::array<double, kRigKnobCount> defaults{
         -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 25.0, 25.0, 50.0, 50.0};
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
-        -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0};
+        -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
-        12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+        12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -1172,6 +1190,55 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
           value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
           value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
         }
+      } else if (i == 2) {
+        RigButton* speakerButton = rigButton(box, @"SPEAKER LOAD", state->uiController,
+                                             @selector(showSpeakerLoad:), NSZeroRect);
+        speakerButton.translatesAutoresizingMaskIntoConstraints = NO;
+        speakerButton.toolTip = @"Open speaker dynamics and impedance controls. Captured / Off is exact bypass.";
+        [box addSubview:speakerButton];
+        [[speakerButton.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+        [[speakerButton.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        [[speakerButton.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:5] setActive:YES];
+        [[speakerButton.heightAnchor constraintEqualToConstant:23] setActive:YES];
+        modelAnchor = speakerButton;
+
+        NSPopover* popover = [[NSPopover alloc] init];
+        popover.behavior = NSPopoverBehaviorTransient;
+        NSViewController* controller = [[NSViewController alloc] init];
+        NSView* view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)];
+        view.wantsLayer = YES; view.layer.backgroundColor = rigPanelBG().CGColor;
+        controller.view = view; popover.contentViewController = controller;
+        popover.contentSize = NSMakeSize(520, 180); state->speakerPopover = popover;
+        NSTextField* title = addLabel(view, @"SPEAKER DYNAMICS / IMPEDANCE", NSMakeRect(18, 150, 260, 18),
+            [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
+        rigApplyTracking(title, 1.0);
+        NSPopUpButton* profile = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(300, 146, 200, 25) pullsDown:NO];
+        [profile addItemsWithTitles:@[@"Captured / Off", @"Auto", @"Resistive", @"Open Back",
+                                      @"Vintage Alnico", @"UK 4x12", @"Modern 4x12", @"Bass"]];
+        NSArray<NSString*>* tips = @[
+          @"Captured / Off — Exact bypass; preserves the speaker-load behavior already in the NAM capture.",
+          @"Auto — Associates a generic profile from the selected cabinet filename; unknown cabinets use Resistive.",
+          @"Resistive — Flattest load and fastest response.", @"Open Back — Loose, broad low-frequency response.",
+          @"Vintage Alnico — Soft breakup and rounded compression.", @"UK 4x12 — Focused mid-bass resonance.",
+          @"Modern 4x12 — Tight low resonance and firm thump.", @"Bass — Deep resonance and slow recovery."];
+        for (NSUInteger item = 0; item < tips.count; ++item) [profile itemAtIndex:item].toolTip = tips[item];
+        profile.target = state->uiController; profile.action = @selector(speakerProfileChanged:);
+        profile.toolTip = profile.selectedItem.toolTip; [view addSubview:profile];
+        state->speakerProfilePopup = profile;
+        for (size_t a = 0; a < 4; ++a) {
+          const size_t k = 22 + a;
+          NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + a * 127, 8, 119, 125)];
+          [view addSubview:cell];
+          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
+          state->knobs[k].toolTip = knobDescriptions[k];
+          NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15), [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
+          label.toolTip = knobDescriptions[k];
+          state->valueLabels[k] = addLabel(cell, knobValues[k], NSMakeRect(24, 57, 72, 17), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
+          NSTextField* value = state->valueLabels[k]; value.editable = YES; value.selectable = YES;
+          value.bordered = NO; value.drawsBackground = YES; value.backgroundColor = rigRaised();
+          value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
+          value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
+        }
       }
 
       // The dropdown is the tile's model control/display — always visible. The
@@ -1190,7 +1257,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [box addSubview:mp];
       [[mp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-      if (i == 1)
+      if (i == 1 || i == 2)
         [[mp.topAnchor constraintEqualToAnchor:modelAnchor.bottomAnchor constant:4] setActive:YES];
       else
         [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:32] setActive:YES];
@@ -1231,7 +1298,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 41) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 46) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }
