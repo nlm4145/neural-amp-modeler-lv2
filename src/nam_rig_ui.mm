@@ -217,6 +217,11 @@ static NSString* stageName(NSInteger stage) {
       @"Sets WAV impulse-response gain handling. Changes glide smoothly.", sender);
   if (!_state) return;
   _state->sendControl(24, (float)sender.indexOfSelectedItem);
+  // Original changes the taps at load time (it bypasses resampling/truncation),
+  // so re-send the current cab path whenever the mode changes in either
+  // direction. Element applies the control write before the following patch.
+  if (!_state->selectedPaths[2].empty())
+    _state->sendPath(2, _state->selectedPaths[2].c_str());
 }
 
 - (void)transformerChanged:(NSPopUpButton*)sender {
@@ -955,11 +960,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                                       constant:-8] setActive:YES];
       } else {
         NSPopUpButton* norm = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [norm addItemsWithTitles:@[@"Preserve", @"Peak", @"Loudness"]];
+        [norm addItemsWithTitles:@[@"Preserve", @"Peak", @"Loudness", @"Original"]];
         NSArray<NSString*>* normalizationDescriptions = @[
           @"Preserve — Retains the impulse response's captured transfer gain across sample rates.",
           @"Peak — Scales the strongest audible-band response to unity, maximizing headroom without clipping the IR response.",
-          @"Loudness — Matches average audible-band response energy to unity for the most consistent perceived level."
+          @"Loudness — Matches average audible-band response energy to unity for the most consistent perceived level.",
+          @"Original — Uses every decoded source tap untouched: no resampling, transfer correction, truncation, fade, or normalization. A sample-rate mismatch intentionally changes playback speed."
         ];
         for (NSUInteger item = 0; item < normalizationDescriptions.count; ++item)
           [norm itemAtIndex:item].toolTip = normalizationDescriptions[item];

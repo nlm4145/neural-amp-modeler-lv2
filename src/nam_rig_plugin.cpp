@@ -267,7 +267,10 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
       if (message->stage == Stage::Cab && endsWithWav(message->path)) {
-        response.ir = WavIR::load(message->path, rig->sampleRate, rig->maxBufferSize).release();
+        const bool original = rig->ports.ir_normalization &&
+                              *rig->ports.ir_normalization >= 2.5f;
+        response.ir = WavIR::load(message->path, rig->sampleRate,
+                                  rig->maxBufferSize, original).release();
       } else {
         // The stage's oversample mode decides the loader external rate.
         // NONE (0): 48000 — dilation is a no-op for common-rate models.
@@ -996,7 +999,7 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   if (enabled[2]) {
     auto* ir = irs[2];
     if (ir) {
-      const int norm = std::max(0, std::min(2,
+      const int norm = std::max(0, std::min(3,
           static_cast<int>(*ports.ir_normalization + 0.5f)));
       ir->process(ports.audio_out, sampleCount, norm);
       cabProcessed = true;

@@ -141,6 +141,29 @@ int main(int argc, char** argv) {
     CHECK(rel < 1e-4, msg);
   }
 
+  // Original mode keeps the decoded source taps exactly as stored, even when
+  // the host rate differs. This intentionally skips resampling, transfer-gain
+  // correction, truncation, and the truncation fade.
+  {
+    std::vector<float> taps(5000);
+    for (size_t i = 0; i < taps.size(); ++i)
+      taps[i] = static_cast<float>((static_cast<int>(i % 29) - 14) * 0.001);
+    const std::string path = std::string(dir) + "/ir_original.wav";
+    writeWavF32(path, taps, 48000);
+    auto ir = NAMRig::WavIR::load(path.c_str(), 96000, 512, true);
+    std::vector<float> rendered(7000, 0.0f);
+    rendered[0] = 1.0f;
+    ir->process(rendered.data(), static_cast<uint32_t>(rendered.size()), 0);
+    double worst = 0.0;
+    for (size_t i = 0; i < taps.size(); ++i)
+      worst = std::max(worst, std::fabs(static_cast<double>(rendered[i] - taps[i])));
+    char message[160];
+    std::snprintf(message, sizeof(message),
+                  "Original keeps every decoded source tap untouched (worst %.3e, tail %.3e)",
+                  worst, static_cast<double>(rendered[5000]));
+    CHECK(worst < 1e-5 && std::fabs(rendered[5000]) < 1e-5, message);
+  }
+
   // Normalization operates on the audible transfer response, not on an
   // arbitrary individual IR tap.
   {

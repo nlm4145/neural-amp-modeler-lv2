@@ -19,11 +19,11 @@ namespace NAMRig {
 //     direct convolution with no lookahead.
 class WavIR {
 public:
-  static std::unique_ptr<WavIR> load(const char* path, double hostRate, int maxBlockSize);
+  static std::unique_ptr<WavIR> load(const char* path, double hostRate,
+                                     int maxBlockSize, bool original = false);
   ~WavIR();
-  // normalizationMode: 0 preserve the capture's transfer gain,
-  // 1 normalize the peak response magnitude, 2 normalize average audible-band
-  // response energy. Mode changes are smoothed internally.
+  // normalizationMode: 0 preserve the corrected capture's transfer gain,
+  // 1 peak, 2 loudness, 3 original source taps (scale remains unity).
   void process(float* samples, uint32_t count, int normalizationMode) noexcept;
 
 private:

@@ -197,13 +197,16 @@ WavIR::~WavIR() {
   if (fftSetup) vDSP_destroy_fftsetup(fftSetup);
 }
 
-std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlockSize) {
+std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
+                                   int maxBlockSize, bool original) {
   uint32_t sourceRate = 0;
-  auto taps = resample(readWav(path, sourceRate), sourceRate, hostRate);
+  auto sourceTaps = readWav(path, sourceRate);
+  auto taps = original ? std::move(sourceTaps)
+                       : resample(sourceTaps, sourceRate, hostRate);
   // A resampled discrete impulse response needs the inverse sample-density
   // factor to retain its transfer function: interpolating 48 -> 96 kHz creates
   // roughly twice as many taps and would otherwise add about 6 dB of gain.
-  if (std::fabs(static_cast<double>(sourceRate) - hostRate) >= 1.0) {
+  if (!original && std::fabs(static_cast<double>(sourceRate) - hostRate) >= 1.0) {
     const float transferScale = static_cast<float>(sourceRate / hostRate);
     for (float& tap : taps) tap *= transferScale;
   }
@@ -211,7 +214,7 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlo
   // natural tails. A hard cut rings (truncation ripple in the transfer
   // function), so the last ~5 ms taper with a raised cosine.
   const size_t maxTaps = static_cast<size_t>(hostRate * 0.08);
-  if (maxTaps > 0 && taps.size() > maxTaps) {
+  if (!original && maxTaps > 0 && taps.size() > maxTaps) {
     taps.resize(maxTaps);
     const size_t fade = std::min(taps.size(),
         static_cast<size_t>(std::llround(hostRate * 0.005)));
@@ -226,7 +229,7 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlo
   // scales so the user can change normalization instantly without reloading
   // or destructively altering the taps.
   return std::unique_ptr<WavIR>(
-      new WavIR(std::move(taps), hostRate, maxBlockSize));
+      new WavIR(std::move(taps), original ? sourceRate : hostRate, maxBlockSize));
 }
 
 // Completed kBlock input block: FFT it into the delay line, accumulate
@@ -273,9 +276,9 @@ void WavIR::flushBlock() noexcept {
 }
 
 void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexcept {
-  const float targetScale = normalizationMode <= 0 ? 1.0f
-                          : normalizationMode == 1 ? peakScale
-                                                   : loudnessScale;
+  const float targetScale = normalizationMode == 1 ? peakScale
+                          : normalizationMode == 2 ? loudnessScale
+                                                   : 1.0f;
   // The first block starts directly at the requested mode; subsequent UI
   // changes glide over 10 ms instead of stepping by potentially many dB at a
   // host block boundary.
