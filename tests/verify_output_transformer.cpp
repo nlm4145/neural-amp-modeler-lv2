@@ -150,6 +150,10 @@ int main() {
   // not: transparent studio use, loose combo bloom, class-A chime and bass.
   const double studioAir =
       responseDb(NAMRig::OutputTransformer::kStudioLinear, 12000.0);
+  const double studioPresence =
+      responseDb(NAMRig::OutputTransformer::kStudioLinear, 4600.0);
+  const double modernPresence =
+      responseDb(NAMRig::OutputTransformer::kModern, 4600.0);
   const double tweedLow =
       responseDb(NAMRig::OutputTransformer::kTweedBloom, 82.0);
   const double tweedPresence =
@@ -162,12 +166,26 @@ int main() {
       responseDb(NAMRig::OutputTransformer::kBassIron, 41.2);
   const double classASub =
       responseDb(NAMRig::OutputTransformer::kClassAChime, 41.2);
-  std::printf("        general: studio air %+.2f dB, tweed low/presence %+.2f/%+.2f dB\n",
-              studioAir, tweedLow, tweedPresence);
+  std::vector<float> studioDriven(96000);
+  for (size_t i = 0; i < studioDriven.size(); ++i)
+    studioDriven[i] = 0.9f * std::sin(2.0 * kPi * fundamental * i / rate);
+  NAMRig::OutputTransformer studioTx;
+  studioTx.process(studioDriven.data(), studioDriven.size(), rate,
+                   NAMRig::OutputTransformer::kStudioLinear);
+  const double studioH1 = harmonic(studioDriven, fundamental, rate, begin);
+  const double studioDistortion =
+      (harmonic(studioDriven, 2 * fundamental, rate, begin) +
+       harmonic(studioDriven, 3 * fundamental, rate, begin)) / studioH1;
+  std::printf("        general: studio air/presence %+.2f/%+.2f dB, tweed low/presence %+.2f/%+.2f dB\n",
+              studioAir, studioPresence, tweedLow, tweedPresence);
   std::printf("        general: class-A low/presence %+.2f/%+.2f dB, bass sub %+.2f dB\n",
               classALow, classAPresence, bassSub);
   check(studioAir > -1.0,
         "Studio Linear preserves wide-band high-frequency response");
+  check(studioPresence > modernPresence + 0.30,
+        "Studio Linear adds an audible presence polish beyond Modern Iron");
+  check(studioDistortion < distortion[0],
+        "Studio Linear remains cleaner than Modern Iron when driven");
   check(tweedLow > classALow + 1.0 && tweedPresence < classAPresence - 1.0,
         "Tweed Bloom is warmer and darker than Class-A Chime");
   check(classAPresence > 1.0,
@@ -209,6 +227,53 @@ int main() {
   }
   check(finite && peak < 25.0f,
         "hot/DC input remains finite and bounded for every profile");
+
+  // True 8x runs the transformer at up to 8x the incoming rate. Explicitly
+  // guard against a profile collapsing to silence or becoming unstable in
+  // that domain.
+  bool highRateFinite = true;
+  bool highRateAudible = true;
+  for (int p = NAMRig::OutputTransformer::kModern;
+       p < NAMRig::OutputTransformer::kProfileCount; ++p) {
+    constexpr double highRate = 768000.0;
+    std::vector<float> signal(76800);
+    for (size_t i = 0; i < signal.size(); ++i)
+      signal[i] = 0.2f * std::sin(2.0 * kPi * 997.0 * i / highRate);
+    NAMRig::OutputTransformer tx;
+    tx.process(signal.data(), signal.size(), highRate, p);
+    double energy = 0.0;
+    for (size_t i = signal.size() / 2; i < signal.size(); ++i) {
+      highRateFinite = highRateFinite && std::isfinite(signal[i]);
+      energy += static_cast<double>(signal[i]) * signal[i];
+    }
+    const double rms = std::sqrt(energy / (signal.size() / 2));
+    highRateAudible = highRateAudible && rms > 0.05;
+  }
+  check(highRateFinite && highRateAudible,
+        "every profile remains finite and audible in a True 8x domain");
+
+  // NAM captures can emit appreciable DC/very-low-frequency energy. At a
+  // 768 kHz True-8x domain, the coefficients for a 7 Hz high-pass sit
+  // extremely close to the unit circle; exercise that worst case long enough
+  // to expose numerical ringing or gain runaway.
+  bool highRateDcFinite = true;
+  bool highRateDcBounded = true;
+  for (int p = NAMRig::OutputTransformer::kModern;
+       p < NAMRig::OutputTransformer::kProfileCount; ++p) {
+    constexpr double highRate = 768000.0;
+    std::vector<float> signal(768000, 0.2f);
+    NAMRig::OutputTransformer tx;
+    tx.process(signal.data(), signal.size(), highRate, p);
+    float profilePeak = 0.0f;
+    for (float x : signal) {
+      highRateDcFinite = highRateDcFinite && std::isfinite(x);
+      profilePeak = std::max(profilePeak, std::fabs(x));
+    }
+    std::printf("        high-rate DC profile %d: peak %.6f\n", p, profilePeak);
+    highRateDcBounded = highRateDcBounded && profilePeak < 1.0f;
+  }
+  check(highRateDcFinite && highRateDcBounded,
+        "DC remains finite and bounded in a True 8x domain");
 
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n",
               failures);

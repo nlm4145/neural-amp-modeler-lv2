@@ -108,18 +108,56 @@ std::vector<float> resample(const std::vector<float>& input, double from, double
   }
   return output;
 }
+
+struct ResponseStats {
+  double peak = 0.0;
+  double rms = 0.0;
+};
+
+// Measure the filter rather than its individual time-domain coefficients.
+// Uniformly spaced physical-Hz samples keep both metrics stable when the same
+// IR is resampled for a different host rate. The 20 Hz--20 kHz window also
+// avoids ultrasonic bins (which a guitar cabinet does not meaningfully use)
+// skewing the average at high host rates.
+ResponseStats measureResponse(const std::vector<float>& taps, double rate) {
+  constexpr size_t kBins = 512;
+  const double lowHz = 20.0;
+  const double highHz = std::max(lowHz, std::min(20000.0, rate * 0.45));
+  double peakSquared = 0.0;
+  double sumSquared = 0.0;
+  for (size_t bin = 0; bin < kBins; ++bin) {
+    const double t = static_cast<double>(bin) / static_cast<double>(kBins - 1);
+    const double radians = -2.0 * kPi * (lowHz + t * (highHz - lowHz)) / rate;
+    const double stepReal = std::cos(radians);
+    const double stepImag = std::sin(radians);
+    double phaseReal = 1.0;
+    double phaseImag = 0.0;
+    double real = 0.0;
+    double imag = 0.0;
+    for (float tap : taps) {
+      real += tap * phaseReal;
+      imag += tap * phaseImag;
+      const double nextReal = phaseReal * stepReal - phaseImag * stepImag;
+      phaseImag = phaseReal * stepImag + phaseImag * stepReal;
+      phaseReal = nextReal;
+    }
+    const double magnitudeSquared = real * real + imag * imag;
+    peakSquared = std::max(peakSquared, magnitudeSquared);
+    sumSquared += magnitudeSquared;
+  }
+  return {std::sqrt(peakSquared), std::sqrt(sumSquared / kBins)};
+}
 }
 
-WavIR::WavIR(std::vector<float> taps, int maxBlockSize) {
+WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   (void)maxBlockSize;  // chunking is internal (kBlock); any call size works
-  double energy = 0.0;
-  float peak = 0.0f;
-  for (float tap : taps) {
-    energy += static_cast<double>(tap) * tap;
-    peak = std::max(peak, std::fabs(tap));
-  }
-  if (peak > 0.0f) peakScale = 1.0f / peak;
-  if (energy > 0.0) loudnessScale = static_cast<float>(1.0 / std::sqrt(energy));
+  const ResponseStats response = measureResponse(taps, sampleRate);
+  if (response.peak > 1.0e-12)
+    peakScale = static_cast<float>(1.0 / response.peak);
+  if (response.rms > 1.0e-12)
+    loudnessScale = static_cast<float>(1.0 / response.rms);
+  scaleSmoothCoeff = 1.0f - std::exp(-1.0f /
+      static_cast<float>(0.010 * std::max(8000.0, sampleRate)));
 
   const size_t headLen = std::min<size_t>(taps.size(), kBlock);
   reversedHead.assign(taps.rbegin() + (taps.size() - headLen), taps.rend());
@@ -162,6 +200,13 @@ WavIR::~WavIR() {
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlockSize) {
   uint32_t sourceRate = 0;
   auto taps = resample(readWav(path, sourceRate), sourceRate, hostRate);
+  // A resampled discrete impulse response needs the inverse sample-density
+  // factor to retain its transfer function: interpolating 48 -> 96 kHz creates
+  // roughly twice as many taps and would otherwise add about 6 dB of gain.
+  if (std::fabs(static_cast<double>(sourceRate) - hostRate) >= 1.0) {
+    const float transferScale = static_cast<float>(sourceRate / hostRate);
+    for (float& tap : taps) tap *= transferScale;
+  }
   // Guitar cabinet IR energy is concentrated near the start; 80 ms keeps
   // natural tails. A hard cut rings (truncation ripple in the transfer
   // function), so the last ~5 ms taper with a raised cosine.
@@ -177,10 +222,11 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate, int maxBlo
   }
   if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
 
-  // Keep the resampled capture level intact. WavIR stores peak and energy
+  // Keep the corrected capture level intact. WavIR stores response-based
   // scales so the user can change normalization instantly without reloading
-  // or destructively altering the taps. Mode 2 preserves the old default.
-  return std::unique_ptr<WavIR>(new WavIR(std::move(taps), maxBlockSize));
+  // or destructively altering the taps.
+  return std::unique_ptr<WavIR>(
+      new WavIR(std::move(taps), hostRate, maxBlockSize));
 }
 
 // Completed kBlock input block: FFT it into the delay line, accumulate
@@ -227,9 +273,16 @@ void WavIR::flushBlock() noexcept {
 }
 
 void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexcept {
-  const float scale = normalizationMode <= 0 ? 1.0f
-                    : normalizationMode == 1 ? peakScale
-                                             : loudnessScale;
+  const float targetScale = normalizationMode <= 0 ? 1.0f
+                          : normalizationMode == 1 ? peakScale
+                                                   : loudnessScale;
+  // The first block starts directly at the requested mode; subsequent UI
+  // changes glide over 10 ms instead of stepping by potentially many dB at a
+  // host block boundary.
+  if (!scaleInitialized) {
+    currentScale = targetScale;
+    scaleInitialized = true;
+  }
   const uint32_t headLen = static_cast<uint32_t>(reversedHead.size());
   const uint32_t history = headLen - 1;
   uint32_t done = 0;
@@ -249,13 +302,17 @@ void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexc
       fillPos += t;
       for (uint32_t i = 0; i < t; ++i) {
         const uint32_t rp = (ringPos + i) & kRingMask;
-        samples[done + i] = (headOut[i] + ring[rp]) * scale;
+        currentScale += (targetScale - currentScale) * scaleSmoothCoeff;
+        samples[done + i] = (headOut[i] + ring[rp]) * currentScale;
         ring[rp] = 0.0f;
       }
       ringPos = (ringPos + t) & kRingMask;
       if (fillPos == kBlock) flushBlock();
     } else {
-      for (uint32_t i = 0; i < t; ++i) samples[done + i] = headOut[i] * scale;
+      for (uint32_t i = 0; i < t; ++i) {
+        currentScale += (targetScale - currentScale) * scaleSmoothCoeff;
+        samples[done + i] = headOut[i] * currentScale;
+      }
     }
     done += t;
   }

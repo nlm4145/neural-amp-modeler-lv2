@@ -286,6 +286,16 @@ struct RigUIState {
     write(controller, port, sizeof(value), 0, &value);
   }
 
+  static NSString* modelPickerTooltip(size_t stage, NSString* path) {
+    NSString* role = stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
+    NSString* behavior = stage == 2
+        ? @"Select the active cabinet NAM model or WAV impulse response."
+        : [NSString stringWithFormat:@"Select the active %@ NAM model.", role];
+    return path.length
+        ? [NSString stringWithFormat:@"%@ Current file: %@", behavior, path]
+        : [NSString stringWithFormat:@"%@ No model is currently loaded.", behavior];
+  }
+
   void displayPath(size_t stage, const char* path) {
     if (stage >= modelPickers.size() || !modelPickers[stage]) return;
     const std::string copy = path ? path : "";
@@ -298,13 +308,15 @@ struct RigUIState {
         [picker removeAllItems];
         [picker addItemWithTitle:@"No model loaded"];
         picker.itemArray.firstObject.enabled = NO;
+        picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
         for (NSString* p in savedPaths) {
           NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:p.lastPathComponent action:NULL keyEquivalent:@""];
-          it.representedObject = p; it.toolTip = p;
+          it.representedObject = p; it.toolTip = modelPickerTooltip(stage, p);
           [[picker menu] addItem:it];
         }
         [picker selectItemAtIndex:0];
         picker.enabled = savedPaths.count == 0 ? NO : YES;
+        picker.toolTip = modelPickerTooltip(stage, nil);
         return;
       }
       NSString* full = [NSString stringWithUTF8String:copy.c_str()];
@@ -319,11 +331,12 @@ struct RigUIState {
         picker.enabled = YES;
       } else {
         NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:full.lastPathComponent action:NULL keyEquivalent:@""];
-        it.representedObject = full; it.toolTip = full;
+        it.representedObject = full; it.toolTip = modelPickerTooltip(stage, full);
         [[picker menu] addItem:it];
         [picker selectItem:it];
         picker.enabled = YES;
       }
+      picker.toolTip = modelPickerTooltip(stage, full);
     });
   }
 
@@ -347,12 +360,14 @@ struct RigUIState {
       NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:(p.length ? p.lastPathComponent : @"—")
                                                     action:NULL keyEquivalent:@""];
       item.representedObject = p;
-      item.toolTip = p;
+      item.toolTip = modelPickerTooltip(stage, p);
       [[picker menu] addItem:item];
     }
     if (paths.count == 0) {
       [picker addItemWithTitle:@"No model loaded"];
+      picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
       picker.enabled = NO;
+      picker.toolTip = modelPickerTooltip(stage, nil);
     } else {
       picker.enabled = YES;
       NSInteger selected = 0;
@@ -364,6 +379,8 @@ struct RigUIState {
           }
       }
       [picker selectItemAtIndex:selected];
+      picker.toolTip = modelPickerTooltip(stage,
+          picker.selectedItem.representedObject);
     }
     picker.hidden = NO;
   }
@@ -453,19 +470,34 @@ struct RigUIState {
         dispatch_async(dispatch_get_main_queue(), ^{
           if (idx >= 0 && idx < popup.itemArray.count)
             [popup selectItemAtIndex:idx];
+          NSString* role = port == 20 ? @"pedal" : @"amp";
+          NSString* selected = popup.selectedItem.toolTip ?: @"";
+          popup.toolTip = [NSString stringWithFormat:
+              @"Sets %@-stage oversampling. %@", role, selected];
         });
       }
       return;
     }
     if (port == 19) {   // legacy global mode: reflect onto the master popup
       const int idx = value < 0.5f ? 0 : (value < 1.5f ? 1 : 2);
-      dispatch_async(dispatch_get_main_queue(), ^{ [osPopup selectItemAtIndex:idx]; });
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [osPopup selectItemAtIndex:idx];
+        NSString* selected = osPopup.selectedItem.toolTip ?: @"";
+        osPopup.toolTip = [NSString stringWithFormat:
+            @"Sets both pedal and amp oversampling. %@", selected];
+      });
       return;
     }
     if (port == 24) {
       const int idx = std::max(0, std::min(2, (int)(value + 0.5f)));
       dispatch_async(dispatch_get_main_queue(), ^{
-        if (irNormPopup) [irNormPopup selectItemAtIndex:idx];
+        if (irNormPopup) {
+          [irNormPopup selectItemAtIndex:idx];
+          NSString* selected = irNormPopup.selectedItem.toolTip ?: @"";
+          irNormPopup.toolTip = [NSString stringWithFormat:
+              @"Sets WAV impulse-response gain handling. Changes glide smoothly. %@",
+              selected];
+        }
       });
       return;
     }
@@ -473,7 +505,10 @@ struct RigUIState {
       const int idx = NAMRig::OutputTransformer::clampProfile(
           (int)(value + 0.5f));
       dispatch_async(dispatch_get_main_queue(), ^{
-        if (transformerPopup) [transformerPopup selectItemAtIndex:idx];
+        if (transformerPopup) {
+          [transformerPopup selectItemAtIndex:idx];
+          transformerPopup.toolTip = transformerPopup.selectedItem.toolTip;
+        }
       });
       return;
     }

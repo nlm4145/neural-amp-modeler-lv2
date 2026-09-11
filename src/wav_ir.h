@@ -21,12 +21,13 @@ class WavIR {
 public:
   static std::unique_ptr<WavIR> load(const char* path, double hostRate, int maxBlockSize);
   ~WavIR();
-  // normalizationMode: 0 preserve capture level, 1 peak-normalize,
-  // 2 energy/loudness normalize (the historical default).
+  // normalizationMode: 0 preserve the capture's transfer gain,
+  // 1 normalize the peak response magnitude, 2 normalize average audible-band
+  // response energy. Mode changes are smoothed internally.
   void process(float* samples, uint32_t count, int normalizationMode) noexcept;
 
 private:
-  WavIR(std::vector<float> taps, int maxBlockSize);
+  WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize);
   void flushBlock() noexcept;
 
   static constexpr uint32_t kBlock = 256;      // head length + partition size
@@ -65,5 +66,8 @@ private:
 
   float peakScale = 1.0f;
   float loudnessScale = 1.0f;
+  float currentScale = 1.0f;
+  float scaleSmoothCoeff = 1.0f;
+  bool scaleInitialized = false;
 };
 }

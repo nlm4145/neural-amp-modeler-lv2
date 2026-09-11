@@ -39,7 +39,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 15 | `gate_threshold` | in | dB, −80 = OFF |
 | 22 | `amp_drive` | in | dB between pedal and amp |
 | 23 | `gate_release` | in | expander release, ms |
-| 24 | `ir_normalization` | in | Preserve / Peak / Loudness |
+| 24 | `ir_normalization` | in | Preserve / Peak / Loudness. Preserve retains transfer gain across sample rates; Peak normalizes the maximum 20 Hz–20 kHz response; Loudness normalizes average response energy in that band. Runtime changes glide over 10 ms. |
 | 25 | `cab_level` | in | post-cab dB trim |
 | 26 | `cab_low_cut` | in | Hz, 0 = OFF |
 | 27 | `cab_high_cut` | in | Hz, 20 kHz = OFF |

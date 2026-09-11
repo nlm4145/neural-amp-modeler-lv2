@@ -34,6 +34,49 @@ static void writeWavF32(const std::string& path, const std::vector<float>& x,
   f.write(reinterpret_cast<const char*>(x.data()), dataBytes);
 }
 
+struct ResponseStats {
+  double peak = 0.0;
+  double rms = 0.0;
+};
+
+static ResponseStats responseStats(const std::vector<float>& taps,
+                                   double rate) {
+  constexpr size_t bins = 512;
+  constexpr double pi = 3.14159265358979323846;
+  const double low = 20.0;
+  const double high = std::max(low, std::min(20000.0, rate * 0.45));
+  double peak2 = 0.0, sum2 = 0.0;
+  for (size_t b = 0; b < bins; ++b) {
+    const double f = low + (high - low) * b / (bins - 1);
+    const double radians = -2.0 * pi * f / rate;
+    const double sr = std::cos(radians), si = std::sin(radians);
+    double pr = 1.0, piPhase = 0.0, re = 0.0, im = 0.0;
+    for (float tap : taps) {
+      re += tap * pr;
+      im += tap * piPhase;
+      const double nr = pr * sr - piPhase * si;
+      piPhase = pr * si + piPhase * sr;
+      pr = nr;
+    }
+    const double mag2 = re * re + im * im;
+    peak2 = std::max(peak2, mag2);
+    sum2 += mag2;
+  }
+  return {std::sqrt(peak2), std::sqrt(sum2 / bins)};
+}
+
+static double magnitudeAt(const std::vector<float>& taps, double rate,
+                          double frequency) {
+  constexpr double pi = 3.14159265358979323846;
+  double re = 0.0, im = 0.0;
+  for (size_t i = 0; i < taps.size(); ++i) {
+    const double phase = -2.0 * pi * frequency * i / rate;
+    re += taps[i] * std::cos(phase);
+    im += taps[i] * std::sin(phase);
+  }
+  return std::sqrt(re * re + im * im);
+}
+
 // Mirrors WavIR::load's truncation + raised-cosine fade.
 static std::vector<float> truncateFade(std::vector<float> taps, double rate) {
   const size_t maxTaps = static_cast<size_t>(rate * 0.08);
@@ -98,31 +141,81 @@ int main(int argc, char** argv) {
     CHECK(rel < 1e-4, msg);
   }
 
-  // Normalization modes only rescale the same response.
+  // Normalization operates on the audible transfer response, not on an
+  // arbitrary individual IR tap.
   {
-    std::uniform_real_distribution<float> dist(-1.f, 1.f);
     std::vector<float> taps(1000);
-    for (auto& v : taps) v = dist(rng);
+    std::normal_distribution<float> dist(0.f, 1.f);
+    for (size_t i = 0; i < taps.size(); ++i)
+      taps[i] = 0.15f * dist(rng) * std::exp(-static_cast<float>(i) / 140.0f);
     const std::string path = std::string(dir) + "/ir_norm.wav";
     writeWavF32(path, taps, 48000);
-    float peak = 0.0f; double energy = 0.0;
-    for (float t : taps) { peak = std::max(peak, std::fabs(t)); energy += (double)t * t; }
-    std::vector<float> x(4096);
-    for (auto& v : x) v = dist(rng);
-    double worst = 0.0;
-    for (int mode = 1; mode <= 2; ++mode) {
-      auto a = NAMRig::WavIR::load(path.c_str(), 48000, 512);
-      auto b = NAMRig::WavIR::load(path.c_str(), 48000, 512);
-      std::vector<float> ya = x, yb = x;
-      a->process(ya.data(), 4096, mode);
-      b->process(yb.data(), 4096, 0);
-      const double s = mode == 1 ? 1.0 / peak : 1.0 / std::sqrt(energy);
-      for (size_t i = 0; i < ya.size(); ++i)
-        worst = std::max(worst, std::fabs((double)ya[i] - s * yb[i]));
+    std::vector<float> rendered[3];
+    for (int mode = 0; mode < 3; ++mode) {
+      auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
+      rendered[mode].assign(4096, 0.0f);
+      rendered[mode][0] = 1.0f;
+      ir->process(rendered[mode].data(), 4096, mode);
     }
-    char msg[128];
-    std::snprintf(msg, sizeof(msg), "peak/loudness modes rescale only (worst %.3e)", worst);
-    CHECK(worst < 1e-5, msg);
+    double preserveWorst = 0.0;
+    for (size_t i = 0; i < taps.size(); ++i)
+      preserveWorst = std::max(
+          preserveWorst, std::fabs(static_cast<double>(rendered[0][i] - taps[i])));
+    const ResponseStats peak = responseStats(rendered[1], 48000.0);
+    const ResponseStats loudness = responseStats(rendered[2], 48000.0);
+    CHECK(preserveWorst < 1e-5, "Preserve retains source-rate transfer gain");
+    CHECK(std::fabs(peak.peak - 1.0) < 2e-3,
+          "Peak sets maximum audible response magnitude to unity");
+    CHECK(std::fabs(loudness.rms - 1.0) < 2e-3,
+          "Loudness sets average audible response energy to unity");
+    CHECK(peak.rms < loudness.rms,
+          "Peak leaves more headroom than Loudness on a shaped cab response");
+  }
+
+  // Resampling an IR must preserve its transfer gain in physical Hz. This is
+  // distinct from resampling an ordinary signal, whose sample amplitude stays
+  // unchanged while its sample density changes.
+  {
+    std::vector<float> taps(256, 0.0f);
+    taps[64] = 0.70f;
+    taps[65] = -0.20f;
+    taps[70] = 0.10f;
+    const std::string path = std::string(dir) + "/ir_rate.wav";
+    writeWavF32(path, taps, 48000);
+    double worstDb = 0.0;
+    for (int mode = 0; mode < 3; ++mode) {
+      std::vector<float> rendered[2];
+      const double rates[] = {48000.0, 96000.0};
+      for (int r = 0; r < 2; ++r) {
+        auto ir = NAMRig::WavIR::load(path.c_str(), rates[r], 512);
+        rendered[r].assign(r == 0 ? 1024 : 2048, 0.0f);
+        rendered[r][0] = 1.0f;
+        ir->process(rendered[r].data(), static_cast<uint32_t>(rendered[r].size()), mode);
+      }
+      for (double frequency : {1000.0, 5000.0, 12000.0}) {
+        const double a = magnitudeAt(rendered[0], rates[0], frequency);
+        const double b = magnitudeAt(rendered[1], rates[1], frequency);
+        worstDb = std::max(worstDb, std::fabs(20.0 * std::log10(b / a)));
+      }
+    }
+    char msg[160];
+    std::snprintf(msg, sizeof(msg),
+                  "all normalization modes are sample-rate invariant (worst %.3f dB)",
+                  worstDb);
+    CHECK(worstDb < 0.10, msg);
+  }
+
+  // Switching modes should not step the output gain at a block boundary.
+  {
+    const std::string path = std::string(dir) + "/ir_smooth.wav";
+    writeWavF32(path, {0.1f}, 48000);
+    auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
+    std::vector<float> before(512, 1.0f), after(4096, 1.0f);
+    ir->process(before.data(), static_cast<uint32_t>(before.size()), 0);
+    ir->process(after.data(), static_cast<uint32_t>(after.size()), 1);
+    CHECK(std::fabs(after.front() - before.back()) < 0.01f &&
+              after.back() > 0.99f && after[1000] > after.front(),
+          "normalization changes glide without a gain step");
   }
 
   std::printf(g_fail ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", g_fail);

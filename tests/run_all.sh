@@ -100,13 +100,24 @@ fi
 
 # End-to-end smoke test against the INSTALLED rig plugin. Plain C, so it
 # builds with clang even where the C++ toolchain headers are broken.
-RIG_SO="$HOME/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2/neural_amp_modeler_rig.so"
+RIG_SO="${RIG_SO:-$HOME/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2/neural_amp_modeler_rig.so}"
 echo "== tests/verify_host_smoke.c (installed rig plugin) =="
 if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_host_smoke.c \
     -o /tmp/verify_host_smoke 2>/dev/null; then
   /tmp/verify_host_smoke "$RIG_SO" || status=1
 else
   echo "  (skipped: plugin not installed or harness build failed)"
+fi
+
+echo "== tests/verify_transformer_switch.cpp (96 kHz / True 8x) =="
+EXAMPLE_AMP="deps/NeuralAudio/deps/NeuralAmpModelerCore/example_models/wavenet.nam"
+if [ -f "$RIG_SO" ] && [ -f "$EXAMPLE_AMP" ] && \
+    clang++ -O2 -std=c++17 $CXX_EXTRA -Ideps/lv2/include \
+      tests/verify_transformer_switch.cpp -o /tmp/verify_transformer_switch \
+      2>/dev/null; then
+  /tmp/verify_transformer_switch "$RIG_SO" "$EXAMPLE_AMP" 96000 6 || status=1
+else
+  echo "  (skipped: plugin/model unavailable or harness build failed)"
 fi
 
 for t in tests/test_*.py; do

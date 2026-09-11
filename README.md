@@ -47,8 +47,8 @@ touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
 ```
 
 - `tests/test_wav_ir_resample.py` — mirrors `WavIR` resampling/normalization
-  exactly (DC gain, bandlimited impulse area, equal-rate identity, round-trip
-  RMSE, 80 ms truncation, unity energy). The length test pins the
+  (DC gain, sample-rate-invariant IR transfer gain, response peak/loudness,
+  equal-rate identity, round-trip RMSE, and 80 ms truncation). The length test pins the
   count/position ratio distinction that once produced a 1/4-length output.
 - `tests/test_tuner_mpm.py` — mirrors the tuner's McLeod NSDF pipeline and
   asserts pitch accuracy (<5¢) on synthetic guitar tones at 48k and 96k,

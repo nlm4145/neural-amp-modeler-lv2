@@ -93,6 +93,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 }
 - (void)loadView {
   RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 190, 74)];
+  v.toolTip = @"Click to load or download this tone. Right-click to view it on Tone3000.";
 
   _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(6, 7, 60, 60)];
   _artView.imageScaling = NSImageScaleProportionallyUpOrDown;
@@ -125,6 +126,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _favButton.imagePosition = NSImageOnly;
   _favButton.target = self;
   _favButton.action = @selector(favClicked:);
+  _favButton.toolTip = @"Add this tone to your Tone3000 favorites.";
   _favButton.autoresizingMask = NSViewMinXMargin;
   [v addSubview:_favButton];
 
@@ -143,6 +145,17 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _detailField.stringValue = [NSString stringWithFormat:@"@%@  ·  %@", item.creator, item.gear.uppercaseString];
   _favButton.image = [NSImage imageWithSystemSymbolName:(item.favorite ? @"star.fill" : @"star") accessibilityDescription:nil];
   _favButton.contentTintColor = item.favorite ? rigAccent() : rigDimText();
+  NSString* cardTip = [NSString stringWithFormat:
+      @"%@ by @%@ — %@. %@ Right-click to view it on Tone3000.",
+      item.title ?: @"Untitled tone", item.creator ?: @"unknown", item.gear ?: @"capture",
+      item.local ? @"Click to load its models." : @"Click to download and load its models."];
+  self.view.toolTip = cardTip;
+  _artView.toolTip = cardTip;
+  _titleField.toolTip = cardTip;
+  _detailField.toolTip = cardTip;
+  _favButton.toolTip = item.favorite
+      ? @"Remove this tone from your Tone3000 favorites."
+      : @"Add this tone to your Tone3000 favorites.";
 
   // Placeholder immediately; load real artwork asynchronously from cache or disk.
   _artView.image = [NSImage imageWithSystemSymbolName:@"guitars" accessibilityDescription:nil];
@@ -218,6 +231,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
                                                    action:@selector(openTone3000:)
                                             keyEquivalent:@""];
   openItem.target = self;  // reads self.representedObject at click time
+  openItem.toolTip = @"Open this tone's detail page in your default web browser.";
   [m addItem:openItem];
   self.view.menu = m;
 }
@@ -736,7 +750,14 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   });
 }
 
-- (void)sortChanged:(id)sender { if (sender) [self persistFilterSelection]; [self refreshOnline]; }
+- (void)sortChanged:(id)sender {
+  if ([sender isKindOfClass:NSPopUpButton.class]) {
+    NSPopUpButton* popup = sender;
+    popup.toolTip = popup.selectedItem.toolTip ?: @"Choose the ordering used for Tone3000 search results.";
+  }
+  if (sender) [self persistFilterSelection];
+  [self refreshOnline];
+}
 
 // Infinite scroll: as the user nears the bottom of the tone list, pull the
 // next search page (cache-first, one page at a time). Fired via the clip
@@ -1249,6 +1270,10 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)controlTextDidEndEditing:(NSNotification*)notification { if (self.accessToken.length) [self refreshOnline]; }
 
 - (void)filterChanged:(id)sender {
+  if ([sender isKindOfClass:NSPopUpButton.class]) {
+    NSPopUpButton* popup = sender;
+    popup.toolTip = popup.selectedItem.toolTip ?: @"Filter Tone3000 results by capture type.";
+  }
   if (sender) [self persistFilterSelection];
   NSString* query = self.search.stringValue.lowercaseString;
   NSString* gear = self.gear.titleOfSelectedItem;

@@ -129,11 +129,12 @@ struct UIState {
     dispatch_async(dispatch_get_main_queue(), ^{
       if (copy.empty()) {
         pathLabel.stringValue = @"No model loaded";
-        pathLabel.toolTip = nil;
+        pathLabel.toolTip = @"The active neural model file. No model is currently loaded.";
       } else {
         NSString* fullPath = [NSString stringWithUTF8String:copy.c_str()];
         pathLabel.stringValue = fullPath.lastPathComponent;
-        pathLabel.toolTip = fullPath;
+        pathLabel.toolTip = [NSString stringWithFormat:
+            @"The active neural model file. Current file: %@", fullPath];
       }
     });
   }
@@ -260,6 +261,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     rigApplyTracking(title, 1.6);
     title.frame = NSMakeRect(18, 218, 340, 24);
     title.alignment = NSTextAlignmentLeft;
+    title.toolTip = @"The compact single-model Neural Amp Modeler plug-in.";
     [state->view addSubview:title];
 
     state->pathLabel = [NSTextField labelWithString:@"No model loaded"];
@@ -267,6 +269,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->pathLabel.textColor = rigDimText();
     state->pathLabel.font = [NSFont systemFontOfSize:12.0];
     state->pathLabel.frame = NSMakeRect(18, 180, 455, 24);
+    state->pathLabel.toolTip = @"The active neural model file. No model is currently loaded.";
     [state->view addSubview:state->pathLabel];
 
     state->uiController = [[NAMUIController alloc] init];
@@ -278,9 +281,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     choose.primary = YES;
     choose.target = state->uiController;
     choose.action = @selector(chooseModel:);
+    choose.toolTip = @"Choose and load a NAM, NAMModel, JSON, AIDA-X, or AIDA DSP model file.";
     [state->view addSubview:choose];
 
     RigPanel* panel = [[RigPanel alloc] initWithFrame:NSMakeRect(18, 26, 684, 130)];
+    panel.toolTip = @"Model level and quality controls.";
     [state->view addSubview:panel];
 
     state->inputSlider = addKnob(state->view, 4, 0.0, -20.0, 20.0,
@@ -288,15 +293,33 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->qualitySlider = addKnob(state->view, 6, 1.0, 0.0, 1.0,
                                    NSMakePoint(328, 78), state->uiController);
     state->outputSlider = addKnob(state->view, 5, 0.0, -20.0, 20.0,
-                                  NSMakePoint(544, 78), state->uiController);
+                                   NSMakePoint(544, 78), state->uiController);
+
+    NSArray<NSString*>* controlTips = @[
+      @"Input trim before the neural model. Positive values drive the capture harder; negative values clean it up.",
+      @"Model quality scale. Higher values use the fullest available model tier and may increase CPU usage.",
+      @"Final output trim after the neural model."
+    ];
+    NSArray<NSSlider*>* controlKnobs = @[state->inputSlider, state->qualitySlider,
+                                         state->outputSlider];
+    for (NSUInteger i = 0; i < controlKnobs.count; ++i)
+      controlKnobs[i].toolTip = [NSString stringWithFormat:
+          @"%@ Drag vertically; hold Shift for fine adjustment; double-click to reset.",
+          controlTips[i]];
 
     NSFont* nameFont = [NSFont systemFontOfSize:10.0 weight:NSFontWeightSemibold];
-    rigApplyTracking(addText(state->view, @"INPUT", NSMakeRect(92, 54, 104, 18),
-                             nameFont, rigDimText()), 1.1);
-    rigApplyTracking(addText(state->view, @"QUALITY", NSMakeRect(308, 54, 104, 18),
-                             nameFont, rigDimText()), 1.1);
-    rigApplyTracking(addText(state->view, @"OUTPUT", NSMakeRect(524, 54, 104, 18),
-                             nameFont, rigDimText()), 1.1);
+    NSTextField* inputName = addText(state->view, @"INPUT", NSMakeRect(92, 54, 104, 18),
+                                    nameFont, rigDimText());
+    NSTextField* qualityName = addText(state->view, @"QUALITY", NSMakeRect(308, 54, 104, 18),
+                                      nameFont, rigDimText());
+    NSTextField* outputName = addText(state->view, @"OUTPUT", NSMakeRect(524, 54, 104, 18),
+                                     nameFont, rigDimText());
+    rigApplyTracking(inputName, 1.1);
+    rigApplyTracking(qualityName, 1.1);
+    rigApplyTracking(outputName, 1.1);
+    inputName.toolTip = controlTips[0];
+    qualityName.toolTip = controlTips[1];
+    outputName.toolTip = controlTips[2];
 
     state->inputValue = addText(state->view, @"+0.0 dB", NSMakeRect(92, 34, 104, 18),
                                 [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular],
@@ -307,6 +330,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->outputValue = addText(state->view, @"+0.0 dB", NSMakeRect(524, 34, 104, 18),
                                  [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular],
                                  rigText());
+    state->inputValue.toolTip = controlTips[0];
+    state->qualityValue.toolTip = controlTips[1];
+    state->outputValue.toolTip = controlTips[2];
 
     NSTextField* note = [NSTextField labelWithString:
         @"Set Element's sample rate before loading (96 kHz = 2× for a 48 kHz model)."];
@@ -314,6 +340,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     note.font = [NSFont systemFontOfSize:11.0];
     note.alignment = NSTextAlignmentCenter;
     note.frame = NSMakeRect(18, 8, 684, 18);
+    note.toolTip = @"NAM models normally expect their training rate, usually 48 kHz. Integer multiples can be used for oversampled operation.";
     [state->view addSubview:note];
 
     // Cocoa LV2 hosts (including Element/JUCE) provide the native parent view.

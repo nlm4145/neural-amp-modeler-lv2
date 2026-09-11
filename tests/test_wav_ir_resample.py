@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for WavIR resampling + selectable IR level normalization.
 
-These mirror the EXACT algorithms in src/wav_ir.cpp (windowed-sinc resample,
-80 ms truncation, preserve/peak/energy scales) so any change to the C++ can be
-validated in seconds, before compiling — the discipline that caught the
-count/position ratio inversion (a 1/4-length output) during development.
+These mirror the algorithms in src/wav_ir.cpp (windowed-sinc resample, IR
+transfer-gain correction, 80 ms truncation, and response-based normalization)
+so changes can be validated before compiling.
 
 Run:  python3 tests/test_wav_ir_resample.py
 """
@@ -57,8 +56,10 @@ def resample(input_sig, from_rate, to_rate):
 
 def wav_ir_load_taps(x, source_rate, host_rate):
     """The tap-processing chain in WavIR::load (after WAV decode):
-    resample -> 80 ms truncation. Normalization is now a runtime output scale."""
+    resample -> transfer-gain correction -> 80 ms truncation."""
     taps = np.asarray(resample(x, source_rate, host_rate), dtype=np.float64)
+    if abs(source_rate - host_rate) >= 1.0:
+        taps *= source_rate / host_rate
     max_len = int(host_rate * 0.08)
     if taps.size > max_len:
         taps = taps[:max_len]
@@ -67,12 +68,26 @@ def wav_ir_load_taps(x, source_rate, host_rate):
     return taps
 
 
-def normalization_scales(taps):
-    peak = float(np.max(np.abs(taps)))
-    energy = float(np.sum(taps * taps))
+def response_stats(taps, rate):
+    """Peak and RMS magnitude across the same physical-Hz band as WavIR."""
+    taps = np.asarray(taps, dtype=np.float64)
+    freqs = np.linspace(20.0, max(20.0, min(20000.0, rate * 0.45)), 512)
+    sample = np.arange(taps.size, dtype=np.float64)
+    response = np.empty(freqs.size, dtype=np.complex128)
+    # Keep temporary matrices bounded for long, high-rate IRs.
+    for start in range(0, freqs.size, 32):
+        f = freqs[start:start + 32]
+        kernel = np.exp(-2j * PI * np.outer(f / rate, sample))
+        response[start:start + f.size] = kernel @ taps
+    magnitude = np.abs(response)
+    return float(np.max(magnitude)), float(np.sqrt(np.mean(magnitude * magnitude)))
+
+
+def normalization_scales(taps, rate):
+    peak, rms = response_stats(taps, rate)
     return (1.0,
-            1.0 / peak if peak > 0.0 else 1.0,
-            1.0 / math.sqrt(energy) if energy > 0.0 else 1.0)
+            1.0 / peak if peak > 1e-12 else 1.0,
+            1.0 / rms if rms > 1e-12 else 1.0)
 
 
 def test_equal_rate_is_identity():
@@ -176,18 +191,53 @@ def test_round_trip_near_lossless():
     assert rmse < 0.01, f"round-trip RMSE {rmse}"
 
 
+def test_ir_transfer_gain_is_sample_rate_invariant():
+    """IR resampling preserves magnitude at the same physical frequencies."""
+    ir = synth_cab_ir(seed=23)
+    reference = wav_ir_load_taps(ir, 48000, 48000)
+    for host_rate in (44100, 96000, 192000):
+        converted = wav_ir_load_taps(ir, 48000, host_rate)
+        for frequency in (100.0, 1000.0, 5000.0, 12000.0):
+            def magnitude(taps, rate):
+                n = np.arange(taps.size)
+                return abs(np.sum(taps * np.exp(-2j * PI * frequency * n / rate)))
+            delta_db = 20 * math.log10(
+                magnitude(converted, host_rate) / magnitude(reference, 48000))
+            assert abs(delta_db) < 0.15, \
+                f"{host_rate} Hz at {frequency} Hz changed by {delta_db:.3f} dB"
+
+
 def test_selectable_normalization():
-    """Preserve is untouched; peak and historical loudness modes hit unity."""
-    rng = random.Random(23)
-    n = 732
-    for peak in (1.0, 0.1, 0.01):
-        ir = np.array([rng.uniform(-1, 1) for _ in range(n)], dtype=np.float32) * peak
+    """Preserve retains gain; Peak and Loudness normalize response metrics."""
+    for amplitude in (1.0, 0.1, 0.01):
+        ir = synth_cab_ir(seed=23) * amplitude
         taps = wav_ir_load_taps(ir, 48000, 48000)
-        preserve, peak_scale, loudness_scale = normalization_scales(taps)
+        preserve, peak_scale, loudness_scale = normalization_scales(taps, 48000)
         assert preserve == 1.0 and np.array_equal(taps, ir)
-        assert abs(float(np.max(np.abs(taps * peak_scale))) - 1.0) < 1e-5
-        energy = float(np.sum((taps * loudness_scale) ** 2))
-        assert abs(math.sqrt(energy) - 1.0) < 1e-4, f"input peak {peak}: energy {energy}"
+        peak, _ = response_stats(taps * peak_scale, 48000)
+        _, rms = response_stats(taps * loudness_scale, 48000)
+        assert abs(peak - 1.0) < 1e-6
+        assert abs(rms - 1.0) < 1e-6
+        assert response_stats(taps * peak_scale, 48000)[1] < rms
+
+
+def test_normalized_modes_are_sample_rate_invariant():
+    """Response normalization uses physical Hz, not sample-count energy."""
+    ir = synth_cab_ir(seed=31)
+    for mode in (1, 2):
+        reference = wav_ir_load_taps(ir, 48000, 48000)
+        reference *= normalization_scales(reference, 48000)[mode]
+        for host_rate in (44100, 96000, 192000):
+            converted = wav_ir_load_taps(ir, 48000, host_rate)
+            converted *= normalization_scales(converted, host_rate)[mode]
+            for frequency in (100.0, 1000.0, 5000.0, 12000.0):
+                def magnitude(taps, rate):
+                    n = np.arange(taps.size)
+                    return abs(np.sum(taps * np.exp(-2j * PI * frequency * n / rate)))
+                delta_db = 20 * math.log10(
+                    magnitude(converted, host_rate) / magnitude(reference, 48000))
+                assert abs(delta_db) < 0.35, \
+                    f"mode {mode}, {host_rate} Hz/{frequency} Hz: {delta_db:.3f} dB"
 
 
 def test_wav_decode_roundtrip_smoke():

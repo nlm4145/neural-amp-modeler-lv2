@@ -37,6 +37,28 @@ constexpr std::array<const char*, 3> kPathURIs{
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model"};
 
+static NSArray<NSString*>* oversampleDescriptions() {
+  static NSArray<NSString*>* descriptions = @[
+    @"None — Runs the model without rate adaptation. Use only when the model and session rates already match; otherwise timing and tone may be wrong.",
+    @"Legacy — Adapts the model by scaling its internal dilation. Uses less CPU, but does not provide true anti-alias filtering.",
+    @"True 2x — Upsamples, runs the nonlinear model at 2x, then filters back down for lower aliasing with a moderate CPU cost.",
+    @"True 4x — Runs the nonlinear model in a true 4x domain for stronger alias rejection at a higher CPU cost.",
+    @"True 8x — Maximum-quality true oversampling and strongest alias rejection; also the highest CPU setting."
+  ];
+  return descriptions;
+}
+
+static NSString* popupTooltip(NSString* purpose, NSPopUpButton* popup) {
+  NSString* selected = popup.selectedItem.toolTip;
+  return selected.length
+      ? [NSString stringWithFormat:@"%@ %@", purpose, selected]
+      : purpose;
+}
+
+static NSString* stageName(NSInteger stage) {
+  return stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
+}
+
 #import "rig_theme.h"
 #import "rig_widgets.h"
 #include "rig_knobs.h"
@@ -167,6 +189,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 // tiles override individually. The DSP re-creates the loaded models for the
 // new rate domain in its worker and swaps them in.
 - (void)oversampleModeChanged:(NSPopUpButton*)sender {
+  sender.toolTip = popupTooltip(@"Sets both pedal and amp oversampling.", sender);
   if (!_state) return;
   // Master indexes map to the same five sparse values as the stage menus.
   const NSInteger i = sender.indexOfSelectedItem;
@@ -180,6 +203,9 @@ constexpr std::array<const char*, 3> kPathURIs{
 // Per-stage oversample control (pedal/amp tiles): ports 20/21, five visible
 // modes mapped onto the sparse LV2 values 0, 1, 4, 5, 6.
 - (void)stageOversampleChanged:(NSPopUpButton*)sender {
+  sender.toolTip = popupTooltip(
+      [NSString stringWithFormat:@"Sets %@-stage oversampling.",
+                                 sender.tag == 20 ? @"pedal" : @"amp"], sender);
   if (!_state) return;
   const int mode = NAMRig::oversampleModeFromMenuIndex(
       static_cast<int>(sender.indexOfSelectedItem));
@@ -187,11 +213,14 @@ constexpr std::array<const char*, 3> kPathURIs{
 }
 
 - (void)irNormalizationChanged:(NSPopUpButton*)sender {
+  sender.toolTip = popupTooltip(
+      @"Sets WAV impulse-response gain handling. Changes glide smoothly.", sender);
   if (!_state) return;
   _state->sendControl(24, (float)sender.indexOfSelectedItem);
 }
 
 - (void)transformerChanged:(NSPopUpButton*)sender {
+  sender.toolTip = sender.selectedItem.toolTip;
   if (!_state) return;
   _state->sendControl(30, (float)sender.indexOfSelectedItem);
 }
@@ -219,6 +248,7 @@ constexpr std::array<const char*, 3> kPathURIs{
   if (!_state) return;
   NSMenuItem* item = sender.selectedItem;
   NSString* path = item.representedObject;
+  sender.toolTip = _state->modelPickerTooltip((size_t)sender.tag, path);
   if (path.length) {
     _state->sendPath((size_t)sender.tag, path.fileSystemRepresentation);
   }
@@ -309,9 +339,10 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   const CGFloat bw = content.bounds.size.width - pad * 2;
 
   // Header: brand + subtle status line.
-  addLabel(browser, @"TONE3000", NSMakeRect(28, 300, 130, 24),
-           [NSFont fontWithName:@"SF Mono Bold" size:16.0] ?: [NSFont boldSystemFontOfSize:16],
-           rigOrange());
+  NSTextField* toneTitle = addLabel(browser, @"TONE3000", NSMakeRect(28, 300, 130, 24),
+                                    [NSFont fontWithName:@"SF Mono Bold" size:16.0] ?: [NSFont boldSystemFontOfSize:16],
+                                    rigOrange());
+  toneTitle.toolTip = @"Integrated Tone3000 browser for discovering, downloading, and loading NAM captures and cabinet IRs.";
   controller.authStatus = addLabel(browser, @"", NSMakeRect(140, 302, 300, 14),
                                    [NSFont systemFontOfSize:10], rigDimText());
 
@@ -322,6 +353,13 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
     RigButton* b = rigButton(browser, modes[(NSUInteger)i], controller, @selector(selectMode:),
                              NSMakeRect(200 + i * 88, 294, 84, 30));
     b.state = (i == 0) ? NSControlStateValueOn : NSControlStateValueOff;
+    NSArray<NSString*>* modeTips = @[
+      @"Browse the online Tone3000 catalog and locally cached results.",
+      @"Show tones marked as favorites in your Tone3000 account.",
+      @"Show locally known tones ordered by most recently modified.",
+      @"Show only tone packs already downloaded to this Mac."
+    ];
+    b.toolTip = modeTips[(NSUInteger)i];
     [modeButtons addObject:b];
   }
   controller.modeButtons = modeButtons;
@@ -329,24 +367,50 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
       @selector(connectTone3000:), NSMakeRect(bw - 230, 294, 92, 30));
   controller.connectButton.primary = NO;
   controller.connectButton.state = NSControlStateValueOff;
+  controller.connectButton.toolTip = @"Sign in to Tone3000 in your browser. A stored valid session reconnects automatically.";
 
   controller.gear = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(bw - 128, 294, 104, 30) pullsDown:NO];
   [controller.gear addItemsWithTitles:@[@"All Gear", @"Amps", @"Cabs", @"Pedals", @"Amp + Cab"]];
+  NSArray<NSString*>* gearTips = @[
+    @"All Gear — Show every supported capture type.",
+    @"Amps — Show amplifier captures only.",
+    @"Cabs — Show cabinet captures and impulse responses only.",
+    @"Pedals — Show pedal captures only.",
+    @"Amp + Cab — Show full-rig captures containing both amplifier and cabinet response."
+  ];
+  for (NSUInteger item = 0; item < gearTips.count; ++item)
+    [controller.gear itemAtIndex:item].toolTip = gearTips[item];
   controller.gear.target = controller; controller.gear.action = @selector(filterChanged:);
   controller.gear.controlSize = NSControlSizeSmall;
+  controller.gear.toolTip = @"Filter Tone3000 results by capture type: amps, cabinets, pedals, or complete amp-and-cab rigs.";
   [browser addSubview:controller.gear];
 
   // Search / sort row.
   controller.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(28, 252, bw * 0.48, 30)];
   controller.search.placeholderString = @"Search Tone3000";
   controller.search.focusRingType = NSFocusRingTypeNone;
+  controller.search.toolTip = @"Search Tone3000 by tone title, creator, or gear type. Online results load page by page.";
   controller.search.delegate = controller; [browser addSubview:controller.search];
   controller.sort = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(28 + bw * 0.48 + 12, 252, 160, 30) pullsDown:NO];
   [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
+  NSArray<NSString*>* sortTips = @[
+    @"Newest — Show the most recently published tones first.",
+    @"Trending — Use Tone3000's current popularity ranking.",
+    @"Most Downloaded — Show tones with the highest download counts first.",
+    @"Oldest — Show the earliest published tones first.",
+    @"Best Match — Prioritize search relevance for the current query."
+  ];
+  for (NSUInteger item = 0; item < sortTips.count; ++item)
+    [controller.sort itemAtIndex:item].toolTip = sortTips[item];
   controller.sort.controlSize = NSControlSizeSmall;
   controller.sort.target = controller; controller.sort.action = @selector(sortChanged:);
+  controller.sort.toolTip = @"Choose the ordering used for Tone3000 search results.";
   [browser addSubview:controller.sort];
   [ToneBrowserController restoreFilterSelectionForGear:controller.gear sort:controller.sort];
+  controller.gear.toolTip = popupTooltip(@"Filters Tone3000 results by capture type.",
+                                         controller.gear);
+  controller.sort.toolTip = popupTooltip(@"Orders Tone3000 search results.",
+                                         controller.sort);
 
   // Tone cards — multi-column collection view, click to load/download.
   const CGFloat tableWidth = bw - 56;
@@ -360,6 +424,7 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(28, 48, tableWidth, 190)];
   scroll.drawsBackground = NO; scroll.borderType = NSNoBorder;
   scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES;
+  scroll.toolTip = @"Scrollable Tone3000 results. More online results load automatically near the bottom.";
 
   controller.collectionView = [[NSCollectionView alloc] initWithFrame:scroll.bounds];
   controller.collectionView.collectionViewLayout = grid;
@@ -367,6 +432,7 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   controller.collectionView.dataSource = controller;
   controller.collectionView.delegate = controller;
   controller.collectionView.selectable = YES;
+  controller.collectionView.toolTip = @"Click a tone card to load its local models or download its available models. Right-click a card to view it on Tone3000.";
   [controller.collectionView registerClass:[ToneCardItem class] forItemWithIdentifier:@"ToneCard"];
 
   scroll.documentView = controller.collectionView;
@@ -381,6 +447,8 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   controller.status = addLabel(browser, @"Scanning NAM Rig's Tone3000 library…", NSMakeRect(28, 16, bw - 56, 22),
                                [NSFont systemFontOfSize:10.5], rigDimText());
   controller.status.lineBreakMode = NSLineBreakByTruncatingTail;
+  controller.authStatus.toolTip = @"Tone3000 sign-in and session status.";
+  controller.status.toolTip = @"Tone library, search, download, and model-loading status.";
   [controller reloadLibrary:nil];
 }
 LV2UI_Handle instantiate(const LV2UI_Descriptor*,
@@ -487,6 +555,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [state->tunerButton setButtonType:NSButtonTypeToggle];
     state->tunerButton.target = state->uiController;
     state->tunerButton.action = @selector(tunerToggled:);
+    state->tunerButton.toolTip = @"Toggle the input tuner. It analyzes the raw guitar signal before the gate, gain controls, and model chain.";
     state->tunerButton.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:state->tunerButton];
     [[state->tunerButton.leadingAnchor constraintEqualToAnchor:title.trailingAnchor constant:28] setActive:YES];
@@ -506,6 +575,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->osPopup.controlSize = NSControlSizeSmall;
     state->osPopup.target = state->uiController;
     state->osPopup.action = @selector(oversampleModeChanged:);
+    for (NSUInteger item = 0; item < oversampleDescriptions().count; ++item)
+      [state->osPopup itemAtIndex:item].toolTip = oversampleDescriptions()[item];
     state->osPopup.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:state->osPopup];
     [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:10] setActive:YES];
@@ -514,6 +585,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->osPopup.heightAnchor constraintEqualToConstant:26] setActive:YES];
     // Fresh instances start at the uncompromised maximum-quality setting.
     [state->osPopup selectItemAtIndex:4];
+    state->osPopup.toolTip = popupTooltip(@"Sets both pedal and amp oversampling.", state->osPopup);
 
     // Tuner readout panel — hidden until the toggle is on. Note name, detune
     // in cents, and a needle meter across ±50 cents. Styled like the tiles
@@ -527,6 +599,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     tp.hidden = YES;
     tp.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:tp];
+    tp.toolTip = @"Live tuner readout from the raw input signal.";
     state->tunerPanel = tp;
     [[tp.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:20] setActive:YES];
     [[tp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
@@ -538,6 +611,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                   rigText(), NSTextAlignmentCenter);
     noteL.translatesAutoresizingMaskIntoConstraints = NO;
     state->tunerNoteLabel = noteL;
+    noteL.toolTip = @"Detected note from the raw input. A dash means no stable pitch is currently detected.";
     [[noteL.leadingAnchor constraintEqualToAnchor:tp.leadingAnchor constant:14] setActive:YES];
     [[noteL.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
     [[noteL.widthAnchor constraintEqualToConstant:58] setActive:YES];
@@ -547,6 +621,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                    rigDimText(), NSTextAlignmentCenter);
     centsL.translatesAutoresizingMaskIntoConstraints = NO;
     state->tunerCentsLabel = centsL;
+    centsL.toolTip = @"Pitch offset from the detected note in cents; zero is in tune.";
     [[centsL.trailingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:-10] setActive:YES];
     [[centsL.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
     [[centsL.widthAnchor constraintEqualToConstant:74] setActive:YES];
@@ -558,6 +633,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     meter.layer.cornerRadius = 2;
     meter.translatesAutoresizingMaskIntoConstraints = NO;
     [tp addSubview:meter];
+    meter.toolTip = @"Tuning meter spanning -50 to +50 cents. The center position is in tune.";
     [[meter.leadingAnchor constraintEqualToAnchor:noteL.trailingAnchor constant:10] setActive:YES];
     [[meter.trailingAnchor constraintEqualToAnchor:centsL.leadingAnchor constant:-10] setActive:YES];
     [[meter.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
@@ -570,6 +646,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     needle.hidden = YES;
     needle.translatesAutoresizingMaskIntoConstraints = NO;
     [meter addSubview:needle];
+    needle.toolTip = @"Current tuning offset; centered and green means in tune.";
     state->tunerNeedle = needle;
     [[needle.topAnchor constraintEqualToAnchor:meter.topAnchor constant:-3] setActive:YES];
     [[needle.bottomAnchor constraintEqualToAnchor:meter.bottomAnchor constant:3] setActive:YES];
@@ -597,6 +674,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     mp.layer.borderColor = rigPanelBorder().CGColor;
     mp.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:mp];
+    mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
     [[mp.leadingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:16] setActive:YES];
     [[mp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[mp.widthAnchor constraintEqualToConstant:180] setActive:YES];
@@ -607,6 +685,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                 rigDimText(), NSTextAlignmentCenter);
     dbL.translatesAutoresizingMaskIntoConstraints = NO;
     state->inDbLabel = dbL;
+    dbL.toolTip = @"Raw input peak level in dBFS, measured before all processing.";
     [[dbL.leadingAnchor constraintEqualToAnchor:mp.leadingAnchor constant:10] setActive:YES];
     [[dbL.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
     [[dbL.widthAnchor constraintEqualToConstant:56] setActive:YES];
@@ -618,6 +697,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     slot.layer.cornerRadius = 2;
     slot.translatesAutoresizingMaskIntoConstraints = NO;
     [mp addSubview:slot];
+    slot.toolTip = @"Raw input peak meter from -60 to 0 dBFS. Orange indicates a hot input; red indicates clipping risk.";
     [[slot.leadingAnchor constraintEqualToAnchor:dbL.trailingAnchor constant:8] setActive:YES];
     [[slot.trailingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:-10] setActive:YES];
     [[slot.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
@@ -629,6 +709,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     fill.layer.cornerRadius = 2;
     fill.translatesAutoresizingMaskIntoConstraints = NO;
     [slot addSubview:fill];
+    fill.toolTip = @"Raw input peak meter from -60 to 0 dBFS. Orange indicates a hot input; red indicates clipping risk.";
     [[fill.leadingAnchor constraintEqualToAnchor:slot.leadingAnchor] setActive:YES];
     [[fill.centerYAnchor constraintEqualToAnchor:slot.centerYAnchor] setActive:YES];
     [[fill.heightAnchor constraintEqualToConstant:8] setActive:YES];
@@ -648,6 +729,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
     state->zoomControl.editable = YES;               // custom zoom % only (no preset list)
     state->zoomControl.controlSize = NSControlSizeSmall;
+    state->zoomControl.placeholderString = @"100%";
+    state->zoomControl.toolTip = @"Set the plug-in interface scale from 50% to 400%. Type a percentage and press Return.";
     state->zoomControl.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:state->zoomControl];
     [[state->zoomControl.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-24] setActive:YES];
@@ -665,6 +748,20 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB"];
+    NSArray<NSString*>* knobDescriptions = @[
+      @"Gate threshold. Signals below this input level are gently expanded; -80 dB bypasses the gate.",
+      @"Gate release time. Higher values preserve note tails longer after the signal falls below the threshold.",
+      @"Input trim before the compressor, pedal, amp, and cabinet stages. Use it to drive the captured models harder or softer.",
+      @"Pre-model compressor amount. Increasing it lowers the threshold, raises the ratio, and adds makeup gain while retaining pick attack.",
+      @"Amp drive between the pedal and amp stages. Positive values hit the amp model harder; negative values clean it up.",
+      @"Post-chain bass shelf centered around 150 Hz.",
+      @"Post-chain midrange bell centered around 700 Hz.",
+      @"Post-chain treble shelf centered around 3 kHz.",
+      @"Level trim immediately after an active cabinet model or WAV impulse response. It has no effect when the cab stage is bypassed.",
+      @"Cabinet high-pass cutoff. Removes low-frequency rumble after the cab; 0 Hz bypasses the filter.",
+      @"Cabinet low-pass cutoff. Softens upper fizz after the cab; 20 kHz bypasses the filter.",
+      @"Final output trim after the complete rig, cabinet processing, and EQ."
+    ];
     const std::array<double, kRigKnobCount> defaults{
         -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0};
     const std::array<double, kRigKnobCount> mins{
@@ -715,6 +812,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                   mins[k], maxes[k],
                                   NSMakePoint(0, 0), state->uiController);
         NSSlider* knob = state->knobs[k];
+        NSString* knobTip = [NSString stringWithFormat:
+            @"%@ Drag vertically; hold Shift for fine adjustment; double-click to reset.",
+            knobDescriptions[k]];
+        knob.toolTip = knobTip;
         knob.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(knob, cell, 0);
         [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
@@ -723,6 +824,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
                                       rigDimText(), NSTextAlignmentCenter);
         rigApplyTracking(kname, 1.1);
+        kname.toolTip = knobDescriptions[k];
         kname.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(kname, cell, 0);
         [[kname.bottomAnchor constraintEqualToAnchor:knob.topAnchor constant:-8] setActive:YES];
@@ -747,6 +849,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         kval.delegate = state->uiController;
         kval.target = state->uiController;
         kval.action = @selector(knobFieldCommitted:);
+        kval.toolTip = [NSString stringWithFormat:
+            @"%@ Click the value to type an exact setting, then press Return or click away.",
+            knobDescriptions[k]];
         kval.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(kval, cell, 0);
         [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];
@@ -768,8 +873,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
+      NSArray<NSString*>* stageTips = @[
+        @"Pedal stage: dynamics and input conditioning feed the selected pedal NAM model before the amp.",
+        @"Amp stage: the selected NAM model, drive trim, and optional output-transformer coloration form the core amp sound.",
+        @"Cabinet stage: run a cabinet NAM model or WAV impulse response, followed by cab level and frequency cuts."
+      ];
+      box.toolTip = stageTips[(NSUInteger)i];
 
       NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
+      header.toolTip = stageTips[(NSUInteger)i];
       header.translatesAutoresizingMaskIntoConstraints = NO;
       [box addSubview:header];
       [[header.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
@@ -781,6 +893,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       numL.stringValue = [NSString stringWithFormat:@"%ld", (long)(i + 1)];
       numL.editable = NO; numL.selectable = NO; numL.drawsBackground = NO; numL.bordered = NO;
       numL.font = [NSFont boldSystemFontOfSize:12]; numL.textColor = rigOrange();
+      numL.toolTip = stageTips[(NSUInteger)i];
       numL.translatesAutoresizingMaskIntoConstraints = NO;
       [header addSubview:numL];
       [[numL.leadingAnchor constraintEqualToAnchor:header.leadingAnchor] setActive:YES];
@@ -790,6 +903,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       nmL.stringValue = names[(NSUInteger)i]; nmL.editable = NO; nmL.selectable = NO; nmL.drawsBackground = NO; nmL.bordered = NO;
       nmL.font = [NSFont systemFontOfSize:13 weight:NSFontWeightBold]; nmL.textColor = rigText();
       rigApplyTracking(nmL, 0.8);
+      nmL.toolTip = stageTips[(NSUInteger)i];
       nmL.translatesAutoresizingMaskIntoConstraints = NO;
       [header addSubview:nmL];
       [[nmL.leadingAnchor constraintEqualToAnchor:numL.trailingAnchor constant:8] setActive:YES];
@@ -803,6 +917,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       state->powerButtons[(size_t)i].buttonType = NSButtonTypeToggle;
       ((RigButton*)state->powerButtons[(size_t)i]).check = YES;
       RigButton* onBtn = (RigButton*)state->powerButtons[(size_t)i];
+      onBtn.toolTip = [NSString stringWithFormat:@"Enable or bypass the %@ stage. Changes use a short click-free fade.", stageName(i)];
       onBtn.translatesAutoresizingMaskIntoConstraints = NO;
       [[onBtn.trailingAnchor constraintEqualToAnchor:header.trailingAnchor] setActive:YES];
       [[onBtn.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
@@ -820,6 +935,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         so.tag = 20 + i;                 // port 20 = pedal, 21 = amp
         so.target = state->uiController;
         so.action = @selector(stageOversampleChanged:);
+        for (NSUInteger item = 0; item < oversampleDescriptions().count; ++item)
+          [so itemAtIndex:item].toolTip = oversampleDescriptions()[item];
         so.translatesAutoresizingMaskIntoConstraints = NO;
         [header addSubview:so];
         [[so.trailingAnchor constraintEqualToAnchor:onBtn.leadingAnchor constant:-8] setActive:YES];
@@ -827,6 +944,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[so.widthAnchor constraintEqualToConstant:104] setActive:YES];
         [[so.heightAnchor constraintEqualToConstant:24] setActive:YES];
         [so selectItemAtIndex:4];        // default True 8x = TTL default
+        so.toolTip = popupTooltip(
+            [NSString stringWithFormat:@"Sets %@-stage oversampling.", stageName(i)], so);
         state->stageOsPopup[(size_t)i] = so;
         // Keep the stage name label clear of the popup.
         [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
@@ -834,6 +953,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       } else {
         NSPopUpButton* norm = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         [norm addItemsWithTitles:@[@"Preserve", @"Peak", @"Loudness"]];
+        NSArray<NSString*>* normalizationDescriptions = @[
+          @"Preserve — Retains the impulse response's captured transfer gain across sample rates.",
+          @"Peak — Scales the strongest audible-band response to unity, maximizing headroom without clipping the IR response.",
+          @"Loudness — Matches average audible-band response energy to unity for the most consistent perceived level."
+        ];
+        for (NSUInteger item = 0; item < normalizationDescriptions.count; ++item)
+          [norm itemAtIndex:item].toolTip = normalizationDescriptions[item];
         norm.controlSize = NSControlSizeSmall;
         norm.target = state->uiController;
         norm.action = @selector(irNormalizationChanged:);
@@ -844,6 +970,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[norm.widthAnchor constraintEqualToConstant:104] setActive:YES];
         [[norm.heightAnchor constraintEqualToConstant:24] setActive:YES];
         [norm selectItemAtIndex:2];
+        norm.toolTip = popupTooltip(@"Sets WAV impulse-response gain handling. Changes glide smoothly.", norm);
         state->irNormPopup = norm;
         [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:norm.leadingAnchor
                                                       constant:-8] setActive:YES];
@@ -862,6 +989,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       // keeping all three model selectors vertically aligned.
       [[thumb.heightAnchor constraintEqualToConstant:112] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
+      thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
 
       NSView* modelAnchor = thumb;
       if (i == 1) {
@@ -874,10 +1002,26 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                            @"Doom Iron", @"Studio Linear",
                                            @"Tweed Bloom", @"Class-A Chime",
                                            @"Bass Iron"]];
+        NSArray<NSString*>* transformerDescriptions = @[
+          @"Captured / Off — Adds no transformer processing, preserving the output-transformer response already present in the NAM capture.",
+          @"Modern Iron — Oversized, wide-bandwidth response with firm lows, open highs, gentle saturation, and very little sag.",
+          @"US Vintage — Deep, rounded lows with restrained presence, warm asymmetric harmonics, and moderate vintage compression.",
+          @"UK Vintage — Tighter bass, pronounced mid-bass bark, earlier core saturation, and a compressed classic-stack feel.",
+          @"Small Iron — Narrower bandwidth, strong low-mid character, early breakup, softened highs, and the most vintage-style compression.",
+          @"Tight Metal — Trims sub-bass flub while retaining pick attack, upper-mid definition, air, and fast recovery.",
+          @"Extended Range — Preserves low-tuned fundamentals and high-end clarity with disciplined resonance, low saturation, and minimal sag.",
+          @"Thrash Bite — Lean, controlled lows with an aggressive upper-mid cut, harder core drive, and quick response.",
+          @"Doom Iron — Large low-frequency bloom, dark rolled-off highs, heavy core saturation, and pronounced slow sag.",
+          @"Studio Linear — Wide, clean headroom with subtle low-end weight, polished presence, restrained harmonics, and almost no sag.",
+          @"Tweed Bloom — Loose warm lows, rich low mids, a soft top end, asymmetric breakup, and deep touch-sensitive sag.",
+          @"Class-A Chime — Controlled bass, open highs, a clear presence lift, lively asymmetric harmonics, and moderate compression.",
+          @"Bass Iron — Extended deep fundamentals, subdued upper mids, high headroom, restrained saturation, and minimal sag."
+        ];
+        for (NSUInteger item = 0; item < transformerDescriptions.count; ++item)
+          [transformer itemAtIndex:item].toolTip = transformerDescriptions[item];
         transformer.controlSize = NSControlSizeSmall;
         transformer.target = state->uiController;
         transformer.action = @selector(transformerChanged:);
-        transformer.toolTip = @"Output-transformer coloration after the amp and before the cab. Choose clean studio headroom, vintage bloom, class-A chime, bass depth, or a metal-focused response. Captured / Off preserves the NAM capture unchanged.";
         transformer.translatesAutoresizingMaskIntoConstraints = NO;
         [box addSubview:transformer];
         [[transformer.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
@@ -885,6 +1029,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[transformer.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:5] setActive:YES];
         [[transformer.heightAnchor constraintEqualToConstant:23] setActive:YES];
         [transformer selectItemAtIndex:0];
+        transformer.toolTip = transformer.selectedItem.toolTip;
         state->transformerPopup = transformer;
         modelAnchor = transformer;
       }
@@ -899,6 +1044,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       mp.target = state->uiController;
       mp.action = @selector(stageModelChanged:);
       [mp addItemWithTitle:@"No model loaded"];
+      [mp itemAtIndex:0].toolTip = RigUIState::modelPickerTooltip((size_t)i, nil);
+      mp.toolTip = RigUIState::modelPickerTooltip((size_t)i, nil);
       mp.enabled = NO;
       [box addSubview:mp];
       [[mp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];

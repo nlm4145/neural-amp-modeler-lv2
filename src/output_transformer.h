@@ -75,15 +75,22 @@ public:
 
 private:
   struct Biquad {
-    float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f;
-    float z1 = 0.0f, z2 = 0.0f;
+    // Double precision is important here even though the surrounding audio
+    // is float. In a True-8x domain (up to 768 kHz), the poles of Studio
+    // Linear's 7 Hz high-pass are so close to the unit circle that rounded
+    // float coefficients/state can turn a small NAM-model DC offset into a
+    // large low-frequency runaway. Keeping the recursive math in double
+    // prevents that host-muting burst while preserving float I/O.
+    double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+    double z1 = 0.0, z2 = 0.0;
     float process(float x) {
-      const float y = b0 * x + z1;
-      z1 = b1 * x - a1 * y + z2;
-      z2 = b2 * x - a2 * y;
-      return y;
+      const double input = x;
+      const double y = b0 * input + z1;
+      z1 = b1 * input - a1 * y + z2;
+      z2 = b2 * input - a2 * y;
+      return static_cast<float>(y);
     }
-    void reset() { z1 = z2 = 0.0f; }
+    void reset() { z1 = z2 = 0.0; }
   };
 
   struct Profile {
@@ -133,9 +140,10 @@ private:
       // Big, slow and dark: low resonance, heavy core bloom and pronounced sag.
       {22.0f, 8500.0f, 82.0f, 5.50f, 0.84f,
        950.0f, 1.90f, 0.75f, 95.0f, 1.10f, 4.50f, 0.70f, 0.060f, 0.180f, 0.900f},
-      // Studio-grade wide-band iron: maximum headroom and minimal coloration.
-      {7.0f, 23000.0f, 65.0f, 0.15f, 0.68f,
-       6000.0f, 0.30f, 0.65f, 75.0f, 0.18f, 1.30f, 0.13f, 0.003f, 0.010f, 1.018f},
+      // Studio-grade wide-band iron: clean headroom with audible low-end
+      // weight and polished presence, but less core distortion than Modern.
+      {7.0f, 23000.0f, 70.0f, 0.45f, 0.68f,
+       4600.0f, 0.90f, 0.70f, 78.0f, 0.23f, 1.60f, 0.18f, 0.005f, 0.015f, 1.020f},
       // Loose American combo feel: warm low-mid bloom, soft top and deep sag.
       {25.0f, 9000.0f, 92.0f, 4.50f, 0.82f,
        850.0f, 1.50f, 0.70f, 105.0f, 0.96f, 4.10f, 0.64f, 0.070f, 0.200f, 0.925f},
@@ -162,11 +170,11 @@ private:
     const double c = std::cos(w), s = std::sin(w);
     const double alpha = s / (2.0 * 0.7071067811865476);
     const double a0 = 1.0 + alpha;
-    f.b0 = static_cast<float>((1.0 + c) * 0.5 / a0);
-    f.b1 = static_cast<float>(-(1.0 + c) / a0);
+    f.b0 = (1.0 + c) * 0.5 / a0;
+    f.b1 = -(1.0 + c) / a0;
     f.b2 = f.b0;
-    f.a1 = static_cast<float>(-2.0 * c / a0);
-    f.a2 = static_cast<float>((1.0 - alpha) / a0);
+    f.a1 = -2.0 * c / a0;
+    f.a2 = (1.0 - alpha) / a0;
   }
 
   static void setLowPass(Biquad& f, float hz, double rate) {
@@ -174,11 +182,11 @@ private:
     const double c = std::cos(w), s = std::sin(w);
     const double alpha = s / (2.0 * 0.7071067811865476);
     const double a0 = 1.0 + alpha;
-    f.b0 = static_cast<float>((1.0 - c) * 0.5 / a0);
-    f.b1 = static_cast<float>((1.0 - c) / a0);
+    f.b0 = (1.0 - c) * 0.5 / a0;
+    f.b1 = (1.0 - c) / a0;
     f.b2 = f.b0;
-    f.a1 = static_cast<float>(-2.0 * c / a0);
-    f.a2 = static_cast<float>((1.0 - alpha) / a0);
+    f.a1 = -2.0 * c / a0;
+    f.a2 = (1.0 - alpha) / a0;
   }
 
   static void setPeaking(Biquad& f, float hz, float gainDb, float q,
@@ -188,11 +196,11 @@ private:
     const double c = std::cos(w), s = std::sin(w);
     const double alpha = s / (2.0 * q);
     const double a0 = 1.0 + alpha / A;
-    f.b0 = static_cast<float>((1.0 + alpha * A) / a0);
-    f.b1 = static_cast<float>(-2.0 * c / a0);
-    f.b2 = static_cast<float>((1.0 - alpha * A) / a0);
-    f.a1 = static_cast<float>(-2.0 * c / a0);
-    f.a2 = static_cast<float>((1.0 - alpha / A) / a0);
+    f.b0 = (1.0 + alpha * A) / a0;
+    f.b1 = -2.0 * c / a0;
+    f.b2 = (1.0 - alpha * A) / a0;
+    f.a1 = -2.0 * c / a0;
+    f.a2 = (1.0 - alpha / A) / a0;
   }
 
   void configure(int profile, double rate) {
