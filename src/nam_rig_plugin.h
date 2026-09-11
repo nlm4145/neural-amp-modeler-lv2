@@ -21,6 +21,7 @@
 
 #include "oversample.h"
 #include "oversample_modes.h"
+#include "output_transformer.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -136,11 +137,13 @@ public:
     float* cab_high_cut;       // in: port 27, Hz (20 kHz = off)
     float* compressor;         // in: port 28, one-knob amount (0..100%)
     float* latency;            // out: port 29, lv2:latency (frames, for host PDC)
+    float* transformer_type;   // in: port 30, output-transformer profile (0..12)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
   static_assert(offsetof(Ports, compressor) == 28 * sizeof(void*));
   static_assert(offsetof(Ports, latency) == 29 * sizeof(void*));
+  static_assert(offsetof(Ports, transformer_type) == 30 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -220,6 +223,10 @@ private:
   uint32_t gateHoldRemaining = 0;
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;
+  OutputTransformer outputTransformer;
+  int transformerRequested = OutputTransformer::kCaptured;
+  int transformerApplied = OutputTransformer::kCaptured;
+  bool transformerLatched = false;
   int32_t maxBufferSize = 512;
 
   // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).

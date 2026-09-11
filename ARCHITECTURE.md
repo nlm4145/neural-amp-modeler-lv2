@@ -13,6 +13,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/nam_rig_lv2.cpp` | LV2 descriptor: instantiate/run/cleanup, extension data (options, state, worker) |
 | `src/nam_rig_plugin.{h,cpp}` | Rig DSP: 3 serial stages (Pedal/Amp/Cab), EQ, tuner, worker model-swap chain |
 | `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: zero-latency hybrid convolution (direct head + uniform partitioned FFT tail), load-time normalize + windowed-sinc resample + truncation fade |
+| `src/output_transformer.h` | Optional post-amp/pre-cab output-transformer profiles: bandwidth, low resonance, leakage/load voicing, core saturation, asymmetry, and sag |
 | `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
@@ -47,6 +48,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 17 | `tuner_note` | out | MIDI note, −1 = none |
 | 18 | `tuner_cents` | out | ±50 |
 | 29 | `latency` | out | frames, `lv2:latency` for host PDC (True cascade delay: 2x=23, 4x=35, 8x=41 per group; 0 at base rate) |
+| 30 | `transformer_type` | in | Amp output-transformer profile (0..12): Captured/Off, Modern, US Vintage, UK Vintage, Small Iron, Tight Metal, Extended Range, Thrash Bite, Doom Iron, Studio Linear, Tweed Bloom, Class-A Chime, Bass Iron |
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.
@@ -101,6 +103,12 @@ nonlinear stage participate in the next model's response. Mixed factors and
 WAV cab IRs form domain boundaries.
 
 Related DSP-chain guarantees:
+
+- The optional output-transformer block runs immediately after the amp and
+  before the cab. In a True oversampling mode it stays inside that domain, so
+  its core-saturation harmonics receive the same anti-alias filtering. The
+  default `Captured / Off` is bit-transparent because most NAM amp captures
+  already contain their physical output transformer.
 
 - Each True cascade delays by a fixed, block-size-independent amount
   (2x = 23, 4x = 35, 8x = 41 base frames); the sum over active groups is

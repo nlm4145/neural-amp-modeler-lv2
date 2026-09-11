@@ -87,11 +87,11 @@ class StandaloneHost {
     resizeFeature_.handle = this;
     resizeFeature_.ui_resize = resizeUI;
 
-    // LV2 control defaults, in port order (ports 4..29).
+    // LV2 control defaults, in port order (ports 4..30).
     controls_ = {0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f,
                  0.0f, 0.0f, 0.0f, -80.0f, 0.0f, -1.0f, 0.0f, 1.0f,
                  1.0f, 1.0f, 0.0f, 150.0f, 2.0f, 0.0f, 0.0f,
-                 20000.0f, 0.0f, 0.0f};
+                 20000.0f, 0.0f, 0.0f, 0.0f};
   }
 
   ~StandaloneHost() { stop(); }
@@ -129,7 +129,7 @@ class StandaloneHost {
     plugin_->ports.notify = reinterpret_cast<LV2_Atom_Sequence*>(notifyBuffer_.data());
     plugin_->ports.audio_in = input_.data();
     plugin_->ports.audio_out = output_.data();
-    for (uint32_t port = 4; port < 30; ++port) {
+    for (uint32_t port = 4; port <= 30; ++port) {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &controls_[port - 4];
     }
@@ -273,7 +273,7 @@ class StandaloneHost {
   static void uiWrite(LV2UI_Controller controller, uint32_t port, uint32_t size,
                       uint32_t format, const void* buffer) {
     auto* host = static_cast<StandaloneHost*>(controller);
-    if (format == 0 && port >= 4 && port < 30 && size == sizeof(float)) {
+    if (format == 0 && port >= 4 && port <= 30 && size == sizeof(float)) {
       host->controls_[port - 4] = *static_cast<const float*>(buffer);
       return;
     }
@@ -453,7 +453,7 @@ class StandaloneHost {
 
   std::array<float, kMaxFrames> input_{};
   std::array<float, kMaxFrames> output_{};
-  std::array<float, 26> controls_{};
+  std::array<float, 27> controls_{};
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

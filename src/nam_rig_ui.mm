@@ -54,6 +54,7 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)oversampleModeChanged:(NSPopUpButton*)sender;      // master (title bar)
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
+- (void)transformerChanged:(NSPopUpButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -188,6 +189,11 @@ constexpr std::array<const char*, 3> kPathURIs{
 - (void)irNormalizationChanged:(NSPopUpButton*)sender {
   if (!_state) return;
   _state->sendControl(24, (float)sender.indexOfSelectedItem);
+}
+
+- (void)transformerChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  _state->sendControl(30, (float)sender.indexOfSelectedItem);
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -852,8 +858,36 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[thumb.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[thumb.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14] setActive:YES];
-      [[thumb.heightAnchor constraintEqualToConstant:140] setActive:YES];
+      // Leave one compact row for the amp's output-transformer selector while
+      // keeping all three model selectors vertically aligned.
+      [[thumb.heightAnchor constraintEqualToConstant:112] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
+
+      NSView* modelAnchor = thumb;
+      if (i == 1) {
+        NSPopUpButton* transformer =
+            [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+        [transformer addItemsWithTitles:@[@"Captured / Off", @"Modern Iron",
+                                           @"US Vintage", @"UK Vintage",
+                                           @"Small Iron", @"Tight Metal",
+                                           @"Extended Range", @"Thrash Bite",
+                                           @"Doom Iron", @"Studio Linear",
+                                           @"Tweed Bloom", @"Class-A Chime",
+                                           @"Bass Iron"]];
+        transformer.controlSize = NSControlSizeSmall;
+        transformer.target = state->uiController;
+        transformer.action = @selector(transformerChanged:);
+        transformer.toolTip = @"Output-transformer coloration after the amp and before the cab. Choose clean studio headroom, vintage bloom, class-A chime, bass depth, or a metal-focused response. Captured / Off preserves the NAM capture unchanged.";
+        transformer.translatesAutoresizingMaskIntoConstraints = NO;
+        [box addSubview:transformer];
+        [[transformer.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+        [[transformer.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        [[transformer.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:5] setActive:YES];
+        [[transformer.heightAnchor constraintEqualToConstant:23] setActive:YES];
+        [transformer selectItemAtIndex:0];
+        state->transformerPopup = transformer;
+        modelAnchor = transformer;
+      }
 
       // The dropdown is the tile's model control/display — always visible. The
       // old filename text label was redundant with it and is removed.
@@ -869,7 +903,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [box addSubview:mp];
       [[mp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-      [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
+      if (i == 1)
+        [[mp.topAnchor constraintEqualToAnchor:modelAnchor.bottomAnchor constant:4] setActive:YES];
+      else
+        [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:32] setActive:YES];
       [[mp.heightAnchor constraintEqualToConstant:22] setActive:YES];
 
       // Pin this tile's knob group exactly to the tile's footprint: the
@@ -907,7 +944,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 21) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 30) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

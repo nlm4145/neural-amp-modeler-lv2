@@ -26,6 +26,13 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
+  echo "== tests/verify_output_transformer.cpp =="
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_output_transformer.cpp \
+      -o /tmp/verify_output_transformer 2>/dev/null; then
+    /tmp/verify_output_transformer || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
   echo "== tests/verify_oversample_modes.cpp =="
   if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_oversample_modes.cpp \
       -o /tmp/verify_os_modes 2>/dev/null; then

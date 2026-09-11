@@ -25,6 +25,7 @@
 
 #include "rig_knobs.h"
 #include "oversample_modes.h"
+#include "output_transformer.h"
 #import "rig_theme.h"
 
 @class NAMRigUIController;
@@ -63,6 +64,7 @@ struct RigUIState {
   __strong NSPopUpButton* osPopup = nil;               // master (title bar)
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
   __strong NSPopUpButton* irNormPopup = nil;
+  __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;
@@ -464,6 +466,14 @@ struct RigUIState {
       const int idx = std::max(0, std::min(2, (int)(value + 0.5f)));
       dispatch_async(dispatch_get_main_queue(), ^{
         if (irNormPopup) [irNormPopup selectItemAtIndex:idx];
+      });
+      return;
+    }
+    if (port == 30) {
+      const int idx = NAMRig::OutputTransformer::clampProfile(
+          (int)(value + 0.5f));
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (transformerPopup) [transformerPopup selectItemAtIndex:idx];
       });
       return;
     }

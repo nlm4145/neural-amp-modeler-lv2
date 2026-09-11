@@ -801,6 +801,28 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   }
   const auto& enabled = appliedEnabled;
 
+  // Output-transformer profiles are part of the amp block.  Changes use the
+  // same click-safe zero crossing as model and bypass changes; the existing
+  // capture remains bit-identical by default (profile 0).
+  const int desiredTransformer = ports.transformer_type
+      ? OutputTransformer::clampProfile(
+            static_cast<int>(*ports.transformer_type + 0.5f))
+      : OutputTransformer::kCaptured;
+  if (!transformerLatched) {
+    transformerRequested = transformerApplied = desiredTransformer;
+    transformerLatched = true;
+  } else if (desiredTransformer != transformerRequested) {
+    transformerRequested = desiredTransformer;
+    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)]) {
+      startTransitionFadeOut();
+    } else {
+      // With no active amp there is no transformer signal/state to protect,
+      // so avoid needlessly dipping an otherwise dry/bypassed chain.
+      transformerApplied = transformerRequested;
+      outputTransformer.reset();
+    }
+  }
+
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor
   // and/or created at Nx * sessionRate), so any mode change re-sends the
@@ -872,6 +894,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
     if (post != 1.0f)
       for (size_t i = 0; i < count; ++i) samples[i] *= post;
+    if (stage == stageIndex(Stage::Amp))
+      outputTransformer.process(samples, count, domainRate, transformerApplied);
   };
 
   // Process one or more consecutive models inside ONE TRUE domain. Keeping
@@ -1084,6 +1108,10 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       commitPendingSwitches();
       for (size_t st = 0; st < kStageCount; ++st)
         appliedEnabled[st] = desiredEnabled[st];
+      if (transformerApplied != transformerRequested) {
+        transformerApplied = transformerRequested;
+        outputTransformer.reset();
+      }
       transitionPhase = TransitionPhase::FadeIn;
       transitionPosition = 0;
       transitionGain = 0.0f;
