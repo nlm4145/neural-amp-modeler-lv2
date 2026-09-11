@@ -149,6 +149,10 @@ struct RigUIState {
   std::array<std::string, 3> selectedPaths{};
   std::array<std::string, 3> selectedImageURLs{};   // thumbnail metadata (persisted)
   std::array<long, 3> selectedToneIds{};            // key into NAM Rig's artwork cache
+  // Every model offered by the selected tone/pack.  Hosts such as Element may
+  // tear down and recreate an LV2 UI when its window loses focus; keeping only
+  // selectedPaths would then rebuild each popup with just its current item.
+  std::array<std::vector<std::string>, 3> availableModelPaths{};
   static std::string uiPersistFile() {
     const char* home = std::getenv("HOME");
     std::string dir = home ? std::string(home) : std::string(".");
@@ -165,9 +169,44 @@ struct RigUIState {
           << selectedImageURLs[i] << "\n"
           << selectedToneIds[i] << "\n";
   }
+  static std::string uiStageModelsFile(size_t stage) {
+    return uiPersistFile() + ".stage-" + std::to_string(stage) + "-models";
+  }
+  void persistStageModels(size_t stage) {
+    if (stage >= availableModelPaths.size()) return;
+    std::ofstream out(uiStageModelsFile(stage), std::ios::trunc);
+    if (!out) return;
+    for (const std::string& path : availableModelPaths[stage])
+      if (!path.empty()) out << path << "\n";
+  }
+  void rememberAvailablePath(size_t stage, const char* path) {
+    if (stage >= availableModelPaths.size() || !path || !path[0]) return;
+    const std::string copy(path);
+    auto& paths = availableModelPaths[stage];
+    if (std::find(paths.begin(), paths.end(), copy) != paths.end()) return;
+    paths.push_back(copy);
+    persistStageModels(stage);
+  }
+  void restoreStageModels() {
+    for (size_t stage = 0; stage < availableModelPaths.size(); ++stage) {
+      std::ifstream in(uiStageModelsFile(stage));
+      if (!in) continue;  // Backward-compatible with the old selection-only file.
+      NSMutableArray<NSString*>* paths = [NSMutableArray array];
+      std::string path;
+      while (std::getline(in, path)) {
+        path.erase(path.find_last_not_of("\r\n") + 1);
+        if (!path.empty()) [paths addObject:[NSString stringWithUTF8String:path.c_str()]];
+      }
+      setStageModels(stage, paths);
+    }
+  }
   // Re-send any previously selected model paths (and re-apply thumbnails) so the
   // rig comes back after a plugin-window/instance recreation.
   void restoreSelectedPaths() {
+    // Restore each popup's complete choice set before selecting/echoing its
+    // current path.  This order is important: displayPath must never have to
+    // synthesize a one-item popup during UI recreation.
+    restoreStageModels();
     const std::string file = uiPersistFile();
     std::ifstream in(file);
     if (!in) return;
@@ -183,8 +222,8 @@ struct RigUIState {
       selectedPaths[i] = path;
       selectedImageURLs[i] = imageURL;
       selectedToneIds[i] = toneId;
-      if (path.empty() && imageURL.empty() && toneId <= 0) continue;
-      if (!path.empty()) { sendPath(i, path.c_str()); displayPath(i, path.c_str()); }
+      if (!path.empty()) sendPath(i, path.c_str());
+      else displayPath(i, "");
       if (imageURL.length() || toneId > 0)
         setStageThumb(i, nil, toneId, imageURL.length() ? [NSString stringWithUTF8String:imageURL.c_str()] : nil);
     }
@@ -192,6 +231,7 @@ struct RigUIState {
   void sendPath(size_t stage, const char* path) {
     if (stage >= pathURIDs.size() || !path) return;
     // Remember + persist the selection so it survives a UI/instance recreation.
+    rememberAvailablePath(stage, path);
     selectedPaths[stage] = path;
     if (path[0] == '\0') { selectedImageURLs[stage].clear(); selectedToneIds[stage] = 0; }  // clearing a model clears its thumb
     persistSelectedPaths();
@@ -247,12 +287,22 @@ struct RigUIState {
   void displayPath(size_t stage, const char* path) {
     if (stage >= modelPickers.size() || !modelPickers[stage]) return;
     const std::string copy = path ? path : "";
+    NSPopUpButton* picker = modelPickers[stage];
+    NSMutableArray<NSString*>* savedPaths = [NSMutableArray array];
+    for (const std::string& saved : availableModelPaths[stage])
+      [savedPaths addObject:[NSString stringWithUTF8String:saved.c_str()]];
     dispatch_async(dispatch_get_main_queue(), ^{
-      NSPopUpButton* picker = modelPickers[stage];
       if (copy.empty()) {
         [picker removeAllItems];
         [picker addItemWithTitle:@"No model loaded"];
-        picker.enabled = NO;
+        picker.itemArray.firstObject.enabled = NO;
+        for (NSString* p in savedPaths) {
+          NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:p.lastPathComponent action:NULL keyEquivalent:@""];
+          it.representedObject = p; it.toolTip = p;
+          [[picker menu] addItem:it];
+        }
+        [picker selectItemAtIndex:0];
+        picker.enabled = savedPaths.count == 0 ? NO : YES;
         return;
       }
       NSString* full = [NSString stringWithUTF8String:copy.c_str()];
@@ -266,11 +316,10 @@ struct RigUIState {
         [picker selectItemAtIndex:match];
         picker.enabled = YES;
       } else {
-        [picker removeAllItems];
         NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:full.lastPathComponent action:NULL keyEquivalent:@""];
         it.representedObject = full; it.toolTip = full;
         [[picker menu] addItem:it];
-        [picker selectItemAtIndex:0];
+        [picker selectItem:it];
         picker.enabled = YES;
       }
     });
@@ -286,6 +335,10 @@ struct RigUIState {
   // stage has models; the old filename text label is redundant and removed.
   void setStageModels(size_t stage, NSArray<NSString*>* paths) {
     if (stage >= modelPickers.size() || !modelPickers[stage]) return;
+    availableModelPaths[stage].clear();
+    for (NSString* p in paths)
+      if (p.length) availableModelPaths[stage].push_back(p.UTF8String);
+    persistStageModels(stage);
     NSPopUpButton* picker = modelPickers[stage];
     [picker removeAllItems];
     for (NSString* p in paths) {
@@ -300,7 +353,15 @@ struct RigUIState {
       picker.enabled = NO;
     } else {
       picker.enabled = YES;
-      [picker selectItemAtIndex:0];
+      NSInteger selected = 0;
+      if (!selectedPaths[stage].empty()) {
+        NSString* current = [NSString stringWithUTF8String:selectedPaths[stage].c_str()];
+        for (NSInteger i = 0; i < (NSInteger)picker.itemArray.count; ++i)
+          if ([picker.itemArray[(NSUInteger)i].representedObject isEqualToString:current]) {
+            selected = i; break;
+          }
+      }
+      [picker selectItemAtIndex:selected];
     }
     picker.hidden = NO;
   }
