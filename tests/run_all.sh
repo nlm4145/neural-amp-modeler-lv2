@@ -47,10 +47,10 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
-  echo "== tests/verify_stereo_space.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_stereo_space.cpp \
-      -o /tmp/verify_stereo_space 2>/dev/null; then
-    /tmp/verify_stereo_space || status=1
+  echo "== tests/verify_space_fx.cpp =="
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_space_fx.cpp \
+      -o /tmp/verify_space_fx 2>/dev/null; then
+    /tmp/verify_space_fx || status=1
   else
     echo "  (skipped: harness build failed)"
   fi
@@ -141,16 +141,38 @@ else
   echo "  (skipped: plugin/model unavailable or harness build failed)"
 fi
 
+# Most of the Python tests are source-contract guards that need nothing but
+# the standard library; only the numeric mirrors import numpy. Run everything
+# with the plain interpreter first and fall back to `uv run --with numpy` only
+# for the tests that actually need it, so a machine without numpy (or without
+# access to the wheel host) still runs every guard.
 for t in tests/test_*.py; do
-  # Source-contract guards above run without third-party dependencies.
+  # Already run above.
   case "$t" in
     tests/test_max_quality_defaults.py|tests/test_a2_fast_ring_copy.py) continue ;;
   esac
   echo "== $t =="
-  if command -v uv >/dev/null 2>&1; then
-    uv run --with numpy python3 "$t" || status=1
+  # `set -e` is active: a bare assignment from a failing command substitution
+  # would abort the whole run, so capture the status in a condition.
+  if output="$(python3 "$t" 2>&1)"; then code=0; else code=$?; fi
+  if [ $code -ne 0 ] && printf '%s' "$output" | grep -q "No module named 'numpy'"; then
+    if command -v uv >/dev/null 2>&1; then
+      if uvout="$(uv run --with numpy python3 "$t" 2>&1)"; then
+        printf '%s\n' "$uvout"
+      elif printf '%s' "$uvout" | grep -qE "Request failed|No solution|pythonhosted"; then
+        # Could not provision numpy (offline or a blocked wheel host). That is
+        # an environment limit, not a test failure, so report it as skipped.
+        echo "  (skipped: numpy could not be installed -- no network access)"
+      else
+        printf '%s\n' "$uvout"
+        status=1
+      fi
+    else
+      echo "  (skipped: needs numpy, which is not installed)"
+    fi
   else
-    python3 "$t" || status=1
+    printf '%s\n' "$output"
+    [ $code -eq 0 ] || status=1
   fi
 done
 exit $status

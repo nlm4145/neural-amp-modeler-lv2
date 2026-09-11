@@ -32,10 +32,11 @@
 
 constexpr const char* kRigURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig";
 constexpr const char* kRigUIURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-ui";
-constexpr std::array<const char*, 3> kPathURIs{
+constexpr std::array<const char*, 4> kPathURIs{
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model",
-    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model"};
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab2-model"};
 
 static NSArray<NSString*>* oversampleDescriptions() {
   static NSArray<NSString*>* descriptions = @[
@@ -81,21 +82,22 @@ static NSString* stageName(NSInteger stage) {
 - (void)showSignalFlow:(NSButton*)sender;
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
 - (void)showSpeakerLoad:(NSButton*)sender;
+- (void)showEffects:(NSButton*)sender;
 - (void)resetAllKnobs:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
 @implementation NAMRigUIController
 - (void)chooseModel:(NSButton*)sender {
-  if (!_state || sender.tag < 0 || sender.tag > 2) return;
+  if (!_state || sender.tag < 0 || sender.tag > 3) return;
   NSOpenPanel* panel = [NSOpenPanel openPanel];
   panel.title = [NSString stringWithFormat:@"Choose %@ NAM Model",
-                 @[@"a Pedal", @"an Amp", @"a Cab"][(NSUInteger)sender.tag]];
+                 @[@"a Pedal", @"an Amp", @"a Cab", @"a Cab B"][(NSUInteger)sender.tag]];
   panel.prompt = @"Load Model";
   panel.canChooseFiles = YES;
   panel.canChooseDirectories = NO;
   panel.allowsMultipleSelection = NO;
-  panel.allowedFileTypes = sender.tag == 2
+  panel.allowedFileTypes = sender.tag >= 2
       ? @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel", @"wav"]
       : @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel"];
   if ([panel runModal] == NSModalResponseOK)
@@ -103,7 +105,7 @@ static NSString* stageName(NSInteger stage) {
 }
 
 - (void)clearModel:(NSButton*)sender {
-  if (_state && sender.tag >= 0 && sender.tag <= 2) {
+  if (_state && sender.tag >= 0 && sender.tag <= 3) {
     _state->sendPath((size_t)sender.tag, "");
     _state->setStageThumb((size_t)sender.tag, nil, 0, nil);  // revert to placeholder
   }
@@ -250,6 +252,12 @@ static NSString* stageName(NSInteger stage) {
 - (void)showSpeakerLoad:(NSButton*)sender {
   if (!_state || !_state->speakerPopover) return;
   [_state->speakerPopover showRelativeToRect:sender.bounds ofView:sender
+                               preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)showEffects:(NSButton*)sender {
+  if (!_state || !_state->effectsPopover) return;
+  [_state->effectsPopover showRelativeToRect:sender.bounds ofView:sender
                                preferredEdge:NSRectEdgeMaxY];
 }
 
@@ -541,7 +549,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
     state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
     state->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
-    for (size_t i = 0; i < 3; ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
+    for (size_t i = 0; i < kPathURIs.size(); ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
     const CGFloat baseW = 1280.0, baseH = 830.0;
@@ -577,7 +585,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[topView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
     [[topView.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
     [[topView.topAnchor constraintEqualToAnchor:content.topAnchor] setActive:YES];
-    [[topView.heightAnchor constraintEqualToConstant:440] setActive:YES];
+    [[topView.heightAnchor constraintEqualToConstant:470] setActive:YES];
 
     state->uiController = [[NAMRigUIController alloc] init];
     state->uiController.state = state;
@@ -862,12 +870,17 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"WIDTH", @"ROOM", @"PRESENCE", @"DEPTH",
                                       @"SAG", @"BIAS", @"NEG FDBK", @"BRIGHT",
                                       @"INPUT EQ", @"MASTER", @"SPKR DRIVE", @"SPKR COMP",
-                                      @"THUMP", @"RESONANCE"];
+                                      @"THUMP", @"RESONANCE",
+                                      @"CAB B LVL", @"ALIGN", @"DLY TIME", @"DLY FDBK",
+                                      @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
+                                      @"SIZE", @"RVB DAMP", @"PRE-DLY"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"OFF", @"+0%",
-                                       @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%"];
+                                       @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
+                                       @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
+                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Signals below this input level are gently expanded; -80 dB bypasses the gate.",
       @"Gate release time. Higher values preserve note tails longer after the signal falls below the threshold.",
@@ -881,8 +894,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Cabinet high-pass cutoff. Removes low-frequency rumble after the cab; 0 Hz bypasses the filter.",
       @"Cabinet low-pass cutoff. Softens upper fizz after the cab; 20 kHz bypasses the filter.",
       @"Final output trim after the complete rig, cabinet processing, and EQ.",
-      @"Stereo width from a short right-channel delay. Zero preserves exact dual mono; higher settings widen the image up to 12 ms.",
-      @"Compact stereo room ambience from decorrelated early reflections after the rig.",
+      @"Cabinet width. Pans Cab A left and Cab B right, and opens the stereo image of a stereo WAV impulse response. Zero sums everything to exact dual mono.",
+      @"Early reflections of a small room around the cabinets, with diffusion and high-frequency damping. Reverb Size and Reverb Damping shape it too.",
       @"Shapes upper frequencies after the NAM amp model, like a power-amp presence circuit. Positive values add bite and clarity; negative values soften fizz. It is separate from the post-cab Treble knob.",
       @"Shapes low frequencies after the NAM amp model, like a power-amp depth/resonance circuit. Positive values add weight and bloom; negative values tighten the low end. It is separate from the post-cab Bass knob.",
       @"Simulates power-supply voltage droop after loud notes. Higher settings soften peaks, add compression and sustain, and recover more slowly. Works independently of Input EQ and Master.",
@@ -894,15 +907,28 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Frequency-dependent speaker breakup after the amp and before the cabinet.",
       @"Speaker excursion compression and recovery after the amp.",
       @"Nonlinear low-frequency speaker excursion.",
-      @"Strength of the selected speaker impedance curve."
+      @"Strength of the selected speaker impedance curve: the low resonance and the rising voice-coil inductance. Negative Feedback flattens both.",
+      @"Level trim of the second cabinet (Cab B) before it mixes with Cab A.",
+      @"Delays Cab B by up to 10 ms so two impulse responses can be phase aligned by ear.",
+      @"Delay time of the stereo delay after the cabinets.",
+      @"Delay feedback. The repeats pass through the damping filter and a soft limiter each time.",
+      @"High-frequency loss of each delay repeat, from bright digital to dark tape-like.",
+      @"Delay level. Zero is an exact bypass.",
+      @"Plate reverb level. Zero is an exact bypass; Room stays available on its own.",
+      @"Plate reverb decay time.",
+      @"Plate size. Scales the reverb tank and the room's early reflections.",
+      @"High-frequency damping inside the plate and on the room reflections.",
+      @"Time before the reverb starts, which keeps the pick attack clear."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
-        -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        -24.0, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
-        12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+        12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
+        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // DRIVE/PRESENCE/DEPTH and the tone controls under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -911,7 +937,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     NSView* knobGroups[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
-    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {8, 9, 10, 11, 12, 13}};
+    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {8, 9, 10, 11, 26, 27}};
     const size_t groupCounts[3] = {4, 6, 6};
 
     for (size_t g = 0; g < 3; ++g) {
@@ -1011,7 +1037,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       NSArray<NSString*>* stageTips = @[
         @"Pedal stage: dynamics and input conditioning feed the selected pedal NAM model before the amp.",
         @"Amp stage: the selected NAM model, drive trim, and optional output-transformer coloration form the core amp sound.",
-        @"Cabinet stage: run a cabinet NAM model or WAV impulse response, followed by cab level and frequency cuts."
+        @"Cabinet stage: run a cabinet NAM model or WAV impulse response, optionally a parallel second cabinet, followed by cab level, frequency cuts, and the stereo effects."
       ];
       box.toolTip = stageTips[(NSUInteger)i];
 
@@ -1225,6 +1251,46 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[speakerButton.heightAnchor constraintEqualToConstant:23] setActive:YES];
         modelAnchor = speakerButton;
 
+        RigButton* effectsButton = rigButton(box, @"WIDTH / DELAY / REVERB", state->uiController,
+                                             @selector(showEffects:), NSZeroRect);
+        effectsButton.translatesAutoresizingMaskIntoConstraints = NO;
+        effectsButton.toolTip = @"Open cabinet width, room, stereo delay, and plate reverb controls. Delay and reverb default off.";
+        [box addSubview:effectsButton];
+        [[effectsButton.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+        [[effectsButton.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        [[effectsButton.topAnchor constraintEqualToAnchor:speakerButton.bottomAnchor constant:4] setActive:YES];
+        [[effectsButton.heightAnchor constraintEqualToConstant:23] setActive:YES];
+        modelAnchor = effectsButton;
+
+        {
+          NSPopover* fx = [[NSPopover alloc] init];
+          fx.behavior = NSPopoverBehaviorTransient;
+          NSViewController* fxController = [[NSViewController alloc] init];
+          NSView* fxView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 345)];
+          fxView.wantsLayer = YES; fxView.layer.backgroundColor = rigPanelBG().CGColor;
+          fxController.view = fxView; fx.contentViewController = fxController;
+          fx.contentSize = NSMakeSize(520, 345); state->effectsPopover = fx;
+          NSTextField* fxTitle = addLabel(fxView, @"WIDTH / ROOM / DELAY / REVERB", NSMakeRect(18, 318, 400, 18),
+              [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
+          rigApplyTracking(fxTitle, 1.0);
+          const size_t fxKnobs[11] = {12, 13, 28, 29, 30, 31, 32, 33, 34, 35, 36};
+          for (size_t a = 0; a < 11; ++a) {
+            const size_t k = fxKnobs[a];
+            const size_t col = a % 4, row = a / 4;
+            NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + col * 127, 8 + (2 - row) * 103, 119, 100)];
+            [fxView addSubview:cell];
+            state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
+            state->knobs[k].toolTip = knobDescriptions[k];
+            NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15), [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
+            label.toolTip = knobDescriptions[k];
+            state->valueLabels[k] = addLabel(cell, knobValues[k], NSMakeRect(24, 57, 72, 17), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
+            NSTextField* value = state->valueLabels[k]; value.editable = YES; value.selectable = YES;
+            value.bordered = NO; value.drawsBackground = YES; value.backgroundColor = rigRaised();
+            value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
+            value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
+          }
+        }
+
         NSPopover* popover = [[NSPopover alloc] init];
         popover.behavior = NSPopoverBehaviorTransient;
         NSViewController* controller = [[NSViewController alloc] init];
@@ -1286,6 +1352,45 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:32] setActive:YES];
       [[mp.heightAnchor constraintEqualToConstant:22] setActive:YES];
 
+      if (i == 2) {
+        NSPopUpButton* mpB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+        state->modelPickers[3] = mpB;
+        mpB.translatesAutoresizingMaskIntoConstraints = NO;
+        mpB.controlSize = NSControlSizeSmall;
+        mpB.tag = 3;
+        mpB.target = state->uiController;
+        mpB.action = @selector(stageModelChanged:);
+        [mpB addItemWithTitle:@"No Cab B loaded"];
+        [mpB itemAtIndex:0].toolTip = RigUIState::modelPickerTooltip(3, nil);
+        mpB.toolTip = RigUIState::modelPickerTooltip(3, nil);
+        mpB.enabled = NO;
+        [box addSubview:mpB];
+        RigButton* browseB = rigButton(box, @"…", state->uiController, @selector(chooseModel:), NSZeroRect);
+        browseB.tag = 3;
+        browseB.toolTip = @"Choose a Cab B NAM model or WAV impulse response from disk.";
+        browseB.translatesAutoresizingMaskIntoConstraints = NO;
+        RigButton* onB = rigButton(box, @"B ON", state->uiController, @selector(controlChanged:), NSZeroRect);
+        onB.tag = 47;
+        onB.buttonType = NSButtonTypeToggle;
+        onB.check = YES;
+        onB.state = NSControlStateValueOff;
+        onB.toolTip = @"Enable the second cabinet. Cab A pans left and Cab B pans right by the Width amount. Changes use a short click-free fade.";
+        onB.translatesAutoresizingMaskIntoConstraints = NO;
+        state->powerButtons[3] = onB;
+        [[mpB.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+        [[mpB.topAnchor constraintEqualToAnchor:mp.bottomAnchor constant:4] setActive:YES];
+        [[mpB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        [[browseB.leadingAnchor constraintEqualToAnchor:mpB.trailingAnchor constant:4] setActive:YES];
+        [[browseB.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
+        [[browseB.widthAnchor constraintEqualToConstant:26] setActive:YES];
+        [[browseB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        [[onB.leadingAnchor constraintEqualToAnchor:browseB.trailingAnchor constant:4] setActive:YES];
+        [[onB.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        [[onB.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
+        [[onB.widthAnchor constraintEqualToConstant:60] setActive:YES];
+        [[onB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+      }
+
       // Pin this tile's knob group exactly to the tile's footprint: the
       // group's leading/trailing edges match the box (which insets itself
       // 16pt inside its cell via its own interior padding), so knobs sit
@@ -1321,7 +1426,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 46) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 58) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }
@@ -1340,7 +1445,7 @@ void portEvent(LV2UI_Handle handle,
   if (!property || property->type != state->atomURID || !value) return;
   const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
   if (value->type == state->atomPath && value->size > 0) {
-    for (size_t i = 0; i < 3; ++i)
+    for (size_t i = 0; i < state->pathURIDs.size(); ++i)
       if (propertyId == state->pathURIDs[i])
         state->displayPath(i, reinterpret_cast<const char*>(value + 1));
     return;

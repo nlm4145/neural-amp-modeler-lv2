@@ -27,7 +27,9 @@ def port_default(index: int) -> float:
 
 assert port_default(20) == 6.0, "fresh pedal stage must default to True 8x"
 assert port_default(21) == 6.0, "fresh amp stage must default to True 8x"
-assert "osApplied = {kOsTrue8, kOsTrue8, kOsTrue8}" in header
+assert "osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2}" in header, (
+    "pedal/amp/cab must start in True 8x; Cab B is parallel and base-rate"
+)
 assert "osRequested = {kOsTrue8, kOsTrue8}" in header
 assert 'addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",' in ui
 assert "[state->osPopup selectItemAtIndex:4]" in ui

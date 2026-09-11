@@ -4,6 +4,14 @@
 The model is deliberately sized for the worst reachable True-8x block, but
 normal callbacks are often much smaller. Ring maintenance must scale with the
 current block/read extent, not the maximum allocation.
+
+KNOWN FAILING since the `Update NeuralAudio` submodule bump (ea6ed50): upstream
+replaced the local patch with an unconditional tail mirror of `mbs` columns per
+layer per block (`_ring_write`, NAM_A2_RING_MODE == 1). Reads never span more
+than `num_frames` columns past the wrap, so the mirror only needs `num_frames`
+columns -- at the rig's 8x sizing that is an 8x redundant copy per layer per
+block. This assertion is NOT stale; it is detecting a real lost optimization in
+the submodule. Fix it in `deps/NeuralAudio/.../wavenet/a2_fast.cpp`, not here.
 """
 from pathlib import Path
 

@@ -2,7 +2,7 @@
 """Unit tests for WavIR resampling + selectable IR level normalization.
 
 These mirror the algorithms in src/wav_ir.cpp (windowed-sinc resample, IR
-transfer-gain correction, 80 ms truncation, and response-based normalization)
+transfer-gain correction, 170 ms truncation, and response-based normalization)
 so changes can be validated before compiling.
 
 Run:  python3 tests/test_wav_ir_resample.py
@@ -56,11 +56,17 @@ def resample(input_sig, from_rate, to_rate):
 
 def wav_ir_load_taps(x, source_rate, host_rate):
     """The tap-processing chain in WavIR::load (after WAV decode):
-    resample -> transfer-gain correction -> 80 ms truncation."""
+    resample -> transfer-gain correction -> truncation.
+
+    The limit tracks WavIR::kMaxSeconds (170 ms). The synthetic IRs here are
+    far shorter, so truncation never fires; it is mirrored for completeness.
+    The C++ loader also applies a 5 ms raised-cosine fade at the cut, which
+    this mirror omits because nothing here reaches the limit. Truncation and
+    the fade are covered end-to-end by tests/verify_wav_ir.cpp."""
     taps = np.asarray(resample(x, source_rate, host_rate), dtype=np.float64)
     if abs(source_rate - host_rate) >= 1.0:
         taps *= source_rate / host_rate
-    max_len = int(host_rate * 0.08)
+    max_len = int(host_rate * 0.17)   # WavIR::kMaxSeconds
     if taps.size > max_len:
         taps = taps[:max_len]
     if taps.size == 0:

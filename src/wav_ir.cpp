@@ -18,43 +18,63 @@ uint32_t u32(const unsigned char* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
 }
 
-std::vector<float> readWav(const char* path, uint32_t& rate) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) throw std::runtime_error("cannot open WAV");
-  std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), {});
+struct WavInfo {
+  uint16_t format = 0, channels = 0, bits = 0;
+  uint32_t rate = 0;
+  const unsigned char* audio = nullptr;
+  size_t audioBytes = 0;
+};
+
+WavInfo parseWav(const std::vector<unsigned char>& bytes) {
   if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) ||
       std::memcmp(bytes.data() + 8, "WAVE", 4))
     throw std::runtime_error("not a RIFF/WAVE file");
-
-  uint16_t format = 0, channels = 0, bits = 0;
-  const unsigned char* audio = nullptr;
-  size_t audioBytes = 0;
+  WavInfo info;
   for (size_t pos = 12; pos + 8 <= bytes.size();) {
     const uint32_t size = u32(bytes.data() + pos + 4);
     const size_t dataPos = pos + 8;
     if (dataPos + size > bytes.size()) break;
     if (!std::memcmp(bytes.data() + pos, "fmt ", 4) && size >= 16) {
-      format = u16(bytes.data() + dataPos);
-      channels = u16(bytes.data() + dataPos + 2);
-      rate = u32(bytes.data() + dataPos + 4);
-      bits = u16(bytes.data() + dataPos + 14);
+      info.format = u16(bytes.data() + dataPos);
+      info.channels = u16(bytes.data() + dataPos + 2);
+      info.rate = u32(bytes.data() + dataPos + 4);
+      info.bits = u16(bytes.data() + dataPos + 14);
+      if (info.format == 0xFFFE && size >= 26) info.format = u16(bytes.data() + dataPos + 24);
     } else if (!std::memcmp(bytes.data() + pos, "data", 4)) {
-      audio = bytes.data() + dataPos;
-      audioBytes = size;
+      info.audio = bytes.data() + dataPos;
+      info.audioBytes = size;
     }
     pos = dataPos + size + (size & 1u);
   }
-  if (!audio || !channels || !rate || !bits || (format != 1 && format != 3))
+  if (!info.audio || !info.channels || !info.rate || !info.bits ||
+      (info.format != 1 && info.format != 3))
     throw std::runtime_error("unsupported WAV format");
+  return info;
+}
+
+std::vector<unsigned char> readFile(const char* path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) throw std::runtime_error("cannot open WAV");
+  return std::vector<unsigned char>((std::istreambuf_iterator<char>(file)), {});
+}
+
+std::vector<float> readWav(const char* path, uint32_t& rate, int channel) {
+  const std::vector<unsigned char> bytes = readFile(path);
+  const WavInfo info = parseWav(bytes);
+  rate = info.rate;
+  const uint16_t format = info.format, channels = info.channels, bits = info.bits;
+  if (channel >= channels) throw std::runtime_error("WAV channel out of range");
   const size_t sampleBytes = bits / 8;
-  const size_t frames = audioBytes / (sampleBytes * channels);
+  const size_t frames = info.audioBytes / (sampleBytes * channels);
   if (!sampleBytes || !frames) throw std::runtime_error("empty WAV");
 
+  const uint16_t first = channel < 0 ? 0 : static_cast<uint16_t>(channel);
+  const uint16_t last = channel < 0 ? channels : static_cast<uint16_t>(channel + 1);
   std::vector<float> mono(frames, 0.0f);
   for (size_t frame = 0; frame < frames; ++frame) {
     double sum = 0.0;
-    for (uint16_t ch = 0; ch < channels; ++ch) {
-      const unsigned char* p = audio + (frame * channels + ch) * sampleBytes;
+    for (uint16_t ch = first; ch < last; ++ch) {
+      const unsigned char* p = info.audio + (frame * channels + ch) * sampleBytes;
       float value = 0.0f;
       if (format == 3 && bits == 32) std::memcpy(&value, p, 4);
       else if (format == 3 && bits == 64) { double d; std::memcpy(&d, p, 8); value = float(d); }
@@ -67,7 +87,7 @@ std::vector<float> readWav(const char* path, uint32_t& rate) {
       else throw std::runtime_error("unsupported WAV sample encoding");
       sum += value;
     }
-    mono[frame] = float(sum / channels);
+    mono[frame] = float(sum / (last - first));
   }
   return mono;
 }
@@ -197,10 +217,18 @@ WavIR::~WavIR() {
   if (fftSetup) vDSP_destroy_fftsetup(fftSetup);
 }
 
+unsigned WavIR::channelCount(const char* path) {
+  try {
+    return parseWav(readFile(path)).channels;
+  } catch (...) {
+    return 0;
+  }
+}
+
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
-                                   int maxBlockSize, bool original) {
+                                   int maxBlockSize, bool original, int channel) {
   uint32_t sourceRate = 0;
-  auto sourceTaps = readWav(path, sourceRate);
+  auto sourceTaps = readWav(path, sourceRate, channel);
   auto taps = original ? std::move(sourceTaps)
                        : resample(sourceTaps, sourceRate, hostRate);
   // A resampled discrete impulse response needs the inverse sample-density
@@ -210,10 +238,10 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
     const float transferScale = static_cast<float>(sourceRate / hostRate);
     for (float& tap : taps) tap *= transferScale;
   }
-  // Guitar cabinet IR energy is concentrated near the start; 80 ms keeps
-  // natural tails. A hard cut rings (truncation ripple in the transfer
-  // function), so the last ~5 ms taper with a raised cosine.
-  const size_t maxTaps = static_cast<size_t>(hostRate * 0.08);
+  // Cabinet IR energy is concentrated near the start; 170 ms (8192 taps at
+  // 48 kHz) keeps far-mic and room tails. A hard cut rings (truncation ripple
+  // in the transfer function), so the last ~5 ms taper with a raised cosine.
+  const size_t maxTaps = static_cast<size_t>(hostRate * kMaxSeconds);
   if (!original && maxTaps > 0 && taps.size() > maxTaps) {
     taps.resize(maxTaps);
     const size_t fade = std::min(taps.size(),
