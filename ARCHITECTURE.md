@@ -53,6 +53,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 32 | `stereo_width` | in | 0–100%; short right-channel delay (up to 12 ms), 0 = exact dual mono |
 | 33 | `room` | in | 0–100%; decorrelated stereo early reflections, 0 = off |
 | 34–41 | `presence`/`depth`/`sag`/`bias`/`negative_feedback`/`bright`/`input_eq`/`master` | in | Optional advanced amp shaping; all neutral by default and independent of ports 12–14 post EQ |
+| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto uses the selected cab path. |
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.
@@ -113,6 +114,11 @@ Related DSP-chain guarantees:
   its core-saturation harmonics receive the same anti-alias filtering. The
   default `Captured / Off` is bit-transparent because most NAM amp captures
   already contain their physical output transformer.
+
+- The optional Speaker Dynamics/Impedance block follows the transformer and
+  advanced post-amp shaping, before either a NAM or WAV cabinet. It shares the
+  amp's True-Nx domain and adds no converter latency. Captured/Off is the exact
+  default bypass; Auto resolves a generic profile from the committed cab path.
 
 - Each True cascade delays by a fixed, block-size-independent amount
   (2x = 23, 4x = 35, 8x = 41 base frames); the sum over active groups is

@@ -33,6 +33,13 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
+  echo "== tests/verify_speaker_dynamics.cpp =="
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_speaker_dynamics.cpp \
+      -o /tmp/verify_speaker_dynamics 2>/dev/null; then
+    /tmp/verify_speaker_dynamics || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
   echo "== tests/verify_amp_advanced.cpp =="
   if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_amp_advanced.cpp \
       -o /tmp/verify_amp_advanced 2>/dev/null; then

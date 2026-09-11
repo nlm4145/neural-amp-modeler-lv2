@@ -63,12 +63,13 @@ int main(int argc, char** argv) {
   enum { kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
-  float ctl[42] = {0};
+  float ctl[47] = {0};
   ctl[7] = 1.0f; ctl[8] = 1.0f; ctl[9] = 1.0f; ctl[10] = 1.0f; /* enables */
   ctl[20] = 1.0f; ctl[21] = 1.0f;   /* per-stage oversample: Legacy */
   ctl[15] = -80.0f;                  /* gate off */
   ctl[23] = 150.0f;                  /* gate release */
   ctl[27] = 20000.0f;                /* high cut off */
+  ctl[43] = 25.0f; ctl[44] = 25.0f; ctl[45] = 50.0f; ctl[46] = 50.0f;
 
   d->connect_port(h, 0, controlBuf);
   d->connect_port(h, 1, notifyBuf);
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
   d->connect_port(h, 32, &ctl[32]);
   d->connect_port(h, 33, &ctl[33]);
   for (uint32_t p = 34; p <= 41; ++p) d->connect_port(h, p, &ctl[p]);
+  for (uint32_t p = 42; p <= 46; ++p) d->connect_port(h, p, &ctl[p]);
 
   double phase = 0.0;
   const double w = 2.0 * M_PI * 220.0 / 48000.0;

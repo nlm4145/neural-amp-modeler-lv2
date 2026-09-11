@@ -122,12 +122,14 @@ int main(int argc, char** argv) {
   constexpr uint32_t kAtomBytes = 16384;
   alignas(LV2_Atom_Sequence) uint8_t control[kAtomBytes]{};
   alignas(LV2_Atom_Sequence) uint8_t notify[kAtomBytes]{};
-  float input[kBlock]{}, output[kBlock]{}, outputRight[kBlock]{}, ports[42]{};
+  float input[kBlock]{}, output[kBlock]{}, outputRight[kBlock]{}, ports[47]{};
   ports[7] = ports[8] = ports[9] = ports[10] = 1.0f;
   ports[15] = -80.0f;
   ports[20] = ports[21] = static_cast<float>(oversampleMode);
   ports[23] = 150.0f;
   ports[27] = 20000.0f;
+  ports[43] = ports[44] = 25.0f;
+  ports[45] = ports[46] = 50.0f;
 
   descriptor->connect_port(instance, 0, control);
   descriptor->connect_port(instance, 1, notify);
@@ -139,6 +141,8 @@ int main(int argc, char** argv) {
   descriptor->connect_port(instance, 32, &ports[32]);
   descriptor->connect_port(instance, 33, &ports[33]);
   for (uint32_t port = 34; port <= 41; ++port)
+    descriptor->connect_port(instance, port, &ports[port]);
+  for (uint32_t port = 42; port <= 46; ++port)
     descriptor->connect_port(instance, port, &ports[port]);
 
   double phase = 0.0;

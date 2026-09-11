@@ -24,6 +24,7 @@
 #include "amp_advanced.h"
 #include "output_transformer.h"
 #include "stereo_space.h"
+#include "speaker_dynamics.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -151,6 +152,11 @@ public:
     float* bright;             // in: port 39, pre-amp high-frequency lift (0..100%)
     float* input_eq;           // in: port 40, pre-amp low-cut shaping (0..100%)
     float* master;             // in: port 41, virtual power-stage drive (0..100%)
+    float* speaker_profile;    // in: port 42, Captured/Auto/generic load profile
+    float* speaker_drive;      // in: port 43, frequency-dependent breakup (0..100%)
+    float* speaker_compression;// in: port 44, excursion compression (0..100%)
+    float* speaker_thump;      // in: port 45, low-frequency excursion (0..100%)
+    float* speaker_resonance;  // in: port 46, impedance-curve strength (0..100%)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -161,6 +167,7 @@ public:
   static_assert(offsetof(Ports, stereo_width) == 32 * sizeof(void*));
   static_assert(offsetof(Ports, room) == 33 * sizeof(void*));
   static_assert(offsetof(Ports, master) == 41 * sizeof(void*));
+  static_assert(offsetof(Ports, speaker_resonance) == 46 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -243,9 +250,13 @@ private:
   AmpAdvanced ampAdvanced;
   OutputTransformer outputTransformer;
   StereoSpace stereoSpace;
+  SpeakerDynamics speakerDynamics;
   int transformerRequested = OutputTransformer::kCaptured;
   int transformerApplied = OutputTransformer::kCaptured;
   bool transformerLatched = false;
+  int speakerRequested = SpeakerDynamics::kCaptured;
+  int speakerApplied = SpeakerDynamics::kCaptured;
+  bool speakerLatched = false;
   int32_t maxBufferSize = 512;
 
   // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).

@@ -432,6 +432,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       !ports.audio_out_r || !ports.stereo_width || !ports.room ||
       !ports.presence || !ports.depth || !ports.sag || !ports.bias ||
       !ports.negative_feedback || !ports.bright || !ports.input_eq || !ports.master ||
+      !ports.speaker_profile || !ports.speaker_drive || !ports.speaker_compression ||
+      !ports.speaker_thump || !ports.speaker_resonance ||
       !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
       !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents ||
@@ -830,6 +832,25 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
   }
 
+  // Generic speaker-load interaction is opt-in. Auto resolves from the
+  // committed cab path without changing the host-visible profile selection.
+  int desiredSpeaker = SpeakerDynamics::clampProfile(
+      static_cast<int>(*ports.speaker_profile + 0.5f));
+  if (desiredSpeaker == SpeakerDynamics::kAuto)
+    desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[2].c_str());
+  if (!speakerLatched) {
+    speakerRequested = speakerApplied = desiredSpeaker;
+    speakerLatched = true;
+  } else if (desiredSpeaker != speakerRequested) {
+    speakerRequested = desiredSpeaker;
+    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)]) {
+      startTransitionFadeOut();
+    } else {
+      speakerApplied = speakerRequested;
+      speakerDynamics.reset();
+    }
+  }
+
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor
   // and/or created at Nx * sessionRate), so any mode change re-sends the
@@ -909,6 +930,9 @@ void Plugin::process(uint32_t sampleCount) noexcept {
                                  *ports.presence, *ports.depth, *ports.sag,
                                  *ports.bias, *ports.negative_feedback,
                                  *ports.master);
+      speakerDynamics.process(samples, count, domainRate, speakerApplied,
+                              *ports.speaker_drive, *ports.speaker_compression,
+                              *ports.speaker_thump, *ports.speaker_resonance);
     }
   };
 
@@ -1125,6 +1149,10 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       if (transformerApplied != transformerRequested) {
         transformerApplied = transformerRequested;
         outputTransformer.reset();
+      }
+      if (speakerApplied != speakerRequested) {
+        speakerApplied = speakerRequested;
+        speakerDynamics.reset();
       }
       transitionPhase = TransitionPhase::FadeIn;
       transitionPosition = 0;
