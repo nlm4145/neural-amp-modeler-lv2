@@ -16,8 +16,6 @@
 	a lv2:Parameter ; rdfs:label "Amp Model" ; rdfs:range atom:Path .
 <@NAM_RIG_LV2_ID@-cab-model>
 	a lv2:Parameter ; rdfs:label "Cab Model" ; rdfs:range atom:Path .
-<@NAM_RIG_LV2_ID@-cab2-model>
-	a lv2:Parameter ; rdfs:label "Cab B Model" ; rdfs:range atom:Path .
 
 <@NAM_RIG_LV2_ID@>
 	a lv2:Plugin, lv2:SimulatorPlugin, doap:Project ;
@@ -31,8 +29,7 @@
 	patch:writable
 		<@NAM_RIG_LV2_ID@-pedal-model>,
 		<@NAM_RIG_LV2_ID@-amp-model>,
-		<@NAM_RIG_LV2_ID@-cab-model>,
-		<@NAM_RIG_LV2_ID@-cab2-model> ;
+		<@NAM_RIG_LV2_ID@-cab-model> ;
 
 	lv2:port [
 		a atom:AtomPort, lv2:InputPort ; atom:bufferType atom:Sequence ;
@@ -187,7 +184,7 @@
 					lv2:index 31 ; lv2:symbol "output_r" ; lv2:name "Output R"
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 32 ;
-					lv2:symbol "stereo_width" ; lv2:name "Cab Width" ;
+					lv2:symbol "stereo_width" ; lv2:name "Stereo Width" ;
 					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 33 ;
@@ -253,52 +250,4 @@
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 46 ;
 					lv2:symbol "speaker_resonance" ; lv2:name "Speaker Resonance" ;
 					lv2:default 50.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 47 ;
-					lv2:symbol "cab2_enabled" ; lv2:name "Cab B On" ;
-					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ; lv2:portProperty lv2:toggled, lv2:integer
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 48 ;
-					lv2:symbol "cab2_level" ; lv2:name "Cab B Level" ;
-					lv2:default 0.0 ; lv2:minimum -24.0 ; lv2:maximum 24.0 ; units:unit units:db
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 49 ;
-					lv2:symbol "cab2_delay" ; lv2:name "Cab B Align" ;
-					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 10.0 ; units:unit units:ms
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 50 ;
-					lv2:symbol "delay_time" ; lv2:name "Delay Time" ;
-					lv2:default 400.0 ; lv2:minimum 20.0 ; lv2:maximum 2000.0 ; units:unit units:ms
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 51 ;
-					lv2:symbol "delay_feedback" ; lv2:name "Delay Feedback" ;
-					lv2:default 35.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 52 ;
-					lv2:symbol "delay_damping" ; lv2:name "Delay Damping" ;
-					lv2:default 40.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 53 ;
-					lv2:symbol "delay_mix" ; lv2:name "Delay Mix" ;
-					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 54 ;
-					lv2:symbol "reverb_mix" ; lv2:name "Reverb Mix" ;
-					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 55 ;
-					lv2:symbol "reverb_decay" ; lv2:name "Reverb Decay" ;
-					lv2:default 50.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 56 ;
-					lv2:symbol "reverb_size" ; lv2:name "Reverb Size" ;
-					lv2:default 50.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 57 ;
-					lv2:symbol "reverb_damping" ; lv2:name "Reverb Damping" ;
-					lv2:default 50.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc
-				], [
-					a lv2:ControlPort, lv2:InputPort ; lv2:index 58 ;
-					lv2:symbol "reverb_predelay" ; lv2:name "Reverb Pre-Delay" ;
-					lv2:default 10.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:ms
 				] .

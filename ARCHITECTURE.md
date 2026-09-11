@@ -13,10 +13,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/nam_rig_lv2.cpp` | LV2 descriptor: instantiate/run/cleanup, extension data (options, state, worker) |
 | `src/nam_rig_plugin.{h,cpp}` | Rig DSP: 3 serial stages (Pedal/Amp/Cab), EQ, tuner, worker model-swap chain |
 | `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: zero-latency hybrid convolution (direct head + uniform partitioned FFT tail), load-time normalize + windowed-sinc resample + truncation fade |
-| `src/amp_advanced.h` | Pre-amp Bright/Input EQ and the virtual power stage: a negative-feedback loop solved exactly per sample, with Presence/Depth in the feedback path, Sag as supply headroom, Bias plus envelope-driven bias excursion, Master as drive |
-| `src/output_transformer.h` | Optional post-power-stage/pre-cab output-transformer profiles: bandwidth, flux-domain core saturation (leaky integrator → saturator → inverse), asymmetry, voicing, high leakage resonance |
-| `src/speaker_dynamics.h` | Speaker impedance curve (low resonance + rising voice-coil inductance, both scaled down by Negative Feedback), Thump, excursion compression (lowers the resonance Q), low-band-only Speaker Drive |
-| `src/space_fx.h` | `AlignDelay` (Cab B alignment), `StereoDelay` (damped, soft-limited feedback), `PlateReverb` (Dattorro tank + diffused early-reflection cluster for Room) |
+| `src/output_transformer.h` | Optional post-amp/pre-cab output-transformer profiles: bandwidth, low resonance, leakage/load voicing, core saturation, asymmetry, and sag |
 | `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
@@ -52,19 +49,11 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 18 | `tuner_cents` | out | ±50 |
 | 29 | `latency` | out | frames, `lv2:latency` for host PDC (True cascade delay: 2x=23, 4x=35, 8x=41 per group; 0 at base rate) |
 | 30 | `transformer_type` | in | Amp output-transformer profile (0..12): Captured/Off, Modern, US Vintage, UK Vintage, Small Iron, Tight Metal, Extended Range, Thrash Bite, Doom Iron, Studio Linear, Tweed Bloom, Class-A Chime, Bass Iron |
-| 31 | `output_r` | audio out | Right channel of the cabinet mix |
-| 32 | `stereo_width` | in | 0–100%; side gain of each stereo cab pair and the pan spread between Cab A (left) and Cab B (right); 0 = exact dual mono |
-| 33 | `room` | in | 0–100%; diffused, damped early reflections from the plate reverb's input stage, 0 = off |
+| 31 | `output_r` | audio out | Right channel; initially mirrors port 3 exactly as the stereo-path foundation |
+| 32 | `stereo_width` | in | 0–100%; short right-channel delay (up to 12 ms), 0 = exact dual mono |
+| 33 | `room` | in | 0–100%; decorrelated stereo early reflections, 0 = off |
 | 34–41 | `presence`/`depth`/`sag`/`bias`/`negative_feedback`/`bright`/`input_eq`/`master` | in | Optional advanced amp shaping; all neutral by default and independent of ports 12–14 post EQ |
-| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto matches whole tokens of the cab file name. |
-| 47 | `cab2_enabled` | in | toggle; Cab B runs parallel to Cab A from the same post-amp tap (default off) |
-| 48 | `cab2_level` | in | dB trim on Cab B |
-| 49 | `cab2_delay` | in | 0–10 ms alignment delay on Cab B |
-| 50–53 | `delay_time`/`delay_feedback`/`delay_damping`/`delay_mix` | in | Stereo delay after the cabinets; mix 0 = exact bypass |
-| 54–58 | `reverb_mix`/`reverb_decay`/`reverb_size`/`reverb_damping`/`reverb_predelay` | in | Plate reverb after the delay; mix 0 = exact bypass (Room stays independent) |
-
-Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
-is never part of the serial chain or a True domain; it loads at the session rate.
+| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto uses the selected cab path. |
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.
@@ -120,40 +109,16 @@ WAV cab IRs form domain boundaries.
 
 Related DSP-chain guarantees:
 
-- Amp block order inside the domain: model → per-stage 5 Hz DC blocker →
-  virtual power stage (`AmpAdvanced::processPostAmp`) → output transformer →
-  speaker impedance/dynamics. Every model stage gets its own in-domain DC
-  blocker so NAM DC offsets never reach the sag envelope, the bias point, the
-  flux integrator, or the excursion detector.
+- The optional output-transformer block runs immediately after the amp and
+  before the cab. In a True oversampling mode it stays inside that domain, so
+  its core-saturation harmonics receive the same anti-alias filtering. The
+  default `Captured / Off` is bit-transparent because most NAM amp captures
+  already contain their physical output transformer.
 
-- The power stage is a feedback loop `y = L·[sat(u/L + b) − sat(b)]`,
-  `u = A·(x − β·F(y))`, solved exactly per sample (linear below the knee,
-  quadratic above). Presence/Depth are shelves in F; their closed-loop effect
-  is `(1+Aβ)/(1+Aβ·g)`, so the shelf gain is derived from the requested dB and
-  the current loop gain. Negative Feedback sets β (0.15 … 0.90); it also
-  scales the speaker impedance curve (damping). Sag lowers the ceiling L and
-  shifts the bias; Master scales the input drive with `1/sqrt(drive)` makeup.
-
-- The transformer's `Captured / Off` and the speaker's `Captured / Off` are
-  bit-transparent. The transformer has no low resonance and no envelope of its
-  own any more: the low resonance belongs to the speaker block and the supply
-  behaviour to the power stage.
-
-- Control smoothing: AmpAdvanced, the post EQ and the cab cuts glide their
-  settings in 32-sample chunks and recompute coefficients only when a
-  smoothed value changes; the neutral state snaps exactly so bit-transparency
-  is kept.
-
-- Cabinets: a stereo WAV IR loads both channels (`WavIR::load(..., channel)`);
-  the IR limit is 170 ms (`WavIR::kMaxSeconds`). Cab B takes the same post-amp
-  tap as Cab A, then alignment delay, level, and equal-power spread by Width.
-  While Cab B is active a `.nam` Cab A leaves the amp's True domain and runs at
-  base rate so both cabinets see the same signal. All post-chain processing
-  (cabs, trims, EQ, fade, effects) runs in maxBufferSize slices on internal
-  stereo buffers; the two output ports may alias.
-
-- Effects run after the transition fade so model swaps never cut delay or
-  reverb tails.
+- The optional Speaker Dynamics/Impedance block follows the transformer and
+  advanced post-amp shaping, before either a NAM or WAV cabinet. It shares the
+  amp's True-Nx domain and adds no converter latency. Captured/Off is the exact
+  default bypass; Auto resolves a generic profile from the committed cab path.
 
 - Each True cascade delays by a fixed, block-size-independent amount
   (2x = 23, 4x = 35, 8x = 41 base frames); the sum over active groups is

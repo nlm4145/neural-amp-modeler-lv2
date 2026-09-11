@@ -8,14 +8,9 @@ namespace NAMRig {
 
 // Lightweight output-transformer coloration for the amp stage.  A NAM amp
 // capture normally already contains its real transformer's response, so mode
-// 0 is deliberately a bit-transparent default.
-//
-// Core saturation acts on flux, the integral of the primary voltage, so low
-// frequencies saturate first.  The flux path is a leaky integrator, a smooth
-// saturator, and the inverse of that integrator back to the voltage domain.
-// Without saturation the path is exactly identity.  Bandwidth limits and a
-// high leakage-inductance resonance complete the profile; the low-frequency
-// resonance of the load lives in SpeakerDynamics.
+// 0 is deliberately a bit-transparent default.  The other profiles are not
+// branded transformer part numbers; they are useful, repeatable families of
+// low-frequency core saturation, leakage/bandwidth, resonance and sag.
 class OutputTransformer {
 public:
   static constexpr int kCaptured = 0;
@@ -38,10 +33,10 @@ public:
   }
 
   void reset() {
-    flux_ = 0.0;
-    saturatedFlux_ = 0.0;
+    lowBand_ = 0.0f;
+    envelope_ = 0.0f;
     highPass_.reset();
-    leakage_.reset();
+    resonance_.reset();
     voice_.reset();
     highCut_.reset();
   }
@@ -51,87 +46,126 @@ public:
     profile = clampProfile(profile);
     if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5)
       configure(profile, sampleRate);
-    if (profile_ == kCaptured) return;
+    if (profile_ == kCaptured) return;  // exact bypass for existing sessions
 
     for (size_t i = 0; i < count; ++i) {
-      double x = highPass_.process(samples[i]);
+      float x = highPass_.process(samples[i]);
+      x = resonance_.process(x);
       x = voice_.process(x);
 
-      flux_ += fluxCoeff_ * (x - flux_);
-      const double saturated =
-          (sigmoid(drive_ * flux_ + asymmetry_) - sigmoid(asymmetry_)) / drive_;
-      const double coreVoltage =
-          (saturated - (1.0 - fluxCoeff_) * saturatedFlux_) / fluxCoeff_;
-      saturatedFlux_ = saturated;
-      double y = x + saturationMix_ * (coreVoltage - x);
+      // The core's flux is dominated by low frequencies.  Feeding that slow
+      // component harder into the saturating branch makes palm-muted bass
+      // compress before the upper mids, like finite transformer iron.
+      lowBand_ += lowBandCoeff_ * (x - lowBand_);
+      const float coreInput = x + coreCoupling_ * lowBand_;
+      const float biased = coreInput + asymmetry_;
+      const float saturated =
+          (fastTanh(drive_ * biased) - fastTanh(drive_ * asymmetry_)) / drive_;
+      float y = x + saturationMix_ * (saturated - coreInput);
 
-      y = leakage_.process(y);
-      samples[i] = static_cast<float>(highCut_.process(y) * makeup_);
+      // A modest program-dependent loss approximates supply/primary copper
+      // compression without turning this block into a separate compressor.
+      const float level = std::fabs(coreInput);
+      envelope_ += (level - envelope_) *
+                   (level > envelope_ ? envelopeAttack_ : envelopeRelease_);
+      y *= 1.0f / (1.0f + sag_ * envelope_);
+      samples[i] = highCut_.process(y * makeup_);
     }
   }
 
 private:
   struct Biquad {
+    // Double precision is important here even though the surrounding audio
+    // is float. In a True-8x domain (up to 768 kHz), the poles of Studio
+    // Linear's 7 Hz high-pass are so close to the unit circle that rounded
+    // float coefficients/state can turn a small NAM-model DC offset into a
+    // large low-frequency runaway. Keeping the recursive math in double
+    // prevents that host-muting burst while preserving float I/O.
     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
     double z1 = 0.0, z2 = 0.0;
-    double process(double x) {
-      const double y = b0 * x + z1;
-      z1 = b1 * x - a1 * y + z2;
-      z2 = b2 * x - a2 * y;
-      return y;
+    float process(float x) {
+      const double input = x;
+      const double y = b0 * input + z1;
+      z1 = b1 * input - a1 * y + z2;
+      z2 = b2 * input - a2 * y;
+      return static_cast<float>(y);
     }
     void reset() { z1 = z2 = 0.0; }
   };
 
   struct Profile {
-    double lowCutHz;
-    double highCutHz;
-    double leakageHz;
-    double leakageDb;
-    double leakageQ;
-    double voiceHz;
-    double voiceDb;
-    double voiceQ;
-    double fluxHz;
-    double drive;
-    double saturationMix;
-    double asymmetry;
-    double makeup;
+    float lowCutHz;
+    float highCutHz;
+    float resonanceHz;
+    float resonanceDb;
+    float resonanceQ;
+    float voiceHz;
+    float voiceDb;
+    float voiceQ;
+    float fluxHz;
+    float coreCoupling;
+    float drive;
+    float saturationMix;
+    float asymmetry;
+    float sag;
+    float makeup;
   };
 
   static constexpr Profile kProfiles_[kProfileCount] = {
-      {5.0, 24000.0, 9000.0, 0.0, 1.0, 2500.0, 0.0, 0.707, 90.0, 1.0, 0.0, 0.0, 1.0},
+      // Bypass values are unused.
+      {5.0f, 24000.0f, 90.0f, 0.0f, 0.707f,
+       2500.0f, 0.0f, 0.707f, 90.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f},
       // Broad-band, oversized modern iron: almost linear, gently rounded.
-      {10.0, 22000.0, 8500.0, 0.60, 1.20, 3200.0, 0.50, 0.65, 90.0, 1.60, 0.24, 0.000, 1.020},
+      {10.0f, 22000.0f, 82.0f, 0.50f, 0.70f,
+       3200.0f, 0.50f, 0.65f, 90.0f, 0.30f, 1.60f, 0.24f, 0.000f, 0.025f, 1.030f},
       // Large US-style vintage iron: deep lows and restrained upper presence.
-      {18.0, 17500.0, 7000.0, 1.20, 1.10, 1750.0, -1.20, 0.68, 105.0, 2.20, 0.38, 0.025, 1.080},
+      {18.0f, 17500.0f, 88.0f, 1.45f, 0.78f,
+       1750.0f, -1.20f, 0.68f, 105.0f, 0.58f, 2.20f, 0.38f, 0.025f, 0.060f, 1.118f},
       // UK stack-style iron: tighter bass, more compression and mid-bass bark.
-      {40.0, 10500.0, 5600.0, 1.80, 1.00, 2400.0, 1.75, 0.82, 130.0, 3.25, 0.52, 0.040, 1.000},
+      {40.0f, 10500.0f, 125.0f, 2.30f, 0.90f,
+       2400.0f, 1.75f, 0.82f, 130.0f, 0.78f, 3.25f, 0.52f, 0.040f, 0.100f, 0.992f},
       // Smaller vintage iron: earliest core saturation and narrowest bandwidth.
-      {68.0, 7500.0, 4200.0, 2.40, 0.90, 1050.0, 2.20, 0.72, 165.0, 4.80, 0.68, 0.065, 0.930},
+      {68.0f, 7500.0f, 165.0f, 3.40f, 1.00f,
+       1050.0f, 2.20f, 0.72f, 165.0f, 1.05f, 4.80f, 0.68f, 0.065f, 0.165f, 0.889f},
       // Fast, oversized metal iron: trims flub but keeps pick attack and air.
-      {58.0, 18000.0, 7800.0, 1.00, 1.20, 3400.0, 1.80, 0.78, 115.0, 2.30, 0.32, 0.012, 1.030},
-      // Extended-range iron: preserves low fundamentals with disciplined core drive.
-      {30.0, 20000.0, 8200.0, 0.70, 1.20, 4200.0, 1.25, 0.74, 78.0, 1.90, 0.27, 0.010, 1.020},
+      {58.0f, 18000.0f, 105.0f, 0.55f, 0.72f,
+       3400.0f, 1.80f, 0.78f, 115.0f, 0.42f, 2.30f, 0.32f, 0.012f, 0.025f, 1.035f},
+      // Extended-range iron: preserves low F#/E while keeping the sub-bass
+      // resonance and core compression disciplined.
+      {30.0f, 20000.0f, 72.0f, 0.35f, 0.68f,
+       4200.0f, 1.25f, 0.74f, 78.0f, 0.34f, 1.90f, 0.27f, 0.010f, 0.018f, 1.025f},
       // Lean low end, cutting upper mids and a harder-driven core for thrash.
-      {72.0, 14000.0, 6500.0, 1.60, 1.10, 2850.0, 2.75, 0.88, 150.0, 3.00, 0.44, 0.028, 1.010},
-      // Big, slow and dark: heavy core bloom and rolled-off highs.
-      {22.0, 8500.0, 4600.0, 2.00, 0.90, 950.0, 1.90, 0.75, 95.0, 4.50, 0.70, 0.060, 0.940},
-      // Studio-grade wide-band iron: clean headroom, polished presence.
-      {7.0, 23000.0, 9500.0, 0.40, 1.30, 4600.0, 0.90, 0.70, 78.0, 1.60, 0.18, 0.005, 1.020},
-      // Loose American combo feel: warm low-mid bloom and a soft top.
-      {25.0, 9000.0, 4800.0, 1.50, 0.90, 850.0, 1.50, 0.70, 105.0, 4.10, 0.64, 0.070, 0.950},
+      {72.0f, 14000.0f, 145.0f, 1.15f, 0.82f,
+       2850.0f, 2.75f, 0.88f, 150.0f, 0.56f, 3.00f, 0.44f, 0.028f, 0.050f, 1.015f},
+      // Big, slow and dark: low resonance, heavy core bloom and pronounced sag.
+      {22.0f, 8500.0f, 82.0f, 5.50f, 0.84f,
+       950.0f, 1.90f, 0.75f, 95.0f, 1.10f, 4.50f, 0.70f, 0.060f, 0.180f, 0.900f},
+      // Studio-grade wide-band iron: clean headroom with audible low-end
+      // weight and polished presence, but less core distortion than Modern.
+      {7.0f, 23000.0f, 70.0f, 0.45f, 0.68f,
+       4600.0f, 0.90f, 0.70f, 78.0f, 0.23f, 1.60f, 0.18f, 0.005f, 0.015f, 1.020f},
+      // Loose American combo feel: warm low-mid bloom, soft top and deep sag.
+      {25.0f, 9000.0f, 92.0f, 4.50f, 0.82f,
+       850.0f, 1.50f, 0.70f, 105.0f, 0.96f, 4.10f, 0.64f, 0.070f, 0.200f, 0.925f},
       // Small class-A-style iron: controlled bass with an open, chiming voice.
-      {44.0, 15500.0, 7200.0, 2.20, 1.10, 3300.0, 2.35, 0.78, 138.0, 2.75, 0.45, 0.060, 1.000},
+      {44.0f, 15500.0f, 132.0f, 1.35f, 0.80f,
+       3300.0f, 2.35f, 0.78f, 138.0f, 0.62f, 2.75f, 0.45f, 0.060f, 0.075f, 1.000f},
       // Large bass iron: deep fundamentals, restrained presence and high headroom.
-      {11.0, 13500.0, 6000.0, 0.80, 1.10, 1350.0, -0.85, 0.70, 68.0, 1.65, 0.22, 0.010, 1.030},
+      {11.0f, 13500.0f, 58.0f, 1.00f, 0.72f,
+       1350.0f, -0.85f, 0.70f, 68.0f, 0.34f, 1.65f, 0.22f, 0.010f, 0.020f, 1.040f},
   };
 
   static constexpr double kPi = 3.14159265358979323846;
 
-  static double sigmoid(double x) { return x / std::sqrt(1.0 + x * x); }
+  // Stable, monotonic tanh approximation.  It is much cheaper than std::tanh
+  // in an 8x domain and reaches exactly +/-1 at the clamp points.
+  static float fastTanh(float x) {
+    x = std::max(-3.0f, std::min(3.0f, x));
+    const float x2 = x * x;
+    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+  }
 
-  static void setHighPass(Biquad& f, double hz, double rate) {
+  static void setHighPass(Biquad& f, float hz, double rate) {
     const double w = 2.0 * kPi * hz / rate;
     const double c = std::cos(w), s = std::sin(w);
     const double alpha = s / (2.0 * 0.7071067811865476);
@@ -143,7 +177,7 @@ private:
     f.a2 = (1.0 - alpha) / a0;
   }
 
-  static void setLowPass(Biquad& f, double hz, double rate) {
+  static void setLowPass(Biquad& f, float hz, double rate) {
     const double w = 2.0 * kPi * hz / rate;
     const double c = std::cos(w), s = std::sin(w);
     const double alpha = s / (2.0 * 0.7071067811865476);
@@ -155,7 +189,7 @@ private:
     f.a2 = (1.0 - alpha) / a0;
   }
 
-  static void setPeaking(Biquad& f, double hz, double gainDb, double q,
+  static void setPeaking(Biquad& f, float hz, float gainDb, float q,
                          double rate) {
     const double A = std::pow(10.0, gainDb / 40.0);
     const double w = 2.0 * kPi * hz / rate;
@@ -175,29 +209,39 @@ private:
     reset();
     if (profile_ == kCaptured) return;
     const Profile& p = kProfiles_[profile_];
-    const double band = sampleRate_ * 0.42;
     setHighPass(highPass_, p.lowCutHz, sampleRate_);
+    setPeaking(resonance_, p.resonanceHz, p.resonanceDb, p.resonanceQ,
+               sampleRate_);
     setPeaking(voice_, p.voiceHz, p.voiceDb, p.voiceQ, sampleRate_);
-    setPeaking(leakage_, std::min(p.leakageHz, band * 0.9), p.leakageDb,
-               p.leakageQ, sampleRate_);
-    setLowPass(highCut_, std::min(p.highCutHz, band), sampleRate_);
-    fluxCoeff_ = 1.0 - std::exp(-2.0 * kPi * p.fluxHz / sampleRate_);
+    setLowPass(highCut_, std::min(p.highCutHz,
+                                 static_cast<float>(sampleRate_ * 0.42)),
+               sampleRate_);
+    lowBandCoeff_ = 1.0f - std::exp(static_cast<float>(
+        -2.0 * kPi * p.fluxHz / sampleRate_));
+    envelopeAttack_ = 1.0f - std::exp(-1.0f / static_cast<float>(0.004 * sampleRate_));
+    envelopeRelease_ = 1.0f - std::exp(-1.0f / static_cast<float>(0.090 * sampleRate_));
+    coreCoupling_ = p.coreCoupling;
     drive_ = p.drive;
     saturationMix_ = p.saturationMix;
     asymmetry_ = p.asymmetry;
+    sag_ = p.sag;
     makeup_ = p.makeup;
   }
 
   int profile_ = kCaptured;
   double sampleRate_ = 0.0;
-  Biquad highPass_, leakage_, voice_, highCut_;
-  double flux_ = 0.0;
-  double saturatedFlux_ = 0.0;
-  double fluxCoeff_ = 1.0;
-  double drive_ = 1.0;
-  double saturationMix_ = 0.0;
-  double asymmetry_ = 0.0;
-  double makeup_ = 1.0;
+  Biquad highPass_, resonance_, voice_, highCut_;
+  float lowBand_ = 0.0f;
+  float envelope_ = 0.0f;
+  float lowBandCoeff_ = 0.0f;
+  float envelopeAttack_ = 0.0f;
+  float envelopeRelease_ = 0.0f;
+  float coreCoupling_ = 0.0f;
+  float drive_ = 1.0f;
+  float saturationMix_ = 0.0f;
+  float asymmetry_ = 0.0f;
+  float sag_ = 0.0f;
+  float makeup_ = 1.0f;
 };
 
 } // namespace NAMRig

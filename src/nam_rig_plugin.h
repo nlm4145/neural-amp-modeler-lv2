@@ -23,7 +23,7 @@
 #include "oversample_modes.h"
 #include "amp_advanced.h"
 #include "output_transformer.h"
-#include "space_fx.h"
+#include "stereo_space.h"
 #include "speaker_dynamics.h"
 #include <lv2/worker/worker.h>
 
@@ -33,7 +33,6 @@
 #define NAM_RIG_PEDAL_URI NAM_RIG_URI "-pedal-model"
 #define NAM_RIG_AMP_URI NAM_RIG_URI "-amp-model"
 #define NAM_RIG_CAB_URI NAM_RIG_URI "-cab-model"
-#define NAM_RIG_CAB2_URI NAM_RIG_URI "-cab2-model"
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 #define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
@@ -42,10 +41,8 @@ namespace NAMRig {
 class WavIR;
 static constexpr unsigned int MAX_FILE_NAME = 1024;
 
-enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 };
+enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Count = 3 };
 static constexpr size_t kStageCount = static_cast<size_t>(Stage::Count);
-// Pedal, Amp and Cab form the serial chain; Cab2 runs parallel to Cab.
-static constexpr size_t kSerialStageCount = 3;
 
 enum LV2WorkType : uint32_t { kWorkTypeLoad, kWorkTypeSwitch, kWorkTypeFree };
 
@@ -65,7 +62,6 @@ struct LV2SwitchModelMsg {
   char path[MAX_FILE_NAME];
   NeuralAudio::NeuralModel* model;
   WavIR* ir;
-  WavIR* irRight;
   bool fullRig;
 };
 
@@ -73,7 +69,6 @@ struct LV2FreeModelMsg {
   LV2WorkType type;
   NeuralAudio::NeuralModel* model;
   WavIR* ir;
-  WavIR* irRight;
 };
 
 // One-pole DC blocker (~5 Hz high-pass). NAM models routinely emit a small
@@ -89,9 +84,6 @@ struct DcBlocker {
     return y;
   }
   void reset() { x1 = 0.0f; y1 = 0.0f; }
-  void setRate(double rate) {
-    r = static_cast<float>(std::exp(-2.0 * 3.14159265358979323846 * 5.0 / rate));
-  }
 };
 
 // Second-order biquad (transposed direct form II). At zero gain the caller
@@ -165,18 +157,6 @@ public:
     float* speaker_compression;// in: port 44, excursion compression (0..100%)
     float* speaker_thump;      // in: port 45, low-frequency excursion (0..100%)
     float* speaker_resonance;  // in: port 46, impedance-curve strength (0..100%)
-    float* cab2_enabled;       // in: port 47, second cabinet slot toggle
-    float* cab2_level;         // in: port 48, second cabinet trim (dB)
-    float* cab2_delay;         // in: port 49, second cabinet alignment (ms)
-    float* delay_time;         // in: port 50, ms
-    float* delay_feedback;     // in: port 51, %
-    float* delay_damping;      // in: port 52, %
-    float* delay_mix;          // in: port 53, % (0 = off)
-    float* reverb_mix;         // in: port 54, % (0 = off)
-    float* reverb_decay;       // in: port 55, %
-    float* reverb_size;        // in: port 56, %
-    float* reverb_damping;     // in: port 57, %
-    float* reverb_predelay;    // in: port 58, ms
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -188,9 +168,6 @@ public:
   static_assert(offsetof(Ports, room) == 33 * sizeof(void*));
   static_assert(offsetof(Ports, master) == 41 * sizeof(void*));
   static_assert(offsetof(Ports, speaker_resonance) == 46 * sizeof(void*));
-  static_assert(offsetof(Ports, cab2_enabled) == 47 * sizeof(void*));
-  static_assert(offsetof(Ports, reverb_predelay) == 58 * sizeof(void*));
-  static constexpr uint32_t kPortCount = 59;
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -201,7 +178,6 @@ public:
   std::array<NeuralAudio::NeuralModelLoader, kStageCount> loaders;
   std::array<NeuralAudio::NeuralModel*, kStageCount> models{};
   std::array<WavIR*, kStageCount> irs{};
-  std::array<WavIR*, kStageCount> irsRight{};
   std::array<std::string, kStageCount> modelPaths;
   bool ampIsFullRig = false;
 
@@ -262,24 +238,9 @@ private:
   // Rate-independent ~2 ms one-pole coefficient for the input/output trims
   // (a fixed per-sample constant would halve the time constant at 96 kHz).
   float trimSmoothCoeff = 0.01f;
-  DcBlocker dcBlocker, dcBlockerR;
-  std::array<DcBlocker, kStageCount> stageDc{};
-  std::array<double, kStageCount> stageDcRate{};
+  DcBlocker dcBlocker;
   Biquad bassEq, midEq, trebleEq;
-  Biquad bassEqR, midEqR, trebleEqR;
   Biquad cabLowCutEq, cabHighCutEq;
-  Biquad cabLowCutEqR, cabHighCutEqR;
-  // Smoothed post-EQ and cab-cut settings; coefficients update per chunk.
-  float smoothedBass = 0.0f, smoothedMid = 0.0f, smoothedTreble = 0.0f;
-  float appliedBass = 0.0f, appliedMid = 0.0f, appliedTreble = 0.0f;
-  float smoothedLowCut = 0.0f, smoothedHighCut = 20000.0f;
-  float appliedLowCut = -1.0f, appliedHighCut = -1.0f;
-  float smoothedCab2Level = 1.0f;
-  float smoothedWidth = 0.0f;
-  std::vector<float> postL, postR, preCab, cabBL, cabBR;
-  AlignDelay cab2Align;
-  StereoDelay delayFx;
-  PlateReverb reverbFx;
   float gateDetector = 0.0f;
   float gateGain = 1.0f;
   bool gateOpen = true;
@@ -288,6 +249,7 @@ private:
   float compressorGain = 1.0f;
   AmpAdvanced ampAdvanced;
   OutputTransformer outputTransformer;
+  StereoSpace stereoSpace;
   SpeakerDynamics speakerDynamics;
   int transformerRequested = OutputTransformer::kCaptured;
   int transformerApplied = OutputTransformer::kCaptured;
@@ -356,7 +318,7 @@ private:
 
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
-  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2};
+  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8};
   // Latest port modes requested by the host. osApplied changes only when the
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
@@ -366,7 +328,6 @@ private:
   struct PendingSwitch {
     NeuralAudio::NeuralModel* model = nullptr;
     WavIR* ir = nullptr;
-    WavIR* irRight = nullptr;
     int oversampleMode = kOsLegacy2;
     bool fullRig = false;
     bool ready = false;
@@ -381,7 +342,7 @@ private:
   // fade-in path as a model swap, so flipping a stage on/off never puts a
   // waveform discontinuity on the output. appliedEnabled is what process()
   // actually runs; port changes only land at the fade's zero crossing.
-  std::array<bool, kStageCount> appliedEnabled{true, true, true, false};
+  std::array<bool, kStageCount> appliedEnabled{true, true, true};
   bool enabledLatched = false;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
@@ -409,8 +370,6 @@ private:
 
   int stageOversample(size_t stage) const {
     // stage 0 = pedal, 1 = amp (2 = cab: follows amp in process()).
-    // Cab2 runs parallel to the cab at the base rate (Legacy dilation).
-    if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;
     const float* port = stage == 0 ? ports.pedal_oversample
                                     : ports.amp_oversample;
     if (!port) return kOsTrue8;     // unconnected host port: maximum-quality default
@@ -462,13 +421,5 @@ private:
   // fade-out is already running.
   void startTransitionFadeOut();
   void tunerSetRates(double rate);
-  void processPostChain(float* mono, uint32_t count, bool cabInChain,
-                        bool modelProcessed, const bool* desiredEnabled) noexcept;
-  void runModel(size_t stage, NeuralAudio::NeuralModel* model, float* samples,
-                size_t count, double domainRate) noexcept;
-  bool cab2AlignActive = false;
-  static constexpr size_t stageIndex(Stage stage) {
-    return static_cast<size_t>(stage);
-  }
 };
 } // namespace NAMRig
