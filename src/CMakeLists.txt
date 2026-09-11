@@ -49,6 +49,7 @@ set(RIG_SOURCES nam_rig_lv2.cpp
 	oversample.cpp
 	oversample.h
 	oversample_modes.h
+	amp_advanced.h
 	output_transformer.h
 	stereo_space.h)
 
@@ -151,7 +152,7 @@ if (APPLE)
 			nam_rig_plugin.cpp nam_rig_plugin.h
 			wav_ir.cpp wav_ir.h
 			oversample.cpp oversample.h oversample_modes.h
-			output_transformer.h stereo_space.h
+			amp_advanced.h output_transformer.h stereo_space.h
 			nam_rig_ui.mm
 			rig_theme.h rig_theme.mm
 			rig_widgets.h rig_widgets.mm

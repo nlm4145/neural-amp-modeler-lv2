@@ -52,6 +52,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 31 | `output_r` | audio out | Right channel; initially mirrors port 3 exactly as the stereo-path foundation |
 | 32 | `stereo_width` | in | 0–100%; short right-channel delay (up to 12 ms), 0 = exact dual mono |
 | 33 | `room` | in | 0–100%; decorrelated stereo early reflections, 0 = off |
+| 34–41 | `presence`/`depth`/`sag`/`bias`/`negative_feedback`/`bright`/`input_eq`/`master` | in | Optional advanced amp shaping; all neutral by default and independent of ports 12–14 post EQ |
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.

@@ -65,6 +65,8 @@ struct RigUIState {
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
   __strong NSPopUpButton* irNormPopup = nil;
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
+  __strong NSPopover* ampAdvancedPopover = nil;
+  __strong NSPopover* signalFlowPopover = nil;
 
   // Tuner UI: toggle button in the title bar + the display panel it reveals.
   __strong NSButton* tunerButton = nil;

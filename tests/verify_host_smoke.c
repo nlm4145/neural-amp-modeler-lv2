@@ -1,5 +1,5 @@
 /* Minimal LV2 host smoke test for the BUILT rig plugin (.so path = argv[1]):
- *   - instantiate with urid:map + worker:schedule, connect all 34 ports,
+ *   - instantiate with urid:map + worker:schedule, connect all 42 ports,
  *     run blocks both smaller and LARGER than the un-negotiated 512 default
  *     maxBlockLength (the chain must slice, not overrun).
  *   - latency port must read 0 with no models loaded.
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
   enum { kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
-  float ctl[34] = {0};
+  float ctl[42] = {0};
   ctl[7] = 1.0f; ctl[8] = 1.0f; ctl[9] = 1.0f; ctl[10] = 1.0f; /* enables */
   ctl[20] = 1.0f; ctl[21] = 1.0f;   /* per-stage oversample: Legacy */
   ctl[15] = -80.0f;                  /* gate off */
@@ -78,6 +78,7 @@ int main(int argc, char** argv) {
   d->connect_port(h, 31, outRightBuf);
   d->connect_port(h, 32, &ctl[32]);
   d->connect_port(h, 33, &ctl[33]);
+  for (uint32_t p = 34; p <= 41; ++p) d->connect_port(h, p, &ctl[p]);
 
   double phase = 0.0;
   const double w = 2.0 * M_PI * 220.0 / 48000.0;

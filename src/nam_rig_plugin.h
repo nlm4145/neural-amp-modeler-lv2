@@ -21,6 +21,7 @@
 
 #include "oversample.h"
 #include "oversample_modes.h"
+#include "amp_advanced.h"
 #include "output_transformer.h"
 #include "stereo_space.h"
 #include <lv2/worker/worker.h>
@@ -142,6 +143,14 @@ public:
     float* audio_out_r;        // out: port 31, right channel (dual-mono foundation)
     float* stereo_width;       // in: port 32, right-channel short delay amount (0..100%)
     float* room;               // in: port 33, stereo early-reflection amount (0..100%)
+    float* presence;           // in: port 34, post-amp high-frequency feedback voicing (dB)
+    float* depth;              // in: port 35, post-amp low-frequency feedback voicing (dB)
+    float* sag;                // in: port 36, dynamic supply compression (0..100%)
+    float* bias;               // in: port 37, asymmetric power-stage bias (-100..100%)
+    float* negative_feedback;  // in: port 38, low-frequency corrective feedback (0..100%)
+    float* bright;             // in: port 39, pre-amp high-frequency lift (0..100%)
+    float* input_eq;           // in: port 40, pre-amp low-cut shaping (0..100%)
+    float* master;             // in: port 41, virtual power-stage drive (0..100%)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -151,6 +160,7 @@ public:
   static_assert(offsetof(Ports, audio_out_r) == 31 * sizeof(void*));
   static_assert(offsetof(Ports, stereo_width) == 32 * sizeof(void*));
   static_assert(offsetof(Ports, room) == 33 * sizeof(void*));
+  static_assert(offsetof(Ports, master) == 41 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -230,6 +240,7 @@ private:
   uint32_t gateHoldRemaining = 0;
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;
+  AmpAdvanced ampAdvanced;
   OutputTransformer outputTransformer;
   StereoSpace stereoSpace;
   int transformerRequested = OutputTransformer::kCaptured;

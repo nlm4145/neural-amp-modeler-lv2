@@ -30,6 +30,14 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 28: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 32: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 33: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
+    case 34: return [NSString stringWithFormat:@"%+.1f dB", value];
+    case 35: return [NSString stringWithFormat:@"%+.1f dB", value];
+    case 36: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
+    case 37: return [NSString stringWithFormat:@"%+.0f%%", value];
+    case 38: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
+    case 39: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
+    case 40: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
+    case 41: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     default: return @"";
   }
 }

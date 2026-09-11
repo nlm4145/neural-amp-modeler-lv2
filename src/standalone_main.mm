@@ -93,6 +93,7 @@ class StandaloneHost {
                  1.0f, 1.0f, 0.0f, 150.0f, 2.0f, 0.0f, 0.0f,
                  20000.0f, 0.0f, 0.0f, 0.0f};
     stereoControls_ = {0.0f, 0.0f};
+    advancedControls_.fill(0.0f);
   }
 
   ~StandaloneHost() { stop(); }
@@ -137,6 +138,10 @@ class StandaloneHost {
     plugin_->ports.audio_out_r = output_.data();
     plugin_->ports.stereo_width = &stereoControls_[0];
     plugin_->ports.room = &stereoControls_[1];
+    for (uint32_t port = 34; port <= 41; ++port) {
+      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
+                                 port * sizeof(void*)) = &advancedControls_[port - 34];
+    }
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -283,6 +288,10 @@ class StandaloneHost {
     }
     if (format == 0 && port >= 32 && port <= 33 && size == sizeof(float)) {
       host->stereoControls_[port - 32] = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= 34 && port <= 41 && size == sizeof(float)) {
+      host->advancedControls_[port - 34] = *static_cast<const float*>(buffer);
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -463,6 +472,7 @@ class StandaloneHost {
   std::array<float, kMaxFrames> output_{};
   std::array<float, 27> controls_{};
   std::array<float, 2> stereoControls_{};
+  std::array<float, 8> advancedControls_{};
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

@@ -77,6 +77,8 @@ static NSString* stageName(NSInteger stage) {
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)transformerChanged:(NSPopUpButton*)sender;
+- (void)showAmpAdvanced:(NSButton*)sender;
+- (void)showSignalFlow:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 @end
@@ -228,6 +230,20 @@ static NSString* stageName(NSInteger stage) {
   sender.toolTip = sender.selectedItem.toolTip;
   if (!_state) return;
   _state->sendControl(30, (float)sender.indexOfSelectedItem);
+}
+
+- (void)showAmpAdvanced:(NSButton*)sender {
+  if (!_state || !_state->ampAdvancedPopover) return;
+  [_state->ampAdvancedPopover showRelativeToRect:sender.bounds
+                                          ofView:sender
+                                   preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)showSignalFlow:(NSButton*)sender {
+  if (!_state || !_state->signalFlowPopover) return;
+  [_state->signalFlowPopover showRelativeToRect:sender.bounds
+                                         ofView:sender
+                                  preferredEdge:NSRectEdgeMaxY];
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -743,6 +759,63 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->zoomControl.widthAnchor constraintEqualToConstant:110] setActive:YES];
     [[state->zoomControl.heightAnchor constraintEqualToConstant:28] setActive:YES];
 
+    RigButton* signalFlowButton = rigButton(topView, @"SIGNAL FLOW", state->uiController,
+                                            @selector(showSignalFlow:), NSZeroRect);
+    signalFlowButton.toolTip = @"Show where the pre-amp, power-amp, cabinet, and existing three-band EQ controls sit in the audio path.";
+    signalFlowButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [[signalFlowButton.trailingAnchor constraintEqualToAnchor:state->zoomControl.leadingAnchor constant:-10] setActive:YES];
+    [[signalFlowButton.centerYAnchor constraintEqualToAnchor:state->zoomControl.centerYAnchor] setActive:YES];
+    [[signalFlowButton.widthAnchor constraintEqualToConstant:118] setActive:YES];
+    [[signalFlowButton.heightAnchor constraintEqualToConstant:28] setActive:YES];
+
+    NSPopover* signalFlowPopover = [[NSPopover alloc] init];
+    signalFlowPopover.behavior = NSPopoverBehaviorTransient;
+    NSViewController* flowController = [[NSViewController alloc] init];
+    NSView* flowView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 610, 430)];
+    flowView.wantsLayer = YES;
+    flowView.layer.backgroundColor = rigPanelBG().CGColor;
+    flowController.view = flowView;
+    signalFlowPopover.contentViewController = flowController;
+    signalFlowPopover.contentSize = NSMakeSize(610, 430);
+    state->signalFlowPopover = signalFlowPopover;
+
+    NSTextField* flowTitle = addLabel(flowView, @"SIGNAL FLOW", NSMakeRect(20, 394, 570, 22),
+        [NSFont systemFontOfSize:14 weight:NSFontWeightBold], rigText(), NSTextAlignmentCenter);
+    rigApplyTracking(flowTitle, 1.2);
+    NSArray<NSString*>* flowSteps = @[
+      @"Guitar Input  →  Input Level  →  Compressor  →  Pedal NAM  →  Amp Drive",
+      @"↓",
+      @"Bright + Input EQ   (before Amp NAM; changes how the amp distorts)",
+      @"↓",
+      @"Amp NAM",
+      @"↓",
+      @"Output Transformer  →  Presence / Depth / Sag / Bias / Feedback / Master",
+      @"↓",
+      @"Cab NAM / WAV IR  →  Cab Level  →  Low Cut / High Cut",
+      @"↓",
+      @"Bass / Mid / Treble   (original clean post-cab EQ)",
+      @"↓",
+      @"Output Level  →  Width / Room  →  Left / Right Output"
+    ];
+    CGFloat flowY = 358.0;
+    for (NSString* step in flowSteps) {
+      const BOOL arrow = [step isEqualToString:@"↓"];
+      NSTextField* line = addLabel(flowView, step, NSMakeRect(20, flowY, 570, arrow ? 17 : 22),
+          arrow ? [NSFont systemFontOfSize:14 weight:NSFontWeightBold]
+                : [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightMedium],
+          arrow ? rigAccent() : rigText(), NSTextAlignmentCenter);
+      if ([step hasPrefix:@"Bright"] || [step hasPrefix:@"Output Transformer"])
+        line.textColor = rigOrange();
+      if ([step hasPrefix:@"Bass / Mid / Treble"])
+        line.textColor = rigGreen();
+      flowY -= arrow ? 21.0 : 28.0;
+    }
+    NSTextField* flowNote = addLabel(flowView,
+        @"Bass / Mid / Treble stay the original post-cab EQ. All new advanced amp controls default off.",
+        NSMakeRect(20, 14, 570, 18), [NSFont systemFontOfSize:10 weight:NSFontWeightRegular],
+        rigDimText(), NSTextAlignmentCenter);
+    flowNote.toolTip = @"The advanced controls use separate DSP state and do not replace or alter the existing Bass, Mid, and Treble controls.";
+
     NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
     // Display names indexed by kRigKnobPorts order; cells are laid out in
@@ -750,10 +823,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     NSArray<NSString*>* knobNames = @[@"GATE", @"RELEASE", @"INPUT", @"COMP",
                                       @"DRIVE", @"BASS", @"MID", @"TREBLE",
                                       @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT",
-                                      @"WIDTH", @"ROOM"];
+                                      @"WIDTH", @"ROOM", @"PRESENCE", @"DEPTH",
+                                      @"SAG", @"BIAS", @"NEG FDBK", @"BRIGHT",
+                                      @"INPUT EQ", @"MASTER"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
-                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF"];
+                                       @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
+                                       @"+0.0 dB", @"+0.0 dB", @"OFF", @"+0%",
+                                       @"OFF", @"OFF", @"OFF", @"OFF"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Signals below this input level are gently expanded; -80 dB bypasses the gate.",
       @"Gate release time. Higher values preserve note tails longer after the signal falls below the threshold.",
@@ -768,14 +845,25 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Cabinet low-pass cutoff. Softens upper fizz after the cab; 20 kHz bypasses the filter.",
       @"Final output trim after the complete rig, cabinet processing, and EQ.",
       @"Stereo width from a short right-channel delay. Zero preserves exact dual mono; higher settings widen the image up to 12 ms.",
-      @"Compact stereo room ambience from decorrelated early reflections after the rig."
+      @"Compact stereo room ambience from decorrelated early reflections after the rig.",
+      @"Post-amp high-frequency feedback voicing. This is separate from the existing post-chain Treble control.",
+      @"Post-amp low-frequency resonance and damping. This is separate from the existing post-chain Bass control.",
+      @"Dynamic power-supply compression and recovery after the amp model.",
+      @"Shifts the virtual power-stage operating point for more symmetric or asymmetric breakup.",
+      @"Adds corrective low-frequency feedback for tighter response and reduced bloom.",
+      @"Pre-amp high-frequency lift before the NAM amp model.",
+      @"Pre-amp low-cut shaping before the NAM amp model.",
+      @"Drives the virtual post-model power stage. Zero leaves the capture untouched."
     ];
     const std::array<double, kRigKnobCount> defaults{
-        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0};
+        -80.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20000.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> mins{
-        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0};
+        -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
+        -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
-        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0};
+        0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
+        12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // BASS/MID/TREBLE under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -1041,6 +1129,49 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         transformer.toolTip = transformer.selectedItem.toolTip;
         state->transformerPopup = transformer;
         modelAnchor = transformer;
+
+        RigButton* advanced = rigButton(box, @"ADVANCED AMP", state->uiController,
+                                        @selector(showAmpAdvanced:), NSZeroRect);
+        advanced.translatesAutoresizingMaskIntoConstraints = NO;
+        advanced.toolTip = @"Open optional amp shaping. Every control defaults off, preserving the captured model and existing Bass, Mid, and Treble.";
+        [[advanced.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+        [[advanced.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        [[advanced.topAnchor constraintEqualToAnchor:transformer.bottomAnchor constant:4] setActive:YES];
+        [[advanced.heightAnchor constraintEqualToConstant:23] setActive:YES];
+        modelAnchor = advanced;
+
+        NSPopover* popover = [[NSPopover alloc] init];
+        popover.behavior = NSPopoverBehaviorTransient;
+        NSViewController* popController = [[NSViewController alloc] init];
+        NSView* popView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 245)];
+        popView.wantsLayer = YES;
+        popView.layer.backgroundColor = rigPanelBG().CGColor;
+        popController.view = popView;
+        popover.contentViewController = popController;
+        popover.contentSize = NSMakeSize(520, 245);
+        state->ampAdvancedPopover = popover;
+
+        NSTextField* advancedTitle = addLabel(popView, @"ADVANCED AMP", NSMakeRect(18, 216, 200, 18),
+            [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
+        rigApplyTracking(advancedTitle, 1.0);
+        for (size_t a = 0; a < 8; ++a) {
+          const size_t k = 14 + a;
+          const size_t col = a % 4, row = a / 4;
+          NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + col * 127, 8 + (1 - row) * 100, 119, 100)];
+          [popView addSubview:cell];
+          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], defaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
+          state->knobs[k].toolTip = knobDescriptions[k];
+          NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15),
+              [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
+          label.toolTip = knobDescriptions[k];
+          state->valueLabels[k] = addLabel(cell, knobValues[k], NSMakeRect(24, 57, 72, 17),
+              [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
+          NSTextField* value = state->valueLabels[k];
+          value.editable = YES; value.selectable = YES; value.bordered = NO;
+          value.drawsBackground = YES; value.backgroundColor = rigRaised();
+          value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
+          value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
+        }
       }
 
       // The dropdown is the tile's model control/display — always visible. The
@@ -1100,7 +1231,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 33) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 41) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

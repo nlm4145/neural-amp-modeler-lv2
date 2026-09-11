@@ -430,6 +430,8 @@ void Plugin::tunerSetRates(double rate) {
 void Plugin::process(uint32_t sampleCount) noexcept {
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
       !ports.audio_out_r || !ports.stereo_width || !ports.room ||
+      !ports.presence || !ports.depth || !ports.sag || !ports.bias ||
+      !ports.negative_feedback || !ports.bright || !ports.input_eq || !ports.master ||
       !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
       !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents ||
@@ -891,6 +893,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
         smoothedAmpDrive += (target - smoothedAmpDrive) * coeff;
         samples[i] *= smoothedAmpDrive;
       }
+      ampAdvanced.processPreAmp(samples, count, domainRate,
+                                *ports.bright, *ports.input_eq);
     }
     const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
     if (pre != 1.0f)
@@ -899,8 +903,13 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
     if (post != 1.0f)
       for (size_t i = 0; i < count; ++i) samples[i] *= post;
-    if (stage == stageIndex(Stage::Amp))
+    if (stage == stageIndex(Stage::Amp)) {
       outputTransformer.process(samples, count, domainRate, transformerApplied);
+      ampAdvanced.processPostAmp(samples, count, domainRate,
+                                 *ports.presence, *ports.depth, *ports.sag,
+                                 *ports.bias, *ports.negative_feedback,
+                                 *ports.master);
+    }
   };
 
   // Process one or more consecutive models inside ONE TRUE domain. Keeping
