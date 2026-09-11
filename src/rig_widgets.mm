@@ -84,6 +84,12 @@
   const double range = self.maxValue - self.minValue;
   double t = range > 0.0 ? (self.doubleValue - self.minValue) / range : 0.0;
   t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+  NSColor* lowColor = [NSColor colorWithSRGBRed:0.24 green:0.84 blue:0.40 alpha:1.0];
+  NSColor* midColor = [NSColor colorWithSRGBRed:1.00 green:0.82 blue:0.18 alpha:1.0];
+  NSColor* highColor = [NSColor colorWithSRGBRed:1.00 green:0.25 blue:0.20 alpha:1.0];
+  NSColor* valueColor = t < 0.5
+      ? [lowColor blendedColorWithFraction:t * 2.0 ofColor:midColor]
+      : [midColor blendedColorWithFraction:(t - 0.5) * 2.0 ofColor:highColor];
   const CGFloat arcRadius = side * 0.5 - 4.0;
   const CGFloat valueAngle = 225.0 - 270.0 * (CGFloat)t;
 
@@ -102,10 +108,10 @@
                                 startAngle:225.0 endAngle:valueAngle clockwise:YES];
     arc.lineCapStyle = NSLineCapStyleRound;
     arc.lineWidth = 7.0;
-    [[rigAccent() colorWithAlphaComponent:0.22] setStroke];
+    [[valueColor colorWithAlphaComponent:0.22] setStroke];
     [arc stroke];
     arc.lineWidth = 3.0;
-    [rigAccent() setStroke];
+    [valueColor setStroke];
     [arc stroke];
   }
 
@@ -118,7 +124,7 @@
                 endingColor:[NSColor colorWithSRGBRed:0.212 green:0.227 blue:0.278 alpha:1.0]];
   [g drawInBezierPath:face angle:90.0];
   face.lineWidth = 1.0;
-  [(_hovered ? [rigAccent() colorWithAlphaComponent:0.45]
+  [(_hovered ? [valueColor colorWithAlphaComponent:0.45]
              : [NSColor colorWithWhite:0.0 alpha:0.55]) setStroke];
   [face stroke];
 

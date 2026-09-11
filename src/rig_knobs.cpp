@@ -4,7 +4,7 @@ const std::array<uint32_t, kRigKnobCount> kRigKnobPorts{
     15, 23, 4, 28, 22, 12, 13, 14, 25, 26, 27, 5, 32, 33,
     34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46};
 const std::array<float, kRigKnobCount> kRigKnobDefaults{
-    -80.0f, 150.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -27.0f, 20.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 20000.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
     25.0f, 25.0f, 50.0f, 50.0f};
