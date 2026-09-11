@@ -178,4 +178,7 @@
 						[ rdfs:value 10.0 ; rdfs:label "Tweed Bloom" ] ,
 						[ rdfs:value 11.0 ; rdfs:label "Class-A Chime" ] ,
 						[ rdfs:value 12.0 ; rdfs:label "Bass Iron" ]
+				], [
+					a lv2:OutputPort, lv2:AudioPort ;
+					lv2:index 31 ; lv2:symbol "output_r" ; lv2:name "Output R"
 				] .

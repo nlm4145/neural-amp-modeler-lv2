@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
   constexpr uint32_t kAtomBytes = 16384;
   alignas(LV2_Atom_Sequence) uint8_t control[kAtomBytes]{};
   alignas(LV2_Atom_Sequence) uint8_t notify[kAtomBytes]{};
-  float input[kBlock]{}, output[kBlock]{}, ports[31]{};
+  float input[kBlock]{}, output[kBlock]{}, outputRight[kBlock]{}, ports[32]{};
   ports[7] = ports[8] = ports[9] = ports[10] = 1.0f;
   ports[15] = -80.0f;
   ports[20] = ports[21] = static_cast<float>(oversampleMode);
@@ -135,6 +135,7 @@ int main(int argc, char** argv) {
   descriptor->connect_port(instance, 3, output);
   for (uint32_t port = 4; port <= 30; ++port)
     descriptor->connect_port(instance, port, &ports[port]);
+  descriptor->connect_port(instance, 31, outputRight);
 
   double phase = 0.0;
   const double step = 2.0 * 3.14159265358979323846 * 220.0 / sampleRate;

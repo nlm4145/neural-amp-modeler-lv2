@@ -1,5 +1,5 @@
 /* Minimal LV2 host smoke test for the BUILT rig plugin (.so path = argv[1]):
- *   - instantiate with urid:map + worker:schedule, connect all 31 ports,
+ *   - instantiate with urid:map + worker:schedule, connect all 32 ports,
  *     run blocks both smaller and LARGER than the un-negotiated 512 default
  *     maxBlockLength (the chain must slice, not overrun).
  *   - latency port must read 0 with no models loaded.
@@ -62,8 +62,8 @@ int main(int argc, char** argv) {
 
   enum { kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
-  static float inBuf[kMax], outBuf[kMax];
-  float ctl[31] = {0};
+  static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
+  float ctl[32] = {0};
   ctl[7] = 1.0f; ctl[8] = 1.0f; ctl[9] = 1.0f; ctl[10] = 1.0f; /* enables */
   ctl[20] = 1.0f; ctl[21] = 1.0f;   /* per-stage oversample: Legacy */
   ctl[15] = -80.0f;                  /* gate off */
@@ -75,10 +75,11 @@ int main(int argc, char** argv) {
   d->connect_port(h, 2, inBuf);
   d->connect_port(h, 3, outBuf);
   for (uint32_t p = 4; p <= 30; ++p) d->connect_port(h, p, &ctl[p]);
+  d->connect_port(h, 31, outRightBuf);
 
   double phase = 0.0;
   const double w = 2.0 * M_PI * 220.0 / 48000.0;
-  int finite = 1;
+  int finite = 1, stereoMatched = 1;
   double worstStep = 0.0;
   float prevOut = 0.0f, prevIn = 0.0f;
   long sample = 0;
@@ -98,6 +99,7 @@ int main(int argc, char** argv) {
     d->run(h, n);
     for (uint32_t i = 0; i < n; ++i) {
       if (!isfinite(outBuf[i])) finite = 0;
+      if (outRightBuf[i] != outBuf[i]) stereoMatched = 0;
       if (sample > 480 && fabsf(prevIn) > 0.2f && fabsf(inBuf[i]) > 0.2f) {
         const double step = fabs(outBuf[i] / inBuf[i] - prevOut / prevIn);
         if (step > worstStep) worstStep = step;
@@ -107,6 +109,7 @@ int main(int argc, char** argv) {
     }
   }
   CHECK(finite, "output finite through 300 blocks incl. 2048/4096 (> 512 default)");
+  CHECK(stereoMatched, "right output exactly mirrors the established left chain");
   CHECK(ctl[29] == 0.0f, "latency port reads 0 with no True stages");
   char msg[128];
   snprintf(msg, sizeof(msg),

@@ -133,6 +133,7 @@ class StandaloneHost {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &controls_[port - 4];
     }
+    plugin_->ports.audio_out_r = output_.data();
 
     worker_ = std::thread([this] { workerLoop(); });
 

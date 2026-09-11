@@ -138,12 +138,14 @@ public:
     float* compressor;         // in: port 28, one-knob amount (0..100%)
     float* latency;            // out: port 29, lv2:latency (frames, for host PDC)
     float* transformer_type;   // in: port 30, output-transformer profile (0..12)
+    float* audio_out_r;        // out: port 31, right channel (dual-mono foundation)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
   static_assert(offsetof(Ports, compressor) == 28 * sizeof(void*));
   static_assert(offsetof(Ports, latency) == 29 * sizeof(void*));
   static_assert(offsetof(Ports, transformer_type) == 30 * sizeof(void*));
+  static_assert(offsetof(Ports, audio_out_r) == 31 * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;

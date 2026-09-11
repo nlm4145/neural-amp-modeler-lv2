@@ -425,7 +425,7 @@ void Plugin::tunerSetRates(double rate) {
 
 void Plugin::process(uint32_t sampleCount) noexcept {
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
-      !ports.input_level || !ports.output_level ||
+      !ports.audio_out_r || !ports.input_level || !ports.output_level ||
       !ports.pedal_enabled || !ports.amp_enabled || !ports.cab_enabled || !ports.auto_cab ||
       !ports.tuner_enable || !ports.tuner_note || !ports.tuner_cents ||
       !ports.pedal_oversample || !ports.amp_oversample || !ports.amp_drive ||
@@ -1117,6 +1117,12 @@ void Plugin::process(uint32_t sampleCount) noexcept {
       transitionGain = 0.0f;
     }
   }
+
+  // Stereo foundation: preserve the established mono chain as the left
+  // channel and mirror it to the appended right output. Future stereo
+  // cabs/effects can diverge the channels without changing current sound.
+  for (uint32_t i = 0; i < sampleCount; ++i)
+    ports.audio_out_r[i] = ports.audio_out[i];
 }
 
 void Plugin::startTransitionFadeOut() {
