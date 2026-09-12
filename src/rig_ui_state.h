@@ -28,6 +28,7 @@
 #include "output_transformer.h"
 #include "speaker_dynamics.h"
 #import "rig_theme.h"
+#import "rig_presets.h"
 
 @class NAMRigUIController;
 @class ToneBrowserController;
@@ -149,6 +150,70 @@ struct RigUIState {
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
   __strong NSView* rigContent = nil;   // the Auto Layout container that fills the window
+
+  // Preset management: title bar dropdown, quick prev/next, and quick save.
+  __strong NSPopUpButton* presetPopup = nil;
+  __strong NSButton* prevPresetBtn = nil;
+  __strong NSButton* nextPresetBtn = nil;
+  __strong NSButton* savePresetBtn = nil;
+  __strong RigPresetManager* presetManager = nil;
+
+  void rebuildPresetMenu() {
+    if (!presetPopup || !presetManager) return;
+    [presetPopup removeAllItems];
+    NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
+    NSInteger match = -1;
+    NSInteger i = 0;
+    for (NSString* name in presetManager.presetNames) {
+      NSString* title = ([name isEqualToString:cur] && presetManager.isModified)
+          ? [name stringByAppendingString:@" *"]
+          : name;
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title action:NULL keyEquivalent:@""];
+      item.representedObject = name;
+      [[presetPopup menu] addItem:item];
+      if ([name isEqualToString:cur]) match = i;
+      ++i;
+    }
+
+    [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* saveItem = [[NSMenuItem alloc] initWithTitle:@"Save Preset"
+                                                      action:@selector(saveCurrentPreset:)
+                                               keyEquivalent:@""];
+    saveItem.target = (id)uiController;
+    [[presetPopup menu] addItem:saveItem];
+
+    NSMenuItem* saveAsItem = [[NSMenuItem alloc] initWithTitle:@"Save As…"
+                                                        action:@selector(savePresetAs:)
+                                                 keyEquivalent:@""];
+    saveAsItem.target = (id)uiController;
+    [[presetPopup menu] addItem:saveAsItem];
+
+    NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete Preset"
+                                                        action:@selector(deleteCurrentPreset:)
+                                                 keyEquivalent:@""];
+    deleteItem.target = (id)uiController;
+    deleteItem.enabled = ![cur isEqualToString:@"Default Rig"];
+    [[presetPopup menu] addItem:deleteItem];
+
+    [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* revealItem = [[NSMenuItem alloc] initWithTitle:@"Reveal in Finder"
+                                                        action:@selector(revealPresetsInFinder:)
+                                                 keyEquivalent:@""];
+    revealItem.target = (id)uiController;
+    [[presetPopup menu] addItem:revealItem];
+
+    if (match >= 0) {
+      [presetPopup selectItemAtIndex:match];
+    }
+  }
+
+  void updatePresetDisplayTitle() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      rebuildPresetMenu();
+    });
+  }
 
   // UI-side persistence: the UI is the single source of truth for the selected
   // model paths (every selection is sent via sendPath). We write them to disk on

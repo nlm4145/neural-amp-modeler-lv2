@@ -133,6 +133,7 @@ if (APPLE)
 		rig_theme.h rig_theme.mm
 		rig_widgets.h rig_widgets.mm
 		rig_knobs.h rig_knobs.cpp
+		rig_presets.h rig_presets.mm
 		rig_tone_api.h rig_tone_api.mm
 		rig_tone_browser.h rig_tone_browser.mm
 		rig_ui_state.h)
@@ -158,6 +159,7 @@ if (APPLE)
 			rig_theme.h rig_theme.mm
 			rig_widgets.h rig_widgets.mm
 			rig_knobs.h rig_knobs.cpp
+			rig_presets.h rig_presets.mm
 			rig_tone_api.h rig_tone_api.mm
 			rig_tone_browser.h rig_tone_browser.mm
 			rig_ui_state.h)

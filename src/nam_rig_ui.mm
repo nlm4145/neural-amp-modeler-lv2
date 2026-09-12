@@ -86,8 +86,23 @@ static NSString* stageName(NSInteger stage) {
 - (void)resetAllKnobs:(NSButton*)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
+- (void)presetPopupChanged:(NSPopUpButton*)sender;
+- (void)prevPresetClicked:(NSButton*)sender;
+- (void)nextPresetClicked:(NSButton*)sender;
+- (void)saveCurrentPreset:(id)sender;
+- (void)savePresetAs:(id)sender;
+- (void)deleteCurrentPreset:(id)sender;
+- (void)revealPresetsInFinder:(id)sender;
+- (void)markPresetModified;
 @end
 @implementation NAMRigUIController
+- (void)markPresetModified {
+  if (!_state || !_state->presetManager) return;
+  if (!_state->presetManager.isModified) {
+    _state->presetManager.isModified = YES;
+    _state->updatePresetDisplayTitle();
+  }
+}
 - (void)chooseModel:(NSButton*)sender {
   if (!_state || sender.tag < 0 || sender.tag > 3) return;
   NSOpenPanel* panel = [NSOpenPanel openPanel];
@@ -100,14 +115,17 @@ static NSString* stageName(NSInteger stage) {
   panel.allowedFileTypes = sender.tag >= 2
       ? @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel", @"wav"]
       : @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel"];
-  if ([panel runModal] == NSModalResponseOK)
+  if ([panel runModal] == NSModalResponseOK) {
     _state->sendPath((size_t)sender.tag, panel.URL.path.fileSystemRepresentation);
+    [self markPresetModified];
+  }
 }
 
 - (void)clearModel:(NSButton*)sender {
   if (_state && sender.tag >= 0 && sender.tag <= 3) {
     _state->sendPath((size_t)sender.tag, "");
     _state->setStageThumb((size_t)sender.tag, nil, 0, nil);  // revert to placeholder
+    [self markPresetModified];
   }
 }
 
@@ -115,6 +133,7 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   _state->sendControl((uint32_t)sender.tag, sender.floatValue);
   _state->updateControl((uint32_t)sender.tag, sender.floatValue);
+  [self markPresetModified];
 }
 
 // Delegate: track which knob value box the user is editing so live knob/host
@@ -173,6 +192,7 @@ static NSString* stageName(NSInteger stage) {
   knob.doubleValue = clamped;
   _state->sendControl((uint32_t)port, (float)clamped);
   _state->updateControl((uint32_t)port, (float)clamped);
+  [self markPresetModified];
 }
 
 // Tuner on/off: drives the tuner_enable port, swaps the icon brightness,
@@ -205,6 +225,7 @@ static NSString* stageName(NSInteger stage) {
       : static_cast<float>(NAMRig::kOversampleTrue8);
   _state->sendControl(20, mode);
   _state->sendControl(21, mode);
+  [self markPresetModified];
 }
 
 // Per-stage oversample control (pedal/amp tiles): ports 20/21, five visible
@@ -217,6 +238,7 @@ static NSString* stageName(NSInteger stage) {
   const int mode = NAMRig::oversampleModeFromMenuIndex(
       static_cast<int>(sender.indexOfSelectedItem));
   _state->sendControl((uint32_t)sender.tag, static_cast<float>(mode));
+  [self markPresetModified];
 }
 
 - (void)irNormalizationChanged:(NSPopUpButton*)sender {
@@ -230,12 +252,14 @@ static NSString* stageName(NSInteger stage) {
   for (size_t stage = 2; stage <= 3; ++stage)
     if (!_state->selectedPaths[stage].empty())
       _state->sendPath(stage, _state->selectedPaths[stage].c_str());
+  [self markPresetModified];
 }
 
 - (void)transformerChanged:(NSPopUpButton*)sender {
   sender.toolTip = sender.selectedItem.toolTip;
   if (!_state) return;
   _state->sendControl(30, (float)sender.indexOfSelectedItem);
+  [self markPresetModified];
 }
 
 - (void)showAmpAdvanced:(NSButton*)sender {
@@ -247,7 +271,10 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)speakerProfileChanged:(NSPopUpButton*)sender {
   sender.toolTip = sender.selectedItem.toolTip;
-  if (_state) _state->sendControl(42, (float)sender.indexOfSelectedItem);
+  if (_state) {
+    _state->sendControl(42, (float)sender.indexOfSelectedItem);
+    [self markPresetModified];
+  }
 }
 
 - (void)showSpeakerLoad:(NSButton*)sender {
@@ -276,6 +303,7 @@ static NSString* stageName(NSInteger stage) {
     _state->sendControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
     _state->updateControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
   }
+  [self markPresetModified];
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -304,7 +332,127 @@ static NSString* stageName(NSInteger stage) {
   sender.toolTip = _state->modelPickerTooltip((size_t)sender.tag, path);
   if (path.length) {
     _state->sendPath((size_t)sender.tag, path.fileSystemRepresentation);
+    [self markPresetModified];
   }
+}
+
+- (void)presetPopupChanged:(NSPopUpButton*)sender {
+  if (!_state || !_state->presetManager) return;
+  NSMenuItem* item = sender.selectedItem;
+  NSString* name = item.representedObject ?: item.title;
+  if (!name.length) return;
+  RigPreset* preset = [_state->presetManager loadPresetNamed:name];
+  if (preset) {
+    [preset applyToState:_state];
+    _state->updatePresetDisplayTitle();
+  }
+}
+
+- (void)prevPresetClicked:(NSButton*)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSString* prev = [_state->presetManager previousPresetName];
+  if (prev) {
+    RigPreset* preset = [_state->presetManager loadPresetNamed:prev];
+    if (preset) {
+      [preset applyToState:_state];
+      _state->updatePresetDisplayTitle();
+    }
+  }
+}
+
+- (void)nextPresetClicked:(NSButton*)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSString* next = [_state->presetManager nextPresetName];
+  if (next) {
+    RigPreset* preset = [_state->presetManager loadPresetNamed:next];
+    if (preset) {
+      [preset applyToState:_state];
+      _state->updatePresetDisplayTitle();
+    }
+  }
+}
+
+- (void)saveCurrentPreset:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  if ([_state->presetManager.currentPresetName isEqualToString:@"Default Rig"]) {
+    [self savePresetAs:sender];
+    return;
+  }
+  NSError* err = nil;
+  if ([_state->presetManager saveCurrentPresetFromState:_state error:&err]) {
+    _state->updatePresetDisplayTitle();
+  } else if (err) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"Save Failed";
+    alert.informativeText = err.localizedDescription;
+    [alert runModal];
+  }
+}
+
+- (void)savePresetAs:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Save Preset";
+  alert.informativeText = @"Enter a name for this preset:";
+  [alert addButtonWithTitle:@"Save"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  NSString* initial = [_state->presetManager.currentPresetName isEqualToString:@"Default Rig"]
+      ? @"My Custom Tone"
+      : _state->presetManager.currentPresetName;
+  input.stringValue = initial;
+  alert.accessoryView = input;
+  [alert.window setInitialFirstResponder:input];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSString* name = [input.stringValue stringByTrimmingCharactersInSet:
+                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!name.length) return;
+    NSError* err = nil;
+    if ([_state->presetManager savePresetNamed:name fromState:_state error:&err]) {
+      _state->updatePresetDisplayTitle();
+    } else if (err) {
+      NSAlert* fail = [[NSAlert alloc] init];
+      fail.messageText = @"Save Failed";
+      fail.informativeText = err.localizedDescription;
+      [fail runModal];
+    }
+  }
+}
+
+- (void)deleteCurrentPreset:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSString* cur = _state->presetManager.currentPresetName;
+  if (!cur.length || [cur isEqualToString:@"Default Rig"]) return;
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Delete Preset";
+  alert.informativeText = [NSString stringWithFormat:@"Are you sure you want to delete '%@'?", cur];
+  alert.alertStyle = NSAlertStyleCritical;
+  [alert addButtonWithTitle:@"Delete"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSError* err = nil;
+    if ([_state->presetManager deletePresetNamed:cur error:&err]) {
+      RigPreset* nextP = [_state->presetManager loadPresetNamed:_state->presetManager.currentPresetName];
+      if (nextP) [nextP applyToState:_state];
+      _state->updatePresetDisplayTitle();
+    }
+  }
+}
+
+- (void)revealPresetsInFinder:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  [_state->presetManager revealPresetsInFinder];
+  _state->updatePresetDisplayTitle();
 }
 @end
 static NSTextField* addLabel(NSView* parent,
@@ -660,7 +808,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->tunerPanel = tp;
     [[tp.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:20] setActive:YES];
     [[tp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[tp.widthAnchor constraintEqualToConstant:380] setActive:YES];
+    [[tp.widthAnchor constraintEqualToConstant:280] setActive:YES];
     [[tp.heightAnchor constraintEqualToConstant:34] setActive:YES];
 
     NSTextField* noteL = addLabel(tp, @"—", NSZeroRect,
@@ -714,7 +862,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [NSLayoutConstraint constraintWithItem:needle
                                      attribute:NSLayoutAttributeLeading
                                      relatedBy:NSLayoutRelationEqual
-                                        toItem:meter
+                                         toItem:meter
                                      attribute:NSLayoutAttributeLeading
                                     multiplier:1.0
                                       constant:0];
@@ -732,9 +880,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     mp.translatesAutoresizingMaskIntoConstraints = NO;
     [topView addSubview:mp];
     mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
-    [[mp.leadingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:16] setActive:YES];
+    [[mp.leadingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:14] setActive:YES];
     [[mp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[mp.widthAnchor constraintEqualToConstant:180] setActive:YES];
+    [[mp.widthAnchor constraintEqualToConstant:150] setActive:YES];
     [[mp.heightAnchor constraintEqualToConstant:34] setActive:YES];
 
     NSTextField* dbL = addLabel(mp, @"  —  dB", NSZeroRect,
@@ -743,9 +891,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     dbL.translatesAutoresizingMaskIntoConstraints = NO;
     state->inDbLabel = dbL;
     dbL.toolTip = @"Raw input peak level in dBFS, measured before all processing.";
-    [[dbL.leadingAnchor constraintEqualToAnchor:mp.leadingAnchor constant:10] setActive:YES];
+    [[dbL.leadingAnchor constraintEqualToAnchor:mp.leadingAnchor constant:6] setActive:YES];
     [[dbL.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
-    [[dbL.widthAnchor constraintEqualToConstant:56] setActive:YES];
+    [[dbL.widthAnchor constraintEqualToConstant:48] setActive:YES];
 
     // Track: dark slot; the fill bar width is set at update time (-60..0 dB).
     NSView* slot = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -755,8 +903,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     slot.translatesAutoresizingMaskIntoConstraints = NO;
     [mp addSubview:slot];
     slot.toolTip = @"Raw input peak meter from -60 to 0 dBFS. Orange indicates a hot input; red indicates clipping risk.";
-    [[slot.leadingAnchor constraintEqualToAnchor:dbL.trailingAnchor constant:8] setActive:YES];
-    [[slot.trailingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:-10] setActive:YES];
+    [[slot.leadingAnchor constraintEqualToAnchor:dbL.trailingAnchor constant:6] setActive:YES];
+    [[slot.trailingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:-8] setActive:YES];
     [[slot.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
     [[slot.heightAnchor constraintEqualToConstant:8] setActive:YES];
 
@@ -781,6 +929,51 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     fillW.active = YES;
     state->inDbBar = fill;
     state->inDbBarWidth = fillW;
+
+    // Preset management controls (title bar):
+    // [ ◀ ] [ Preset: Name ▾ ] [ ▶ ] [ SAVE ]
+    RigButton* prevPresetBtn = rigButton(topView, @"◀", state->uiController,
+                                         @selector(prevPresetClicked:), NSZeroRect);
+    prevPresetBtn.toolTip = @"Switch to the previous preset.";
+    prevPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    state->prevPresetBtn = prevPresetBtn;
+    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:16] setActive:YES];
+    [[prevPresetBtn.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[prevPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
+    [[prevPresetBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+    NSPopUpButton* presetPop = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    presetPop.controlSize = NSControlSizeSmall;
+    presetPop.target = state->uiController;
+    presetPop.action = @selector(presetPopupChanged:);
+    presetPop.toolTip = @"Active preset. Click to select a preset, save, or manage presets.";
+    presetPop.translatesAutoresizingMaskIntoConstraints = NO;
+    [topView addSubview:presetPop];
+    state->presetPopup = presetPop;
+    [[presetPop.leadingAnchor constraintEqualToAnchor:prevPresetBtn.trailingAnchor constant:4] setActive:YES];
+    [[presetPop.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[presetPop.widthAnchor constraintEqualToConstant:165] setActive:YES];
+    [[presetPop.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+    RigButton* nextPresetBtn = rigButton(topView, @"▶", state->uiController,
+                                         @selector(nextPresetClicked:), NSZeroRect);
+    nextPresetBtn.toolTip = @"Switch to the next preset.";
+    nextPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    state->nextPresetBtn = nextPresetBtn;
+    [[nextPresetBtn.leadingAnchor constraintEqualToAnchor:presetPop.trailingAnchor constant:4] setActive:YES];
+    [[nextPresetBtn.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[nextPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
+    [[nextPresetBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+    RigButton* savePresetBtn = rigButton(topView, @"SAVE", state->uiController,
+                                         @selector(saveCurrentPreset:), NSZeroRect);
+    savePresetBtn.toolTip = @"Save current rig settings to active preset, or save as a new preset.";
+    savePresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    state->savePresetBtn = savePresetBtn;
+    [[savePresetBtn.leadingAnchor constraintEqualToAnchor:nextPresetBtn.trailingAnchor constant:8] setActive:YES];
+    [[savePresetBtn.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
+    [[savePresetBtn.widthAnchor constraintEqualToConstant:54] setActive:YES];
+    [[savePresetBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
     state->zoomControl = [[NSComboBox alloc] initWithFrame:NSZeroRect];
     state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
@@ -1410,6 +1603,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     *widget = (__bridge void*)state->view;
     state->sendGet();
     state->restoreSelectedPaths();   // re-apply the persisted rig selection
+    state->presetManager = [RigPresetManager sharedManager];
+    [state->presetManager rescanPresets];
+    state->rebuildPresetMenu();
     return state;
   }
 }
