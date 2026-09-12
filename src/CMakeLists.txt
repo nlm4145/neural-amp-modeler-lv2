@@ -144,11 +144,11 @@ if (APPLE)
 		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 	)
 
-	option(BUILD_NAM_STANDALONE "Build the native macOS standalone rig app" OFF)
-	if (BUILD_NAM_STANDALONE)
+	option(BUILD_AXE_FX_STANDALONE "Build the native macOS Axe FX app" OFF)
+	if (BUILD_AXE_FX_STANDALONE)
 		find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
-		add_executable(nam_oversampled_rig_standalone MACOSX_BUNDLE
+		add_executable(axe_fx_standalone MACOSX_BUNDLE
 			standalone_main.mm
 			nam_rig_plugin.cpp nam_rig_plugin.h
 			wav_ir.cpp wav_ir.h
@@ -161,15 +161,15 @@ if (APPLE)
 			rig_tone_api.h rig_tone_api.mm
 			rig_tone_browser.h rig_tone_browser.mm
 			rig_ui_state.h)
-		target_include_directories(nam_oversampled_rig_standalone PRIVATE
+		target_include_directories(axe_fx_standalone PRIVATE
 			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
-		target_link_libraries(nam_oversampled_rig_standalone PRIVATE NeuralAudio
+		target_link_libraries(axe_fx_standalone PRIVATE NeuralAudio
 			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
 			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK})
-		target_compile_options(nam_oversampled_rig_standalone PRIVATE -fobjc-arc)
-		set_target_properties(nam_oversampled_rig_standalone PROPERTIES
-			OUTPUT_NAME "NAM Oversampled Rig"
+		target_compile_options(axe_fx_standalone PRIVATE -fobjc-arc)
+		set_target_properties(axe_fx_standalone PROPERTIES
+			OUTPUT_NAME "Axe FX"
 			MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/resources/standalone-Info.plist.in")
 	endif()
 endif()

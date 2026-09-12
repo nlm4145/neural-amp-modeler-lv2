@@ -1,4 +1,4 @@
-# NAM Oversampled Rig — Architecture
+# Axe FX — Architecture
 
 This documents the DSP↔UI contract and the project's hard-won conventions so
 future changes (human or agent) don't have to re-derive them. Ground truth:
@@ -197,7 +197,7 @@ LV2 State `save/restore` is host-driven and does NOT run on a plain app
 switch that recreates the plugin instance, and the DSP worker chain never
 fires for loads in Element. So the UI is the single source of truth:
 `RigUIState::sendPath()` writes path + thumbnail URL + toneId to
-`~/Library/Application Support/NAM Oversampled Rig/rig-model-paths.txt`, and
+`~/Library/Application Support/Axe FX/rig-model-paths.txt`, and
 `restoreSelectedPaths()` re-sends at the end of `instantiate()`. Do not add
 DSP-side persistence hooks — they are dead code in this host.
 
@@ -215,7 +215,7 @@ NeuralAudio's oversampling multiplies WaveNet dilations by
 ## Tone3000 integration rules
 
 - Search pagination is **cache-first and lazy** (disk cache,
-  `~/Library/Application Support/NAM Oversampled Rig/SearchCache`,
+  `~/Library/Application Support/Axe FX/SearchCache`,
   SHA1(request path).json, 10-min TTL; page 1 per search, more on scroll).
   Eager full pagination trips the rate limit (100 req/min) and gets the
   machine WAF-403-blocked.

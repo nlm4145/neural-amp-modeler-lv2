@@ -21,7 +21,7 @@
 
 <@NAM_RIG_LV2_ID@>
 	a lv2:Plugin, lv2:SimulatorPlugin, doap:Project ;
-	doap:name "NAM Oversampled Rig Testing" ;
+	doap:name "Axe FX" ;
 	doap:license <http://opensource.org/licenses/gpl-3-0> ;
 	doap:maintainer [ foaf:name "Mike Oliphant / local rig extension" ] ;
 	lv2:requiredFeature urid:map, work:schedule ;
