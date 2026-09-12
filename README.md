@@ -48,11 +48,34 @@ touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
 
 - `tests/test_wav_ir_resample.py` — mirrors `WavIR` resampling/normalization
   (DC gain, sample-rate-invariant IR transfer gain, response peak/loudness,
-  equal-rate identity, round-trip RMSE, and 80 ms truncation). The length test pins the
+  equal-rate identity, round-trip RMSE, and 170 ms truncation). The length test pins the
   count/position ratio distinction that once produced a 1/4-length output.
 - `tests/test_tuner_mpm.py` — mirrors the tuner's McLeod NSDF pipeline and
   asserts pitch accuracy (<5¢) on synthetic guitar tones at 48k and 96k,
   including low E (the 96 kHz case that broke v1) and palm mute.
+
+The C++ harnesses in `tests/verify_*.cpp` cover the DSP blocks directly and
+are built ad hoc by `run_all.sh`:
+
+- `verify_amp_advanced.cpp` — the virtual power stage: Presence/Depth deliver
+  their requested dB at any Negative Feedback setting, Sag lowers headroom
+  (rather than applying static gain reduction), Master compresses, and the
+  loop stays bounded at 768 kHz.
+- `verify_output_transformer.cpp` — per-profile bandwidth, voicing and core
+  drive, plus the flux-domain signature: every profile compresses 82 Hz more
+  than 1 kHz when driven, and none of them adds a low resonance.
+- `verify_speaker_dynamics.cpp` — the impedance curve's low resonance AND
+  rising voice-coil inductance, Negative Feedback damping flattening both,
+  excursion-only Speaker Drive, and whole-token cab-name matching.
+- `verify_space_fx.cpp` — `AlignDelay` sample accuracy, `StereoDelay` timing,
+  damping and soft-limited feedback, and `PlateReverb` decay/size/damping/
+  pre-delay with exact bypass.
+- `verify_wav_ir.cpp` — partitioned-FFT convolution vs direct reference,
+  the 170 ms limit, and stereo-IR channel loading.
+
+Note: `tests/test_a2_fast_ring_copy.py` currently FAILS. That is a real lost
+optimization in the `NeuralAudio` submodule, not a stale assertion — see the
+test's docstring.
 
 See `ARCHITECTURE.md` for the DSP↔UI port contract, worker model-swap chain,
 and the Tone3000 API/OAuth rules.

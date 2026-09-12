@@ -1419,10 +1419,9 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   else if ([item.gear.lowercaseString isEqualToString:@"amp-cab"] || [item.gear.lowercaseString isEqualToString:@"full-rig"])
     category = @"Full Rig";   // NAM Rig's library layout: full rigs get their own folder
   else category = @"Amp";
-  NSString* folder = [[[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]
+  NSString* folder = [[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]
                         stringByAppendingPathComponent:category]
-                       stringByAppendingPathComponent:@"Axe FX"]
-                      stringByAppendingPathComponent:safeFilename(item.title)] copy];
+                       stringByAppendingPathComponent:safeFilename(item.title)] copy];
   NSFileManager* fm = [NSFileManager defaultManager];
   [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
   NSMutableArray<NSDictionary*>* downloads = [NSMutableArray array];

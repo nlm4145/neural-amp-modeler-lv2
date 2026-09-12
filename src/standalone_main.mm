@@ -95,6 +95,7 @@ class StandaloneHost {
     stereoControls_ = {0.0f, 0.0f};
     advancedControls_.fill(0.0f);
     speakerControls_ = {0.0f, 25.0f, 25.0f, 50.0f, 50.0f};
+    fxControls_ = {0.0f, 0.0f, 0.0f, 400.0f, 35.0f, 40.0f, 0.0f, 0.0f, 50.0f, 50.0f, 50.0f, 10.0f};
   }
 
   ~StandaloneHost() { stop(); }
@@ -136,7 +137,7 @@ class StandaloneHost {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &controls_[port - 4];
     }
-    plugin_->ports.audio_out_r = output_.data();
+    plugin_->ports.audio_out_r = outputR_.data();
     plugin_->ports.stereo_width = &stereoControls_[0];
     plugin_->ports.room = &stereoControls_[1];
     for (uint32_t port = 34; port <= 41; ++port) {
@@ -146,6 +147,10 @@ class StandaloneHost {
     for (uint32_t port = 42; port <= 46; ++port) {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &speakerControls_[port - 42];
+    }
+    for (uint32_t port = 47; port <= 58; ++port) {
+      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
+                                 port * sizeof(void*)) = &fxControls_[port - 47];
     }
 
     worker_ = std::thread([this] { workerLoop(); });
@@ -303,6 +308,10 @@ class StandaloneHost {
       host->speakerControls_[port - 42] = *static_cast<const float*>(buffer);
       return;
     }
+    if (format == 0 && port >= 47 && port <= 58 && size == sizeof(float)) {
+      host->fxControls_[port - 47] = *static_cast<const float*>(buffer);
+      return;
+    }
     if (port == 0 && format == host->eventTransfer_)
       host->uiToAudio_.push(size, format, buffer);
   }
@@ -389,6 +398,7 @@ class StandaloneHost {
     const OSStatus status = AudioUnitRender(audioUnit_, flags, timestamp, 1, frames, &inputList);
     if (status != noErr) {
       std::fill_n(output_.data(), frames, 0.0f);
+      std::fill_n(outputR_.data(), frames, 0.0f);
     } else {
       applyWorkerResponses();
       buildControlSequence();
@@ -397,9 +407,27 @@ class StandaloneHost {
       collectNotifications();
     }
 
-    for (UInt32 buffer = 0; buffer < ioData->mNumberBuffers; ++buffer) {
-      float* destination = static_cast<float*>(ioData->mBuffers[buffer].mData);
-      if (destination) std::copy_n(output_.data(), frames, destination);
+    if (ioData->mNumberBuffers >= 2 &&
+        ioData->mBuffers[0].mNumberChannels == 1 &&
+        ioData->mBuffers[1].mNumberChannels == 1) {
+      float* left = static_cast<float*>(ioData->mBuffers[0].mData);
+      float* right = static_cast<float*>(ioData->mBuffers[1].mData);
+      if (left) std::copy_n(output_.data(), frames, left);
+      if (right) std::copy_n(outputR_.data(), frames, right);
+    } else if (ioData->mNumberBuffers > 0) {
+      float* destination = static_cast<float*>(ioData->mBuffers[0].mData);
+      const UInt32 channels = ioData->mBuffers[0].mNumberChannels;
+      if (destination && channels >= 2) {
+        for (UInt32 frame = 0; frame < frames; ++frame) {
+          destination[frame * channels] = output_[frame];
+          destination[frame * channels + 1] = outputR_[frame];
+          for (UInt32 channel = 2; channel < channels; ++channel)
+            destination[frame * channels + channel] = 0.0f;
+        }
+      } else if (destination) {
+        for (UInt32 frame = 0; frame < frames; ++frame)
+          destination[frame] = 0.5f * (output_[frame] + outputR_[frame]);
+      }
     }
     return noErr;
   }
@@ -443,20 +471,25 @@ class StandaloneHost {
     AudioUnitSetProperty(audioUnit_, kAUVoiceIOProperty_VoiceProcessingEnableAGC,
                          kAudioUnitScope_Global, 0, &agc, sizeof(agc));
 
-    AudioStreamBasicDescription format{};
-    format.mSampleRate = sampleRate_;
-    format.mFormatID = kAudioFormatLinearPCM;
-    format.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
-    format.mFramesPerPacket = 1;
-    format.mChannelsPerFrame = 1;
-    format.mBitsPerChannel = 32;
-    format.mBytesPerFrame = sizeof(float);
-    format.mBytesPerPacket = sizeof(float);
+    AudioStreamBasicDescription inputFormat{};
+    inputFormat.mSampleRate = sampleRate_;
+    inputFormat.mFormatID = kAudioFormatLinearPCM;
+    inputFormat.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
+    inputFormat.mFramesPerPacket = 1;
+    inputFormat.mChannelsPerFrame = 1;
+    inputFormat.mBitsPerChannel = 32;
+    inputFormat.mBytesPerFrame = sizeof(float);
+    inputFormat.mBytesPerPacket = sizeof(float);
+    AudioStreamBasicDescription outputFormat = inputFormat;
+    outputFormat.mFormatFlags |= kAudioFormatFlagIsNonInterleaved;
+    outputFormat.mChannelsPerFrame = 2;
     if (AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_StreamFormat,
-                             kAudioUnitScope_Output, 1, &format, sizeof(format)) != noErr ||
+                             kAudioUnitScope_Output, 1, &inputFormat,
+                             sizeof(inputFormat)) != noErr ||
         AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_StreamFormat,
-                             kAudioUnitScope_Input, 0, &format, sizeof(format)) != noErr)
-      return fail(error, @"Core Audio could not configure a mono floating-point stream.");
+                             kAudioUnitScope_Input, 0, &outputFormat,
+                             sizeof(outputFormat)) != noErr)
+      return fail(error, @"Core Audio could not configure floating-point input/stereo output.");
 
     UInt32 maxFrames = kMaxFrames;
     AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_MaximumFramesPerSlice,
@@ -479,10 +512,12 @@ class StandaloneHost {
 
   std::array<float, kMaxFrames> input_{};
   std::array<float, kMaxFrames> output_{};
+  std::array<float, kMaxFrames> outputR_{};
   std::array<float, 27> controls_{};
   std::array<float, 2> stereoControls_{};
   std::array<float, 8> advancedControls_{};
   std::array<float, 5> speakerControls_{};
+  std::array<float, 12> fxControls_{};
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

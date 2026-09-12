@@ -26,7 +26,8 @@
 namespace {
 
 constexpr unsigned kMaxFileName = 1024;
-enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2 };
+constexpr uint32_t kPortCount = 59;   // mirrors Plugin::kPortCount
+enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3 };
 enum WorkType : uint32_t { WorkLoad, WorkSwitch, WorkFree };
 
 // These mirror the public worker-message ABI in nam_rig_plugin.h without
@@ -47,6 +48,7 @@ struct SwitchMessage {
   char path[kMaxFileName];
   void* model;
   void* ir;
+  void* irRight;   // stereo cabinet IRs load a second convolver
   bool fullRig;
 };
 
@@ -122,7 +124,8 @@ int main(int argc, char** argv) {
   constexpr uint32_t kAtomBytes = 16384;
   alignas(LV2_Atom_Sequence) uint8_t control[kAtomBytes]{};
   alignas(LV2_Atom_Sequence) uint8_t notify[kAtomBytes]{};
-  float input[kBlock]{}, output[kBlock]{}, outputRight[kBlock]{}, ports[47]{};
+  float input[kBlock]{}, output[kBlock]{}, outputRight[kBlock]{},
+      ports[kPortCount]{};
   ports[7] = ports[8] = ports[9] = ports[10] = 1.0f;
   ports[15] = -80.0f;
   ports[20] = ports[21] = static_cast<float>(oversampleMode);
@@ -130,6 +133,11 @@ int main(int argc, char** argv) {
   ports[27] = 20000.0f;
   ports[43] = ports[44] = 25.0f;
   ports[45] = ports[46] = 50.0f;
+  ports[50] = 400.0f;   // delay time; Mix (53) stays 0 = bypassed
+  ports[51] = 35.0f;
+  ports[52] = 40.0f;
+  ports[55] = ports[56] = ports[57] = 50.0f;   // reverb Mix (54) stays 0
+  ports[58] = 10.0f;
 
   descriptor->connect_port(instance, 0, control);
   descriptor->connect_port(instance, 1, notify);
@@ -140,9 +148,7 @@ int main(int argc, char** argv) {
   descriptor->connect_port(instance, 31, outputRight);
   descriptor->connect_port(instance, 32, &ports[32]);
   descriptor->connect_port(instance, 33, &ports[33]);
-  for (uint32_t port = 34; port <= 41; ++port)
-    descriptor->connect_port(instance, port, &ports[port]);
-  for (uint32_t port = 42; port <= 46; ++port)
+  for (uint32_t port = 34; port <= kPortCount - 1; ++port)
     descriptor->connect_port(instance, port, &ports[port]);
 
   double phase = 0.0;
@@ -208,6 +214,14 @@ int main(int argc, char** argv) {
   check(captured > 1.0e-5 && studio > 1.0e-5 && modern > 1.0e-5, result);
   check(studio < captured * 2.0 && studio > captured * 0.5,
         "Studio Linear remains within +/-6 dB of Captured after settling");
+
+  // Width 0 with Cab B off and both effects at Mix 0: the right output must
+  // still mirror the left exactly through a live amp model.
+  bool mirrored = true;
+  for (uint32_t i = 0; i < kBlock; ++i)
+    mirrored = mirrored && output[i] == outputRight[i];
+  check(mirrored,
+        "right output mirrors left with Cab B off and effects bypassed");
 
   descriptor->cleanup(instance);
   dlclose(library);

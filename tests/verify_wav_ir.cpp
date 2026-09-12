@@ -34,6 +34,20 @@ static void writeWavF32(const std::string& path, const std::vector<float>& x,
   f.write(reinterpret_cast<const char*>(x.data()), dataBytes);
 }
 
+static void writeWavF32Stereo(const std::string& path,
+                              const std::vector<float>& interleaved,
+                              uint32_t rate) {
+  std::ofstream f(path, std::ios::binary);
+  auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+  auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+  const uint32_t dataBytes = static_cast<uint32_t>(interleaved.size() * 4);
+  f.write("RIFF", 4); u32(36 + dataBytes); f.write("WAVE", 4);
+  f.write("fmt ", 4); u32(16); u16(3); u16(2); u32(rate); u32(rate * 8);
+  u16(8); u16(32);
+  f.write("data", 4); u32(dataBytes);
+  f.write(reinterpret_cast<const char*>(interleaved.data()), dataBytes);
+}
+
 struct ResponseStats {
   double peak = 0.0;
   double rms = 0.0;
@@ -77,9 +91,11 @@ static double magnitudeAt(const std::vector<float>& taps, double rate,
   return std::sqrt(re * re + im * im);
 }
 
-// Mirrors WavIR::load's truncation + raised-cosine fade.
+// Mirrors WavIR::load's truncation + raised-cosine fade. The limit tracks
+// WavIR::kMaxSeconds (170 ms, 8192 taps at 48 kHz) so far-mic and room
+// captures keep their tails.
 static std::vector<float> truncateFade(std::vector<float> taps, double rate) {
-  const size_t maxTaps = static_cast<size_t>(rate * 0.08);
+  const size_t maxTaps = static_cast<size_t>(rate * NAMRig::WavIR::kMaxSeconds);
   if (maxTaps > 0 && taps.size() > maxTaps) {
     taps.resize(maxTaps);
     const size_t fade = std::min(taps.size(),
@@ -132,13 +148,87 @@ int main(int argc, char** argv) {
       {256, "exact head boundary (256 taps)"},
       {300, "one partial partition (300 taps)"},
       {3000, "11 partitions (3000 taps)"},
-      {5000, "truncated + faded (5000 -> 3840 taps at 48k)"},
+      {5000, "long untruncated IR (5000 taps, under the 170 ms limit)"},
+      {8160, "exactly at the 170 ms limit (8160 taps at 48k)"},
+      {20000, "truncated + faded (20000 -> 8160 taps at 48k)"},
   };
   for (auto& c : cases) {
     const double rel = runCase(dir, c.len, 48000, rng);
     char msg[128];
     std::snprintf(msg, sizeof(msg), "%s: rel err %.3e < 1e-4", c.what, rel);
     CHECK(rel < 1e-4, msg);
+  }
+
+  // The 170 ms limit is the point of raising it: a tail that used to be cut
+  // at 80 ms must now still be convolved.
+  {
+    std::vector<float> taps(12000, 0.0f);
+    taps[0] = 1.0f;
+    taps[5000] = 0.25f;   // ~104 ms: inside 170 ms, beyond the old 80 ms cap
+    taps[9000] = 0.20f;   // ~187 ms: beyond the limit, must be gone
+    const std::string path = std::string(dir) + "/ir_length.wav";
+    writeWavF32(path, taps, 48000);
+    auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
+    std::vector<float> rendered(14000, 0.0f);
+    rendered[0] = 1.0f;
+    ir->process(rendered.data(), static_cast<uint32_t>(rendered.size()), 0);
+    char message[192];
+    std::snprintf(message, sizeof(message),
+                  "a 104 ms tail survives (%.3f) while a 187 ms tail is truncated (%.3e)",
+                  static_cast<double>(rendered[5000]),
+                  static_cast<double>(rendered[9000]));
+    CHECK(std::fabs(rendered[5000] - 0.25f) < 1e-4 &&
+              std::fabs(rendered[9000]) < 1e-6, message);
+  }
+
+  // A stereo cabinet IR must load as two independent convolvers. Summing the
+  // channels to mono cancels whatever phase difference makes it stereo.
+  {
+    const size_t frames = 4000;
+    std::vector<float> interleaved(frames * 2, 0.0f);
+    interleaved[0] = 1.0f;                 // left: unit impulse at 0
+    interleaved[2 * 40 + 1] = 0.5f;        // right: half-scale impulse at 40
+    const std::string path = std::string(dir) + "/ir_stereo.wav";
+    writeWavF32Stereo(path, interleaved, 48000);
+    CHECK(NAMRig::WavIR::channelCount(path.c_str()) == 2,
+          "channelCount reports a stereo cabinet IR");
+    auto left = NAMRig::WavIR::load(path.c_str(), 48000, 512, false, 0);
+    auto right = NAMRig::WavIR::load(path.c_str(), 48000, 512, false, 1);
+    auto mono = NAMRig::WavIR::load(path.c_str(), 48000, 512, false, -1);
+    std::vector<float> l(512, 0.0f), r(512, 0.0f), m(512, 0.0f);
+    l[0] = r[0] = m[0] = 1.0f;
+    left->process(l.data(), 512, 0);
+    right->process(r.data(), 512, 0);
+    mono->process(m.data(), 512, 0);
+    char message[192];
+    std::snprintf(message, sizeof(message),
+                  "stereo channels load independently (L[0] %.3f, R[40] %.3f, R[0] %.3e)",
+                  static_cast<double>(l[0]), static_cast<double>(r[40]),
+                  static_cast<double>(r[0]));
+    CHECK(std::fabs(l[0] - 1.0f) < 1e-4 && std::fabs(r[40] - 0.5f) < 1e-4 &&
+              std::fabs(r[0]) < 1e-6, message);
+    CHECK(std::fabs(m[0] - 0.5f) < 1e-4 && std::fabs(m[40] - 0.25f) < 1e-4,
+          "channel -1 averages both channels (the pre-stereo behaviour)");
+
+    // Stereo normalization is linked: a deliberately quieter right channel
+    // must remain quieter instead of being independently raised to unity.
+    std::vector<float> unbalanced(frames * 2, 0.0f);
+    unbalanced[0] = 1.0f;
+    unbalanced[1] = 0.1f;
+    const std::string balancePath = std::string(dir) + "/ir_stereo_balance.wav";
+    writeWavF32Stereo(balancePath, unbalanced, 48000);
+    for (int mode : {1, 2}) {
+      auto linkedL = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, false, 0);
+      auto linkedR = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, false, 1);
+      NAMRig::WavIR::linkStereoNormalization(*linkedL, *linkedR);
+      std::vector<float> outL(512, 0.0f), outR(512, 0.0f);
+      outL[0] = outR[0] = 1.0f;
+      linkedL->process(outL.data(), outL.size(), mode);
+      linkedR->process(outR.data(), outR.size(), mode);
+      CHECK(std::fabs(outR[0] / outL[0] - 0.1f) < 1.0e-4f,
+            mode == 1 ? "linked stereo Peak normalization preserves channel balance"
+                      : "linked stereo Loudness normalization preserves channel balance");
+    }
   }
 
   // Original mode keeps the decoded source taps exactly as stored, even when
