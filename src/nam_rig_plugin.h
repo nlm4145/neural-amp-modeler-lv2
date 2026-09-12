@@ -343,8 +343,10 @@ private:
   // instance — a level's streaming history belongs to that level's rate
   // (sharing one instance across levels corrupts the stream state; that was
   // the 2026-08-29 True-4x/8x bug). osUp[stage][level] / osDown[stage][level];
-  // stage 2 (cab .nam) rides the amp's factor. osScratch[st] is the stage's
-  // Nx-rate domain buffer; osChain is the base-rate pedal->amp work buffer.
+  // stage 2 (cab .nam) rides the amp's factor, either in the shared serial
+  // group or in its own domain when Cab B makes the cabinets parallel.
+  // osScratch[st] is the stage's Nx-rate domain buffer; osChain is the
+  // base-rate pedal->amp work buffer.
   // Cab WAV IR + EQ stay at the base rate (linear stages cannot alias).
   static constexpr size_t kMaxOsLevels = 3;    // 2x, 4x, 8x
   std::array<std::array<Up2x, kMaxOsLevels>, kStageCount> osUp;
@@ -466,6 +468,8 @@ private:
                         bool modelProcessed, const bool* desiredEnabled) noexcept;
   void runModel(size_t stage, NeuralAudio::NeuralModel* model, float* samples,
                 size_t count, double domainRate) noexcept;
+  uint32_t processTrueCab(size_t stage, float* samples, uint32_t count,
+                          int factor) noexcept;
   bool cab2AlignActive = false;
   static constexpr size_t stageIndex(Stage stage) {
     return static_cast<size_t>(stage);

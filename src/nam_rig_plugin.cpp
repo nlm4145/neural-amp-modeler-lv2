@@ -221,7 +221,9 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
     stageDc[st].setRate(rate);
     stageDcRate[st] = rate;
   }
-  cab2Align.initialize(rate, 12.0);
+  // Includes the user's 10 ms alignment range plus the short True-Nx
+  // converter delay used by a parallel Cab A NAM model.
+  cab2Align.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
 
@@ -306,10 +308,13 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                               *rig->ports.ir_normalization >= 2.5f;
         const unsigned channels = WavIR::channelCount(message->path);
         if (channels >= 2) {
-          response.ir = WavIR::load(message->path, rig->sampleRate,
-                                    rig->maxBufferSize, original, 0).release();
-          response.irRight = WavIR::load(message->path, rig->sampleRate,
-                                         rig->maxBufferSize, original, 1).release();
+          auto left = WavIR::load(message->path, rig->sampleRate,
+                                  rig->maxBufferSize, original, 0);
+          auto right = WavIR::load(message->path, rig->sampleRate,
+                                   rig->maxBufferSize, original, 1);
+          WavIR::linkStereoNormalization(*left, *right);
+          response.ir = left.release();
+          response.irRight = right.release();
         } else {
           response.ir = WavIR::load(message->path, rig->sampleRate,
                                     rig->maxBufferSize, original).release();
@@ -943,8 +948,8 @@ void Plugin::process(uint32_t sampleCount) noexcept {
   // (chain of 2x half-band pairs). NONE and LEGACY stages run at base rate.
   // The nonlinear stages are the aliasing sources, so only they get TRUE
   // domains; the cab WAV IR and EQ stay at base rate. A .nam cab follows the
-  // AMP's TRUE factor while it is the only cabinet; with a second cabinet
-  // engaged both cabinets run parallel at base rate from the same tap.
+  // AMP's TRUE factor. With a second cabinet engaged, Cab A uses an independent
+  // True domain from the shared post-amp tap and Cab B is delayed to match it.
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
@@ -1049,6 +1054,13 @@ void Plugin::process(uint32_t sampleCount) noexcept {
     }
     std::memcpy(io, chain, sliceLen * sizeof(float));
   }
+  // A parallel Cab A NAM model keeps the True-Nx domain it was loaded for.
+  // Its independent converter therefore adds one more cascade; Cab B is
+  // delayed by the same amount below so both branches remain aligned.
+  if (parallelCabs && enabled[2] && models[2] && !irs[2]) {
+    const int cabFactor = truePipelineFactor(osApplied[2], sampleRate);
+    if (cabFactor > 1) latencyFrames += cascadeLatencyFrames(cabFactor);
+  }
   if (ports.latency)
     *ports.latency = static_cast<float>(latencyFrames);
 
@@ -1072,6 +1084,32 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
   }
   for (size_t i = 0; i < count; ++i)
     samples[i] = stageDc[stage].process(samples[i]);
+}
+
+uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
+                               int factor) noexcept {
+  const size_t levels = factor == 8 ? 3 : (factor == 4 ? 2 : 1);
+  float* bufs[2] = {osScratch[stage].data(), osScratch2[stage].data()};
+  size_t n = osUp[stage][0].process(samples, count, bufs[0]);
+  for (size_t level = 1; level < levels && n > 0; ++level)
+    n = osUp[stage][level].process(bufs[(level - 1) % 2], n,
+                                   bufs[level % 2]);
+  float* domain = bufs[(levels - 1) % 2];
+  if (n == 0 || n + 64 > osScratch[stage].size()) return count;
+  runModel(stage, models[stage], domain, n, sampleRate * factor);
+
+  size_t back = n;
+  const float* downInput = domain;
+  for (size_t level = levels; level-- > 0;) {
+    float* downOutput = level == 0 ? samples : bufs[(level - 1) % 2];
+    back = osDown[stage][level].process(downInput, back, downOutput);
+    downInput = downOutput;
+  }
+  if (back < count) {
+    const float fill = back > 0 ? samples[back - 1] : samples[0];
+    for (size_t i = back; i < count; ++i) samples[i] = fill;
+  }
+  return static_cast<uint32_t>(back);
 }
 
 // Everything after the serial NAM chain: the parallel cabinet pair, the cab
@@ -1108,6 +1146,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     float* R = postR.data();
     std::memcpy(L, mono + off, n * sizeof(float));
     bool cabProcessed = cabInChain;
+    bool haveA = cabInChain;
     bool stereoA = false;
     if (parallelCabs) std::memcpy(preCab.data(), L, n * sizeof(float));
 
@@ -1121,9 +1160,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         irs[2]->process(L, n, norm);
         cabProcessed = true;
       } else if (models[2] && parallelCabs) {
-        runModel(2, models[2], L, n, sampleRate);
+        const int factor = truePipelineFactor(osApplied[2], sampleRate);
+        if (factor > 1) processTrueCab(2, L, n, factor);
+        else runModel(2, models[2], L, n, sampleRate);
         cabProcessed = true;
       }
+      haveA = cabProcessed;
     }
     if (!stereoA) std::memcpy(R, L, n * sizeof(float));
 
@@ -1143,7 +1185,13 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         runModel(3, models[3], BL, n, sampleRate);
         std::memcpy(BR, BL, n * sizeof(float));
       }
-      cab2Align.process(BL, BR, n, portValue(ports.cab2_delay, 0.0f));
+      const int cabFactor = haveA && models[2] && !irs[2]
+          ? truePipelineFactor(osApplied[2], sampleRate) : 1;
+      const float domainDelayMs = cabFactor > 1
+          ? static_cast<float>(1000.0 * cascadeLatencyFrames(cabFactor) / sampleRate)
+          : 0.0f;
+      cab2Align.process(BL, BR, n,
+                        portValue(ports.cab2_delay, 0.0f) + domainDelayMs);
       cab2AlignActive = true;
       for (uint32_t i = 0; i < n; ++i) {
         smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;
@@ -1156,27 +1204,39 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
 
     // Width: side gain of each stereo cabinet pair, then the spread between
     // cabinet A (left) and cabinet B (right). Zero keeps exact dual mono.
-    if (haveB || stereoA || smoothedWidth != 0.0f || widthTarget != 0.0f) {
+    if (haveA || haveB || smoothedWidth != 0.0f || widthTarget != 0.0f) {
       const float* BL = cabBL.data();
       const float* BR = cabBR.data();
       for (uint32_t i = 0; i < n; ++i) {
         smoothedWidth += (widthTarget - smoothedWidth) * glide10;
         if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
         const float w = smoothedWidth;
-        const float midA = 0.5f * (L[i] + R[i]);
-        const float sideA = 0.5f * (L[i] - R[i]) * w;
-        float outL = midA + sideA;
-        float outR = midA - sideA;
+        float outL = L[i];
+        float outR = R[i];
+        float aL = 0.0f, aR = 0.0f;
+        float bL = 0.0f, bR = 0.0f;
+        if (haveA) {
+          const float midA = 0.5f * (L[i] + R[i]);
+          const float sideA = 0.5f * (L[i] - R[i]) * w;
+          aL = midA + sideA;
+          aR = midA - sideA;
+          outL = aL;
+          outR = aR;
+        }
         if (haveB) {
           const float midB = 0.5f * (BL[i] + BR[i]);
           const float sideB = 0.5f * (BL[i] - BR[i]) * w;
-          const float bL = midB + sideB;
-          const float bR = midB - sideB;
+          bL = midB + sideB;
+          bR = midB - sideB;
+          outL = bL;
+          outR = bR;
+        }
+        if (haveA && haveB) {
           const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - w);
           const float near = std::cos(theta);
           const float far = std::sin(theta);
-          outL = (midA + sideA) * near + bL * far;
-          outR = (midA - sideA) * far + bR * near;
+          outL = aL * near + bL * far;
+          outR = aR * far + bR * near;
         }
         L[i] = outL;
         R[i] = outR;

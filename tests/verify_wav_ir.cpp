@@ -209,6 +209,26 @@ int main(int argc, char** argv) {
               std::fabs(r[0]) < 1e-6, message);
     CHECK(std::fabs(m[0] - 0.5f) < 1e-4 && std::fabs(m[40] - 0.25f) < 1e-4,
           "channel -1 averages both channels (the pre-stereo behaviour)");
+
+    // Stereo normalization is linked: a deliberately quieter right channel
+    // must remain quieter instead of being independently raised to unity.
+    std::vector<float> unbalanced(frames * 2, 0.0f);
+    unbalanced[0] = 1.0f;
+    unbalanced[1] = 0.1f;
+    const std::string balancePath = std::string(dir) + "/ir_stereo_balance.wav";
+    writeWavF32Stereo(balancePath, unbalanced, 48000);
+    for (int mode : {1, 2}) {
+      auto linkedL = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, false, 0);
+      auto linkedR = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, false, 1);
+      NAMRig::WavIR::linkStereoNormalization(*linkedL, *linkedR);
+      std::vector<float> outL(512, 0.0f), outR(512, 0.0f);
+      outL[0] = outR[0] = 1.0f;
+      linkedL->process(outL.data(), outL.size(), mode);
+      linkedR->process(outR.data(), outR.size(), mode);
+      CHECK(std::fabs(outR[0] / outL[0] - 0.1f) < 1.0e-4f,
+            mode == 1 ? "linked stereo Peak normalization preserves channel balance"
+                      : "linked stereo Loudness normalization preserves channel balance");
+    }
   }
 
   // Original mode keeps the decoded source taps exactly as stored, even when

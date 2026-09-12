@@ -23,6 +23,9 @@ public:
   static std::unique_ptr<WavIR> load(const char* path, double hostRate,
                                      int maxBlockSize, bool original = false,
                                      int channel = -1);
+  // Peak/Loudness normalization for a stereo IR must use one linked scale so
+  // the source file's inter-channel balance is preserved.
+  static void linkStereoNormalization(WavIR& left, WavIR& right) noexcept;
   static unsigned channelCount(const char* path);
   static constexpr double kMaxSeconds = 0.17;
   ~WavIR();
@@ -70,6 +73,8 @@ private:
 
   float peakScale = 1.0f;
   float loudnessScale = 1.0f;
+  double responsePeak = 0.0;
+  double responseRms = 0.0;
   float currentScale = 1.0f;
   float scaleSmoothCoeff = 1.0f;
   bool scaleInitialized = false;

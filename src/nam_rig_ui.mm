@@ -225,10 +225,11 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   _state->sendControl(24, (float)sender.indexOfSelectedItem);
   // Original changes the taps at load time (it bypasses resampling/truncation),
-  // so re-send the current cab path whenever the mode changes in either
+  // so re-send both current cabinet paths whenever the mode changes in either
   // direction. Element applies the control write before the following patch.
-  if (!_state->selectedPaths[2].empty())
-    _state->sendPath(2, _state->selectedPaths[2].c_str());
+  for (size_t stage = 2; stage <= 3; ++stage)
+    if (!_state->selectedPaths[stage].empty())
+      _state->sendPath(stage, _state->selectedPaths[stage].c_str());
 }
 
 - (void)transformerChanged:(NSPopUpButton*)sender {

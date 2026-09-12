@@ -172,6 +172,8 @@ ResponseStats measureResponse(const std::vector<float>& taps, double rate) {
 WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   (void)maxBlockSize;  // chunking is internal (kBlock); any call size works
   const ResponseStats response = measureResponse(taps, sampleRate);
+  responsePeak = response.peak;
+  responseRms = response.rms;
   if (response.peak > 1.0e-12)
     peakScale = static_cast<float>(1.0 / response.peak);
   if (response.rms > 1.0e-12)
@@ -215,6 +217,16 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
 
 WavIR::~WavIR() {
   if (fftSetup) vDSP_destroy_fftsetup(fftSetup);
+}
+
+void WavIR::linkStereoNormalization(WavIR& left, WavIR& right) noexcept {
+  const double peak = std::max(left.responsePeak, right.responsePeak);
+  const double rms = std::sqrt(0.5 * (left.responseRms * left.responseRms +
+                                      right.responseRms * right.responseRms));
+  const float peakScale = peak > 1.0e-12 ? static_cast<float>(1.0 / peak) : 1.0f;
+  const float loudnessScale = rms > 1.0e-12 ? static_cast<float>(1.0 / rms) : 1.0f;
+  left.peakScale = right.peakScale = peakScale;
+  left.loudnessScale = right.loudnessScale = loudnessScale;
 }
 
 unsigned WavIR::channelCount(const char* path) {

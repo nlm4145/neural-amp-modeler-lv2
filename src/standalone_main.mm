@@ -398,6 +398,7 @@ class StandaloneHost {
     const OSStatus status = AudioUnitRender(audioUnit_, flags, timestamp, 1, frames, &inputList);
     if (status != noErr) {
       std::fill_n(output_.data(), frames, 0.0f);
+      std::fill_n(outputR_.data(), frames, 0.0f);
     } else {
       applyWorkerResponses();
       buildControlSequence();
@@ -406,9 +407,27 @@ class StandaloneHost {
       collectNotifications();
     }
 
-    for (UInt32 buffer = 0; buffer < ioData->mNumberBuffers; ++buffer) {
-      float* destination = static_cast<float*>(ioData->mBuffers[buffer].mData);
-      if (destination) std::copy_n(output_.data(), frames, destination);
+    if (ioData->mNumberBuffers >= 2 &&
+        ioData->mBuffers[0].mNumberChannels == 1 &&
+        ioData->mBuffers[1].mNumberChannels == 1) {
+      float* left = static_cast<float*>(ioData->mBuffers[0].mData);
+      float* right = static_cast<float*>(ioData->mBuffers[1].mData);
+      if (left) std::copy_n(output_.data(), frames, left);
+      if (right) std::copy_n(outputR_.data(), frames, right);
+    } else if (ioData->mNumberBuffers > 0) {
+      float* destination = static_cast<float*>(ioData->mBuffers[0].mData);
+      const UInt32 channels = ioData->mBuffers[0].mNumberChannels;
+      if (destination && channels >= 2) {
+        for (UInt32 frame = 0; frame < frames; ++frame) {
+          destination[frame * channels] = output_[frame];
+          destination[frame * channels + 1] = outputR_[frame];
+          for (UInt32 channel = 2; channel < channels; ++channel)
+            destination[frame * channels + channel] = 0.0f;
+        }
+      } else if (destination) {
+        for (UInt32 frame = 0; frame < frames; ++frame)
+          destination[frame] = 0.5f * (output_[frame] + outputR_[frame]);
+      }
     }
     return noErr;
   }
@@ -452,20 +471,25 @@ class StandaloneHost {
     AudioUnitSetProperty(audioUnit_, kAUVoiceIOProperty_VoiceProcessingEnableAGC,
                          kAudioUnitScope_Global, 0, &agc, sizeof(agc));
 
-    AudioStreamBasicDescription format{};
-    format.mSampleRate = sampleRate_;
-    format.mFormatID = kAudioFormatLinearPCM;
-    format.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
-    format.mFramesPerPacket = 1;
-    format.mChannelsPerFrame = 1;
-    format.mBitsPerChannel = 32;
-    format.mBytesPerFrame = sizeof(float);
-    format.mBytesPerPacket = sizeof(float);
+    AudioStreamBasicDescription inputFormat{};
+    inputFormat.mSampleRate = sampleRate_;
+    inputFormat.mFormatID = kAudioFormatLinearPCM;
+    inputFormat.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
+    inputFormat.mFramesPerPacket = 1;
+    inputFormat.mChannelsPerFrame = 1;
+    inputFormat.mBitsPerChannel = 32;
+    inputFormat.mBytesPerFrame = sizeof(float);
+    inputFormat.mBytesPerPacket = sizeof(float);
+    AudioStreamBasicDescription outputFormat = inputFormat;
+    outputFormat.mFormatFlags |= kAudioFormatFlagIsNonInterleaved;
+    outputFormat.mChannelsPerFrame = 2;
     if (AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_StreamFormat,
-                             kAudioUnitScope_Output, 1, &format, sizeof(format)) != noErr ||
+                             kAudioUnitScope_Output, 1, &inputFormat,
+                             sizeof(inputFormat)) != noErr ||
         AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_StreamFormat,
-                             kAudioUnitScope_Input, 0, &format, sizeof(format)) != noErr)
-      return fail(error, @"Core Audio could not configure a mono floating-point stream.");
+                             kAudioUnitScope_Input, 0, &outputFormat,
+                             sizeof(outputFormat)) != noErr)
+      return fail(error, @"Core Audio could not configure floating-point input/stereo output.");
 
     UInt32 maxFrames = kMaxFrames;
     AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_MaximumFramesPerSlice,

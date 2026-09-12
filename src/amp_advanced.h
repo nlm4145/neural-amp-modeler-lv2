@@ -119,6 +119,15 @@ class AmpAdvanced {
       const double sagDepth = 0.5 * smoothSag_;
       const double excursionDepth = 0.4 * smoothSag_;
       const double biasStatic = 0.45 * smoothBias_;
+      // Presence and Depth can use the linear feedback loop on their own.
+      // The power-stage saturation is introduced continuously by the dynamic
+      // controls, so moving any control away from exact neutral cannot switch
+      // a fully driven nonlinear stage into the signal path at once.
+      const double nonlinearAmount = std::max(
+          std::max(static_cast<double>(smoothSag_),
+                   std::fabs(static_cast<double>(smoothBias_))),
+          std::max(static_cast<double>(smoothFeedback_),
+                   static_cast<double>(smoothMaster_)));
       const double attack = 1.0 - std::exp(-1.0 / (rate * 0.015));
       const double release = 1.0 - std::exp(-1.0 / (rate * 0.220));
 
@@ -135,7 +144,9 @@ class AmpAdvanced {
                                     c + k * headroom * biasOut +
                                         bias * headroom / kOpenLoopGain);
         const double normalized = solved - biasOut;
-        const double y = headroom * normalized;
+        const double nonlinearY = headroom * normalized;
+        const double linearY = kOpenLoopGain * c / (1.0 + kOpenLoopGain * k);
+        const double y = linearY + nonlinearAmount * (nonlinearY - linearY);
         const double level = std::fabs(normalized);
         supplyEnvelope_ += (level - supplyEnvelope_) *
                            (level > supplyEnvelope_ ? attack : release);

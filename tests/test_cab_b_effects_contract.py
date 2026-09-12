@@ -67,14 +67,25 @@ assert "for (size_t i = 0; i < kSerialStageCount; ++i)" in dsp, (
     "the oversample reload must not try to re-create Cab B for a True domain"
 )
 
-# Both cabinets take the SAME post-amp tap; a .nam Cab A therefore leaves the
-# amp's True domain while Cab B is engaged.
+# Both cabinets take the SAME post-amp tap. A .nam Cab A leaves the amp's
+# shared True group but retains its own correctly configured True domain.
 assert "std::memcpy(preCab.data(), L, n * sizeof(float));" in dsp
 assert "const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);" in dsp, (
     "a .nam Cab A must defer out of the True chain when Cab B is active"
 )
-assert "cab2Align.process(BL, BR, n, portValue(ports.cab2_delay, 0.0f));" in dsp
+assert "processTrueCab(2, L, n, factor)" in dsp, (
+    "a parallel Cab A NAM model must stay in the True domain it was loaded for"
+)
+assert "latencyFrames += cascadeLatencyFrames(cabFactor);" in dsp, (
+    "the independent Cab A converter must be reported to the host"
+)
+assert "portValue(ports.cab2_delay, 0.0f) + domainDelayMs" in dsp, (
+    "Cab B must compensate the parallel Cab A converter before user alignment"
+)
 assert "smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;" in dsp
+assert "if (haveA && haveB)" in dsp and "outL = bL;" in dsp, (
+    "Cab B alone must replace the dry Cab A branch instead of mixing with it"
+)
 
 # Stereo WAV impulse responses load both channels into a second convolver.
 assert "WavIR* irRight;" in header and "std::array<WavIR*, kStageCount> irsRight{};" in header
@@ -82,6 +93,9 @@ assert "WavIR* irRight = nullptr;" in header, "the pending switch must carry the
 assert re.search(r"const unsigned channels = WavIR::channelCount\(message->path\);", dsp)
 assert re.search(r"WavIR::load\(message->path, rig->sampleRate,\s*rig->maxBufferSize, original, 1\)", dsp), (
     "channel 1 must load into the right-channel convolver"
+)
+assert "WavIR::linkStereoNormalization(*left, *right);" in dsp, (
+    "stereo IR normalization must preserve the source channel balance"
 )
 assert "delete message->irRight;" in dsp, "the worker must free the right-channel IR"
 assert "delete pending.irRight;" in dsp
@@ -109,5 +123,8 @@ assert "for (uint32_t port = 47; port <= 58; ++port)" in standalone, (
 assert "std::array<float, 12> fxControls_{};" in standalone
 assert "plugin_->ports.audio_out_r = outputR_.data();" in standalone, (
     "the standalone host must give the right channel its own buffer"
+)
+assert "std::copy_n(outputR_.data(), frames, right);" in standalone, (
+    "the standalone host must actually render the right DSP output"
 )
 print("  PASS  Cab B, stereo IRs, delay and reverb are append-only and fully wired")

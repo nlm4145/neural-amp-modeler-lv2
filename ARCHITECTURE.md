@@ -147,8 +147,10 @@ Related DSP-chain guarantees:
 - Cabinets: a stereo WAV IR loads both channels (`WavIR::load(..., channel)`);
   the IR limit is 170 ms (`WavIR::kMaxSeconds`). Cab B takes the same post-amp
   tap as Cab A, then alignment delay, level, and equal-power spread by Width.
-  While Cab B is active a `.nam` Cab A leaves the amp's True domain and runs at
-  base rate so both cabinets see the same signal. All post-chain processing
+  While Cab B is active a `.nam` Cab A leaves the amp's shared True group but
+  retains an independent True domain matching the rate it was loaded for; Cab B
+  is delayed by that converter latency before its user alignment delay. All
+  post-chain processing
   (cabs, trims, EQ, fade, effects) runs in maxBufferSize slices on internal
   stereo buffers; the two output ports may alias.
 

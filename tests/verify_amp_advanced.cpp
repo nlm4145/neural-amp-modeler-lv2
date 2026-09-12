@@ -23,6 +23,21 @@ int main() {
                      0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
   CHECK(output == input, "neutral advanced controls are bit-transparent");
 
+  // Approaching neutral must also approach the bypassed signal. Previously an
+  // infinitesimal Presence value enabled the entire baseline saturator, making
+  // the exact-zero bypass a discontinuity for hot model output.
+  {
+    std::vector<float> nearInput(count, 1.5f), nearOutput = nearInput;
+    NAMRig::AmpAdvanced nearNeutral;
+    nearNeutral.processPostAmp(nearOutput.data(), nearOutput.size(), rate,
+                               0.0001f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    float worst = 0.0f;
+    for (size_t i = count / 2; i < count; ++i)
+      worst = std::max(worst, std::fabs(nearOutput[i] - nearInput[i]));
+    CHECK(worst < 1.0e-3f,
+          "the power stage approaches bypass continuously at neutral");
+  }
+
   amp.reset();
   output = input;
   amp.processPreAmp(output.data(), output.size(), rate, 100.0f, 100.0f);
