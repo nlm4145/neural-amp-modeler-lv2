@@ -29,7 +29,8 @@ NSString* const kPluginPublishableKey = @"t3k_pub_ScsutPfmPM2CwvG726tU60R5WN_KCh
 // The plugin keeps its OWN TONE3000 session in a separate keychain entry so it
 // stops depending on NAM Rig. It bootstraps once from NAM Rig's session, then
 // refreshes and persists independently from here on.
-static NSString* const kPluginKeychainService = @"NAM Oversampled Rig Tone3000";
+static NSString* const kPluginKeychainService = @"Axe FX Tone3000";
+static NSString* const kLegacyPluginKeychainService = @"NAM Oversampled Rig Tone3000";
 static NSString* const kPluginKeychainAccount = @"session";
 
 // Reads NAM Rig's stored TONE3000 OAuth session (a JSON blob holding
@@ -56,17 +57,20 @@ NSDictionary* namRigSession(void) {
 // Reads the plugin's own stored TONE3000 session (same JSON shape as NAM
 // Rig's: accessToken, refreshToken, expiresAtMilliseconds) from the Keychain.
 NSDictionary* pluginSession(void) {
-  NSDictionary* query = @{
-    (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-    (__bridge id)kSecAttrService:kPluginKeychainService,
-    (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
-    (__bridge id)kSecReturnData:@YES,
-  };
-  CFDataRef data = nullptr;
-  if (SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef*)&data) != errSecSuccess) return nil;
-  NSData* nsdata = (__bridge_transfer NSData*)data;
-  id json = [NSJSONSerialization JSONObjectWithData:nsdata options:0 error:nil];
-  return [json isKindOfClass:NSDictionary.class] ? json : nil;
+  for (NSString* service in @[kPluginKeychainService, kLegacyPluginKeychainService]) {
+    NSDictionary* query = @{
+      (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService:service,
+      (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
+      (__bridge id)kSecReturnData:@YES,
+    };
+    CFDataRef data = nullptr;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef*)&data) != errSecSuccess) continue;
+    NSData* nsdata = (__bridge_transfer NSData*)data;
+    id json = [NSJSONSerialization JSONObjectWithData:nsdata options:0 error:nil];
+    if ([json isKindOfClass:NSDictionary.class]) return json;
+  }
+  return nil;
 }
 
 // Writes (or updates) the plugin's own TONE3000 session in the Keychain.
@@ -92,12 +96,14 @@ void savePluginSession(NSDictionary* session) {
 // token has been rotated server-side ("refresh_token_already_used"): keeping
 // it poisons every request with a 401 and "REFRESH failed" forever.
 void clearPluginSession(void) {
-  NSDictionary* query = @{
-    (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-    (__bridge id)kSecAttrService:kPluginKeychainService,
-    (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
-  };
-  SecItemDelete((__bridge CFDictionaryRef)query);
+  for (NSString* service in @[kPluginKeychainService, kLegacyPluginKeychainService]) {
+    NSDictionary* query = @{
+      (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService:service,
+      (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)query);
+  }
 }
 
 // ---- TONE3000 OAuth2 authorization-code + PKCE helpers ----

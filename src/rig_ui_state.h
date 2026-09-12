@@ -160,10 +160,15 @@ struct RigUIState {
   // tear down and recreate an LV2 UI when its window loses focus; keeping only
   // selectedPaths would then rebuild each popup with just its current item.
   std::array<std::vector<std::string>, 3> availableModelPaths{};
+  static std::string uiLegacyPersistFile() {
+    const char* home = std::getenv("HOME");
+    std::string dir = home ? std::string(home) : std::string(".");
+    return dir + "/Library/Application Support/NAM Oversampled Rig/rig-model-paths.txt";
+  }
   static std::string uiPersistFile() {
     const char* home = std::getenv("HOME");
     std::string dir = home ? std::string(home) : std::string(".");
-    dir += "/Library/Application Support/NAM Oversampled Rig";
+    dir += "/Library/Application Support/Axe FX";
     ::mkdir(dir.c_str(), 0755);
     return dir + "/rig-model-paths.txt";
   }
@@ -197,6 +202,11 @@ struct RigUIState {
   void restoreStageModels() {
     for (size_t stage = 0; stage < availableModelPaths.size(); ++stage) {
       std::ifstream in(uiStageModelsFile(stage));
+      if (!in) {
+        const std::string legacy = uiLegacyPersistFile() + ".stage-" +
+                                   std::to_string(stage) + "-models";
+        in.open(legacy);
+      }
       if (!in) continue;  // Backward-compatible with the old selection-only file.
       NSMutableArray<NSString*>* paths = [NSMutableArray array];
       std::string path;
@@ -216,6 +226,11 @@ struct RigUIState {
     restoreStageModels();
     const std::string file = uiPersistFile();
     std::ifstream in(file);
+    bool migrated = false;
+    if (!in) {
+      in.open(uiLegacyPersistFile());
+      migrated = static_cast<bool>(in);
+    }
     if (!in) return;
     for (size_t i = 0; i < 3 && i < selectedPaths.size(); ++i) {
       std::string path, imageURL, toneIdStr;
@@ -234,6 +249,7 @@ struct RigUIState {
       if (imageURL.length() || toneId > 0)
         setStageThumb(i, nil, toneId, imageURL.length() ? [NSString stringWithUTF8String:imageURL.c_str()] : nil);
     }
+    if (migrated) persistSelectedPaths();
   }
   void sendPath(size_t stage, const char* path) {
     if (stage >= pathURIDs.size() || !path) return;

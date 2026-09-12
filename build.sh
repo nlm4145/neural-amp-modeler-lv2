@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build + install script for the NAM / NAM Oversampled Rig LV2 plugins.
+# Build + install script for the NAM / Axe FX LV2 plugins.
 #
 # Builds OUT-OF-TREE so the git repo stays clean, then installs the finished
 # bundle directly into ~/Library/Audio/Plug-Ins/LV2/ (where Element loads it).

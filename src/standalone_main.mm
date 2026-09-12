@@ -526,8 +526,8 @@ class StandaloneHost {
   NSMenu* menu = [[NSMenu alloc] init];
   NSMenuItem* appItem = [[NSMenuItem alloc] init];
   [menu addItem:appItem];
-  NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"NAM Oversampled Rig"];
-  [appMenu addItemWithTitle:@"Quit NAM Oversampled Rig"
+  NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"Axe FX"];
+  [appMenu addItemWithTitle:@"Quit Axe FX"
                      action:@selector(terminate:)
               keyEquivalent:@"q"];
   appItem.submenu = appMenu;
@@ -539,7 +539,7 @@ class StandaloneHost {
                           NSWindowStyleMaskMiniaturizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
-  _window.title = @"NAM Oversampled Rig";
+  _window.title = @"Axe FX";
   _window.delegate = self;
   _window.releasedWhenClosed = NO;
   [_window center];
@@ -548,7 +548,7 @@ class StandaloneHost {
   NSString* error = nil;
   if (!_host->start(_window, _window.contentView, &error)) {
     NSAlert* alert = [[NSAlert alloc] init];
-    alert.messageText = @"NAM Oversampled Rig could not start";
+    alert.messageText = @"Axe FX could not start";
     alert.informativeText = error ?: @"Unknown error";
     [alert runModal];
     [NSApp terminate:nil];

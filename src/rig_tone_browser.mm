@@ -263,15 +263,15 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage) {
 // Full pagination of every keystroke/sort-change was getting us 429-throttled
 // then 403-WAF-blocked (427 requests in ~2 minutes). NAM Rig avoids this by
 // browsing from local data. We now do the same: every search page fetched from
-// the API is persisted under ~/Library/Application Support/NAM Oversampled
-// Rig/SearchCache/<sha1 of path>.json and served from disk when fresh (<10 min
+// the API is persisted under ~/Library/Application Support/Axe FX/SearchCache/
+// <sha1 of path>.json and served from disk when fresh (<10 min
 // old). Pages load lazily (one page per filter change / scroll), so a full
 // 30-page browse never re-downloads pages it already has.
 static NSString* searchCacheDir(void) {
   static NSString* dir = nil;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    dir = [@("~/Library/Application Support/NAM Oversampled Rig/SearchCache")
+    dir = [@("~/Library/Application Support/Axe FX/SearchCache")
            stringByExpandingTildeInPath];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir
                               withIntermediateDirectories:YES attributes:nil error:nil];
@@ -367,7 +367,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 // plugin editor (and these NSPopUpButtons) every time the window is reopened,
 // so without this the selections reset to "All Gear"/"Newest".
 - (void)persistFilterSelection {
-  NSString* dir = [@("~/Library/Application Support/NAM Oversampled Rig") stringByExpandingTildeInPath];
+  NSString* dir = [@("~/Library/Application Support/Axe FX") stringByExpandingTildeInPath];
   [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSString* path = [dir stringByAppendingPathComponent:@"browse-filters.txt"];
   NSString* line = [NSString stringWithFormat:@"%@\n%@\n",
@@ -375,9 +375,14 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort {
-  NSString* path = [[@("~/Library/Application Support/NAM Oversampled Rig") stringByExpandingTildeInPath]
+  NSString* path = [[@("~/Library/Application Support/Axe FX") stringByExpandingTildeInPath]
                     stringByAppendingPathComponent:@"browse-filters.txt"];
   NSString* text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+  if (!text.length) {
+    NSString* legacy = [[@("~/Library/Application Support/NAM Oversampled Rig") stringByExpandingTildeInPath]
+                        stringByAppendingPathComponent:@"browse-filters.txt"];
+    text = [NSString stringWithContentsOfFile:legacy encoding:NSUTF8StringEncoding error:nil];
+  }
   if (![text isKindOfClass:[NSString class]] || !text.length) return;
   NSArray* lines = [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
   NSString* savedGear = lines.count > 0 ? lines[0] : @"";
@@ -1416,7 +1421,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   else category = @"Amp";
   NSString* folder = [[[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]
                         stringByAppendingPathComponent:category]
-                       stringByAppendingPathComponent:@"NAM Oversampled Rig"]
+                       stringByAppendingPathComponent:@"Axe FX"]
                       stringByAppendingPathComponent:safeFilename(item.title)] copy];
   NSFileManager* fm = [NSFileManager defaultManager];
   [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];

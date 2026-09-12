@@ -92,7 +92,7 @@ output, without a DAW or LV2 host:
 ./build-standalone.sh
 ```
 
-This builds the app, installs it as `/Applications/NAM Oversampled Rig.app`, and
+This builds the app, installs it as `/Applications/Axe FX.app`, and
 launches it. On its first launch, macOS asks for microphone permission. Select
 the desired guitar interface as the system input and output before launching.
 To build and install without launching, pass `--no-launch`. For a non-system
