@@ -89,39 +89,48 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   NSImageView *_artView;
   NSTextField *_titleField;
   NSTextField *_detailField;
+  NSTextField *_tagField;
   NSButton *_favButton;
 }
 - (void)loadView {
-  RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 190, 74)];
+  RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 320, 108)];
   v.toolTip = @"Click to load or download this tone. Right-click to view it on Tone3000.";
 
-  _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(6, 7, 60, 60)];
+  _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(8, 8, 92, 92)];
   _artView.imageScaling = NSImageScaleProportionallyUpOrDown;
   _artView.wantsLayer = YES;
-  _artView.layer.cornerRadius = 7;
+  _artView.layer.cornerRadius = 8;
   _artView.layer.masksToBounds = YES;
   _artView.layer.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.25].CGColor;
   [v addSubview:_artView];
 
-  _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(72, 42, 92, 16)];
-  _titleField.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
+  _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 68, 172, 22)];
+  _titleField.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
   _titleField.textColor = rigText();
   _titleField.lineBreakMode = NSLineBreakByTruncatingTail;
   _titleField.editable = NO; _titleField.selectable = NO; _titleField.drawsBackground = NO; _titleField.bordered = NO;
   _titleField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_titleField];
 
-  _detailField = [[NSTextField alloc] initWithFrame:NSMakeRect(72, 24, 112, 14)];
-  _detailField.font = [NSFont systemFontOfSize:9.5];
+  _detailField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 44, 195, 18)];
+  _detailField.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   _detailField.textColor = rigDimText();
   _detailField.lineBreakMode = NSLineBreakByTruncatingTail;
   _detailField.editable = NO; _detailField.selectable = NO; _detailField.drawsBackground = NO; _detailField.bordered = NO;
   _detailField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_detailField];
 
+  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 16, 195, 18)];
+  _tagField.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
+  _tagField.textColor = rigDimText();
+  _tagField.lineBreakMode = NSLineBreakByTruncatingTail;
+  _tagField.editable = NO; _tagField.selectable = NO; _tagField.drawsBackground = NO; _tagField.bordered = NO;
+  _tagField.autoresizingMask = NSViewWidthSizable;
+  [v addSubview:_tagField];
+
   // Favorite star (top-right). Clicking reports to the browser controller;
   // the star is intentionally NOT a title/mode control, just a toggle.
-  _favButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 42, 18, 18)];
+  _favButton = [[NSButton alloc] initWithFrame:NSMakeRect(286, 68, 22, 22)];
   _favButton.bordered = NO;
   _favButton.imagePosition = NSImageOnly;
   _favButton.target = self;
@@ -145,6 +154,20 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _detailField.stringValue = [NSString stringWithFormat:@"@%@  ·  %@", item.creator, item.gear.uppercaseString];
   _favButton.image = [NSImage imageWithSystemSymbolName:(item.favorite ? @"star.fill" : @"star") accessibilityDescription:nil];
   _favButton.contentTintColor = item.favorite ? rigAccent() : rigDimText();
+
+  if (item.local) {
+    _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@  ·  Downloaded",
+        (long)(item.models.count ?: 1), item.models.count == 1 ? @"" : @"s"];
+    _tagField.textColor = rigGreen();
+  } else if (item.remoteModels.count > 0) {
+    _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@ available",
+        (long)item.remoteModels.count, item.remoteModels.count == 1 ? @"" : @"s"];
+    _tagField.textColor = rigDimText();
+  } else {
+    _tagField.stringValue = @"NAM Model Pack";
+    _tagField.textColor = rigDimText();
+  }
+
   NSString* cardTip = [NSString stringWithFormat:
       @"%@ by @%@ — %@. %@ Right-click to view it on Tone3000.",
       item.title ?: @"Untitled tone", item.creator ?: @"unknown", item.gear ?: @"capture",
@@ -153,6 +176,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _artView.toolTip = cardTip;
   _titleField.toolTip = cardTip;
   _detailField.toolTip = cardTip;
+  _tagField.toolTip = cardTip;
   _favButton.toolTip = item.favorite
       ? @"Remove this tone from your Tone3000 favorites."
       : @"Add this tone to your Tone3000 favorites.";
@@ -166,7 +190,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   if (!path.length || ![[NSFileManager defaultManager] fileExistsAtPath:path])
     path = artworkForTone(item.toneId, item.stage);
 
-  // Decode at card size (60pt @2x): scrolling cost stays flat no matter how
+  // Decode at card size (92pt @2x): scrolling cost stays flat no matter how
   // large the artwork on disk is.
   __weak NSImageView *weakArt = _artView;
   if (path.length) {
@@ -174,7 +198,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
     if (cached) { _artView.image = cached; return; }
     NSString *capturedPath = [path copy];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      NSImage *img = rigThumbnailFromFile(capturedPath, 120.0);
+      NSImage *img = rigThumbnailFromFile(capturedPath, 184.0);
       if (!img) return;
       [artworkCache() setObject:img forKey:capturedPath];
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -198,7 +222,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:capturedURL]];
     if (!data.length) return;
-    NSImage *img = rigThumbnailFromData(data, 120.0);
+    NSImage *img = rigThumbnailFromData(data, 184.0);
     if (!img) return;
     // Persist the ORIGINAL bytes to NAM Rig's artwork cache directory (the
     // stage tiles read the same file at a larger size); cache the decoded

@@ -79,7 +79,6 @@ static NSString* stageName(NSInteger stage) {
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)transformerChanged:(NSPopUpButton*)sender;
 - (void)showAmpAdvanced:(NSButton*)sender;
-- (void)showSignalFlow:(NSButton*)sender;
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
 - (void)showSpeakerLoad:(NSButton*)sender;
 - (void)showEffects:(NSButton*)sender;
@@ -93,9 +92,14 @@ static NSString* stageName(NSInteger stage) {
 - (void)savePresetAs:(id)sender;
 - (void)deleteCurrentPreset:(id)sender;
 - (void)revealPresetsInFinder:(id)sender;
+- (void)switchTab:(NSButton*)sender;
 - (void)markPresetModified;
 @end
 @implementation NAMRigUIController
+- (void)switchTab:(NSButton*)sender {
+  if (!_state) return;
+  _state->selectTab(sender.tag);
+}
 - (void)markPresetModified {
   if (!_state || !_state->presetManager) return;
   if (!_state->presetManager.isModified) {
@@ -297,13 +301,6 @@ static NSString* stageName(NSInteger stage) {
   if (!_state || !_state->effectsPopover) return;
   [_state->effectsPopover showRelativeToRect:sender.bounds ofView:sender
                                preferredEdge:NSRectEdgeMaxY];
-}
-
-- (void)showSignalFlow:(NSButton*)sender {
-  if (!_state || !_state->signalFlowPopover) return;
-  [_state->signalFlowPopover showRelativeToRect:sender.bounds
-                                         ofView:sender
-                                  preferredEdge:NSRectEdgeMaxY];
 }
 
 - (void)resetAllKnobs:(NSButton*)sender {
@@ -527,60 +524,58 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 // Mode selector buttons are built inline in addToneBrowser with per-button
 // state tracking; no extra helper needed.
 
-static void addToneBrowser(RigUIState* state, NSView* content) {
+static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   const CGFloat pad = 24.0;
-  RigPanel* browser = [[RigPanel alloc] initWithFrame:NSZeroRect];
-  browser.translatesAutoresizingMaskIntoConstraints = NO;
-  // Pin below the topView (which is the previous subview of `content`).
-  NSView* topView = content.subviews.count ? content.subviews.firstObject : content;
-  [content addSubview:browser];
-  [[browser.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:pad] setActive:YES];
-  [[browser.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-pad] setActive:YES];
-  [[browser.topAnchor constraintEqualToAnchor:topView.bottomAnchor constant:12] setActive:YES];
-  [[browser.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-12] setActive:YES];
+  const CGFloat bw = 1280.0 - pad * 2;
 
   ToneBrowserController* controller = [[ToneBrowserController alloc] init];
   controller.state = state; state->browserController = controller;
-  // Connect automatically in the background — no button click required. The
-  // deferred dispatch lets the rest of the browser UI (search/gear/sort) wire
-  // up before the first connect; autoConnect also installs the periodic
-  // re-connect safety net.
   dispatch_async(dispatch_get_main_queue(), ^{ [controller autoConnect]; });
 
-  const CGFloat bw = content.bounds.size.width - pad * 2;
-
   // Header: brand + subtle status line.
-  NSTextField* toneTitle = addLabel(browser, @"TONE3000", NSMakeRect(28, 300, 130, 24),
+  NSTextField* toneTitle = addLabel(tonePane, @"TONE3000", NSZeroRect,
                                     [NSFont fontWithName:@"SF Mono Bold" size:16.0] ?: [NSFont boldSystemFontOfSize:16],
                                     rigOrange());
   toneTitle.toolTip = @"Integrated Tone3000 browser for discovering, downloading, and loading NAM captures and cabinet IRs.";
-  controller.authStatus = addLabel(browser, @"", NSMakeRect(140, 302, 300, 14),
+  toneTitle.translatesAutoresizingMaskIntoConstraints = NO;
+  [tonePane addSubview:toneTitle];
+  [[toneTitle.leadingAnchor constraintEqualToAnchor:tonePane.leadingAnchor constant:216] setActive:YES];
+  [[toneTitle.topAnchor constraintEqualToAnchor:tonePane.topAnchor constant:10] setActive:YES];
+  [[toneTitle.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+  controller.authStatus = addLabel(tonePane, @"", NSZeroRect,
                                    [NSFont systemFontOfSize:10], rigDimText());
+  controller.authStatus.translatesAutoresizingMaskIntoConstraints = NO;
+  [tonePane addSubview:controller.authStatus];
+  [[controller.authStatus.leadingAnchor constraintEqualToAnchor:toneTitle.trailingAnchor constant:10] setActive:YES];
+  [[controller.authStatus.centerYAnchor constraintEqualToAnchor:toneTitle.centerYAnchor] setActive:YES];
+  [[controller.authStatus.widthAnchor constraintEqualToConstant:100] setActive:YES];
 
   // Mode selector (toggles) + Connect + gear — single row beneath the brand.
   NSArray<NSString*>* modes = @[@"Browse", @"Favorites", @"Recent", @"Local"];
   NSMutableArray<RigButton*>* modeButtons = [NSMutableArray array];
+  NSArray<NSString*>* modeTips = @[
+    @"Browse the online Tone3000 catalog and locally cached results.",
+    @"Show tones marked as favorites in your Tone3000 account.",
+    @"Show locally known tones ordered by most recently modified.",
+    @"Show only tone packs already downloaded to this Mac."
+  ];
+  NSView* prevMode = controller.authStatus;
   for (NSInteger i = 0; i < (NSInteger)modes.count; ++i) {
-    RigButton* b = rigButton(browser, modes[(NSUInteger)i], controller, @selector(selectMode:),
-                             NSMakeRect(200 + i * 88, 294, 84, 30));
+    RigButton* b = rigButton(tonePane, modes[(NSUInteger)i], controller, @selector(selectMode:), NSZeroRect);
+    b.translatesAutoresizingMaskIntoConstraints = NO;
     b.state = (i == 0) ? NSControlStateValueOn : NSControlStateValueOff;
-    NSArray<NSString*>* modeTips = @[
-      @"Browse the online Tone3000 catalog and locally cached results.",
-      @"Show tones marked as favorites in your Tone3000 account.",
-      @"Show locally known tones ordered by most recently modified.",
-      @"Show only tone packs already downloaded to this Mac."
-    ];
     b.toolTip = modeTips[(NSUInteger)i];
+    [[b.leadingAnchor constraintEqualToAnchor:prevMode.trailingAnchor constant:(i == 0 ? 12 : 6)] setActive:YES];
+    [[b.centerYAnchor constraintEqualToAnchor:toneTitle.centerYAnchor] setActive:YES];
+    [[b.widthAnchor constraintEqualToConstant:80] setActive:YES];
+    [[b.heightAnchor constraintEqualToConstant:26] setActive:YES];
     [modeButtons addObject:b];
+    prevMode = b;
   }
   controller.modeButtons = modeButtons;
-  controller.connectButton = rigButton(browser, @"Connect", controller,
-      @selector(connectTone3000:), NSMakeRect(bw - 230, 294, 92, 30));
-  controller.connectButton.primary = NO;
-  controller.connectButton.state = NSControlStateValueOff;
-  controller.connectButton.toolTip = @"Sign in to Tone3000 in your browser. A stored valid session reconnects automatically.";
 
-  controller.gear = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(bw - 128, 294, 104, 30) pullsDown:NO];
+  controller.gear = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
   [controller.gear addItemsWithTitles:@[@"All Gear", @"Amps", @"Cabs", @"Pedals", @"Amp + Cab"]];
   NSArray<NSString*>* gearTips = @[
     @"All Gear — Show every supported capture type.",
@@ -594,15 +589,41 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   controller.gear.target = controller; controller.gear.action = @selector(filterChanged:);
   controller.gear.controlSize = NSControlSizeSmall;
   controller.gear.toolTip = @"Filter Tone3000 results by capture type: amps, cabinets, pedals, or complete amp-and-cab rigs.";
-  [browser addSubview:controller.gear];
+  controller.gear.translatesAutoresizingMaskIntoConstraints = NO;
+  [tonePane addSubview:controller.gear];
+  [[controller.gear.trailingAnchor constraintEqualToAnchor:tonePane.trailingAnchor constant:-134] setActive:YES];
+  [[controller.gear.centerYAnchor constraintEqualToAnchor:toneTitle.centerYAnchor] setActive:YES];
+  [[controller.gear.widthAnchor constraintEqualToConstant:104] setActive:YES];
+  [[controller.gear.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+  controller.connectButton = rigButton(tonePane, @"Connect", controller,
+      @selector(connectTone3000:), NSZeroRect);
+  controller.connectButton.primary = NO;
+  controller.connectButton.state = NSControlStateValueOff;
+  controller.connectButton.toolTip = @"Sign in to Tone3000 in your browser. A stored valid session reconnects automatically.";
+  controller.connectButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [[controller.connectButton.trailingAnchor constraintEqualToAnchor:controller.gear.leadingAnchor constant:-10] setActive:YES];
+  [[controller.connectButton.centerYAnchor constraintEqualToAnchor:toneTitle.centerYAnchor] setActive:YES];
+  [[controller.connectButton.widthAnchor constraintEqualToConstant:88] setActive:YES];
+  [[controller.connectButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+  RigPanel* browser = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  browser.translatesAutoresizingMaskIntoConstraints = NO;
+  [tonePane addSubview:browser];
+  [[browser.leadingAnchor constraintEqualToAnchor:tonePane.leadingAnchor constant:pad] setActive:YES];
+  [[browser.trailingAnchor constraintEqualToAnchor:tonePane.trailingAnchor constant:-pad] setActive:YES];
+  [[browser.topAnchor constraintEqualToAnchor:toneTitle.bottomAnchor constant:12] setActive:YES];
+  [[browser.bottomAnchor constraintEqualToAnchor:tonePane.bottomAnchor constant:-14] setActive:YES];
+
+  const CGFloat bh = 980.0 - (10.0 + 26.0 + 12.0) - 14.0;
 
   // Search / sort row.
-  controller.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(28, 252, bw * 0.48, 30)];
+  controller.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(24, bh - 38, bw * 0.48, 28)];
   controller.search.placeholderString = @"Search Tone3000";
   controller.search.focusRingType = NSFocusRingTypeNone;
   controller.search.toolTip = @"Search Tone3000 by tone title, creator, or gear type. Online results load page by page.";
   controller.search.delegate = controller; [browser addSubview:controller.search];
-  controller.sort = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(28 + bw * 0.48 + 12, 252, 160, 30) pullsDown:NO];
+  controller.sort = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24 + bw * 0.48 + 12, bh - 38, 160, 28) pullsDown:NO];
   [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
   NSArray<NSString*>* sortTips = @[
     @"Newest — Show the most recently published tones first.",
@@ -623,16 +644,17 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
   controller.sort.toolTip = popupTooltip(@"Orders Tone3000 search results.",
                                          controller.sort);
 
-  // Tone cards — multi-column collection view, click to load/download.
-  const CGFloat tableWidth = bw - 56;
+  // Tone cards — multi-column collection view with large readable cards.
+  const CGFloat tableWidth = bw - 48;
   NSCollectionViewGridLayout *grid = [[NSCollectionViewGridLayout alloc] init];
-  grid.minimumItemSize = NSMakeSize(180, 74);
-  grid.maximumItemSize = NSMakeSize(260, 74);
-  grid.minimumInteritemSpacing = 10;
-  grid.minimumLineSpacing = 10;
-  grid.margins = NSEdgeInsetsMake(6, 6, 6, 6);
+  grid.minimumItemSize = NSMakeSize(270, 108);
+  grid.maximumItemSize = NSMakeSize(380, 108);
+  grid.minimumInteritemSpacing = 14;
+  grid.minimumLineSpacing = 14;
+  grid.margins = NSEdgeInsetsMake(10, 10, 10, 10);
 
-  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(28, 48, tableWidth, 190)];
+  const CGFloat scrollH = bh - 38 - 46;
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 38, tableWidth, scrollH)];
   scroll.drawsBackground = NO; scroll.borderType = NSNoBorder;
   scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES;
   scroll.toolTip = @"Scrollable Tone3000 results. More online results load automatically near the bottom.";
@@ -655,7 +677,7 @@ static void addToneBrowser(RigUIState* state, NSView* content) {
                                            object:scroll.contentView];
   [browser addSubview:scroll];
 
-  controller.status = addLabel(browser, @"Scanning NAM Rig's Tone3000 library…", NSMakeRect(28, 16, bw - 56, 22),
+  controller.status = addLabel(browser, @"Scanning NAM Rig's Tone3000 library…", NSMakeRect(24, 12, bw - 48, 20),
                                [NSFont systemFontOfSize:10.5], rigDimText());
   controller.status.lineBreakMode = NSLineBreakByTruncatingTail;
   controller.authStatus.toolTip = @"Tone3000 sign-in and session status.";
@@ -711,7 +733,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (size_t i = 0; i < kPathURIs.size(); ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
-    const CGFloat baseW = 1280.0, baseH = 830.0;
+    const CGFloat baseW = 1280.0, baseH = 980.0;
 
     state->view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, baseW, baseH)];
     state->view.wantsLayer = YES;
@@ -736,29 +758,68 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [state->view addSubview:content];
     state->rigContent = content;
 
-    // Top section: title bar + 3 stage boxes. A compact FIXED height keeps the
-    // tiles tight near the top; the browser fills all remaining space below.
-    NSView* topView = [[NSView alloc] initWithFrame:NSZeroRect];
-    topView.translatesAutoresizingMaskIntoConstraints = NO;
-    [content addSubview:topView];
-    [[topView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
-    [[topView.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
-    [[topView.topAnchor constraintEqualToAnchor:content.topAnchor] setActive:YES];
-    [[topView.heightAnchor constraintEqualToConstant:470] setActive:YES];
-
     state->uiController = [[NAMRigUIController alloc] init];
     state->uiController.state = state;
 
-    // Invisible layout anchor replacing the old title/chain labels: the
-    // tuner button, tuner panel, input meter and the tile row all pin to it,
-    // so it keeps their exact geometry with no visible text.
+    // Two panes: rigPane for the complete amplifier/pedal/cab rig, and tonePane for Tone3000.
+    NSView* rigPane = [[NSView alloc] initWithFrame:NSZeroRect];
+    rigPane.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:rigPane];
+    [[rigPane.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
+    [[rigPane.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
+    [[rigPane.topAnchor constraintEqualToAnchor:content.topAnchor] setActive:YES];
+    [[rigPane.bottomAnchor constraintEqualToAnchor:content.bottomAnchor] setActive:YES];
+    state->rigPane = rigPane;
+
+    NSView* tonePane = [[NSView alloc] initWithFrame:NSZeroRect];
+    tonePane.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:tonePane];
+    [[tonePane.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
+    [[tonePane.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
+    [[tonePane.topAnchor constraintEqualToAnchor:content.topAnchor] setActive:YES];
+    [[tonePane.bottomAnchor constraintEqualToAnchor:content.bottomAnchor] setActive:YES];
+    state->tonePane = tonePane;
+
+    // Persistent top tab switcher & zoom control (added to content so they stay pinned above both panes).
+    state->rigTabBtn = rigButton(content, @"RIG", state->uiController, @selector(switchTab:), NSZeroRect);
+    state->rigTabBtn.tag = 0;
+    state->rigTabBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [[state->rigTabBtn.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:24] setActive:YES];
+    [[state->rigTabBtn.topAnchor constraintEqualToAnchor:content.topAnchor constant:10] setActive:YES];
+    [[state->rigTabBtn.widthAnchor constraintEqualToConstant:76] setActive:YES];
+    [[state->rigTabBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    state->rigTabBtn.toolTip = @"View the amp, pedal, cabinet stages and tone controls.";
+
+    state->toneTabBtn = rigButton(content, @"TONE3000", state->uiController, @selector(switchTab:), NSZeroRect);
+    state->toneTabBtn.tag = 1;
+    state->toneTabBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [[state->toneTabBtn.leadingAnchor constraintEqualToAnchor:state->rigTabBtn.trailingAnchor constant:6] setActive:YES];
+    [[state->toneTabBtn.topAnchor constraintEqualToAnchor:content.topAnchor constant:10] setActive:YES];
+    [[state->toneTabBtn.widthAnchor constraintEqualToConstant:98] setActive:YES];
+    [[state->toneTabBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    state->toneTabBtn.toolTip = @"Browse, search, and download NAM captures and cabinet IRs from Tone3000.";
+
+    state->zoomControl = [[NSComboBox alloc] initWithFrame:NSZeroRect];
+    state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
+    state->zoomControl.editable = YES;               // custom zoom % only (no preset list)
+    state->zoomControl.controlSize = NSControlSizeSmall;
+    state->zoomControl.placeholderString = @"100%";
+    state->zoomControl.toolTip = @"Set the plug-in interface scale from 50% to 400%. Type a percentage and press Return.";
+    state->zoomControl.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:state->zoomControl];
+    [[state->zoomControl.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-24] setActive:YES];
+    [[state->zoomControl.topAnchor constraintEqualToAnchor:content.topAnchor constant:9] setActive:YES];
+    [[state->zoomControl.widthAnchor constraintEqualToConstant:100] setActive:YES];
+    [[state->zoomControl.heightAnchor constraintEqualToConstant:28] setActive:YES];
+
+    // Layout anchor for the rig header row, starting to the right of the tab buttons.
     NSView* title = [[NSView alloc] initWithFrame:NSZeroRect];
     title.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:title];
-    [[title.leadingAnchor constraintEqualToAnchor:topView.leadingAnchor constant:24] setActive:YES];
-    [[title.topAnchor constraintEqualToAnchor:topView.topAnchor constant:10] setActive:YES];
+    [rigPane addSubview:title];
+    [[title.leadingAnchor constraintEqualToAnchor:rigPane.leadingAnchor constant:216] setActive:YES];
+    [[title.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:10] setActive:YES];
     [[title.heightAnchor constraintEqualToConstant:26] setActive:YES];
-    [[title.widthAnchor constraintEqualToConstant:10] setActive:YES];
+    [[title.widthAnchor constraintEqualToConstant:6] setActive:YES];
 
     // Tuner toggle (title bar) — flat icon button, dim when off, bright when on.
     state->tunerButton = [[NSButton alloc] initWithFrame:NSZeroRect];
@@ -772,18 +833,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->tunerButton.action = @selector(tunerToggled:);
     state->tunerButton.toolTip = @"Toggle the input tuner. It analyzes the raw guitar signal before the gate, gain controls, and model chain.";
     state->tunerButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:state->tunerButton];
-    [[state->tunerButton.leadingAnchor constraintEqualToAnchor:title.trailingAnchor constant:28] setActive:YES];
+    [rigPane addSubview:state->tunerButton];
+    [[state->tunerButton.leadingAnchor constraintEqualToAnchor:title.trailingAnchor constant:6] setActive:YES];
     [[state->tunerButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[state->tunerButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
     [[state->tunerButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-    // Oversample mode dropdown (title bar, next to the tuner icon) — A/B
-    // the oversampling implementations (and a raw off mode):
-    //   None    : no rate adaptation (A/B reference; may sound detuned)
-    //   Legacy  : NeuralAudio dilation oversampling (previous behavior)
-    //   True 2x : genuine UP/model/DOWN 2x domain (measured ~21 dB less
-    //             alias clutter on hard-clipped material)
+    // Oversample mode dropdown (title bar, next to the tuner icon)
     state->osPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [state->osPopup addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",
                                           @"True 8x"]];
@@ -793,8 +849,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (NSUInteger item = 0; item < oversampleDescriptions().count; ++item)
       [state->osPopup itemAtIndex:item].toolTip = oversampleDescriptions()[item];
     state->osPopup.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:state->osPopup];
-    [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:10] setActive:YES];
+    [rigPane addSubview:state->osPopup];
+    [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:8] setActive:YES];
     [[state->osPopup.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[state->osPopup.widthAnchor constraintEqualToConstant:104] setActive:YES];
     [[state->osPopup.heightAnchor constraintEqualToConstant:26] setActive:YES];
@@ -802,9 +858,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [state->osPopup selectItemAtIndex:4];
     state->osPopup.toolTip = popupTooltip(@"Sets both pedal and amp oversampling.", state->osPopup);
 
-    // Tuner readout panel — hidden until the toggle is on. Note name, detune
-    // in cents, and a needle meter across ±50 cents. Styled like the tiles
-    // (panel bg, subtle border, accent highlights).
+    // Tuner readout panel — hidden until the toggle is on.
     NSView* tp = [[NSView alloc] initWithFrame:NSZeroRect];
     tp.wantsLayer = YES;
     tp.layer.backgroundColor = rigPanelBG().CGColor;
@@ -813,12 +867,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     tp.layer.borderColor = rigPanelBorder().CGColor;
     tp.hidden = YES;
     tp.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:tp];
+    [rigPane addSubview:tp];
     tp.toolTip = @"Live tuner readout from the raw input signal.";
     state->tunerPanel = tp;
-    [[tp.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:20] setActive:YES];
-    [[tp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[tp.widthAnchor constraintEqualToConstant:280] setActive:YES];
+    [[tp.leadingAnchor constraintEqualToAnchor:state->tunerButton.leadingAnchor] setActive:YES];
+    [[tp.topAnchor constraintEqualToAnchor:state->tunerButton.bottomAnchor constant:6] setActive:YES];
+    [[tp.widthAnchor constraintEqualToConstant:240] setActive:YES];
     [[tp.heightAnchor constraintEqualToConstant:34] setActive:YES];
 
     NSTextField* noteL = addLabel(tp, @"—", NSZeroRect,
@@ -866,8 +920,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[needle.topAnchor constraintEqualToAnchor:meter.topAnchor constant:-3] setActive:YES];
     [[needle.bottomAnchor constraintEqualToAnchor:meter.bottomAnchor constant:3] setActive:YES];
     [[needle.widthAnchor constraintEqualToConstant:3] setActive:YES];
-    // Horizontal position is set at update time as a fraction of meter width;
-    // pin to leading edge with a settable constant.
+
     NSLayoutConstraint* needleLeading =
         [NSLayoutConstraint constraintWithItem:needle
                                      attribute:NSLayoutAttributeLeading
@@ -888,12 +941,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     mp.layer.borderWidth = 1.0;
     mp.layer.borderColor = rigPanelBorder().CGColor;
     mp.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:mp];
+    [rigPane addSubview:mp];
     mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
-    [[mp.leadingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:14] setActive:YES];
+    [[mp.leadingAnchor constraintEqualToAnchor:state->osPopup.trailingAnchor constant:14] setActive:YES];
     [[mp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[mp.widthAnchor constraintEqualToConstant:150] setActive:YES];
-    [[mp.heightAnchor constraintEqualToConstant:34] setActive:YES];
+    [[mp.widthAnchor constraintEqualToConstant:140] setActive:YES];
+    [[mp.heightAnchor constraintEqualToConstant:30] setActive:YES];
 
     NSTextField* dbL = addLabel(mp, @"  —  dB", NSZeroRect,
                                 [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],
@@ -942,12 +995,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     // Preset management controls (title bar):
     // [ ◀ ] [ Preset: Name ▾ ] [ ▶ ] [ SAVE ]
-    RigButton* prevPresetBtn = rigButton(topView, @"◀", state->uiController,
+    RigButton* prevPresetBtn = rigButton(rigPane, @"◀", state->uiController,
                                          @selector(prevPresetClicked:), NSZeroRect);
     prevPresetBtn.toolTip = @"Switch to the previous preset.";
     prevPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
     state->prevPresetBtn = prevPresetBtn;
-    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:16] setActive:YES];
+    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:14] setActive:YES];
     [[prevPresetBtn.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[prevPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
     [[prevPresetBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
@@ -958,14 +1011,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     presetPop.action = @selector(presetPopupChanged:);
     presetPop.toolTip = @"Active preset. Click to select a preset, save, or manage presets.";
     presetPop.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:presetPop];
+    [rigPane addSubview:presetPop];
     state->presetPopup = presetPop;
     [[presetPop.leadingAnchor constraintEqualToAnchor:prevPresetBtn.trailingAnchor constant:4] setActive:YES];
     [[presetPop.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[presetPop.widthAnchor constraintEqualToConstant:165] setActive:YES];
+    [[presetPop.widthAnchor constraintEqualToConstant:155] setActive:YES];
     [[presetPop.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-    RigButton* nextPresetBtn = rigButton(topView, @"▶", state->uiController,
+    RigButton* nextPresetBtn = rigButton(rigPane, @"▶", state->uiController,
                                          @selector(nextPresetClicked:), NSZeroRect);
     nextPresetBtn.toolTip = @"Switch to the next preset.";
     nextPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
@@ -975,7 +1028,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[nextPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
     [[nextPresetBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-    RigButton* savePresetBtn = rigButton(topView, @"SAVE", state->uiController,
+    RigButton* savePresetBtn = rigButton(rigPane, @"SAVE", state->uiController,
                                          @selector(saveCurrentPreset:), NSZeroRect);
     savePresetBtn.toolTip = @"Save current rig settings to active preset, or save as a new preset.";
     savePresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
@@ -985,84 +1038,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[savePresetBtn.widthAnchor constraintEqualToConstant:54] setActive:YES];
     [[savePresetBtn.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-    state->zoomControl = [[NSComboBox alloc] initWithFrame:NSZeroRect];
-    state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
-    state->zoomControl.editable = YES;               // custom zoom % only (no preset list)
-    state->zoomControl.controlSize = NSControlSizeSmall;
-    state->zoomControl.placeholderString = @"100%";
-    state->zoomControl.toolTip = @"Set the plug-in interface scale from 50% to 400%. Type a percentage and press Return.";
-    state->zoomControl.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:state->zoomControl];
-    [[state->zoomControl.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-24] setActive:YES];
-    [[state->zoomControl.topAnchor constraintEqualToAnchor:topView.topAnchor constant:8] setActive:YES];
-    [[state->zoomControl.widthAnchor constraintEqualToConstant:110] setActive:YES];
-    [[state->zoomControl.heightAnchor constraintEqualToConstant:28] setActive:YES];
-
-    RigButton* signalFlowButton = rigButton(topView, @"SIGNAL FLOW", state->uiController,
-                                            @selector(showSignalFlow:), NSZeroRect);
-    signalFlowButton.toolTip = @"Show where the pre-amp, power-amp, cabinet, and existing three-band EQ controls sit in the audio path.";
-    signalFlowButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [[signalFlowButton.trailingAnchor constraintEqualToAnchor:state->zoomControl.leadingAnchor constant:-10] setActive:YES];
-    [[signalFlowButton.centerYAnchor constraintEqualToAnchor:state->zoomControl.centerYAnchor] setActive:YES];
-    [[signalFlowButton.widthAnchor constraintEqualToConstant:118] setActive:YES];
-    [[signalFlowButton.heightAnchor constraintEqualToConstant:28] setActive:YES];
-
-    RigButton* resetKnobsButton = rigButton(topView, @"RESET KNOBS", state->uiController,
+    RigButton* resetKnobsButton = rigButton(rigPane, @"RESET KNOBS", state->uiController,
                                            @selector(resetAllKnobs:), NSZeroRect);
     resetKnobsButton.toolTip = @"Reset every knob to its factory default. Model selections, stage switches, profiles, and oversampling are unchanged.";
     resetKnobsButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [[resetKnobsButton.trailingAnchor constraintEqualToAnchor:signalFlowButton.leadingAnchor constant:-10] setActive:YES];
-    [[resetKnobsButton.centerYAnchor constraintEqualToAnchor:signalFlowButton.centerYAnchor] setActive:YES];
+    [rigPane addSubview:resetKnobsButton];
+    [[resetKnobsButton.trailingAnchor constraintEqualToAnchor:rigPane.trailingAnchor constant:-134] setActive:YES];
+    [[resetKnobsButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[resetKnobsButton.widthAnchor constraintEqualToConstant:112] setActive:YES];
-    [[resetKnobsButton.heightAnchor constraintEqualToConstant:28] setActive:YES];
-
-    NSPopover* signalFlowPopover = [[NSPopover alloc] init];
-    signalFlowPopover.behavior = NSPopoverBehaviorTransient;
-    NSViewController* flowController = [[NSViewController alloc] init];
-    NSView* flowView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 610, 430)];
-    flowView.wantsLayer = YES;
-    flowView.layer.backgroundColor = rigPanelBG().CGColor;
-    flowController.view = flowView;
-    signalFlowPopover.contentViewController = flowController;
-    signalFlowPopover.contentSize = NSMakeSize(610, 430);
-    state->signalFlowPopover = signalFlowPopover;
-
-    NSTextField* flowTitle = addLabel(flowView, @"SIGNAL FLOW", NSMakeRect(20, 394, 570, 22),
-        [NSFont systemFontOfSize:14 weight:NSFontWeightBold], rigText(), NSTextAlignmentCenter);
-    rigApplyTracking(flowTitle, 1.2);
-    NSArray<NSString*>* flowSteps = @[
-      @"Guitar Input  →  Input Level  →  Compressor  →  Pedal NAM  →  Amp Drive",
-      @"↓",
-      @"Bright + Input EQ   (before Amp NAM; changes how the amp distorts)",
-      @"↓",
-      @"Amp NAM",
-      @"↓",
-      @"Output Transformer  →  Presence / Depth / Sag / Bias / Feedback / Master",
-      @"↓",
-      @"Speaker Dynamics / Impedance  →  Cab NAM / WAV IR  →  Cab Level  →  Low Cut / High Cut",
-      @"↓",
-      @"Bass / Mid / Treble   (original clean post-cab EQ)",
-      @"↓",
-      @"Output Level  →  Width / Room  →  Left / Right Output"
-    ];
-    CGFloat flowY = 358.0;
-    for (NSString* step in flowSteps) {
-      const BOOL arrow = [step isEqualToString:@"↓"];
-      NSTextField* line = addLabel(flowView, step, NSMakeRect(20, flowY, 570, arrow ? 17 : 22),
-          arrow ? [NSFont systemFontOfSize:14 weight:NSFontWeightBold]
-                : [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightMedium],
-          arrow ? rigAccent() : rigText(), NSTextAlignmentCenter);
-      if ([step hasPrefix:@"Bright"] || [step hasPrefix:@"Output Transformer"])
-        line.textColor = rigOrange();
-      if ([step hasPrefix:@"Bass / Mid / Treble"])
-        line.textColor = rigGreen();
-      flowY -= arrow ? 21.0 : 28.0;
-    }
-    NSTextField* flowNote = addLabel(flowView,
-        @"Bass / Mid / Treble stay the original post-cab EQ. All new advanced amp controls default off.",
-        NSMakeRect(20, 14, 570, 18), [NSFont systemFontOfSize:10 weight:NSFontWeightRegular],
-        rigDimText(), NSTextAlignmentCenter);
-    flowNote.toolTip = @"The advanced controls use separate DSP state and do not replace or alter the existing Bass, Mid, and Treble controls.";
+    [[resetKnobsButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
     NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
@@ -1134,6 +1118,17 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
+    NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    boxRow.distribution = NSStackViewDistributionFillEqually;
+    boxRow.spacing = 22.0;
+    boxRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [rigPane addSubview:boxRow];
+    [[boxRow.leadingAnchor constraintEqualToAnchor:rigPane.leadingAnchor constant:24] setActive:YES];
+    [[boxRow.trailingAnchor constraintEqualToAnchor:rigPane.trailingAnchor constant:-24] setActive:YES];
+    [[boxRow.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:16] setActive:YES];
+    [[boxRow.heightAnchor constraintEqualToConstant:328] setActive:YES];
+
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // DRIVE/PRESENCE/DEPTH and the tone controls under AMP, OUTPUT under CAB. Each group's LEADING and
     // TRAILING edges are pinned to its tile box in the tile loop below, so the
@@ -1147,9 +1142,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
       group.translatesAutoresizingMaskIntoConstraints = NO;
-      [topView addSubview:group];
+      [rigPane addSubview:group];
       knobGroups[g] = group;
-      [[group.bottomAnchor constraintEqualToAnchor:topView.bottomAnchor constant:-16] setActive:YES];
+      [[group.topAnchor constraintEqualToAnchor:boxRow.bottomAnchor constant:14] setActive:YES];
       [[group.heightAnchor constraintEqualToConstant:110] setActive:YES];
 
       // Equal-width cells tiled across the group with the same 22pt spacing
@@ -1220,16 +1215,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       }
     }
 
-    NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
-    boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    boxRow.distribution = NSStackViewDistributionFillEqually;
-    boxRow.spacing = 22.0;
-    boxRow.translatesAutoresizingMaskIntoConstraints = NO;
-    [topView addSubview:boxRow];
-    [[boxRow.leadingAnchor constraintEqualToAnchor:topView.leadingAnchor constant:24] setActive:YES];
-    [[boxRow.trailingAnchor constraintEqualToAnchor:topView.trailingAnchor constant:-24] setActive:YES];
-    [[boxRow.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:18] setActive:YES];
-    [[boxRow.bottomAnchor constraintEqualToAnchor:knobGroups[0].topAnchor constant:-12] setActive:YES];
+    // Empty space below the rig controls for future expansion modules.
+    RigPanel* expansionSlot = addPanel(rigPane, NSZeroRect);
+    expansionSlot.translatesAutoresizingMaskIntoConstraints = NO;
+    expansionSlot.toolTip = @"Rig expansion area for future signal chain and effect modules.";
+    [[expansionSlot.leadingAnchor constraintEqualToAnchor:rigPane.leadingAnchor constant:24] setActive:YES];
+    [[expansionSlot.trailingAnchor constraintEqualToAnchor:rigPane.trailingAnchor constant:-24] setActive:YES];
+    [[expansionSlot.topAnchor constraintEqualToAnchor:knobGroups[0].bottomAnchor constant:18] setActive:YES];
+    [[expansionSlot.bottomAnchor constraintEqualToAnchor:rigPane.bottomAnchor constant:-20] setActive:YES];
 
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
@@ -1442,7 +1435,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         RigButton* speakerButton = rigButton(box, @"SPEAKER LOAD", state->uiController,
                                              @selector(showSpeakerLoad:), NSZeroRect);
         speakerButton.translatesAutoresizingMaskIntoConstraints = NO;
-        speakerButton.toolTip = @"Open speaker dynamics and impedance controls. Captured / Off is exact bypass.";
+        speakerButton.toolTip = @"Speaker Dynamics / Impedance — Open speaker dynamics and impedance controls. Captured / Off is exact bypass.";
         [box addSubview:speakerButton];
         [[speakerButton.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
         [[speakerButton.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
@@ -1602,7 +1595,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       state->setStageThumb((size_t)i, nil, 0, nil);
     }
 
-    addToneBrowser(state, content);
+    addToneBrowser(state, tonePane);
+    state->selectTab(0);
     [parent addSubview:state->view];
     state->applyZoom();                               // default 100%
     *widget = (__bridge void*)state->view;

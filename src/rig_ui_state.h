@@ -28,6 +28,7 @@
 #include "output_transformer.h"
 #include "speaker_dynamics.h"
 #import "rig_theme.h"
+#import "rig_widgets.h"
 #import "rig_presets.h"
 
 @class NAMRigUIController;
@@ -68,7 +69,6 @@ struct RigUIState {
   __strong NSPopUpButton* irNormPopup = nil;
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
   __strong NSPopover* ampAdvancedPopover = nil;
-  __strong NSPopover* signalFlowPopover = nil;
   __strong NSPopUpButton* speakerProfilePopup = nil;
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
@@ -150,6 +150,29 @@ struct RigUIState {
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
   __strong NSView* rigContent = nil;   // the Auto Layout container that fills the window
+
+  // Tabbed panes: Rig (tab 0) and Tone3000 (tab 1).
+  __strong NSView* rigPane = nil;
+  __strong NSView* tonePane = nil;
+  __strong RigButton* rigTabBtn = nil;
+  __strong RigButton* toneTabBtn = nil;
+  NSInteger activeTab = 0;
+
+  void selectTab(NSInteger tab) {
+    activeTab = tab;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (rigTabBtn) {
+        rigTabBtn.state = (tab == 0) ? NSControlStateValueOn : NSControlStateValueOff;
+        rigTabBtn.needsDisplay = YES;
+      }
+      if (toneTabBtn) {
+        toneTabBtn.state = (tab == 1) ? NSControlStateValueOn : NSControlStateValueOff;
+        toneTabBtn.needsDisplay = YES;
+      }
+      if (rigPane) rigPane.hidden = (tab != 0);
+      if (tonePane) tonePane.hidden = (tab != 1);
+    });
+  }
 
   // Preset management: title bar dropdown, quick prev/next, and quick save.
   __strong NSPopUpButton* presetPopup = nil;
@@ -339,14 +362,14 @@ struct RigUIState {
     displayPath(stage, path);
   }
   // Zoom scales the WHOLE UI as one unit with a pure layer transform: rigContent
-  // is laid out once at base (1280x830) and pinned there, and we scale its layer
+  // is laid out once at base (1280x520) and pinned there, and we scale its layer
   // by `zoom` anchored top-left. Every child — Auto-Layout tiles, the fixed-frame
   // knobs, dropdowns, tone cards, text, images — renders scaled proportionally,
   // because they all live inside rigContent's layer and are never re-laid out at
   // the zoomed size. `state->view` (the widget Element hosts) and ui_resize are
   // sized to base*zoom so the window matches the scaled content.
   void applyZoom() {
-    const CGFloat baseW = 1280.0, baseH = 830.0;
+    const CGFloat baseW = 1280.0, baseH = 980.0;
     const CGFloat z = zoom;
     NSView* container = rigContent ? rigContent : view;
     container.layer.anchorPoint = CGPointMake(0, 0);
