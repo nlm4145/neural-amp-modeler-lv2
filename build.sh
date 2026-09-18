@@ -29,9 +29,8 @@ echo "== 3/4 Installing bundle -> $INSTALL_BUNDLE"
 # Close Element if currently running so files are not locked and new binaries are picked up
 if pgrep -x "Element" >/dev/null 2>&1; then
   echo "   Closing Element..."
-  osascript -e 'tell application id "net.kushview.Element" to quit' >/dev/null 2>&1 || \
-    osascript -e 'tell application "Element" to quit' >/dev/null 2>&1 || true
-  for _ in {1..15}; do
+  osascript -e 'with timeout of 2 seconds' -e 'tell application "Element" to quit' -e 'end timeout' >/dev/null 2>&1 || true
+  for _ in {1..10}; do
     if ! pgrep -x "Element" >/dev/null 2>&1; then break; fi
     sleep 0.2
   done

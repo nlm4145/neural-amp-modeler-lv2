@@ -147,6 +147,8 @@ struct RigUIState {
   __strong NSView* rigContent = nil;   // the Auto Layout container that fills the window
 
   // Tabbed panes: Rig (tab 0) and Tone3000 (tab 1).
+  __strong NSView* headerBar = nil;
+  __strong NSView* rigHeaderGroup = nil;
   __strong NSView* rigPane = nil;
   __strong NSView* tonePane = nil;
   __strong RigButton* rigTabBtn = nil;
@@ -164,6 +166,7 @@ struct RigUIState {
         toneTabBtn.state = (tab == 1) ? NSControlStateValueOn : NSControlStateValueOff;
         toneTabBtn.needsDisplay = YES;
       }
+      if (rigHeaderGroup) rigHeaderGroup.hidden = (tab != 0);
       if (rigPane) rigPane.hidden = (tab != 0);
       if (tonePane) tonePane.hidden = (tab != 1);
     });

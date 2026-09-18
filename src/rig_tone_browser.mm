@@ -146,6 +146,74 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   [super setSelected:selected];
   ((RigCardView *)self.view).showsSelection = selected;
 }
+static NSString* formatToneCardTooltip(ToneItem* item) {
+  if (!item) return @"";
+  NSMutableString* s = [NSMutableString string];
+
+  if (item.title.length) {
+    [s appendString:item.title];
+    if (item.creator.length) {
+      [s appendFormat:@" by @%@", item.creator];
+    }
+    if (item.gear.length && ![item.gear isEqualToString:@"unknown"]) {
+      [s appendFormat:@"  ·  %@", item.gear.uppercaseString];
+    }
+  }
+
+  NSDictionary* tone = item.toneData;
+  if ([tone isKindOfClass:NSDictionary.class]) {
+    NSString* desc = [tone[@"description"] isKindOfClass:NSString.class] ? tone[@"description"] : nil;
+    if (desc.length) {
+      NSString* trimmed = [desc stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+      if (trimmed.length) {
+        if (s.length) [s appendString:@"\n\n"];
+        [s appendFormat:@"Description\n%@", trimmed];
+      }
+    }
+
+    NSArray* makes = [tone[@"makes"] isKindOfClass:NSArray.class] ? tone[@"makes"] : nil;
+    if (makes.count) {
+      NSMutableArray<NSString*>* names = [NSMutableArray array];
+      for (id m in makes) {
+        if ([m isKindOfClass:NSDictionary.class] && [m[@"name"] isKindOfClass:NSString.class]) {
+          [names addObject:m[@"name"]];
+        } else if ([m isKindOfClass:NSString.class]) {
+          [names addObject:m];
+        }
+      }
+      if (names.count) {
+        if (s.length) [s appendString:@"\n\n"];
+        [s appendFormat:@"Makes and Models\n%@", [names componentsJoinedByString:@"\n"]];
+      }
+    }
+
+    NSArray* tags = [tone[@"tags"] isKindOfClass:NSArray.class] ? tone[@"tags"] : nil;
+    if (tags.count) {
+      NSMutableArray<NSString*>* tagStrings = [NSMutableArray array];
+      for (id t in tags) {
+        NSString* name = nil;
+        if ([t isKindOfClass:NSDictionary.class] && [t[@"name"] isKindOfClass:NSString.class]) {
+          name = t[@"name"];
+        } else if ([t isKindOfClass:NSString.class]) {
+          name = t;
+        }
+        if (name.length) {
+          [tagStrings addObject:[NSString stringWithFormat:@"[%@]", name]];
+        }
+      }
+      if (tagStrings.count) {
+        if (s.length) [s appendString:@"\n\n"];
+        [s appendFormat:@"Tags\n%@", [tagStrings componentsJoinedByString:@"  "]];
+      }
+    }
+  }
+
+  if (s.length) [s appendString:@"\n\n"];
+  [s appendString:item.local ? @"Click to load into rig · Right-click to view on Tone3000"
+                            : @"Click to download and load into rig · Right-click to view on Tone3000"];
+  return s;
+}
+
 - (void)setRepresentedObject:(id)representedObject {
   [super setRepresentedObject:representedObject];
   if (![representedObject isKindOfClass:[ToneItem class]]) return;
@@ -168,10 +236,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
     _tagField.textColor = rigDimText();
   }
 
-  NSString* cardTip = [NSString stringWithFormat:
-      @"%@ by @%@ — %@. %@ Right-click to view it on Tone3000.",
-      item.title ?: @"Untitled tone", item.creator ?: @"unknown", item.gear ?: @"capture",
-      item.local ? @"Click to load its models." : @"Click to download and load its models."];
+  NSString* cardTip = formatToneCardTooltip(item);
   self.view.toolTip = cardTip;
   _artView.toolTip = cardTip;
   _titleField.toolTip = cardTip;

@@ -35,4 +35,23 @@ assert "minimumItemSize = NSMakeSize(270, 108)" in ui, "Card grid must use enlar
 assert "NSMakeRect(8, 8, 92, 92)" in browser, "ToneCardItem must use enlarged 92x92 artwork"
 assert "_tagField" in browser, "ToneCardItem must include tag field"
 
-print("  PASS  tabbed UI contract verified (1280x980, Rig empty expansion space, and enlarged Tone cards)")
+# Verify header relocation to host toolbar space and upward boxRow shift
+assert "headerBar" in state, "RigUIState missing headerBar"
+assert "rigHeaderGroup" in state, "RigUIState missing rigHeaderGroup"
+assert "NAMRigRootView" in ui, "UI missing NAMRigRootView host toolbar container"
+assert "layoutHeaderInHostWindow" in ui, "UI missing layoutHeaderInHostWindow"
+assert "rigPane.topAnchor constant:12" in ui, "boxRow topAnchor must be pinned to rigPane.topAnchor constant: 12"
+
+# Verify tone type (gear) filter positioned next to sort dropdown inside browser search row
+assert "controller.gear = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24 + searchW + 12" in ui, \
+    "controller.gear must be positioned inside browser search row next to search field"
+assert "[browser addSubview:controller.gear]" in ui, "controller.gear must be added to browser"
+assert "[browser addSubview:controller.sort]" in ui, "controller.sort must be added to browser"
+
+# Verify rich tone card hover details
+assert "formatToneCardTooltip" in browser, "browser missing formatToneCardTooltip"
+assert 'Makes and Models' in browser, "formatToneCardTooltip must format Makes and Models"
+assert 'Description' in browser, "formatToneCardTooltip must format Description"
+assert 'Tags' in browser, "formatToneCardTooltip must format Tags"
+
+print("  PASS  tabbed UI contract verified (1280x980, headerBar relocation, upward cards, adjacent Tone3000 filters, rich hover tooltip)")
