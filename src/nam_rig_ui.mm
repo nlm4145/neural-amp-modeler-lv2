@@ -41,7 +41,6 @@ constexpr std::array<const char*, 4> kPathURIs{
 static NSArray<NSString*>* oversampleDescriptions() {
   static NSArray<NSString*>* descriptions = @[
     @"None — Runs the model without rate adaptation. Use only when the model and session rates already match; otherwise timing and tone may be wrong.",
-    @"Legacy — Adapts the model by scaling its internal dilation. Uses less CPU, but does not provide true anti-alias filtering.",
     @"True 2x — Upsamples, runs the nonlinear model at 2x, then filters back down for lower aliasing with a moderate CPU cost.",
     @"True 4x — Runs the nonlinear model in a true 4x domain for stronger alias rejection at a higher CPU cost.",
     @"True 8x — Maximum-quality true oversampling and strongest alias rejection; also the highest CPU setting."
@@ -74,7 +73,6 @@ static NSString* stageName(NSInteger stage) {
 - (void)controlChanged:(NSSlider*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
-- (void)oversampleModeChanged:(NSPopUpButton*)sender;      // master (title bar)
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)transformerChanged:(NSPopUpButton*)sender;
@@ -225,25 +223,8 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
-// Master oversample control (title bar): applies the chosen mode to BOTH
-// stages (ports 20 + 21). Kept for quick global A/B; per-stage popups in the
-// tiles override individually. The DSP re-creates the loaded models for the
-// new rate domain in its worker and swaps them in.
-- (void)oversampleModeChanged:(NSPopUpButton*)sender {
-  sender.toolTip = popupTooltip(@"Sets both pedal and amp oversampling.", sender);
-  if (!_state) return;
-  // Master indexes map to the same five sparse values as the stage menus.
-  const NSInteger i = sender.indexOfSelectedItem;
-  const float mode = (i >= 0 && i < 5)
-      ? static_cast<float>(NAMRig::oversampleModeFromMenuIndex((int)i))
-      : static_cast<float>(NAMRig::kOversampleTrue8);
-  _state->sendControl(20, mode);
-  _state->sendControl(21, mode);
-  [self markPresetModified];
-}
-
-// Per-stage oversample control (pedal/amp tiles): ports 20/21, five visible
-// modes mapped onto the sparse LV2 values 0, 1, 4, 5, 6.
+// Per-stage oversample control (pedal/amp tiles): ports 20/21, four visible
+// modes mapped onto the sparse LV2 values 0, 4, 5, 6.
 - (void)stageOversampleChanged:(NSPopUpButton*)sender {
   sender.toolTip = popupTooltip(
       [NSString stringWithFormat:@"Sets %@-stage oversampling.",
@@ -839,25 +820,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->tunerButton.widthAnchor constraintEqualToConstant:30] setActive:YES];
     [[state->tunerButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-    // Oversample mode dropdown (title bar, next to the tuner icon)
-    state->osPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [state->osPopup addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",
-                                          @"True 8x"]];
-    state->osPopup.controlSize = NSControlSizeSmall;
-    state->osPopup.target = state->uiController;
-    state->osPopup.action = @selector(oversampleModeChanged:);
-    for (NSUInteger item = 0; item < oversampleDescriptions().count; ++item)
-      [state->osPopup itemAtIndex:item].toolTip = oversampleDescriptions()[item];
-    state->osPopup.translatesAutoresizingMaskIntoConstraints = NO;
-    [rigPane addSubview:state->osPopup];
-    [[state->osPopup.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:8] setActive:YES];
-    [[state->osPopup.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
-    [[state->osPopup.widthAnchor constraintEqualToConstant:104] setActive:YES];
-    [[state->osPopup.heightAnchor constraintEqualToConstant:26] setActive:YES];
-    // Fresh instances start at the uncompromised maximum-quality setting.
-    [state->osPopup selectItemAtIndex:4];
-    state->osPopup.toolTip = popupTooltip(@"Sets both pedal and amp oversampling.", state->osPopup);
-
     // Tuner readout panel — hidden until the toggle is on.
     NSView* tp = [[NSView alloc] initWithFrame:NSZeroRect];
     tp.wantsLayer = YES;
@@ -943,7 +905,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     mp.translatesAutoresizingMaskIntoConstraints = NO;
     [rigPane addSubview:mp];
     mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
-    [[mp.leadingAnchor constraintEqualToAnchor:state->osPopup.trailingAnchor constant:14] setActive:YES];
+    [[mp.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:12] setActive:YES];
     [[mp.centerYAnchor constraintEqualToAnchor:title.centerYAnchor] setActive:YES];
     [[mp.widthAnchor constraintEqualToConstant:140] setActive:YES];
     [[mp.heightAnchor constraintEqualToConstant:30] setActive:YES];
@@ -1279,11 +1241,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
       // Per-stage oversample dropdown (pedal + amp only — a WAV cab IR is
       // linear and cannot alias; a .nam cab follows the amp's mode). Sits
-      // left of the ON button, five modes: None / Legacy / True 2x-4x-8x.
+      // left of the ON button, four modes: None / True 2x / True 4x / True 8x.
       if (i < 2) {
         NSPopUpButton* so = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [so addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",
-                                 @"True 8x"]];
+        [so addItemsWithTitles:@[@"None", @"True 2x", @"True 4x", @"True 8x"]];
         so.controlSize = NSControlSizeSmall;
         so.tag = 20 + i;                 // port 20 = pedal, 21 = amp
         so.target = state->uiController;
@@ -1296,7 +1257,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[so.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
         [[so.widthAnchor constraintEqualToConstant:104] setActive:YES];
         [[so.heightAnchor constraintEqualToConstant:24] setActive:YES];
-        [so selectItemAtIndex:4];        // default True 8x = TTL default
+        [so selectItemAtIndex:3];        // default True 8x = TTL default
         so.toolTip = popupTooltip(
             [NSString stringWithFormat:@"Sets %@-stage oversampling.", stageName(i)], so);
         state->stageOsPopup[(size_t)i] = so;

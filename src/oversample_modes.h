@@ -13,18 +13,16 @@ static constexpr int kOversampleTrue8 = 6;
 
 constexpr int oversampleModeFromMenuIndex(int index) {
   return index <= 0 ? kOversampleNone
-       : index == 1 ? kOversampleLegacy
-       : index == 2 ? kOversampleTrue2
-       : index == 3 ? kOversampleTrue4
+       : index == 1 ? kOversampleTrue2
+       : index == 2 ? kOversampleTrue4
                     : kOversampleTrue8;
 }
 
 constexpr int oversampleMenuIndexFromMode(int mode) {
   return mode <= kOversampleNone ? 0
-       : mode < kOversampleTrue2 ? 1
-       : mode == kOversampleTrue2 ? 2
-       : mode == kOversampleTrue4 ? 3
-                                  : 4;
+       : mode < kOversampleTrue4 ? 1
+       : mode == kOversampleTrue4 ? 2
+                                  : 3;
 }
 
 } // namespace NAMRig

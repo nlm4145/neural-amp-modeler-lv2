@@ -31,9 +31,9 @@ assert "osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2}" in header, (
     "pedal/amp/cab must start in True 8x; Cab B is parallel and base-rate"
 )
 assert "osRequested = {kOsTrue8, kOsTrue8}" in header
-assert 'addItemsWithTitles:@[@"None", @"Legacy", @"True 2x", @"True 4x",' in ui
-assert "[state->osPopup selectItemAtIndex:4]" in ui
-assert "[so selectItemAtIndex:4]" in ui
+assert 'addItemsWithTitles:@[@"None", @"True 2x", @"True 4x", @"True 8x"]' in ui
+assert "osPopup" not in ui
+assert "[so selectItemAtIndex:3]" in ui
 assert "loader.SetDefaultQualityScaleFactor(1.0f)" in dsp
 assert "response.model->SetQualityScaleFactor(1.0f)" in dsp
 print("  PASS  fresh rig defaults to full-tier True 8x on every nonlinear stage")

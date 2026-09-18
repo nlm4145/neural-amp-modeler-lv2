@@ -59,12 +59,7 @@ struct RigUIState {
   __strong NSLayoutConstraint* inDbBarWidth = nil;
   float lastInputDb = -120.0f;
 
-  // Oversample mode dropdowns. The title-bar popup is the MASTER (sets both
-  // stages); the pedal and amp tiles each have their own per-stage popup
-  // (ports 20/21, five modes: None / Legacy / True 2x-4x-8x). The cab
-  // has none — a WAV IR is linear and cannot alias; a .nam cab follows the
-  // amp's mode.
-  __strong NSPopUpButton* osPopup = nil;               // master (title bar)
+  // Per-stage oversample mode dropdowns (ports 20/21: None / True 2x / True 4x / True 8x).
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
   __strong NSPopUpButton* irNormPopup = nil;
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
@@ -604,16 +599,6 @@ struct RigUIState {
               @"Sets %@-stage oversampling. %@", role, selected];
         });
       }
-      return;
-    }
-    if (port == 19) {   // legacy global mode: reflect onto the master popup
-      const int idx = value < 0.5f ? 0 : (value < 1.5f ? 1 : 2);
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [osPopup selectItemAtIndex:idx];
-        NSString* selected = osPopup.selectedItem.toolTip ?: @"";
-        osPopup.toolTip = [NSString stringWithFormat:
-            @"Sets both pedal and amp oversampling. %@", selected];
-      });
       return;
     }
     if (port == 24) {

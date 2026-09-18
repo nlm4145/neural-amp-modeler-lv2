@@ -369,7 +369,7 @@ private:
     NeuralAudio::NeuralModel* model = nullptr;
     WavIR* ir = nullptr;
     WavIR* irRight = nullptr;
-    int oversampleMode = kOsLegacy2;
+    int oversampleMode = kOsTrue8;
     bool fullRig = false;
     bool ready = false;
     char path[MAX_FILE_NAME] = {};
@@ -386,11 +386,7 @@ private:
   std::array<bool, kStageCount> appliedEnabled{true, true, true, false};
   bool enabledLatched = false;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
-  // 0 = NONE   (no rate adaptation — loader external rate pinned to 48000 so
-  //             dilation is a no-op for common rates; a non-48k model at a
-  //             non-multiple session rate runs wrong, warning is logged),
-  // 1/2/3 = LEGACY 2x/4x/8x (NeuralAudio dilation scaling: hostRate/modelRate
-  //             baked in at load time — cheap, stretches the model's memory),
+  // 0 = NONE   (no rate adaptation)
   // 4/5/6 = TRUE 2x/4x/8x (genuine UP -> model@Nx -> DOWN pipeline in this
   //             plugin; the aliasing fix).
   // The stage ports supersede the old global port 19 (kept in the TTL for
@@ -402,10 +398,8 @@ private:
     const int i = static_cast<int>(v + 0.5f);
     if (i < 0) return kOsNone;
     if (i > kOsTrue8) return kOsTrue8;
-    // Legacy 4x/8x (values 2/3) are aliases of Legacy (1): dilation's factor
-    // is set by the incoming rate, not the tile — the collapsed UI options
-    // keep old session values mapping onto the one real Legacy behavior.
-    if (i == kOsLegacy4 || i == kOsLegacy8) return kOsLegacy2;
+    // Legacy oversampling removed: map any legacy mode (1, 2, 3) to True 2x.
+    if (i == kOsLegacy2 || i == kOsLegacy4 || i == kOsLegacy8) return kOsTrue2;
     return i;
   }
 
