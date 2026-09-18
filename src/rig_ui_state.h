@@ -438,40 +438,51 @@ struct RigUIState {
   // The dropdown is the tile's model control, so it's always visible once a
   // stage has models; the old filename text label is redundant and removed.
   void setStageModels(size_t stage, NSArray<NSString*>* paths) {
-    if (stage >= modelPickers.size() || !modelPickers[stage]) return;
+    if (stage >= availableModelPaths.size()) return;
     availableModelPaths[stage].clear();
     for (NSString* p in paths)
       if (p.length) availableModelPaths[stage].push_back(p.UTF8String);
     persistStageModels(stage);
-    NSPopUpButton* picker = modelPickers[stage];
-    [picker removeAllItems];
-    for (NSString* p in paths) {
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:(p.length ? p.lastPathComponent : @"—")
-                                                    action:NULL keyEquivalent:@""];
-      item.representedObject = p;
-      item.toolTip = modelPickerTooltip(stage, p);
-      [[picker menu] addItem:item];
-    }
-    if (paths.count == 0) {
-      [picker addItemWithTitle:@"No model loaded"];
-      picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
-      picker.enabled = NO;
-      picker.toolTip = modelPickerTooltip(stage, nil);
-    } else {
-      picker.enabled = YES;
-      NSInteger selected = 0;
-      if (!selectedPaths[stage].empty()) {
-        NSString* current = [NSString stringWithUTF8String:selectedPaths[stage].c_str()];
-        for (NSInteger i = 0; i < (NSInteger)picker.itemArray.count; ++i)
-          if ([picker.itemArray[(NSUInteger)i].representedObject isEqualToString:current]) {
-            selected = i; break;
-          }
+    if (stage >= modelPickers.size()) return;
+
+    auto updatePicker = ^{
+      NSPopUpButton* picker = modelPickers[stage];
+      if (!picker) return;
+      [picker removeAllItems];
+      for (NSString* p in paths) {
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:(p.length ? p.lastPathComponent : @"—")
+                                                      action:NULL keyEquivalent:@""];
+        item.representedObject = p;
+        item.toolTip = modelPickerTooltip(stage, p);
+        [[picker menu] addItem:item];
       }
-      [picker selectItemAtIndex:selected];
-      picker.toolTip = modelPickerTooltip(stage,
-          picker.selectedItem.representedObject);
+      if (paths.count == 0) {
+        [picker addItemWithTitle:@"No model loaded"];
+        picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
+        picker.enabled = NO;
+        picker.toolTip = modelPickerTooltip(stage, nil);
+      } else {
+        picker.enabled = YES;
+        NSInteger selected = 0;
+        if (!selectedPaths[stage].empty()) {
+          NSString* current = [NSString stringWithUTF8String:selectedPaths[stage].c_str()];
+          for (NSInteger i = 0; i < (NSInteger)picker.itemArray.count; ++i)
+            if ([picker.itemArray[(NSUInteger)i].representedObject isEqualToString:current]) {
+              selected = i; break;
+            }
+        }
+        [picker selectItemAtIndex:selected];
+        picker.toolTip = modelPickerTooltip(stage,
+            picker.selectedItem.representedObject);
+      }
+      picker.hidden = NO;
+    };
+
+    if ([NSThread isMainThread]) {
+      updatePicker();
+    } else {
+      dispatch_async(dispatch_get_main_queue(), updatePicker);
     }
-    picker.hidden = NO;
   }
 
   // Sets the gear thumbnail for a stage. Resolution order:

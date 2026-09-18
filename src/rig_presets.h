@@ -21,7 +21,10 @@ struct RigStagePreset {
   float oversample = 6.0f;     // port 20 or 21
   float transformer = 0.0f;    // port 30 (amp only)
   float irNormalization = 2.0f;// port 24 (cab only)
+  std::vector<std::string> models; // available model selections for this stage
 };
+
+std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath, size_t stage);
 
 NS_ASSUME_NONNULL_BEGIN
 

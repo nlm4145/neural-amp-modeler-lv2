@@ -16,8 +16,12 @@ knobs_cpp = (ROOT / "src/rig_knobs.cpp").read_text()
 assert "@interface RigPreset" in presets_h, "RigPreset must be declared in rig_presets.h"
 assert "@interface RigPresetManager" in presets_h, "RigPresetManager must be declared in rig_presets.h"
 assert "stageAtIndex:" in presets_h, "stageAtIndex: must be declared in rig_presets.h"
+assert "std::vector<std::string> models;" in presets_h, "RigStagePreset must have models vector"
+assert "discoverModelsForStagePath" in presets_h, "discoverModelsForStagePath must be declared in rig_presets.h"
 assert "@implementation RigPreset" in presets_mm, "RigPreset must be implemented in rig_presets.mm"
 assert "@implementation RigPresetManager" in presets_mm, "RigPresetManager must be implemented in rig_presets.mm"
+assert "discoverModelsForStagePath" in presets_mm, "discoverModelsForStagePath must be implemented in rig_presets.mm"
+assert "setStageModels" in presets_mm, "applyToState must update available stage models"
 
 # 2. Verify all 37 knob ports are registered in the preset map
 assert "kRigKnobCount = 37" in knobs_h
@@ -68,7 +72,8 @@ sample_preset = {
             "path": "/path/to/overdrive.nam",
             "imageURL": "https://example.com/pedal.png",
             "toneId": 12345,
-            "oversample": 6.0
+            "oversample": 6.0,
+            "models": ["/path/to/overdrive.nam", "/path/to/overdrive_boost.nam"]
         },
         {
             "role": "amp",
@@ -77,7 +82,8 @@ sample_preset = {
             "imageURL": "https://example.com/amp.png",
             "toneId": 67890,
             "oversample": 6.0,
-            "transformer": 1.0
+            "transformer": 1.0,
+            "models": ["/path/to/mesa_clean.nam", "/path/to/mesa_lead.nam"]
         },
         {
             "role": "cab",
@@ -85,14 +91,16 @@ sample_preset = {
             "path": "/path/to/v30_cab.wav",
             "imageURL": "https://example.com/cab.png",
             "toneId": 11111,
-            "ir_normalization": 2.0
+            "ir_normalization": 2.0,
+            "models": ["/path/to/v30_cab.wav", "/path/to/v30_room.wav"]
         },
         {
             "role": "cab2",
             "enabled": False,
             "path": "",
             "imageURL": "",
-            "toneId": 0
+            "toneId": 0,
+            "models": []
         }
     ],
     "ports": {str(p): 0.0 for p in expected_ports},
@@ -117,6 +125,9 @@ with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as f:
 assert loaded["name"] == "Mesa Modern Lead"
 assert len(loaded["stages"]) == 4
 assert loaded["stages"][1]["transformer"] == 1.0
+assert loaded["stages"][0]["models"] == ["/path/to/overdrive.nam", "/path/to/overdrive_boost.nam"]
+assert loaded["stages"][1]["models"] == ["/path/to/mesa_clean.nam", "/path/to/mesa_lead.nam"]
+assert loaded["stages"][2]["models"] == ["/path/to/v30_cab.wav", "/path/to/v30_room.wav"]
 assert loaded["params"]["reverb_mix"] == 15.0
 assert len(loaded["ports"]) == len(expected_ports)
 

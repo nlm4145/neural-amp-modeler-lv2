@@ -116,13 +116,23 @@ static NSString* stageName(NSInteger stage) {
       ? @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel", @"wav"]
       : @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel"];
   if ([panel runModal] == NSModalResponseOK) {
-    _state->sendPath((size_t)sender.tag, panel.URL.path.fileSystemRepresentation);
+    NSString* chosen = panel.URL.path;
+    std::vector<std::string> discovered = discoverModelsForStagePath(chosen.fileSystemRepresentation, (size_t)sender.tag);
+    NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithCapacity:discovered.size()];
+    for (const auto& m : discovered) {
+      if (!m.empty()) [paths addObject:[NSString stringWithUTF8String:m.c_str()]];
+    }
+    if (paths.count > 0) {
+      _state->setStageModels((size_t)sender.tag, paths);
+    }
+    _state->sendPath((size_t)sender.tag, chosen.fileSystemRepresentation);
     [self markPresetModified];
   }
 }
 
 - (void)clearModel:(NSButton*)sender {
   if (_state && sender.tag >= 0 && sender.tag <= 3) {
+    _state->setStageModels((size_t)sender.tag, @[]);
     _state->sendPath((size_t)sender.tag, "");
     _state->setStageThumb((size_t)sender.tag, nil, 0, nil);  // revert to placeholder
     [self markPresetModified];
@@ -1076,43 +1086,43 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms"];
     NSArray<NSString*>* knobDescriptions = @[
-      @"Gate threshold. Signals below this input level are gently expanded; -80 dB bypasses the gate.",
-      @"Gate release time. Higher values preserve note tails longer after the signal falls below the threshold.",
-      @"Input trim before the compressor, pedal, amp, and cabinet stages. Use it to drive the captured models harder or softer.",
-      @"Pre-model compressor amount. Increasing it lowers the threshold, raises the ratio, and adds makeup gain while retaining pick attack.",
-      @"Amp drive between the pedal and amp stages. Positive values hit the amp model harder; negative values clean it up.",
-      @"Post-chain bass shelf centered around 150 Hz.",
-      @"Post-chain midrange bell centered around 700 Hz.",
-      @"Post-chain treble shelf centered around 3 kHz.",
-      @"Level trim immediately after an active cabinet model or WAV impulse response. It has no effect when the cab stage is bypassed.",
-      @"Cabinet high-pass cutoff. Removes low-frequency rumble after the cab; 0 Hz bypasses the filter.",
-      @"Cabinet low-pass cutoff. Softens upper fizz after the cab; 20 kHz bypasses the filter.",
-      @"Final output trim after the complete rig, cabinet processing, and EQ.",
-      @"Cabinet width. Pans Cab A left and Cab B right, and opens the stereo image of a stereo WAV impulse response. Zero sums everything to exact dual mono.",
-      @"Early reflections of a small room around the cabinets, with diffusion and high-frequency damping. Reverb Size and Reverb Damping shape it too.",
-      @"Shapes upper frequencies after the NAM amp model, like a power-amp presence circuit. Positive values add bite and clarity; negative values soften fizz. It is separate from the post-cab Treble knob.",
-      @"Shapes low frequencies after the NAM amp model, like a power-amp depth/resonance circuit. Positive values add weight and bloom; negative values tighten the low end. It is separate from the post-cab Bass knob.",
-      @"Simulates power-supply voltage droop after loud notes. Higher settings soften peaks, add compression and sustain, and recover more slowly. Works independently of Input EQ and Master.",
-      @"Changes the symmetry of the added post-model saturation, emphasizing different even harmonics. It works independently; Master adds more drive and makes the result easier to hear.",
-      @"Applies corrective low-frequency feedback after the amp model. Higher settings tighten bass, reduce bloom and make palm mutes more controlled. Works independently of Input EQ and Master.",
-      @"Boosts upper frequencies before the NAM amp model, so the model distorts a brighter signal. Use it for extra pick attack and clarity. Works independently of Input EQ.",
-      @"Removes deep bass before the NAM amp model. Higher settings tighten palm mutes, reduce mud and keep bass from overdriving the capture. It does not enable or affect the other knobs.",
-      @"Adds a simulated power-stage drive after the NAM amp model. Higher settings add saturation, compression, sustain and flattened peaks. At 0% the captured amp is untouched; it does not enable Bias or other controls.",
-      @"Frequency-dependent speaker breakup after the amp and before the cabinet.",
-      @"Speaker excursion compression and recovery after the amp.",
-      @"Nonlinear low-frequency speaker excursion.",
-      @"Strength of the selected speaker impedance curve: the low resonance and the rising voice-coil inductance. Negative Feedback flattens both.",
-      @"Level trim of the second cabinet (Cab B) before it mixes with Cab A.",
-      @"Delays Cab B by up to 10 ms so two impulse responses can be phase aligned by ear.",
-      @"Delay time of the stereo delay after the cabinets.",
-      @"Delay feedback. The repeats pass through the damping filter and a soft limiter each time.",
-      @"High-frequency loss of each delay repeat, from bright digital to dark tape-like.",
-      @"Delay level. Zero is an exact bypass.",
-      @"Plate reverb level. Zero is an exact bypass; Room stays available on its own.",
-      @"Plate reverb decay time.",
-      @"Plate size. Scales the reverb tank and the room's early reflections.",
-      @"High-frequency damping inside the plate and on the room reflections.",
-      @"Time before the reverb starts, which keeps the pick attack clear."
+      @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
+      @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
+      @"Input level trim. Adjusts raw guitar signal strength before hitting any pedals, the amp, or compression. Turn up to push high-gain models harder into saturation; turn down for extra clean headroom.",
+      @"Pre-model compressor. Evens out playing dynamics and adds smooth sustain before hitting the amp. Higher settings squash loud pick transients and bring up quiet details while preserving initial pick attack.",
+      @"Amp drive boost. Boosts or attenuates the signal between the pedal and the amp model. Turn up to push the amp into richer preamp saturation and harmonic crunch; turn down to clean up the tone.",
+      @"Post-cab bass EQ (150 Hz shelf). Shapes the low end of your sound after the cabinet. Turn up to add body, low-frequency warmth, and cabinet weight; turn down to clear up low-end boominess and mud.",
+      @"Post-cab midrange EQ (700 Hz bell). Shapes the crucial mid frequencies after the cabinet. Turn up to punch forward and cut through a dense mix; turn down (scoop) for classic aggressive metal rhythm tone.",
+      @"Post-cab treble EQ (3 kHz shelf). Shapes top-end brightness after the cabinet. Turn up for crisper pick definition, attack presence, and sheen; turn down to tame harsh digital fizz and ice-pick highs.",
+      @"Cab A level trim. Adjusts the volume immediately after Cabinet A. Use it to level-match different impulse responses or balance the blend between Cab A and Cab B without changing tone.",
+      @"Cabinet low cut (high-pass filter). Rolls off sub-bass rumble and low-end flub below the cutoff frequency. Raising this tightens palm mutes and keeps deep lows clear of bass and kick drum frequencies; 0 Hz bypasses.",
+      @"Cabinet high cut (low-pass filter). Smooths away harsh top-end sizzle and ultra-high fizz above the cutoff frequency. Lowering this rounds off the highs for a warmer, more organic vintage speaker tone; 20 kHz bypasses.",
+      @"Master output level. Final output volume trim after the entire rig, cabinets, and effects. Adjusts monitoring or recording level into your DAW without altering distortion, tone balance, or compression.",
+      @"Stereo cabinet width. Pans Cab A left and Cab B right, and widens the stereo image of stereo impulse responses. 0% is pure dual-mono; higher settings create a wide, immersive wall-of-sound stereo spread.",
+      @"Room reflections. Blends in short early reflections of a physical studio tracking room with high-frequency diffusion. Adds realistic acoustic 3D depth and air to dry cabinet IRs. Reverb Size and Reverb Damping shape it too.",
+      @"Presence control (post-amp). Boosts or cuts upper-mid harmonics directly after the amp model. Positive values add cutting bite, overtone sparkle, and attack clarity; negative values soften harsh distortion fizz. Separate from post-cab Treble.",
+      @"Depth / resonance control (post-amp). Boosts or cuts deep lows directly after the amp model. Positive values add physical cabinet thump, bottom-end bloom, and resonance; negative values tighten bass response for fast riffs. Separate from post-cab Bass.",
+      @"Power sag. Simulates power-supply voltage droop after loud notes. Higher settings soften peaks, add compression and sustain, and recover more slowly. Creates a spongy, organic dynamic feel under the fingers. Works independently of Input EQ and Master.",
+      @"Tube bias symmetry. Changes the symmetry of the added post-model saturation, emphasizing different even harmonics. Shifts distortion texture from smooth and warm to raw, gritty, and asymmetric. Works independently; Master adds more drive and makes the result easier to hear.",
+      @"Negative feedback. Applies corrective low-frequency feedback after the amp model. Higher settings tighten bass, reduce bloom and make palm mutes more controlled; lower settings feel raw, open, and aggressive. Works independently of Input EQ and Master.",
+      @"Bright boost (pre-amp). Boosts upper frequencies before the NAM amp model, so the model distorts a brighter signal. Use it for extra pick attack and clarity. Adds chime and aggressive bite to high notes. Works independently of Input EQ.",
+      @"Input EQ (pre-amp tightening). Removes deep bass before the NAM amp model. Higher settings tighten palm mutes, reduce mud and keep bass from overdriving the capture. It does not enable or affect the other knobs.",
+      @"Master volume (power-amp drive). Adds a simulated power-stage drive after the NAM amp model. Higher settings add saturation, compression, sustain and flattened peaks. Thickens up tone with rich power-tube overdrive. At 0% the captured amp is untouched; it does not enable Bias or other controls.",
+      @"Speaker breakup drive. Simulates mechanical speaker cone breakup under heavy volume. Pushing this adds gritty mid-range distortion, raspy edge, and organic harmonic richness as if a physical speaker is being driven to its limits.",
+      @"Speaker compression. Simulates physical speaker cone excursion compression and recovery after the amp. Tames sudden transient spikes from hard picking and smooths out note attack, creating a squashed, punchy response.",
+      @"Speaker thump. Simulates nonlinear low-frequency speaker excursion. Adds visceral low-end inertia, chest-thumping bass impact, and dynamic cabinet resonance on palm mutes and deep bass notes.",
+      @"Speaker resonance. Strength of the selected speaker impedance curve: the low resonance and the rising voice-coil inductance. Boosting creates a lively, resonant 'in-the-room' cabinet feel; lowering it flattens the response. Negative Feedback flattens both.",
+      @"Cab B level trim. Adjusts the volume of the second cabinet (Cab B) before it mixes with Cab A. Use it to balance dual-cabinet blends (e.g. blending a dark ribbon mic with a bright dynamic mic).",
+      @"Cab B phase alignment. Delays Cab B by up to 10 ms so two impulse responses can be phase aligned by ear, eliminating hollow comb filtering and locking in full punchy low end.",
+      @"Stereo delay time. Sets the time between delay repeats from 20 ms to 2000 ms. Short settings create tight slapback or double-tracking; medium settings create rhythmic groove; long settings create spacious ambient leads.",
+      @"Delay feedback. Controls the number of delay repeats. Higher settings produce cascading echoes that slowly decay into a soft, tape-like wash through the damping filter and limiter.",
+      @"Delay damping. High-frequency loss of each delay repeat, from bright digital to dark tape-like. Low damping keeps repeats crisp and clear; high damping rolls off top end so repeats sit warmly behind your playing.",
+      @"Delay mix. Blends wet delay echoes with dry guitar tone. At 0%, delay is fully bypassed; higher settings make repeats more prominent for atmospheric textures and solos.",
+      @"Plate reverb mix. Blends the lush plate reverb tank with the dry guitar sound. At 0%, reverb is fully bypassed; higher settings immerse your tone in deep, shimmering space while Room stays available on its own.",
+      @"Reverb decay time. Controls how long the reverb tail lingers. Short settings add subtle studio room ambience; long settings produce cavernous, dreamy reverberation that floats behind sustained notes.",
+      @"Reverb space size. Scales the reverb plate tank dimensions and the room's early reflections. Smaller sizes sound tight and intimate; larger sizes expand into a vast acoustic hall.",
+      @"Reverb high damping. Controls high-frequency absorption in the plate and room reflections. Lower damping preserves bright, airy shimmer; higher damping darkens the tail for a warm, natural decay that never clutters the mix.",
+      @"Reverb pre-delay. Sets the time gap (0-100 ms) before the reverb tail begins. Keeps your initial pick attack and note definition clear and upfront before the ambient reverb blooms."
     ];
 
     const std::array<double, kRigKnobCount> mins{
@@ -1167,10 +1177,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                   mins[k], maxes[k],
                                   NSMakePoint(0, 0), state->uiController);
         NSSlider* knob = state->knobs[k];
-        NSString* knobTip = [NSString stringWithFormat:
-            @"%@ Drag vertically; hold Shift for fine adjustment; double-click to reset.",
-            knobDescriptions[k]];
-        knob.toolTip = knobTip;
+        knob.toolTip = knobDescriptions[k];
         knob.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(knob, cell, 0);
         [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
@@ -1204,9 +1211,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         kval.delegate = state->uiController;
         kval.target = state->uiController;
         kval.action = @selector(knobFieldCommitted:);
-        kval.toolTip = [NSString stringWithFormat:
-            @"%@ Click the value to type an exact setting, then press Return or click away.",
-            knobDescriptions[k]];
+        kval.toolTip = knobDescriptions[k];
         kval.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(kval, cell, 0);
         [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];

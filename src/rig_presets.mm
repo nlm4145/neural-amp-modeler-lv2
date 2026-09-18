@@ -79,6 +79,76 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
   return map;
 }
 
+std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath, size_t stage) {
+  if (modelPath.empty()) return {};
+
+  NSString* pathStr = [NSString stringWithUTF8String:modelPath.c_str()];
+  NSFileManager* fm = [NSFileManager defaultManager];
+  if (![fm fileExistsAtPath:pathStr]) {
+    return {modelPath};
+  }
+
+  NSString* folder = [pathStr stringByDeletingLastPathComponent];
+  NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+  NSMutableArray<NSString*>* discovered = [NSMutableArray array];
+
+  // 1. If _tone3000.json exists, follow Tone3000 pack downloads
+  if ([fm fileExistsAtPath:manifestPath]) {
+    NSData* data = [NSData dataWithContentsOfFile:manifestPath];
+    if (data) {
+      id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+      if ([json isKindOfClass:[NSDictionary class]]) {
+        NSArray* downloads = json[@"downloads"];
+        if ([downloads isKindOfClass:[NSArray class]]) {
+          for (NSDictionary* d in downloads) {
+            if (![d isKindOfClass:[NSDictionary class]]) continue;
+            NSString* local = d[@"local_filename"];
+            if ([local isKindOfClass:[NSString class]] && local.length) {
+              NSString* full = [folder stringByAppendingPathComponent:local];
+              if ([fm fileExistsAtPath:full] && ![discovered containsObject:full]) {
+                [discovered addObject:full];
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. If no _tone3000.json or downloads empty, scan directory for sibling models
+  if (discovered.count == 0) {
+    NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:folder error:nil];
+    NSSet* allowedExts = (stage >= 2)
+        ? [NSSet setWithObjects:@"wav", @"nam", @"nammodel", @"aidax", @"aidadspmodel", nil]
+        : [NSSet setWithObjects:@"nam", @"nammodel", @"aidax", @"aidadspmodel", nil];
+
+    NSMutableArray<NSString*>* candidates = [NSMutableArray array];
+    for (NSString* f in files) {
+      if ([f hasPrefix:@"."] || [f hasPrefix:@"_"]) continue;
+      NSString* ext = [[f pathExtension] lowercaseString];
+      if ([allowedExts containsObject:ext]) {
+        [candidates addObject:[folder stringByAppendingPathComponent:f]];
+      }
+    }
+    [candidates sortUsingComparator:^NSComparisonResult(NSString* a, NSString* b) {
+      return [a.lastPathComponent localizedCaseInsensitiveCompare:b.lastPathComponent];
+    }];
+    [discovered addObjectsFromArray:candidates];
+  }
+
+  // 3. Ensure the current modelPath itself is included
+  if (![discovered containsObject:pathStr]) {
+    [discovered addObject:pathStr];
+  }
+
+  std::vector<std::string> result;
+  result.reserve(discovered.count);
+  for (NSString* p in discovered) {
+    if (p.length) result.push_back(p.UTF8String);
+  }
+  return result;
+}
+
 @implementation RigPreset {
   std::array<RigStagePreset, 4> _stages;
   std::unordered_map<uint32_t, float> _controls;
@@ -117,6 +187,7 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
     p->_stages[s].oversample = static_cast<float>(NAMRig::kOversampleTrue8);
     p->_stages[s].transformer = 0.0f;
     p->_stages[s].irNormalization = 2.0f;
+    p->_stages[s].models.clear();
   }
 
   for (size_t k = 0; k < kRigKnobCount; ++k) {
@@ -165,6 +236,7 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
     preset->_stages[s].oversample = static_cast<float>(NAMRig::kOversampleTrue8);
     preset->_stages[s].transformer = 0.0f;
     preset->_stages[s].irNormalization = 2.0f;
+    preset->_stages[s].models.clear();
   }
 
   NSArray* stagesArray = root[@"stages"];
@@ -179,6 +251,18 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
       if (st[@"oversample"]) preset->_stages[s].oversample = [st[@"oversample"] floatValue];
       if (st[@"transformer"]) preset->_stages[s].transformer = [st[@"transformer"] floatValue];
       if (st[@"ir_normalization"]) preset->_stages[s].irNormalization = [st[@"ir_normalization"] floatValue];
+      preset->_stages[s].models.clear();
+      NSArray* modelsArr = st[@"models"];
+      if ([modelsArr isKindOfClass:[NSArray class]]) {
+        for (id m in modelsArr) {
+          if ([m isKindOfClass:[NSString class]] && [m length]) {
+            preset->_stages[s].models.push_back([m UTF8String]);
+          }
+        }
+      }
+      if (preset->_stages[s].models.empty() && !preset->_stages[s].path.empty()) {
+        preset->_stages[s].models = discoverModelsForStagePath(preset->_stages[s].path, s);
+      }
     }
   }
 
@@ -228,6 +312,11 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
     if (s == 0 || s == 1) st[@"oversample"] = @(_stages[s].oversample);
     if (s == 1) st[@"transformer"] = @(_stages[s].transformer);
     if (s == 2) st[@"ir_normalization"] = @(_stages[s].irNormalization);
+    NSMutableArray* modelsList = [NSMutableArray arrayWithCapacity:_stages[s].models.size()];
+    for (const auto& m : _stages[s].models) {
+      if (!m.empty()) [modelsList addObject:[NSString stringWithUTF8String:m.c_str()]];
+    }
+    st[@"models"] = modelsList;
     [stagesList addObject:st];
   }
   root[@"stages"] = stagesList;
@@ -265,6 +354,15 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
     p->_stages[s].path = state->selectedPaths[s];
     p->_stages[s].imageURL = state->selectedImageURLs[s];
     p->_stages[s].toneId = state->selectedToneIds[s];
+    p->_stages[s].models = state->availableModelPaths[s];
+    if (p->_stages[s].models.empty() && !p->_stages[s].path.empty()) {
+      p->_stages[s].models = discoverModelsForStagePath(p->_stages[s].path, s);
+    }
+    if (!p->_stages[s].path.empty()) {
+      if (std::find(p->_stages[s].models.begin(), p->_stages[s].models.end(), p->_stages[s].path) == p->_stages[s].models.end()) {
+        p->_stages[s].models.push_back(p->_stages[s].path);
+      }
+    }
     if (state->powerButtons[s]) {
       p->_stages[s].enabled = (state->powerButtons[s].state == NSControlStateValueOn);
     } else {
@@ -363,17 +461,32 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
     state->updateControl(port, val);
   }
 
-  // 4. Models: load models onto worker thread and restore thumbs
+  // 4. Models: populate available stage selections and load selected models
   for (size_t s = 0; s < 4; ++s) {
     const std::string& path = _stages[s].path;
     const std::string& img = _stages[s].imageURL;
     const long toneId = _stages[s].toneId;
+    std::vector<std::string> stageModels = _stages[s].models;
+    if (stageModels.empty() && !path.empty()) {
+      stageModels = discoverModelsForStagePath(path, s);
+    }
     if (!path.empty()) {
+      // Ensure the active path is present in stageModels
+      if (std::find(stageModels.begin(), stageModels.end(), path) == stageModels.end()) {
+        stageModels.push_back(path);
+      }
+      state->selectedPaths[s] = path;
+      NSMutableArray<NSString*>* modelPaths = [NSMutableArray arrayWithCapacity:stageModels.size()];
+      for (const auto& m : stageModels) {
+        if (!m.empty()) [modelPaths addObject:[NSString stringWithUTF8String:m.c_str()]];
+      }
+      state->setStageModels(s, modelPaths);
       state->sendPath(s, path.c_str());
       if (img.length() || toneId > 0) {
         state->setStageThumb(s, nil, toneId, [NSString stringWithUTF8String:img.c_str()]);
       }
     } else {
+      state->setStageModels(s, @[]);
       state->sendPath(s, "");
       state->setStageThumb(s, nil, 0, nil);
     }

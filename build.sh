@@ -4,7 +4,7 @@
 # Builds OUT-OF-TREE so the git repo stays clean, then installs the finished
 # bundle directly into ~/Library/Audio/Plug-Ins/LV2/ (where Element loads it).
 #
-# Usage:  ./build.sh          (build + install + codesign + dlopen check)
+# Usage:  ./build.sh          (build + install + codesign + dlopen check + restart Element)
 # Override the build dir with:  BUILD_DIR=/path/to/build ./build.sh
 set -euo pipefail
 
@@ -26,6 +26,21 @@ echo "== 2/4 Building (-j$JOBS)"
 cmake --build "$BUILD_DIR" -j"$JOBS"
 
 echo "== 3/4 Installing bundle -> $INSTALL_BUNDLE"
+# Close Element if currently running so files are not locked and new binaries are picked up
+if pgrep -x "Element" >/dev/null 2>&1; then
+  echo "   Closing Element..."
+  osascript -e 'tell application id "net.kushview.Element" to quit' >/dev/null 2>&1 || \
+    osascript -e 'tell application "Element" to quit' >/dev/null 2>&1 || true
+  for _ in {1..15}; do
+    if ! pgrep -x "Element" >/dev/null 2>&1; then break; fi
+    sleep 0.2
+  done
+  if pgrep -x "Element" >/dev/null 2>&1; then
+    killall -9 "Element" >/dev/null 2>&1 || true
+    sleep 0.5
+  fi
+fi
+
 mkdir -p "$LV2_DIR"
 # Atomic swap: copy to a temp sibling first, then move into place. A failed
 # copy mid-way must never leave the user without an installed plugin.
@@ -49,4 +64,9 @@ except Exception as e:
 PY
 done
 
-echo "== Done. Reload the plugin in Element to pick up the new build."
+echo "== Reopening Element..."
+open -b "net.kushview.Element" >/dev/null 2>&1 || \
+  open -a "/Applications/Element.app" >/dev/null 2>&1 || \
+  open -a "Element" >/dev/null 2>&1 || true
+
+echo "== Done. Element closed and reopened with the new build."
