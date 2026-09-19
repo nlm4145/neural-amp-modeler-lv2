@@ -81,7 +81,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
 - (void)showSpeakerLoad:(NSButton*)sender;
 - (void)showEffects:(NSButton*)sender;
-- (void)resetAllKnobs:(NSButton*)sender;
+- (void)resetAllKnobs:(id)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
 - (void)presetPopupChanged:(NSPopUpButton*)sender;
@@ -329,7 +329,7 @@ static NSString* stageName(NSInteger stage) {
   _state->selectDeckTab(0);  // Switch to POST-FX STUDIO in Lower Studio Deck
 }
 
-- (void)resetAllKnobs:(NSButton*)sender {
+- (void)resetAllKnobs:(id)sender {
   (void)sender;
   if (!_state) return;
   for (size_t k = 0; k < kRigKnobCount; ++k) {
@@ -2224,20 +2224,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->toneTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
     state->toneTabBtn.toolTip = @"Browse, search, and download NAM captures and cabinet IRs from Tone3000.";
 
-    state->zoomControl = [[NSComboBox alloc] initWithFrame:NSZeroRect];
-    state->zoomControl.target = state->uiController; state->zoomControl.action = @selector(zoomChanged:);
-    state->zoomControl.editable = YES;               // custom zoom % only (no preset list)
-    state->zoomControl.controlSize = NSControlSizeSmall;
-    state->zoomControl.placeholderString = @"100%";
-    state->zoomControl.toolTip = @"Set the plug-in interface scale from 50% to 400%. Type a percentage and press Return.";
-    state->zoomControl.translatesAutoresizingMaskIntoConstraints = NO;
-    [headerBar addSubview:state->zoomControl];
-    [[state->zoomControl.trailingAnchor constraintEqualToAnchor:headerBar.trailingAnchor] setActive:YES];
-    [[state->zoomControl.centerYAnchor constraintEqualToAnchor:headerBar.centerYAnchor] setActive:YES];
-    [[state->zoomControl.widthAnchor constraintEqualToConstant:90] setActive:YES];
-    [[state->zoomControl.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    // Rig header group (tuner, input meter, preset management, reset knobs):
+    // Rig header group (tuner, input meter, preset management, A/B compare):
     // active in RIG tab, hidden in TONE3000 tab.
     NAMRigHeaderGroup* rigGroup = [[NAMRigHeaderGroup alloc] initWithFrame:NSZeroRect];
     rigGroup.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2246,7 +2233,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [headerBar addSubview:rigGroup];
     state->rigHeaderGroup = rigGroup;
     [[rigGroup.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:14] setActive:YES];
-    [[rigGroup.trailingAnchor constraintEqualToAnchor:state->zoomControl.leadingAnchor constant:-10] setActive:YES];
+    [[rigGroup.trailingAnchor constraintEqualToAnchor:headerBar.trailingAnchor] setActive:YES];
     [[rigGroup.topAnchor constraintEqualToAnchor:headerBar.topAnchor] setActive:YES];
     [[rigGroup.bottomAnchor constraintEqualToAnchor:headerBar.bottomAnchor] setActive:YES];
 
@@ -2508,34 +2495,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[nextPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
     [[nextPresetBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
 
-    RigButton* savePresetBtn = rigButton(rigGroup, @"SAVE", state->uiController,
-                                         @selector(saveCurrentPreset:), NSZeroRect);
-    savePresetBtn.toolTip = @"Save current rig settings to active preset, or save as a new preset.";
-    savePresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
-    state->savePresetBtn = savePresetBtn;
-    [[savePresetBtn.leadingAnchor constraintEqualToAnchor:nextPresetBtn.trailingAnchor constant:6] setActive:YES];
-    [[savePresetBtn.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[savePresetBtn.widthAnchor constraintEqualToConstant:54] setActive:YES];
-    [[savePresetBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    RigButton* resetKnobsButton = rigButton(rigGroup, @"RESET KNOBS", state->uiController,
-                                           @selector(resetAllKnobs:), NSZeroRect);
-    resetKnobsButton.toolTip = @"Reset every knob to its factory default. Model selections, stage switches, profiles, and oversampling are unchanged.";
-    resetKnobsButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [rigGroup addSubview:resetKnobsButton];
-    [[resetKnobsButton.trailingAnchor constraintEqualToAnchor:rigGroup.trailingAnchor] setActive:YES];
-    [[resetKnobsButton.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[resetKnobsButton.widthAnchor constraintEqualToConstant:112] setActive:YES];
-    [[resetKnobsButton.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    // Hands-free A/B compare strip: B slot + 0-30s interval slider + START/STOP,
-    // chained after SAVE so trailing RESET KNOBS stays put. A is the live
-    // active preset in the main window; status shows the sounding side.
+    // Hands-free A/B compare strip: B slot + 0-30s interval slider + START/STOP.
+    // A is the live active preset in the main window; status shows the sounding side.
     NSTextField* abBLabel = addLabel(rigGroup, @"B", NSZeroRect,
                                      [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
                                      rigDimText(), NSTextAlignmentCenter);
     abBLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [[abBLabel.leadingAnchor constraintEqualToAnchor:savePresetBtn.trailingAnchor constant:10] setActive:YES];
+    [[abBLabel.leadingAnchor constraintEqualToAnchor:nextPresetBtn.trailingAnchor constant:10] setActive:YES];
     [[abBLabel.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[abBLabel.widthAnchor constraintEqualToConstant:12] setActive:YES];
     abBLabel.toolTip = @"Preset slot B for hands-free compare. A is the active preset in the main window.";
@@ -2589,17 +2555,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[abToggle.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[abToggle.widthAnchor constraintEqualToConstant:58] setActive:YES];
     [[abToggle.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    NSTextField* abStatus = addLabel(rigGroup, @"A/B idle", NSZeroRect,
-                                     [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
-                                     rigDimText(), NSTextAlignmentLeft);
-    abStatus.translatesAutoresizingMaskIntoConstraints = NO;
-    state->abStatusLabel = abStatus;
-    abStatus.toolTip = @"Which A/B side is currently sounding while cycling.";
-    [[abStatus.leadingAnchor constraintEqualToAnchor:abToggle.trailingAnchor constant:6] setActive:YES];
-    [[abStatus.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[abStatus.trailingAnchor constraintLessThanOrEqualToAnchor:resetKnobsButton.leadingAnchor constant:-8] setActive:YES];
-    [[abStatus.heightAnchor constraintEqualToConstant:24] setActive:YES];
+    [[abToggle.trailingAnchor constraintLessThanOrEqualToAnchor:rigGroup.trailingAnchor constant:-8] setActive:YES];
 
     NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.

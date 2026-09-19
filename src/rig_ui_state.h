@@ -470,6 +470,14 @@ struct RigUIState {
 
     [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
 
+    NSMenuItem* resetItem = [[NSMenuItem alloc] initWithTitle:@"Reset to Default"
+                                                       action:@selector(resetAllKnobs:)
+                                                keyEquivalent:@""];
+    resetItem.target = (id)uiController;
+    [[presetPopup menu] addItem:resetItem];
+
+    [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
+
     NSMenuItem* revealItem = [[NSMenuItem alloc] initWithTitle:@"Reveal in Finder"
                                                         action:@selector(revealPresetsInFinder:)
                                                  keyEquivalent:@""];
