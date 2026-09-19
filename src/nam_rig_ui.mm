@@ -122,6 +122,26 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   _state->muteOnTune = (sender.state == NSControlStateValueOn);
   sender.contentTintColor = _state->muteOnTune ? rigText() : rigDimText();
+  if ([sender respondsToSelector:@selector(setPrimary:)]) {
+    ((RigButton*)sender).primary = _state->muteOnTune;
+  }
+  sender.needsDisplay = YES;
+  if (_state->tunerButton && _state->tunerButton.state == NSControlStateValueOn) {
+    if (_state->muteOnTune) {
+      for (size_t k = 0; k < kRigKnobCount; ++k) {
+        if (kRigKnobPorts[k] == 5) {
+          NSSlider* outK = _state->knobs[k] ?: _state->deckKnobs[k];
+          if (outK) _state->unmutedOutputLevel = outK.floatValue;
+          break;
+        }
+      }
+      _state->sendControl(5, -80.0f);
+      _state->updateControl(5, -80.0f);
+    } else {
+      _state->sendControl(5, _state->unmutedOutputLevel);
+      _state->updateControl(5, _state->unmutedOutputLevel);
+    }
+  }
 }
 - (void)markPresetModified {
   if (!_state || !_state->presetManager) return;
@@ -236,16 +256,17 @@ static NSString* stageName(NSInteger stage) {
   [self markPresetModified];
 }
 
-// Tuner on/off: drives the tuner_enable port, swaps the icon brightness,
-// and shows/hides the readout panel. DSP analysis only runs while enabled.
+// Tuner on/off: drives the tuner_enable port and updates active button state.
 // If muteOnTune is active, temporarily silences output while tuning.
 - (void)tunerToggled:(NSButton*)sender {
   if (!_state) return;
   const BOOL on = sender.state == NSControlStateValueOn;
   _state->sendControl(16, on ? 1.0f : 0.0f);
   sender.contentTintColor = on ? rigText() : rigDimText();
+  if ([sender respondsToSelector:@selector(setPrimary:)]) {
+    ((RigButton*)sender).primary = on;
+  }
   sender.needsDisplay = YES;
-  _state->tunerPanel.hidden = !on;
   if (on) {
     if (_state->muteOnTune) {
       for (size_t k = 0; k < kRigKnobCount; ++k) {
@@ -263,9 +284,17 @@ static NSString* stageName(NSInteger stage) {
       _state->sendControl(5, _state->unmutedOutputLevel);
       _state->updateControl(5, _state->unmutedOutputLevel);
     }
-    _state->tunerNoteLabel.stringValue = @"—";
-    _state->tunerCentsLabel.stringValue = @"";
-    _state->tunerNeedle.hidden = YES;
+    if (_state->tunerNoteLabel) {
+      _state->tunerNoteLabel.stringValue = @"—";
+      _state->tunerNoteLabel.textColor = rigText();
+    }
+    if (_state->tunerCentsLabel) {
+      _state->tunerCentsLabel.stringValue = @"BYPASSED";
+      _state->tunerCentsLabel.textColor = rigDimText();
+    }
+    if (_state->tunerNeedle) {
+      _state->tunerNeedle.hidden = YES;
+    }
   }
 }
 
@@ -1205,52 +1234,6 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
   return rack;
 }
 
-static NSView* addSignalNodeCard(NSView* parent, NSString* num, NSString* title, NSString* tech, NSString* badge, NSColor* accent) {
-  NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
-  card.translatesAutoresizingMaskIntoConstraints = NO;
-  card.wantsLayer = YES;
-  card.layer.cornerRadius = 6.0;
-  card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
-  card.layer.borderWidth = 1.0;
-  card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
-  [parent addSubview:card];
-
-  NSTextField* numLbl = addLabel(card, num, NSZeroRect,
-                                 [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightBold],
-                                 accent, NSTextAlignmentLeft);
-  numLbl.translatesAutoresizingMaskIntoConstraints = NO;
-  [[numLbl.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
-  [[numLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8] setActive:YES];
-
-  NSTextField* badgeLbl = addLabel(card, badge, NSZeroRect,
-                                   [NSFont systemFontOfSize:8 weight:NSFontWeightBold],
-                                   accent, NSTextAlignmentRight);
-  rigApplyTracking(badgeLbl, 0.8);
-  badgeLbl.translatesAutoresizingMaskIntoConstraints = NO;
-  [[badgeLbl.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
-  [[badgeLbl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8] setActive:YES];
-
-  NSTextField* tLbl = addLabel(card, title, NSZeroRect,
-                               [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
-                               rigText(), NSTextAlignmentLeft);
-  rigApplyTracking(tLbl, 0.6);
-  tLbl.translatesAutoresizingMaskIntoConstraints = NO;
-  [[tLbl.topAnchor constraintEqualToAnchor:numLbl.bottomAnchor constant:4] setActive:YES];
-  [[tLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8] setActive:YES];
-  [[tLbl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8] setActive:YES];
-
-  NSTextField* dLbl = addLabel(card, tech, NSZeroRect,
-                               [NSFont systemFontOfSize:8.5 weight:NSFontWeightRegular],
-                               rigDimText(), NSTextAlignmentLeft);
-  dLbl.translatesAutoresizingMaskIntoConstraints = NO;
-  [[dLbl.topAnchor constraintEqualToAnchor:tLbl.bottomAnchor constant:4] setActive:YES];
-  [[dLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8] setActive:YES];
-  [[dLbl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8] setActive:YES];
-  [[card.bottomAnchor constraintGreaterThanOrEqualToAnchor:dLbl.bottomAnchor constant:8] setActive:YES];
-
-  return card;
-}
-
 static void addLowerStudioDeck(RigUIState* state,
                                RigPanel* expansionSlot,
                                const std::array<double, kRigKnobCount>& mins,
@@ -1298,7 +1281,7 @@ static void addLowerStudioDeck(RigUIState* state,
     @"POST-FX STUDIO",
     @"POWER STAGE & IRON",
     @"CAB LAB & SPEAKER",
-    @"SIGNAL CHAIN MAP"
+    @"PRECISION TUNER"
   ];
   NSMutableArray<RigButton*>* tabBtns = [NSMutableArray array];
   for (NSInteger i = 0; i < 4; ++i) {
@@ -2010,95 +1993,317 @@ static void addLowerStudioDeck(RigUIState* state,
   }
 
   // ==========================================
-  // PANE 3: SIGNAL CHAIN MAP
+  // PANE 3: PRECISION TUNER DECK
   // ==========================================
   NSView* pane3 = panes[3];
-  RigPanel* mapPanel = addPanel(pane3, NSZeroRect);
-  mapPanel.translatesAutoresizingMaskIntoConstraints = NO;
-  [[mapPanel.topAnchor constraintEqualToAnchor:pane3.topAnchor] setActive:YES];
-  [[mapPanel.bottomAnchor constraintEqualToAnchor:pane3.bottomAnchor] setActive:YES];
-  [[mapPanel.leadingAnchor constraintEqualToAnchor:pane3.leadingAnchor] setActive:YES];
-  [[mapPanel.trailingAnchor constraintEqualToAnchor:pane3.trailingAnchor] setActive:YES];
+  state->tunerPanel = pane3;
 
-  NSView* mh = [[NSView alloc] initWithFrame:NSZeroRect];
-  mh.translatesAutoresizingMaskIntoConstraints = NO;
-  [mapPanel addSubview:mh];
-  [[mh.topAnchor constraintEqualToAnchor:mapPanel.topAnchor constant:10] setActive:YES];
-  [[mh.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
-  [[mh.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
-  [[mh.heightAnchor constraintEqualToConstant:22] setActive:YES];
+  NSStackView* row3 = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  row3.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row3.distribution = NSStackViewDistributionFill;
+  row3.spacing = 14.0;
+  row3.translatesAutoresizingMaskIntoConstraints = NO;
+  [pane3 addSubview:row3];
+  [[row3.topAnchor constraintEqualToAnchor:pane3.topAnchor] setActive:YES];
+  [[row3.bottomAnchor constraintEqualToAnchor:pane3.bottomAnchor] setActive:YES];
+  [[row3.leadingAnchor constraintEqualToAnchor:pane3.leadingAnchor] setActive:YES];
+  [[row3.trailingAnchor constraintEqualToAnchor:pane3.trailingAnchor] setActive:YES];
 
-  NSTextField* mt = addLabel(mh, @"AUDIO DSP SIGNAL FLOW ARCHITECTURE", NSZeroRect,
-                             [NSFont systemFontOfSize:11 weight:NSFontWeightBold],
-                             cyanColor, NSTextAlignmentLeft);
-  rigApplyTracking(mt, 1.1);
-  mt.translatesAutoresizingMaskIntoConstraints = NO;
-  [[mt.leadingAnchor constraintEqualToAnchor:mh.leadingAnchor] setActive:YES];
-  [[mt.centerYAnchor constraintEqualToAnchor:mh.centerYAnchor] setActive:YES];
+  // 1. Pitch Detector Display
+  {
+    RigPanel* pitchRack = addStudioRackSection(row3, @"PITCH DETECTOR", @"HARMONIC TRACKER", cyanColor);
+    [row3 addArrangedSubview:pitchRack];
+    [[pitchRack.widthAnchor constraintEqualToConstant:290] setActive:YES];
 
-  NSTextField* ms = addLabel(mh, @"END-TO-END DSP PROCESSING PIPELINE (INPUT JACK ➔ STEREO MASTER OUT)", NSZeroRect,
-                             [NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
-                             rigDimText(), NSTextAlignmentRight);
-  rigApplyTracking(ms, 0.7);
-  ms.translatesAutoresizingMaskIntoConstraints = NO;
-  [[ms.trailingAnchor constraintEqualToAnchor:mh.trailingAnchor] setActive:YES];
-  [[ms.centerYAnchor constraintEqualToAnchor:mh.centerYAnchor] setActive:YES];
+    NSView* displayBox = [[NSView alloc] initWithFrame:NSZeroRect];
+    displayBox.wantsLayer = YES;
+    displayBox.layer.backgroundColor = rigRaised().CGColor;
+    displayBox.layer.cornerRadius = 8;
+    displayBox.layer.borderWidth = 1.0;
+    displayBox.layer.borderColor = rigPanelBorder().CGColor;
+    displayBox.translatesAutoresizingMaskIntoConstraints = NO;
+    [pitchRack addSubview:displayBox];
+    [[displayBox.topAnchor constraintEqualToAnchor:pitchRack.topAnchor constant:40] setActive:YES];
+    [[displayBox.leadingAnchor constraintEqualToAnchor:pitchRack.leadingAnchor constant:14] setActive:YES];
+    [[displayBox.trailingAnchor constraintEqualToAnchor:pitchRack.trailingAnchor constant:-14] setActive:YES];
+    [[displayBox.heightAnchor constraintEqualToConstant:118] setActive:YES];
 
-  NSBox* msep = [[NSBox alloc] initWithFrame:NSZeroRect];
-  msep.boxType = NSBoxSeparator;
-  msep.translatesAutoresizingMaskIntoConstraints = NO;
-  [mapPanel addSubview:msep];
-  [[msep.topAnchor constraintEqualToAnchor:mh.bottomAnchor constant:6] setActive:YES];
-  [[msep.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
-  [[msep.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
-  [[msep.heightAnchor constraintEqualToConstant:1] setActive:YES];
+    NSTextField* noteL = addLabel(displayBox, @"—", NSZeroRect,
+                                  [NSFont systemFontOfSize:52 weight:NSFontWeightBold],
+                                  rigText(), NSTextAlignmentCenter);
+    noteL.translatesAutoresizingMaskIntoConstraints = NO;
+    state->tunerNoteLabel = noteL;
+    noteL.toolTip = @"Detected musical note and octave from raw guitar input.";
+    [[noteL.centerXAnchor constraintEqualToAnchor:displayBox.centerXAnchor] setActive:YES];
+    [[noteL.topAnchor constraintEqualToAnchor:displayBox.topAnchor constant:10] setActive:YES];
 
-  // Row A (Nodes 01 - 05)
-  NSStackView* rowA = [[NSStackView alloc] initWithFrame:NSZeroRect];
-  rowA.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  rowA.distribution = NSStackViewDistributionFillEqually;
-  rowA.spacing = 10.0;
-  rowA.translatesAutoresizingMaskIntoConstraints = NO;
-  [mapPanel addSubview:rowA];
-  [[rowA.topAnchor constraintEqualToAnchor:msep.bottomAnchor constant:10] setActive:YES];
-  [[rowA.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
-  [[rowA.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
-  [[rowA.heightAnchor constraintEqualToConstant:94] setActive:YES];
+    NSTextField* centsL = addLabel(displayBox, @"", NSZeroRect,
+                                   [NSFont monospacedDigitSystemFontOfSize:14 weight:NSFontWeightBold],
+                                   rigDimText(), NSTextAlignmentCenter);
+    centsL.translatesAutoresizingMaskIntoConstraints = NO;
+    state->tunerCentsLabel = centsL;
+    centsL.toolTip = @"Cents offset from detected pitch.";
+    [[centsL.centerXAnchor constraintEqualToAnchor:displayBox.centerXAnchor] setActive:YES];
+    [[centsL.topAnchor constraintEqualToAnchor:noteL.bottomAnchor constant:4] setActive:YES];
 
-  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"01", @"INPUT & TUNER", @"Raw Input Trim • MPM Pitch Tracker", @"PRE-AMP", cyanColor)];
-  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"02", @"NOISE GATE & COMP", @"Opto-Comp • Fast Attack Noise Gate", @"DYNAMICS", cyanColor)];
-  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"03", @"NAM PEDAL", @"Neural Drive/Boost • True 8x OS", @"NEURAL", cyanColor)];
-  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"04", @"PRE-AMP SCULPT", @"Bright Boost • Input EQ Tightener", @"ANALOG EQ", goldColor)];
-  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"05", @"NAM AMP CORE", @"Core Neural Amp Head • True 8x OS", @"NEURAL CORE", goldColor)];
+    NSView* trackerBadge = [[NSView alloc] initWithFrame:NSZeroRect];
+    trackerBadge.wantsLayer = YES;
+    trackerBadge.layer.backgroundColor = rigRaised().CGColor;
+    trackerBadge.layer.cornerRadius = 4;
+    trackerBadge.layer.borderWidth = 1.0;
+    trackerBadge.layer.borderColor = rigPanelBorder().CGColor;
+    trackerBadge.translatesAutoresizingMaskIntoConstraints = NO;
+    [pitchRack addSubview:trackerBadge];
+    [[trackerBadge.topAnchor constraintEqualToAnchor:displayBox.bottomAnchor constant:10] setActive:YES];
+    [[trackerBadge.leadingAnchor constraintEqualToAnchor:pitchRack.leadingAnchor constant:14] setActive:YES];
+    [[trackerBadge.trailingAnchor constraintEqualToAnchor:pitchRack.trailingAnchor constant:-14] setActive:YES];
+    [[trackerBadge.heightAnchor constraintEqualToConstant:28] setActive:YES];
 
-  // Connector between rows
-  NSTextField* conn = addLabel(mapPanel, @"▼   ROUTING TO POWER STAGE, REACTIVE LOAD, DUAL CABINET CONVOLUTION & STEREO FX   ▼", NSZeroRect,
-                               [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
-                               [NSColor colorWithSRGBRed:0.40 green:0.55 blue:0.75 alpha:0.8], NSTextAlignmentCenter);
-  rigApplyTracking(conn, 1.4);
-  conn.translatesAutoresizingMaskIntoConstraints = NO;
-  [[conn.topAnchor constraintEqualToAnchor:rowA.bottomAnchor constant:8] setActive:YES];
-  [[conn.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
-  [[conn.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
+    NSTextField* badgeText = addLabel(trackerBadge, @"AUTOCORRELATION • MPM (NSDF)", NSZeroRect,
+                                      [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+                                      cyanColor, NSTextAlignmentCenter);
+    rigApplyTracking(badgeText, 0.8);
+    badgeText.translatesAutoresizingMaskIntoConstraints = NO;
+    [[badgeText.centerXAnchor constraintEqualToAnchor:trackerBadge.centerXAnchor] setActive:YES];
+    [[badgeText.centerYAnchor constraintEqualToAnchor:trackerBadge.centerYAnchor] setActive:YES];
+  }
 
-  // Row B (Nodes 06 - 11)
-  NSStackView* rowB = [[NSStackView alloc] initWithFrame:NSZeroRect];
-  rowB.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  rowB.distribution = NSStackViewDistributionFillEqually;
-  rowB.spacing = 10.0;
-  rowB.translatesAutoresizingMaskIntoConstraints = NO;
-  [mapPanel addSubview:rowB];
-  [[rowB.topAnchor constraintEqualToAnchor:conn.bottomAnchor constant:8] setActive:YES];
-  [[rowB.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
-  [[rowB.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
-  [[rowB.heightAnchor constraintEqualToConstant:94] setActive:YES];
+  // 2. Precision Cent Deviation Meter & String Reference
+  {
+    RigPanel* meterRack = addStudioRackSection(row3, @"PRECISION CENT DEVIATION", @"±50 CENTS HIGH-RES STROBE METER", cyanColor);
+    [row3 addArrangedSubview:meterRack];
 
-  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"06", @"POWER STAGE", @"Dynamic Sag • Tube Bias • Master", @"TUBE STAGE", goldColor)];
-  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"07", @"IRON CORE", @"Output Transformer Core Hysteresis", @"MAGNETIC", goldColor)];
-  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"08", @"SPEAKER LOAD", @"Reactive Impedance • Excursion Thump", @"REACTIVE LOAD", emeraldColor)];
-  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"09", @"DUAL CAB / IR", @"Parallel Cab A & B • Phase Alignment", @"CONVOLUTION", emeraldColor)];
-  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"10", @"POST-CAB EQ", @"3-Band Post EQ • Low/High Cuts", @"EQ / FILTER", emeraldColor)];
-  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"11", @"STEREO FX & OUT", @"Tape Delay • Plate Reverb • Master Out", @"POST-FX", violetColor)];
+    // Ruler markings view
+    NSView* ruler = [[NSView alloc] initWithFrame:NSZeroRect];
+    ruler.translatesAutoresizingMaskIntoConstraints = NO;
+    [meterRack addSubview:ruler];
+    [[ruler.topAnchor constraintEqualToAnchor:meterRack.topAnchor constant:42] setActive:YES];
+    [[ruler.leadingAnchor constraintEqualToAnchor:meterRack.leadingAnchor constant:18] setActive:YES];
+    [[ruler.trailingAnchor constraintEqualToAnchor:meterRack.trailingAnchor constant:-18] setActive:YES];
+    [[ruler.heightAnchor constraintEqualToConstant:16] setActive:YES];
+
+    NSTextField* l50 = addLabel(ruler, @"-50¢", NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightMedium], rigDimText(), NSTextAlignmentLeft);
+    l50.translatesAutoresizingMaskIntoConstraints = NO;
+    [[l50.leadingAnchor constraintEqualToAnchor:ruler.leadingAnchor] setActive:YES];
+    [[l50.centerYAnchor constraintEqualToAnchor:ruler.centerYAnchor] setActive:YES];
+
+    NSTextField* l25 = addLabel(ruler, @"-25¢", NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:9.5 weight:NSFontWeightMedium], rigDimText(), NSTextAlignmentCenter);
+    l25.translatesAutoresizingMaskIntoConstraints = NO;
+    [[NSLayoutConstraint constraintWithItem:l25 attribute:NSLayoutAttributeCenterX relatedBy:NSLayoutRelationEqual toItem:ruler attribute:NSLayoutAttributeTrailing multiplier:0.25 constant:0] setActive:YES];
+    [[l25.centerYAnchor constraintEqualToAnchor:ruler.centerYAnchor] setActive:YES];
+
+    NSTextField* l0 = addLabel(ruler, @"▼ 0¢ IN TUNE ▼", NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightBold], rigGreen(), NSTextAlignmentCenter);
+    l0.translatesAutoresizingMaskIntoConstraints = NO;
+    [[l0.centerXAnchor constraintEqualToAnchor:ruler.centerXAnchor] setActive:YES];
+    [[l0.centerYAnchor constraintEqualToAnchor:ruler.centerYAnchor] setActive:YES];
+
+    NSTextField* r25 = addLabel(ruler, @"+25¢", NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:9.5 weight:NSFontWeightMedium], rigDimText(), NSTextAlignmentCenter);
+    r25.translatesAutoresizingMaskIntoConstraints = NO;
+    [[NSLayoutConstraint constraintWithItem:r25 attribute:NSLayoutAttributeCenterX relatedBy:NSLayoutRelationEqual toItem:ruler attribute:NSLayoutAttributeTrailing multiplier:0.75 constant:0] setActive:YES];
+    [[r25.centerYAnchor constraintEqualToAnchor:ruler.centerYAnchor] setActive:YES];
+
+    NSTextField* r50 = addLabel(ruler, @"+50¢", NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightMedium], rigDimText(), NSTextAlignmentRight);
+    r50.translatesAutoresizingMaskIntoConstraints = NO;
+    [[r50.trailingAnchor constraintEqualToAnchor:ruler.trailingAnchor] setActive:YES];
+    [[r50.centerYAnchor constraintEqualToAnchor:ruler.centerYAnchor] setActive:YES];
+
+    // Wide horizontal meter track
+    NSView* meter = [[NSView alloc] initWithFrame:NSZeroRect];
+    meter.wantsLayer = YES;
+    meter.layer.backgroundColor = rigRaised().CGColor;
+    meter.layer.cornerRadius = 4;
+    meter.layer.borderWidth = 1.0;
+    meter.layer.borderColor = rigPanelBorder().CGColor;
+    meter.translatesAutoresizingMaskIntoConstraints = NO;
+    [meterRack addSubview:meter];
+    meter.toolTip = @"Tuning meter spanning -50 to +50 cents. The center mark is in tune.";
+    [[meter.topAnchor constraintEqualToAnchor:ruler.bottomAnchor constant:6] setActive:YES];
+    [[meter.leadingAnchor constraintEqualToAnchor:meterRack.leadingAnchor constant:18] setActive:YES];
+    [[meter.trailingAnchor constraintEqualToAnchor:meterRack.trailingAnchor constant:-18] setActive:YES];
+    [[meter.heightAnchor constraintEqualToConstant:34] setActive:YES];
+
+    // Center in-tune target strip (-5 to +5 cents = 10% width in center)
+    NSView* targetZone = [[NSView alloc] initWithFrame:NSZeroRect];
+    targetZone.wantsLayer = YES;
+    targetZone.layer.backgroundColor = [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.20].CGColor;
+    targetZone.layer.cornerRadius = 2;
+    targetZone.translatesAutoresizingMaskIntoConstraints = NO;
+    [meter addSubview:targetZone];
+    [[targetZone.centerXAnchor constraintEqualToAnchor:meter.centerXAnchor] setActive:YES];
+    [[targetZone.centerYAnchor constraintEqualToAnchor:meter.centerYAnchor] setActive:YES];
+    [[targetZone.widthAnchor constraintEqualToAnchor:meter.widthAnchor multiplier:0.1] setActive:YES];
+    [[targetZone.heightAnchor constraintEqualToAnchor:meter.heightAnchor constant:-4] setActive:YES];
+
+    // Center vertical calibration hairline
+    NSView* centerMark = [[NSView alloc] initWithFrame:NSZeroRect];
+    centerMark.wantsLayer = YES;
+    centerMark.layer.backgroundColor = rigGreen().CGColor;
+    centerMark.translatesAutoresizingMaskIntoConstraints = NO;
+    [meter addSubview:centerMark];
+    [[centerMark.centerXAnchor constraintEqualToAnchor:meter.centerXAnchor] setActive:YES];
+    [[centerMark.centerYAnchor constraintEqualToAnchor:meter.centerYAnchor] setActive:YES];
+    [[centerMark.widthAnchor constraintEqualToConstant:2] setActive:YES];
+    [[centerMark.heightAnchor constraintEqualToAnchor:meter.heightAnchor] setActive:YES];
+
+    // Sliding needle
+    NSImageView* needle = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    needle.wantsLayer = YES;
+    needle.layer.backgroundColor = rigAccent().CGColor;
+    needle.layer.cornerRadius = 2.5;
+    needle.hidden = YES;
+    needle.translatesAutoresizingMaskIntoConstraints = NO;
+    [meter addSubview:needle];
+    needle.toolTip = @"Current tuning offset; centered and green means in tune.";
+    state->tunerNeedle = needle;
+    [[needle.centerYAnchor constraintEqualToAnchor:meter.centerYAnchor] setActive:YES];
+    [[needle.heightAnchor constraintEqualToAnchor:meter.heightAnchor constant:6] setActive:YES];
+    [[needle.widthAnchor constraintEqualToConstant:6] setActive:YES];
+
+    NSLayoutConstraint* needleLeading =
+        [NSLayoutConstraint constraintWithItem:needle
+                                     attribute:NSLayoutAttributeLeading
+                                     relatedBy:NSLayoutRelationEqual
+                                         toItem:meter
+                                     attribute:NSLayoutAttributeLeading
+                                    multiplier:1.0
+                                      constant:0];
+    needleLeading.active = YES;
+    state->tunerNeedleLeading = needleLeading;
+
+    // Guidance indicators below meter
+    NSView* guideRow = [[NSView alloc] initWithFrame:NSZeroRect];
+    guideRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [meterRack addSubview:guideRow];
+    [[guideRow.leadingAnchor constraintEqualToAnchor:meter.leadingAnchor] setActive:YES];
+    [[guideRow.trailingAnchor constraintEqualToAnchor:meter.trailingAnchor] setActive:YES];
+    [[guideRow.topAnchor constraintEqualToAnchor:meter.bottomAnchor constant:8] setActive:YES];
+    [[guideRow.heightAnchor constraintEqualToConstant:16] setActive:YES];
+
+    NSTextField* flatGuide = addLabel(guideRow, @"◀ FLAT (TUNE UP)", NSZeroRect,
+                                      [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                                      [NSColor colorWithSRGBRed:0.95 green:0.65 blue:0.25 alpha:0.8], NSTextAlignmentLeft);
+    flatGuide.translatesAutoresizingMaskIntoConstraints = NO;
+    [[flatGuide.leadingAnchor constraintEqualToAnchor:guideRow.leadingAnchor] setActive:YES];
+    [[flatGuide.centerYAnchor constraintEqualToAnchor:guideRow.centerYAnchor] setActive:YES];
+
+    NSTextField* centerGuide = addLabel(guideRow, @"● TARGET LOCK ●", NSZeroRect,
+                                        [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                                        rigGreen(), NSTextAlignmentCenter);
+    centerGuide.translatesAutoresizingMaskIntoConstraints = NO;
+    [[centerGuide.centerXAnchor constraintEqualToAnchor:guideRow.centerXAnchor] setActive:YES];
+    [[centerGuide.centerYAnchor constraintEqualToAnchor:guideRow.centerYAnchor] setActive:YES];
+
+    NSTextField* sharpGuide = addLabel(guideRow, @"SHARP (TUNE DOWN) ▶", NSZeroRect,
+                                       [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                                       [NSColor colorWithSRGBRed:0.95 green:0.65 blue:0.25 alpha:0.8], NSTextAlignmentRight);
+    sharpGuide.translatesAutoresizingMaskIntoConstraints = NO;
+    [[sharpGuide.trailingAnchor constraintEqualToAnchor:guideRow.trailingAnchor] setActive:YES];
+    [[sharpGuide.centerYAnchor constraintEqualToAnchor:guideRow.centerYAnchor] setActive:YES];
+
+    // Standard Tuning String Reference Guide
+    NSStackView* stringStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    stringStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    stringStack.distribution = NSStackViewDistributionFillEqually;
+    stringStack.spacing = 8.0;
+    stringStack.translatesAutoresizingMaskIntoConstraints = NO;
+    [meterRack addSubview:stringStack];
+    [[stringStack.leadingAnchor constraintEqualToAnchor:meter.leadingAnchor] setActive:YES];
+    [[stringStack.trailingAnchor constraintEqualToAnchor:meter.trailingAnchor] setActive:YES];
+    [[stringStack.topAnchor constraintEqualToAnchor:guideRow.bottomAnchor constant:12] setActive:YES];
+    [[stringStack.heightAnchor constraintEqualToConstant:32] setActive:YES];
+
+    NSArray<NSString*>* strings = @[
+      @"6 : E2 • 82.4 Hz",
+      @"5 : A2 • 110.0 Hz",
+      @"4 : D3 • 146.8 Hz",
+      @"3 : G3 • 196.0 Hz",
+      @"2 : B3 • 246.9 Hz",
+      @"1 : E4 • 329.6 Hz"
+    ];
+    for (NSString* str in strings) {
+      NSView* pill = [[NSView alloc] initWithFrame:NSZeroRect];
+      pill.wantsLayer = YES;
+      pill.layer.backgroundColor = rigRaised().CGColor;
+      pill.layer.cornerRadius = 4;
+      pill.layer.borderWidth = 1.0;
+      pill.layer.borderColor = rigPanelBorder().CGColor;
+      NSTextField* pl = addLabel(pill, str, NSZeroRect,
+                                 [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightMedium],
+                                 rigDimText(), NSTextAlignmentCenter);
+      pl.translatesAutoresizingMaskIntoConstraints = NO;
+      [[pl.centerXAnchor constraintEqualToAnchor:pill.centerXAnchor] setActive:YES];
+      [[pl.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor] setActive:YES];
+      [stringStack addArrangedSubview:pill];
+    }
+  }
+
+  // 3. Tuner Controls & Calibration
+  {
+    RigPanel* ctrlRack = addStudioRackSection(row3, @"TUNER CONTROLS & ROUTING", @"CALIBRATION & MUTE", cyanColor);
+    [row3 addArrangedSubview:ctrlRack];
+    [[ctrlRack.widthAnchor constraintEqualToConstant:290] setActive:YES];
+
+    RigButton* tBtn = rigButton(ctrlRack, @"TUNER ACTIVE", state->uiController,
+                                @selector(tunerToggled:), NSZeroRect);
+    tBtn.toolTip = @"Enable or disable guitar pitch detection.";
+    tBtn.buttonType = NSButtonTypeToggle;
+    tBtn.state = NSControlStateValueOn;
+    tBtn.primary = YES;
+    tBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    state->tunerButton = tBtn;
+    [[tBtn.topAnchor constraintEqualToAnchor:ctrlRack.topAnchor constant:40] setActive:YES];
+    [[tBtn.leadingAnchor constraintEqualToAnchor:ctrlRack.leadingAnchor constant:14] setActive:YES];
+    [[tBtn.trailingAnchor constraintEqualToAnchor:ctrlRack.trailingAnchor constant:-14] setActive:YES];
+    [[tBtn.heightAnchor constraintEqualToConstant:32] setActive:YES];
+
+    RigButton* muteBtn = rigButton(ctrlRack, @"MUTE GUITAR OUTPUT", state->uiController,
+                                   @selector(toggleMuteOnTune:), NSZeroRect);
+    muteBtn.toolTip = @"Mute guitar output while tuning for silent on-stage tuning.";
+    muteBtn.buttonType = NSButtonTypeToggle;
+    muteBtn.state = state->muteOnTune ? NSControlStateValueOn : NSControlStateValueOff;
+    muteBtn.primary = state->muteOnTune;
+    muteBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    state->muteOnTuneButton = muteBtn;
+    [[muteBtn.topAnchor constraintEqualToAnchor:tBtn.bottomAnchor constant:8] setActive:YES];
+    [[muteBtn.leadingAnchor constraintEqualToAnchor:ctrlRack.leadingAnchor constant:14] setActive:YES];
+    [[muteBtn.trailingAnchor constraintEqualToAnchor:ctrlRack.trailingAnchor constant:-14] setActive:YES];
+    [[muteBtn.heightAnchor constraintEqualToConstant:32] setActive:YES];
+
+    // Info card below buttons
+    NSView* infoCard = [[NSView alloc] initWithFrame:NSZeroRect];
+    infoCard.wantsLayer = YES;
+    infoCard.layer.backgroundColor = rigRaised().CGColor;
+    infoCard.layer.cornerRadius = 6;
+    infoCard.layer.borderWidth = 1.0;
+    infoCard.layer.borderColor = rigPanelBorder().CGColor;
+    infoCard.translatesAutoresizingMaskIntoConstraints = NO;
+    [ctrlRack addSubview:infoCard];
+    [[infoCard.topAnchor constraintEqualToAnchor:muteBtn.bottomAnchor constant:10] setActive:YES];
+    [[infoCard.leadingAnchor constraintEqualToAnchor:ctrlRack.leadingAnchor constant:14] setActive:YES];
+    [[infoCard.trailingAnchor constraintEqualToAnchor:ctrlRack.trailingAnchor constant:-14] setActive:YES];
+    [[infoCard.heightAnchor constraintEqualToConstant:68] setActive:YES];
+
+    NSTextField* info1 = addLabel(infoCard, @"CONCERT PITCH : A4 = 440.0 Hz", NSZeroRect,
+                                  [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                                  rigDimText(), NSTextAlignmentLeft);
+    info1.translatesAutoresizingMaskIntoConstraints = NO;
+    [[info1.topAnchor constraintEqualToAnchor:infoCard.topAnchor constant:8] setActive:YES];
+    [[info1.leadingAnchor constraintEqualToAnchor:infoCard.leadingAnchor constant:10] setActive:YES];
+
+    NSTextField* info2 = addLabel(infoCard, @"SIGNAL TAP : PRE-AMP DIRECT TAP", NSZeroRect,
+                                  [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                                  rigDimText(), NSTextAlignmentLeft);
+    info2.translatesAutoresizingMaskIntoConstraints = NO;
+    [[info2.topAnchor constraintEqualToAnchor:info1.bottomAnchor constant:5] setActive:YES];
+    [[info2.leadingAnchor constraintEqualToAnchor:infoCard.leadingAnchor constant:10] setActive:YES];
+
+    NSTextField* info3 = addLabel(infoCard, @"DETECTION RANGE : 55 Hz – 1400 Hz", NSZeroRect,
+                                  [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                                  rigDimText(), NSTextAlignmentLeft);
+    info3.translatesAutoresizingMaskIntoConstraints = NO;
+    [[info3.topAnchor constraintEqualToAnchor:info2.bottomAnchor constant:5] setActive:YES];
+    [[info3.leadingAnchor constraintEqualToAnchor:infoCard.leadingAnchor constant:10] setActive:YES];
+  }
 }
 
 LV2UI_Handle instantiate(const LV2UI_Descriptor*,
@@ -2237,111 +2442,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[rigGroup.topAnchor constraintEqualToAnchor:headerBar.topAnchor] setActive:YES];
     [[rigGroup.bottomAnchor constraintEqualToAnchor:headerBar.bottomAnchor] setActive:YES];
 
-    // Tuner toggle — flat icon button, dim when off, bright when on.
-    state->tunerButton = [[NSButton alloc] initWithFrame:NSZeroRect];
-    state->tunerButton.bordered = NO;
-    state->tunerButton.imagePosition = NSImageOnly;
-    state->tunerButton.image = [NSImage imageWithSystemSymbolName:@"guitars"
-                                          accessibilityDescription:@"Tuner"];
-    state->tunerButton.contentTintColor = rigDimText();
-    [state->tunerButton setButtonType:NSButtonTypeToggle];
-    state->tunerButton.target = state->uiController;
-    state->tunerButton.action = @selector(tunerToggled:);
-    state->tunerButton.toolTip = @"Toggle the input tuner. It analyzes the raw guitar signal before the gate, gain controls, and model chain.";
-    state->tunerButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [rigGroup addSubview:state->tunerButton];
-    [[state->tunerButton.leadingAnchor constraintEqualToAnchor:rigGroup.leadingAnchor] setActive:YES];
-    [[state->tunerButton.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[state->tunerButton.widthAnchor constraintEqualToConstant:28] setActive:YES];
-    [[state->tunerButton.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    // Tuner readout panel — hidden until the toggle is on.
-    NSView* tp = [[NSView alloc] initWithFrame:NSZeroRect];
-    tp.wantsLayer = YES;
-    tp.layer.backgroundColor = rigPanelBG().CGColor;
-    tp.layer.cornerRadius = 8;
-    tp.layer.borderWidth = 1.0;
-    tp.layer.borderColor = rigPanelBorder().CGColor;
-    tp.hidden = YES;
-    tp.translatesAutoresizingMaskIntoConstraints = NO;
-    [rigGroup addSubview:tp];
-    tp.toolTip = @"Live tuner readout from the raw input signal.";
-    state->tunerPanel = tp;
-    [[tp.leadingAnchor constraintEqualToAnchor:state->tunerButton.leadingAnchor] setActive:YES];
-    [[tp.topAnchor constraintEqualToAnchor:state->tunerButton.bottomAnchor constant:4] setActive:YES];
-    [[tp.widthAnchor constraintEqualToConstant:240] setActive:YES];
-    [[tp.heightAnchor constraintEqualToConstant:34] setActive:YES];
-
-    NSTextField* noteL = addLabel(tp, @"—", NSZeroRect,
-                                  [NSFont monospacedDigitSystemFontOfSize:17 weight:NSFontWeightBold],
-                                  rigText(), NSTextAlignmentCenter);
-    noteL.translatesAutoresizingMaskIntoConstraints = NO;
-    state->tunerNoteLabel = noteL;
-    noteL.toolTip = @"Detected note from the raw input. A dash means no stable pitch is currently detected.";
-    [[noteL.leadingAnchor constraintEqualToAnchor:tp.leadingAnchor constant:14] setActive:YES];
-    [[noteL.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
-    [[noteL.widthAnchor constraintEqualToConstant:58] setActive:YES];
-
-    NSTextField* centsL = addLabel(tp, @"", NSZeroRect,
-                                   [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightRegular],
-                                   rigDimText(), NSTextAlignmentCenter);
-    centsL.translatesAutoresizingMaskIntoConstraints = NO;
-    state->tunerCentsLabel = centsL;
-    centsL.toolTip = @"Pitch offset from the detected note in cents; zero is in tune.";
-    [[centsL.trailingAnchor constraintEqualToAnchor:tp.trailingAnchor constant:-10] setActive:YES];
-    [[centsL.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
-    [[centsL.widthAnchor constraintEqualToConstant:74] setActive:YES];
-
-    // Needle: thin accent bar that slides across the ±50-cent scale.
-    NSView* meter = [[NSView alloc] initWithFrame:NSZeroRect];
-    meter.wantsLayer = YES;
-    meter.layer.backgroundColor = rigRaised().CGColor;
-    meter.layer.cornerRadius = 2;
-    meter.translatesAutoresizingMaskIntoConstraints = NO;
-    [tp addSubview:meter];
-    meter.toolTip = @"Tuning meter spanning -50 to +50 cents. The center position is in tune.";
-    [[meter.leadingAnchor constraintEqualToAnchor:noteL.trailingAnchor constant:10] setActive:YES];
-    [[meter.trailingAnchor constraintEqualToAnchor:centsL.leadingAnchor constant:-10] setActive:YES];
-    [[meter.centerYAnchor constraintEqualToAnchor:tp.centerYAnchor] setActive:YES];
-    [[meter.heightAnchor constraintEqualToConstant:6] setActive:YES];
-
-    NSImageView* needle = [[NSImageView alloc] initWithFrame:NSZeroRect];
-    needle.wantsLayer = YES;
-    needle.layer.backgroundColor = rigAccent().CGColor;
-    needle.layer.cornerRadius = 1.5;
-    needle.hidden = YES;
-    needle.translatesAutoresizingMaskIntoConstraints = NO;
-    [meter addSubview:needle];
-    needle.toolTip = @"Current tuning offset; centered and green means in tune.";
-    state->tunerNeedle = needle;
-    [[needle.topAnchor constraintEqualToAnchor:meter.topAnchor constant:-3] setActive:YES];
-    [[needle.bottomAnchor constraintEqualToAnchor:meter.bottomAnchor constant:3] setActive:YES];
-    [[needle.widthAnchor constraintEqualToConstant:3] setActive:YES];
-
-    NSLayoutConstraint* needleLeading =
-        [NSLayoutConstraint constraintWithItem:needle
-                                     attribute:NSLayoutAttributeLeading
-                                     relatedBy:NSLayoutRelationEqual
-                                         toItem:meter
-                                     attribute:NSLayoutAttributeLeading
-                                    multiplier:1.0
-                                      constant:0];
-    needleLeading.active = YES;
-    state->tunerNeedleLeading = needleLeading;
-
-    // Tuner mute toggle button
-    RigButton* muteBtn = rigButton(rigGroup, @"MUTE", state->uiController,
-                                   @selector(toggleMuteOnTune:), NSZeroRect);
-    muteBtn.toolTip = @"Mute guitar output while the tuner is active for silent tuning.";
-    muteBtn.translatesAutoresizingMaskIntoConstraints = NO;
-    muteBtn.buttonType = NSButtonTypeToggle;
-    muteBtn.state = state->muteOnTune ? NSControlStateValueOn : NSControlStateValueOff;
-    state->muteOnTuneButton = muteBtn;
-    [[muteBtn.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:4] setActive:YES];
-    [[muteBtn.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[muteBtn.widthAnchor constraintEqualToConstant:48] setActive:YES];
-    [[muteBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
     // Input level meter (always visible in rig header): dBFS readout + bar.
     NSView* mp = [[NSView alloc] initWithFrame:NSZeroRect];
     mp.wantsLayer = YES;
@@ -2352,7 +2452,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     mp.translatesAutoresizingMaskIntoConstraints = NO;
     [rigGroup addSubview:mp];
     mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
-    [[mp.leadingAnchor constraintEqualToAnchor:muteBtn.trailingAnchor constant:8] setActive:YES];
+    [[mp.leadingAnchor constraintEqualToAnchor:rigGroup.leadingAnchor] setActive:YES];
     [[mp.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[mp.widthAnchor constraintEqualToConstant:120] setActive:YES];
     [[mp.heightAnchor constraintEqualToConstant:24] setActive:YES];

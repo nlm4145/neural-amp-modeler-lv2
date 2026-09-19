@@ -100,6 +100,7 @@ struct RigUIState {
   __strong NAMCabConsoleVisualizer* cabConsoleVisualizer = nil;
 
   void selectDeckTab(NSInteger index) {
+    const NSInteger prevTab = activeDeckTab;
     activeDeckTab = index;
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -113,6 +114,55 @@ struct RigUIState {
       for (NSInteger i = 0; i < (NSInteger)deckTabPanes.count; ++i) {
         NSView* pane = deckTabPanes[(NSUInteger)i];
         pane.hidden = (i != index);
+      }
+      if (index == 3) {
+        // Switched to Tuner tab: activate tuner DSP
+        sendControl(16, 1.0f);
+        if (tunerButton) {
+          tunerButton.state = NSControlStateValueOn;
+          tunerButton.contentTintColor = rigText();
+          if ([tunerButton respondsToSelector:@selector(setPrimary:)]) {
+            ((RigButton*)tunerButton).primary = YES;
+          }
+          tunerButton.needsDisplay = YES;
+        }
+        if (tunerPanel) tunerPanel.hidden = NO;
+        if (muteOnTune) {
+          for (size_t k = 0; k < kRigKnobCount; ++k) {
+            if (kRigKnobPorts[k] == 5) {
+              NSSlider* outK = knobs[k] ?: deckKnobs[k];
+              if (outK) unmutedOutputLevel = outK.floatValue;
+              break;
+            }
+          }
+          sendControl(5, -80.0f);
+          updateControl(5, -80.0f);
+        }
+      } else if (prevTab == 3) {
+        // Leaving Tuner tab: disable tuner DSP and restore output if muted
+        sendControl(16, 0.0f);
+        if (tunerButton) {
+          tunerButton.state = NSControlStateValueOff;
+          tunerButton.contentTintColor = rigDimText();
+          if ([tunerButton respondsToSelector:@selector(setPrimary:)]) {
+            ((RigButton*)tunerButton).primary = NO;
+          }
+          tunerButton.needsDisplay = YES;
+        }
+        if (tunerPanel) tunerPanel.hidden = YES;
+        if (muteOnTune) {
+          sendControl(5, unmutedOutputLevel);
+          updateControl(5, unmutedOutputLevel);
+        }
+        if (tunerNoteLabel) {
+          tunerNoteLabel.stringValue = @"—";
+          tunerNoteLabel.textColor = rigText();
+        }
+        if (tunerCentsLabel) {
+          tunerCentsLabel.stringValue = @"";
+          tunerCentsLabel.textColor = rigDimText();
+        }
+        if (tunerNeedle) tunerNeedle.hidden = YES;
       }
     });
   }
@@ -128,7 +178,7 @@ struct RigUIState {
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
 
-  // Tuner UI: toggle button in the title bar + the display panel it reveals.
+  // Tuner UI: master toggle + readout elements in Pro Studio Deck tab 3.
   __strong NSButton* tunerButton = nil;
   __strong NSView* tunerPanel = nil;
   __strong NSTextField* tunerNoteLabel = nil;
@@ -144,7 +194,9 @@ struct RigUIState {
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
+      if (activeDeckTab != 3) return;
       if (!tunerPanel || tunerPanel.hidden) return;
+      if (tunerButton && tunerButton.state != NSControlStateValueOn) return;
       if (lastTunerNote < 0) {
         tunerNoteLabel.stringValue = @"—";
         tunerNoteLabel.textColor = rigText();
@@ -157,16 +209,28 @@ struct RigUIState {
       const int n = (int)(lastTunerNote + 0.5f);
       tunerNoteLabel.stringValue = [NSString stringWithFormat:@"%@%d",
                                     kNames[((n % 12) + 12) % 12], n / 12 - 1];
-      tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢",
-                                     (int)std::lround(lastTunerCents)];
       const bool inTune = std::fabs(lastTunerCents) <= 5.0f;
+      if (std::fabs(lastTunerCents) <= 2.0f) {
+        tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢  ● IN TUNE",
+                                       (int)std::lround(lastTunerCents)];
+      } else if (lastTunerCents > 2.0f) {
+        tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢ (SHARP)",
+                                       (int)std::lround(lastTunerCents)];
+      } else {
+        tunerCentsLabel.stringValue = [NSString stringWithFormat:@"%+d¢ (FLAT)",
+                                       (int)std::lround(lastTunerCents)];
+      }
       tunerNoteLabel.textColor = inTune ? rigGreen() : rigText();
+      tunerCentsLabel.textColor = inTune ? rigGreen() : (std::fabs(lastTunerCents) <= 15.0f ? rigOrange() : rigDimText());
       tunerNeedle.layer.backgroundColor = (inTune ? rigGreen() : rigOrange()).CGColor;
       tunerNeedle.hidden = NO;
       // Needle across ±50 cents: middle of the meter = in tune.
       NSView* meter = tunerNeedle.superview;
-      const CGFloat w = meter.bounds.size.width - 6.0;
-      tunerNeedleLeading.constant = 3.0 + (lastTunerCents + 50.0f) / 100.0f * w;
+      const CGFloat needleW = tunerNeedle.bounds.size.width > 0 ? tunerNeedle.bounds.size.width : 6.0;
+      const CGFloat w = meter.bounds.size.width - needleW;
+      if (w > 0) {
+        tunerNeedleLeading.constant = (lastTunerCents + 50.0f) / 100.0f * w;
+      }
     });
   }
 
