@@ -19,7 +19,7 @@ assert "tonePane.hidden = (tab != 1)" in state, "selectTab must toggle tonePane.
 
 # Verify 1280x980 base size in UI state and standalone app
 assert "baseH = 980.0" in state, "Base height must be 980.0"
-assert "NSMakeRect(0, 0, 1280, 980)" in standalone, "Standalone window must be 1280x980"
+assert "NSMakeRect(0, 0, 1520, 980)" in standalone, "Standalone window must be 1520x980"
 
 # Verify UI elements and wiring
 assert '@"RIG"' in ui, "UI missing RIG tab button title"

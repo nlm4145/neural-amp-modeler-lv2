@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -35,6 +36,13 @@
 @class ToneBrowserController;
 
 struct RigUIState {
+  std::shared_ptr<bool> isAlive = std::make_shared<bool>(true);
+
+  ~RigUIState() {
+    if (isAlive) *isAlive = false;
+    stopABTimer();
+  }
+
   LV2UI_Write_Function write = nullptr;
   LV2UI_Controller controller = nullptr;
   LV2_URID_Map* map = nullptr;
@@ -93,7 +101,9 @@ struct RigUIState {
 
   void selectDeckTab(NSInteger index) {
     activeDeckTab = index;
+    auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       for (NSInteger i = 0; i < (NSInteger)deckTabButtons.count; ++i) {
         RigButton* b = deckTabButtons[(NSUInteger)i];
         b.state = (i == index) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -131,7 +141,9 @@ struct RigUIState {
   // Redraw the readout from lastTunerNote/lastTunerCents. Called on the main
   // thread from portEvent.
   void updateTunerDisplay() {
+    auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       if (!tunerPanel || tunerPanel.hidden) return;
       if (lastTunerNote < 0) {
         tunerNoteLabel.stringValue = @"—";
@@ -163,7 +175,9 @@ struct RigUIState {
   // to orange above -6 dB (hot) and red above -1 dB (clip risk).
   void updateInputDbDisplay() {
     const float db = lastInputDb;
+    auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       if (!inDbLabel) return;
       const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
       inDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
@@ -180,7 +194,9 @@ struct RigUIState {
   // Redraw the output meter from lastOutputDb. Scale: -60..0 dBFS.
   void updateOutputDbDisplay() {
     const float db = lastOutputDb;
+    auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       if (!outDbLabel) return;
       const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
       outDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
@@ -224,7 +240,9 @@ struct RigUIState {
 
   void selectTab(NSInteger tab) {
     activeTab = tab;
+    auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       if (rigTabBtn) {
         rigTabBtn.state = (tab == 0) ? NSControlStateValueOn : NSControlStateValueOff;
         rigTabBtn.needsDisplay = YES;
@@ -245,6 +263,166 @@ struct RigUIState {
   __strong NSButton* nextPresetBtn = nil;
   __strong NSButton* savePresetBtn = nil;
   __strong RigPresetManager* presetManager = nil;
+
+  // Hands-free A/B preset compare: alternates between the active preset (A =
+  // whatever is in the main preset window) and a memorized B preset, driven
+  // by a UI-side timer so the player can audition while playing (no clicks).
+  // NSTimer must be invalidated before teardown (cleanup() calls stopAB()).
+  __strong NSPopUpButton* abPresetB = nil;
+  __strong NSSlider* abIntervalSlider = nil;
+  __strong NSTextField* abIntervalLabel = nil;
+  __strong NSButton* abCycleBtn = nil;
+  __strong NSTextField* abStatusLabel = nil;
+  __strong NSTimer* abTimer = nil;
+  NSString* abNameA = nil;   // snapshot of the active preset taken at START
+  NSString* abNameB = nil;   // B slot memorized from the B dropdown
+  double abIntervalSec = 4.0;
+  bool abShowingA = true;
+  bool abCycling = false;
+
+  void applyPresetByName(NSString* name) {
+    if (!name.length || !presetManager || !uiController) return;
+    RigPreset* preset = [presetManager loadPresetNamed:name];
+    if (preset) {
+      [preset applyToState:this];
+      updatePresetDisplayTitle();
+    }
+  }
+
+  // Cycle apply: loads the preset's DSP state WITHOUT touching
+  // currentPresetName or the main preset window. This keeps A (main window)
+  // and B (B dropdown) fixed while cycling, so they never collapse onto the
+  // same value — only the status readout flips to show the sounding side.
+  void abApplyCycle(NSString* name) {
+    if (!name.length || !presetManager) return;
+    NSString* path = [[presetManager presetsDirectory]
+        stringByAppendingPathComponent:
+            [[name lastPathComponent] stringByAppendingPathExtension:@"json"]];
+    RigPreset* preset = [RigPreset loadFromFile:path];
+    if (preset) [preset applyToState:this];
+  }
+
+  // Drives the A/B cycle and the status readout. Runs on the main thread.
+  void abTick() {
+    if (!abCycling) return;
+    abShowingA = !abShowingA;
+    NSString* next = abShowingA ? abNameA : abNameB;
+    abApplyCycle(next);
+    updateABStatus();
+  }
+
+  void updateABStatus() {
+    if (!abStatusLabel) return;
+    NSString* showing = abShowingA ? @"A" : @"B";
+    NSString* name = abShowingA ? abNameA : abNameB;
+    if (!name.length) name = @"—";
+    abStatusLabel.stringValue = abCycling
+        ? [NSString stringWithFormat:@"%@: %@", showing, name]
+        : @"A/B idle";
+  }
+
+  void refreshABMenus() {
+    if (!abPresetB || !presetManager) return;
+    NSArray<NSString*>* names = presetManager.presetNames ?: @[];
+    NSString* keep = nil;
+    if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
+      keep = abPresetB.selectedItem.representedObject;
+    if (!keep.length) keep = abNameB;
+    [abPresetB removeAllItems];
+    for (NSString* name in names) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:name action:NULL keyEquivalent:@""];
+      item.representedObject = name;
+      [[abPresetB menu] addItem:item];
+    }
+    NSInteger match = keep.length ? [abPresetB indexOfItemWithRepresentedObject:keep] : -1;
+    if (match < 0 && names.count) {
+      // Default B to something other than the active preset when possible.
+      NSString* cur = presetManager.currentPresetName;
+      NSString* fallback = nil;
+      for (NSString* name in names) {
+        if (![name isEqualToString:cur]) { fallback = name; break; }
+      }
+      if (!fallback.length) fallback = names.firstObject;
+      match = [abPresetB indexOfItemWithRepresentedObject:fallback];
+      if (match < 0) match = 0;
+    }
+    if (match >= 0) [abPresetB selectItemAtIndex:match];
+    if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
+      abNameB = abPresetB.selectedItem.representedObject;
+    updateABStatus();
+  }
+
+  // Snap A to the live active preset (called whenever the main preset
+  // selection changes while idle, and after STOP restores A).
+  void syncABNameA() {
+    if (abCycling) return;
+    NSString* cur = presetManager ? presetManager.currentPresetName : nil;
+    if (cur.length) abNameA = cur;
+    if (presetPopup) resyncPresetPopupSelection();
+    updateABStatus();
+  }
+
+  void startAB() {
+    if (presetManager) {
+      [presetManager rescanPresets];
+      refreshABMenus();
+      // A is always the live active preset — snapshot it now.
+      NSString* cur = presetManager.currentPresetName;
+      if (cur.length) abNameA = cur;
+    }
+    if (!abNameA.length || !abNameB.length) return;
+    if ([abNameA isEqualToString:abNameB]) return;  // nothing to compare
+    stopABTimer();
+    abCycling = true;
+    abShowingA = false;  // first tick lands on A immediately
+    if (abCycleBtn) {
+      abCycleBtn.title = @"STOP";
+      abCycleBtn.state = NSControlStateValueOn;
+    }
+    abTick();  // switch to A right away so START is responsive
+    restartABTimer();
+    updateABStatus();
+  }
+
+  void restartABTimer() {
+    stopABTimer();
+    const double interval = abIntervalSec < 0.25 ? 0.25 : abIntervalSec;
+    abTimer = [NSTimer scheduledTimerWithTimeInterval:interval
+                                              target:uiController
+                                            selector:@selector(abTimerFired:)
+                                            userInfo:nil
+                                             repeats:YES];
+  }
+
+  void stopABTimer() {
+    if (abTimer) {
+      [abTimer invalidate];
+      abTimer = nil;
+    }
+  }
+
+  void stopAB() {
+    stopABTimer();
+    abCycling = false;
+    if (abCycleBtn) {
+      abCycleBtn.title = @"START";
+      abCycleBtn.state = NSControlStateValueOff;
+    }
+    // Restore the main window to the A side (the cycle never moved it, so
+    // just re-apply A's sound and snap A back to the live selection).
+    if (abNameA.length) {
+      abApplyCycle(abNameA);
+      RigPreset* a = [presetManager loadPresetNamed:abNameA];
+      if (a) [a applyToState:this];
+    }
+    syncABNameA();
+    updatePresetDisplayTitle();
+  }
+
+  void toggleAB() {
+    if (abCycling) stopAB();
+    else startAB();
+  }
 
   void rebuildPresetMenu() {
     if (!presetPopup || !presetManager) return;
@@ -301,11 +479,16 @@ struct RigUIState {
     if (match >= 0) {
       [presetPopup selectItemAtIndex:match];
     }
+    // Newly saved presets should appear in the A/B slots too.
+    refreshABMenus();
   }
 
   void updatePresetDisplayTitle() {
+    auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       rebuildPresetMenu();
+      updateABStatus();
     });
   }
 
@@ -318,7 +501,9 @@ struct RigUIState {
   // Must run on the main thread (all preset actions do).
   void resyncPresetPopupSelection() {
     if (!presetPopup || !presetManager) return;
+    auto alive = this->isAlive;
     auto resync = ^{
+      if (!alive || !*alive) return;
       NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
       NSInteger match = -1;
       NSArray<NSMenuItem*>* items = presetPopup.itemArray;
@@ -681,9 +866,11 @@ struct RigUIState {
   }
 
   void updateControl(uint32_t port, float value) {
+    auto alive = this->isAlive;
     if ((port >= 7 && port <= 9) || port == 47) {
       const size_t slot = port == 47 ? 3 : port - 7;
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (!alive || !*alive) return;
         if (!powerButtons[slot]) return;
         powerButtons[slot].state = value >= 0.5f;
         powerButtons[slot].needsDisplay = YES;
@@ -696,6 +883,7 @@ struct RigUIState {
         const int mode = (int)(value + 0.5f);
         const int idx = NAMRig::oversampleMenuIndexFromMode(mode);
         dispatch_async(dispatch_get_main_queue(), ^{
+          if (!alive || !*alive) return;
           if (idx >= 0 && idx < popup.itemArray.count)
             [popup selectItemAtIndex:idx];
           NSString* role = port == 20 ? @"pedal" : @"amp";
@@ -709,6 +897,7 @@ struct RigUIState {
     if (port == 24) {
       const int idx = std::max(0, std::min(3, (int)(value + 0.5f)));
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (!alive || !*alive) return;
         if (irNormPopup) {
           [irNormPopup selectItemAtIndex:idx];
           NSString* selected = irNormPopup.selectedItem.toolTip ?: @"";
@@ -723,6 +912,7 @@ struct RigUIState {
       const int idx = NAMRig::OutputTransformer::clampProfile(
           (int)(value + 0.5f));
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (!alive || !*alive) return;
         if (transformerPopup) {
           [transformerPopup selectItemAtIndex:idx];
           transformerPopup.toolTip = transformerPopup.selectedItem.toolTip;
@@ -737,6 +927,7 @@ struct RigUIState {
     if (port == 42) {
       const int idx = NAMRig::SpeakerDynamics::clampProfile((int)(value + 0.5f));
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (!alive || !*alive) return;
         if (speakerProfilePopup) {
           [speakerProfilePopup selectItemAtIndex:idx];
           speakerProfilePopup.toolTip = speakerProfilePopup.selectedItem.toolTip;
@@ -754,6 +945,7 @@ struct RigUIState {
       if (kRigKnobPorts[k] == port) { index = (ssize_t)k; break; }
     if (index < 0) return;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
       if (knobs[index]) knobs[index].floatValue = value;
       if (!knobFieldEditing[index] && valueLabels[index])
         valueLabels[index].stringValue = rigKnobValueText(port, value);

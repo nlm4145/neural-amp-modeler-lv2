@@ -95,6 +95,10 @@ static NSString* stageName(NSInteger stage) {
 - (void)switchTab:(NSButton*)sender;
 - (void)switchDeckTab:(NSButton*)sender;
 - (void)toggleMuteOnTune:(NSButton*)sender;
+- (void)abPresetChanged:(NSPopUpButton*)sender;
+- (void)abIntervalChanged:(NSSlider*)sender;
+- (void)abToggleClicked:(NSButton*)sender;
+- (void)abTimerFired:(NSTimer*)timer;
 - (void)applyDelayPreset:(NSButton*)sender;
 - (void)applyReverbPreset:(NSButton*)sender;
 - (void)applySpatialPreset:(NSButton*)sender;
@@ -520,6 +524,7 @@ static NSString* stageName(NSInteger stage) {
   RigPreset* preset = [_state->presetManager loadPresetNamed:name];
   if (preset) {
     [preset applyToState:_state];
+    _state->syncABNameA();
     _state->updatePresetDisplayTitle();
   } else {
     _state->resyncPresetPopupSelection();
@@ -534,6 +539,7 @@ static NSString* stageName(NSInteger stage) {
     RigPreset* preset = [_state->presetManager loadPresetNamed:prev];
     if (preset) {
       [preset applyToState:_state];
+      _state->syncABNameA();
       _state->updatePresetDisplayTitle();
     }
   }
@@ -547,6 +553,7 @@ static NSString* stageName(NSInteger stage) {
     RigPreset* preset = [_state->presetManager loadPresetNamed:next];
     if (preset) {
       [preset applyToState:_state];
+      _state->syncABNameA();
       _state->updatePresetDisplayTitle();
     }
   }
@@ -699,6 +706,51 @@ static NSString* stageName(NSInteger stage) {
   // Opening Finder doesn't change the rig, so keep the popup on the current
   // preset instead of rebuilding (rebuild is harmless but flashes the menu).
   _state->resyncPresetPopupSelection();
+}
+
+// ---- Hands-free A/B preset compare ----
+// A is the live active preset (main window); the B dropdown memorizes the
+// other side. START alternates between them on a timer so the player can
+// audition while playing. STOP (same button, or changing B) halts the cycle
+// on the current sound.
+- (void)abPresetChanged:(NSPopUpButton*)sender {
+  if (!_state || sender != _state->abPresetB) return;
+  NSString* name = sender.selectedItem.representedObject;
+  if (![name isKindOfClass:[NSString class]]) return;
+  _state->abNameB = name;
+  // Changing B mid-cycle stops on the newly picked preset: predictable and
+  // hands-free (no surprise switch a second later).
+  if (_state->abCycling) {
+    _state->stopAB();
+    _state->applyPresetByName(name);
+    _state->abShowingA = NO;
+    _state->updateABStatus();
+  } else {
+    _state->updateABStatus();
+  }
+}
+- (void)abIntervalChanged:(NSSlider*)sender {
+  if (!_state) return;
+  // Slider spans 0..30s; clamp the timer floor to 0.25s so 0 stays usable as
+  // "switch as fast as possible" without hammering preset loads.
+  double secs = sender.doubleValue;
+  if (secs < 0.0) secs = 0.0;
+  if (secs > 30.0) secs = 30.0;
+  _state->abIntervalSec = secs;
+  if (_state->abIntervalLabel)
+    _state->abIntervalLabel.stringValue = [NSString stringWithFormat:@"%.0fs", secs];
+  // Restart the cadence mid-cycle so the new interval takes effect now.
+  if (_state->abCycling) _state->restartABTimer();
+}
+- (void)abToggleClicked:(NSButton*)sender {
+  (void)sender;
+  if (!_state) return;
+  _state->toggleAB();
+}
+- (void)abTimerFired:(NSTimer*)timer {
+  (void)timer;
+  if (!_state) return;
+  _state->abTick();
 }
 @end
 static NSTextField* addLabel(NSView* parent,
@@ -2476,6 +2528,79 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[resetKnobsButton.widthAnchor constraintEqualToConstant:112] setActive:YES];
     [[resetKnobsButton.heightAnchor constraintEqualToConstant:24] setActive:YES];
 
+    // Hands-free A/B compare strip: B slot + 0-30s interval slider + START/STOP,
+    // chained after SAVE so trailing RESET KNOBS stays put. A is the live
+    // active preset in the main window; status shows the sounding side.
+    NSTextField* abBLabel = addLabel(rigGroup, @"B", NSZeroRect,
+                                     [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
+                                     rigDimText(), NSTextAlignmentCenter);
+    abBLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [[abBLabel.leadingAnchor constraintEqualToAnchor:savePresetBtn.trailingAnchor constant:10] setActive:YES];
+    [[abBLabel.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[abBLabel.widthAnchor constraintEqualToConstant:12] setActive:YES];
+    abBLabel.toolTip = @"Preset slot B for hands-free compare. A is the active preset in the main window.";
+
+    NSPopUpButton* abPopB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    abPopB.controlSize = NSControlSizeSmall;
+    abPopB.target = state->uiController;
+    abPopB.action = @selector(abPresetChanged:);
+    abPopB.tag = 1;
+    abPopB.toolTip = @"Preset B: the other side of the hands-free A/B compare. A is the active preset.";
+    abPopB.translatesAutoresizingMaskIntoConstraints = NO;
+    [rigGroup addSubview:abPopB];
+    state->abPresetB = abPopB;
+    [[abPopB.leadingAnchor constraintEqualToAnchor:abBLabel.trailingAnchor constant:2] setActive:YES];
+    [[abPopB.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[abPopB.widthAnchor constraintEqualToConstant:148] setActive:YES];
+    [[abPopB.heightAnchor constraintEqualToConstant:24] setActive:YES];
+
+    NSSlider* abIntSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    abIntSlider.minValue = 0.0;
+    abIntSlider.maxValue = 30.0;
+    abIntSlider.doubleValue = state->abIntervalSec;
+    abIntSlider.target = state->uiController;
+    abIntSlider.action = @selector(abIntervalChanged:);
+    abIntSlider.continuous = YES;
+    abIntSlider.toolTip = @"Seconds on each side before auto-switching (0-30s). Dragging mid-cycle restarts the cadence.";
+    abIntSlider.translatesAutoresizingMaskIntoConstraints = NO;
+    [rigGroup addSubview:abIntSlider];
+    state->abIntervalSlider = abIntSlider;
+    [[abIntSlider.leadingAnchor constraintEqualToAnchor:abPopB.trailingAnchor constant:8] setActive:YES];
+    [[abIntSlider.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[abIntSlider.widthAnchor constraintEqualToConstant:90] setActive:YES];
+
+    NSTextField* abIntLabel = addLabel(rigGroup, @"4s", NSZeroRect,
+                                       [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
+                                       rigDimText(), NSTextAlignmentLeft);
+    abIntLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    state->abIntervalLabel = abIntLabel;
+    abIntLabel.toolTip = @"A/B cycle interval in seconds.";
+    [[abIntLabel.leadingAnchor constraintEqualToAnchor:abIntSlider.trailingAnchor constant:4] setActive:YES];
+    [[abIntLabel.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[abIntLabel.widthAnchor constraintEqualToConstant:30] setActive:YES];
+
+    RigButton* abToggle = rigButton(rigGroup, @"START", state->uiController,
+                                    @selector(abToggleClicked:), NSZeroRect);
+    abToggle.toolTip = @"Start or stop hands-free A/B cycling. START jumps to A immediately; STOP holds the current sound.";
+    abToggle.translatesAutoresizingMaskIntoConstraints = NO;
+    abToggle.buttonType = NSButtonTypeToggle;
+    state->abCycleBtn = abToggle;
+    [[abToggle.leadingAnchor constraintEqualToAnchor:abIntLabel.trailingAnchor constant:6] setActive:YES];
+    [[abToggle.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[abToggle.widthAnchor constraintEqualToConstant:58] setActive:YES];
+    [[abToggle.heightAnchor constraintEqualToConstant:24] setActive:YES];
+
+    NSTextField* abStatus = addLabel(rigGroup, @"A/B idle", NSZeroRect,
+                                     [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
+                                     rigDimText(), NSTextAlignmentLeft);
+    abStatus.translatesAutoresizingMaskIntoConstraints = NO;
+    state->abStatusLabel = abStatus;
+    abStatus.toolTip = @"Which A/B side is currently sounding while cycling.";
+    [[abStatus.leadingAnchor constraintEqualToAnchor:abToggle.trailingAnchor constant:6] setActive:YES];
+    [[abStatus.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[abStatus.trailingAnchor constraintLessThanOrEqualToAnchor:resetKnobsButton.leadingAnchor constant:-8] setActive:YES];
+    [[abStatus.heightAnchor constraintEqualToConstant:24] setActive:YES];
+
     NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
     // Display names indexed by kRigKnobPorts order; cells are laid out in
@@ -2548,8 +2673,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    boxRow.distribution = NSStackViewDistributionFillEqually;
-    boxRow.spacing = 22.0;
     boxRow.translatesAutoresizingMaskIntoConstraints = NO;
     [rigPane addSubview:boxRow];
     [[boxRow.leadingAnchor constraintEqualToAnchor:rigPane.leadingAnchor constant:24] setActive:YES];
@@ -2557,11 +2680,16 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:12] setActive:YES];
     [[boxRow.heightAnchor constraintEqualToConstant:242] setActive:YES];
 
-    // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
-    // DRIVE/PRESENCE/DEPTH and the tone controls under AMP, OUTPUT under CAB. Each group's LEADING and
-    // TRAILING edges are pinned to its tile box in the tile loop below, so the
-    // knobs stay exactly within the tile's footprint at any width/zoom.
+    // Stage tiles get widths proportional to their knob counts (4/6/6):
+    // each knob column gets the same pixel width everywhere, so 64pt knobs
+    // and 70pt value boxes fit identically in every tile. The pedal tile is
+    // narrower, amp and cab wider — no squish, no oversized cab card.
+    // NSStackView proportions: use explicit width ratios via constraints
+    // after adding (FillProportionally can't be trusted with custom views).
+    const CGFloat tileUnits[3] = {4.0, 6.0, 6.0};
+    const CGFloat tileGap = 22.0;
     NSView* knobGroups[3] = {nil, nil, nil};
+    RigPanel* tileBoxes[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
     const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {8, 9, 10, 11, 26, 27}};
@@ -2576,9 +2704,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[group.heightAnchor constraintEqualToConstant:110] setActive:YES];
 
       // Equal-width cells tiled across the group. All knobs stay full-size
-      // 64pt; the window base width was enlarged so 6-knob tiles fit without
-      // overlap. 6-knob tiles use tighter spacing to fit.
-      const CGFloat cellSpacing = (groupCounts[g] > 4 ? 10.0 : 22.0);
+      // 64pt. Cell width must fit the 70pt value box, so each 6-knob group
+      // gets 1/6 of its tile width; spacing only separates groups, never
+      // cells — knobs can't drift together no matter how wide the window is.
+      // The 4-knob pedal group keeps roomier cells for the same knob size.
+      const CGFloat groupPad = 4.0;
       const CGFloat knobSide = 64.0;
       NSView* prev = nil;
       for (size_t gi = 0; gi < groupCounts[g]; ++gi) {
@@ -2590,14 +2720,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[cell.topAnchor constraintEqualToAnchor:group.topAnchor] setActive:YES];
         [[cell.bottomAnchor constraintEqualToAnchor:group.bottomAnchor] setActive:YES];
         if (prev) {
-          [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:cellSpacing] setActive:YES];
+          [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:0] setActive:YES];
           [[cell.widthAnchor constraintEqualToAnchor:prev.widthAnchor] setActive:YES];
         } else {
-          [[cell.leadingAnchor constraintEqualToAnchor:group.leadingAnchor] setActive:YES];
+          [[cell.leadingAnchor constraintEqualToAnchor:group.leadingAnchor constant:groupPad] setActive:YES];
         }
         prev = cell;
         if (gi == groupCounts[g] - 1)
-          [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor] setActive:YES];
+          [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor constant:-groupPad] setActive:YES];
 
         state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k],
                                   mins[k], maxes[k],
@@ -2888,17 +3018,32 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[onB.heightAnchor constraintEqualToConstant:23] setActive:YES];
       }
 
-      // Pin this tile's knob group exactly to the tile's footprint: the
-      // group's leading/trailing edges match the box (which insets itself
-      // 16pt inside its cell via its own interior padding), so knobs sit
-      // within the tile's visual bounds. Vertical placement is fixed above.
+      // Pin this tile's knob group exactly to the tile's footprint, with the
+      // same 16pt interior inset the tile's own children use — knob columns
+      // line up 1:1 with the columns implied by the tile width.
       NSView* grp = knobGroups[i];
-      [[grp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor] setActive:YES];
-      [[grp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor] setActive:YES];
+      [[grp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
+      [[grp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
 
+      tileBoxes[i] = box;
       [boxRow addArrangedSubview:box];
+      if (i > 0) {
+        // Width proportional to knob count: pedal 4 units, amp/cab 6 each.
+        // (boxRow has no distribution; these constraints set the ratios.)
+        [[box.widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor
+                                       multiplier:tileUnits[i] / tileUnits[0]] setActive:YES];
+      }
+      // Fixed 22pt gaps between tiles (NSStackView spacing is off without
+      // a distribution, so use explicit inter-tile spacing constraints).
+      if (i > 0) {
+        [[box.leadingAnchor constraintEqualToAnchor:tileBoxes[i-1].trailingAnchor
+                                           constant:tileGap] setActive:YES];
+      }
       state->setStageThumb((size_t)i, nil, 0, nil);
     }
+    // Pin the row ends so the proportional widths resolve against boxRow.
+    [[tileBoxes[0].leadingAnchor constraintEqualToAnchor:boxRow.leadingAnchor] setActive:YES];
+    [[tileBoxes[2].trailingAnchor constraintEqualToAnchor:boxRow.trailingAnchor] setActive:YES];
 
     for (size_t k = 0; k < kRigKnobCount; ++k) {
       if (!state->knobs[k] && state->deckKnobs[k]) state->knobs[k] = state->deckKnobs[k];
@@ -2915,12 +3060,20 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->presetManager = [RigPresetManager sharedManager];
     [state->presetManager rescanPresets];
     state->rebuildPresetMenu();
+    state->refreshABMenus();
+    state->updateABStatus();
     return state;
   }
 }
 
 void cleanup(LV2UI_Handle handle) {
   auto* state = static_cast<RigUIState*>(handle);
+  if (state) {
+    state->stopABTimer();   // invalidate the A/B timer before teardown (do not call stopAB() which queues UI rebuilds)
+    if (state->uiController) {
+      state->uiController.state = nullptr;
+    }
+  }
   [state->headerBar removeFromSuperview];
   [state->view removeFromSuperview];
   delete state;
