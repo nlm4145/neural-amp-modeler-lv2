@@ -37,6 +37,7 @@
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 #define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
+#define NAM_RIG_OUTPUT_DB_URI NAM_RIG_URI "-output-db"
 
 namespace NAMRig {
 class WavIR;
@@ -250,6 +251,7 @@ private:
     LV2_URID tunerNote;
     LV2_URID tunerCents;
     LV2_URID inputDb;
+    LV2_URID outputDb;
   } uris{};
 
   LV2_Atom_Forge forge{};
@@ -336,7 +338,7 @@ private:
   struct Meter {
     float lastDb = -120.0f;
     float sentDb = -999.0f;
-  } meter;
+  } meter, outMeter;
 
   // TRUE oversampling cascades. Each factor is a CHAIN of 2x half-band
   // pairs: 2x = 1 pair, 4x = 2, 8x = 3. Every level needs its OWN converter

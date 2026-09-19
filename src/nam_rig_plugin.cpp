@@ -206,6 +206,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
   uris.inputDb = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
+  uris.outputDb = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
 
   for (auto& loader : loaders) {
     loader.SetExternalSampleRate(static_cast<int>(rate));
@@ -1393,6 +1394,34 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     std::memcpy(ports.audio_out_r + off, R, n * sizeof(float));
   }
   (void)cabProcessedAny;
+
+  // ---- Master output level meter (post-effects, final output) ----
+  {
+    float peak = 0.0f;
+    for (uint32_t i = 0; i < count; ++i) {
+      const float a = std::fabs(ports.audio_out[i]);
+      const float b = std::fabs(ports.audio_out_r[i]);
+      if (a > peak) peak = a;
+      if (b > peak) peak = b;
+    }
+    const float blockDb = peak > 1e-9f ? 20.0f * std::log10(peak) : -120.0f;
+    const float releasePerBlock = 20.0f * (float)count / (float)sampleRate;
+    if (blockDb >= outMeter.lastDb)
+      outMeter.lastDb = blockDb;
+    else
+      outMeter.lastDb = std::max(blockDb, outMeter.lastDb - releasePerBlock);
+    if (std::fabs(outMeter.lastDb - outMeter.sentDb) >= 0.5f) {
+      outMeter.sentDb = outMeter.lastDb;
+      LV2_Atom_Forge_Frame frame;
+      lv2_atom_forge_frame_time(&forge, 0);
+      lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+      lv2_atom_forge_key(&forge, uris.patchProperty);
+      lv2_atom_forge_urid(&forge, uris.outputDb);
+      lv2_atom_forge_key(&forge, uris.patchValue);
+      lv2_atom_forge_float(&forge, outMeter.lastDb);
+      lv2_atom_forge_pop(&forge, &frame);
+    }
+  }
 
   if (commitRequested) {
     commitPendingSwitches();

@@ -17,6 +17,7 @@
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 #define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
+#define NAM_RIG_OUTPUT_DB_URI NAM_RIG_URI "-output-db"
 
 #include <array>
 #include <cmath>
@@ -91,12 +92,31 @@ static NSString* stageName(NSInteger stage) {
 - (void)deleteCurrentPreset:(id)sender;
 - (void)revealPresetsInFinder:(id)sender;
 - (void)switchTab:(NSButton*)sender;
+- (void)switchDeckTab:(NSButton*)sender;
+- (void)toggleMuteOnTune:(NSButton*)sender;
+- (void)applyDelayPreset:(NSButton*)sender;
+- (void)applyReverbPreset:(NSButton*)sender;
+- (void)applySpatialPreset:(NSButton*)sender;
+- (void)applyPowerPreset:(NSButton*)sender;
+- (void)applySculptPreset:(NSButton*)sender;
+- (void)applySpeakerPreset:(NSButton*)sender;
+- (void)applyCabConsolePreset:(NSButton*)sender;
+- (void)applyTransformerPreset:(NSButton*)sender;
 - (void)markPresetModified;
 @end
 @implementation NAMRigUIController
 - (void)switchTab:(NSButton*)sender {
   if (!_state) return;
   _state->selectTab(sender.tag);
+}
+- (void)switchDeckTab:(NSButton*)sender {
+  if (!_state) return;
+  _state->selectDeckTab(sender.tag);
+}
+- (void)toggleMuteOnTune:(NSButton*)sender {
+  if (!_state) return;
+  _state->muteOnTune = (sender.state == NSControlStateValueOn);
+  sender.contentTintColor = _state->muteOnTune ? rigText() : rigDimText();
 }
 - (void)markPresetModified {
   if (!_state || !_state->presetManager) return;
@@ -154,20 +174,23 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
-  for (size_t k = 0; k < kRigKnobCount; ++k)
+  for (size_t k = 0; k < kRigKnobCount; ++k) {
     if (_state->valueLabels[k] == f) _state->knobFieldEditing[k] = true;
+    if (_state->deckValueLabels[k] == f) _state->deckKnobFieldEditing[k] = true;
+  }
 }
 - (void)controlTextDidEndEditing:(NSNotification*)obj {
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
   for (size_t k = 0; k < kRigKnobCount; ++k) {
-    if (_state->valueLabels[k] == f) {
+    if (_state->valueLabels[k] == f || _state->deckValueLabels[k] == f) {
       _state->knobFieldEditing[k] = false;
+      _state->deckKnobFieldEditing[k] = false;
       // Commit on click-away / Tab too (Enter already ran the action; the
       // equality guard keeps a no-op focus visit from re-sending the value).
-      NSSlider* knob = _state->knobs[k];
-      if (![f.stringValue isEqualToString:rigKnobValueText(kRigKnobPorts[k], knob.floatValue)])
+      NSSlider* knob = _state->knobs[k] ?: _state->deckKnobs[k];
+      if (knob && ![f.stringValue isEqualToString:rigKnobValueText(kRigKnobPorts[k], knob.floatValue)])
         [self knobFieldCommitted:f];
     }
   }
@@ -184,7 +207,8 @@ static NSString* stageName(NSInteger stage) {
   for (size_t k = 0; k < kRigKnobCount; ++k)
     if (kRigKnobPorts[k] == (uint32_t)port) { index = (ssize_t)k; break; }
   if (index < 0) return;
-  NSSlider* knob = _state->knobs[index];
+  NSSlider* knob = _state->knobs[index] ?: _state->deckKnobs[index];
+  if (!knob) return;
 
   NSString* s = [[sender.stringValue stringByTrimmingCharactersInSet:
                   [NSCharacterSet whitespaceCharacterSet]]
@@ -209,6 +233,7 @@ static NSString* stageName(NSInteger stage) {
 
 // Tuner on/off: drives the tuner_enable port, swaps the icon brightness,
 // and shows/hides the readout panel. DSP analysis only runs while enabled.
+// If muteOnTune is active, temporarily silences output while tuning.
 - (void)tunerToggled:(NSButton*)sender {
   if (!_state) return;
   const BOOL on = sender.state == NSControlStateValueOn;
@@ -216,7 +241,23 @@ static NSString* stageName(NSInteger stage) {
   sender.contentTintColor = on ? rigText() : rigDimText();
   sender.needsDisplay = YES;
   _state->tunerPanel.hidden = !on;
-  if (!on) {
+  if (on) {
+    if (_state->muteOnTune) {
+      for (size_t k = 0; k < kRigKnobCount; ++k) {
+        if (kRigKnobPorts[k] == 5) {
+          NSSlider* outK = _state->knobs[k] ?: _state->deckKnobs[k];
+          if (outK) _state->unmutedOutputLevel = outK.floatValue;
+          break;
+        }
+      }
+      _state->sendControl(5, -80.0f);
+      _state->updateControl(5, -80.0f);
+    }
+  } else {
+    if (_state->muteOnTune) {
+      _state->sendControl(5, _state->unmutedOutputLevel);
+      _state->updateControl(5, _state->unmutedOutputLevel);
+    }
     _state->tunerNoteLabel.stringValue = @"—";
     _state->tunerCentsLabel.stringValue = @"";
     _state->tunerNeedle.hidden = YES;
@@ -258,10 +299,9 @@ static NSString* stageName(NSInteger stage) {
 }
 
 - (void)showAmpAdvanced:(NSButton*)sender {
-  if (!_state || !_state->ampAdvancedPopover) return;
-  [_state->ampAdvancedPopover showRelativeToRect:sender.bounds
-                                           ofView:sender
-                                    preferredEdge:NSRectEdgeMaxY];
+  (void)sender;
+  if (!_state) return;
+  _state->selectDeckTab(1);  // Switch to POWER STAGE & IRON in Lower Studio Deck
 }
 
 - (void)speakerProfileChanged:(NSPopUpButton*)sender {
@@ -273,15 +313,15 @@ static NSString* stageName(NSInteger stage) {
 }
 
 - (void)showSpeakerLoad:(NSButton*)sender {
-  if (!_state || !_state->speakerPopover) return;
-  [_state->speakerPopover showRelativeToRect:sender.bounds ofView:sender
-                               preferredEdge:NSRectEdgeMaxY];
+  (void)sender;
+  if (!_state) return;
+  _state->selectDeckTab(2);  // Switch to CAB LAB & SPEAKER in Lower Studio Deck
 }
 
 - (void)showEffects:(NSButton*)sender {
-  if (!_state || !_state->effectsPopover) return;
-  [_state->effectsPopover showRelativeToRect:sender.bounds ofView:sender
-                               preferredEdge:NSRectEdgeMaxY];
+  (void)sender;
+  if (!_state) return;
+  _state->selectDeckTab(0);  // Switch to POST-FX STUDIO in Lower Studio Deck
 }
 
 - (void)resetAllKnobs:(NSButton*)sender {
@@ -292,6 +332,142 @@ static NSString* stageName(NSInteger stage) {
     _state->updateControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
   }
   [self markPresetModified];
+}
+
+- (void)applyDelayPreset:(NSButton*)sender {
+  if (!_state) return;
+  const float times[] = {80.0f, 375.0f, 500.0f, 1000.0f, 1400.0f};
+  if (sender.tag >= 0 && sender.tag < 5) {
+    const float t = times[sender.tag];
+    _state->sendControl(50, t);
+    _state->updateControl(50, t);
+    if (_state->knobs[31] && _state->knobs[31].floatValue < 1.0f) {
+      _state->sendControl(53, 30.0f);
+      _state->updateControl(53, 30.0f);
+    }
+    [self markPresetModified];
+  }
+}
+
+- (void)applyReverbPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct ReverbPreset { float mix, decay, size, damp, pre; };
+  const ReverbPreset presets[] = {
+    {30.0f, 50.0f, 60.0f, 40.0f, 15.0f}, // EMT 140
+    {35.0f, 40.0f, 45.0f, 65.0f, 20.0f}, // WARM PLATE
+    {25.0f, 70.0f, 80.0f, 80.0f, 30.0f}, // DARK TANK
+    {40.0f, 85.0f, 95.0f, 15.0f, 5.0f},  // SHIMMER
+    {20.0f, 20.0f, 30.0f, 45.0f, 8.0f}   // TIGHT ROOM
+  };
+  if (sender.tag >= 0 && sender.tag < 5) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(54, p.mix); _state->updateControl(54, p.mix);
+    _state->sendControl(55, p.decay); _state->updateControl(55, p.decay);
+    _state->sendControl(56, p.size); _state->updateControl(56, p.size);
+    _state->sendControl(57, p.damp); _state->updateControl(57, p.damp);
+    _state->sendControl(58, p.pre); _state->updateControl(58, p.pre);
+    [self markPresetModified];
+  }
+}
+
+- (void)applySpatialPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct SpatialPreset { float width, room; };
+  const SpatialPreset presets[] = {
+    {0.0f, 0.0f},    // MONO CENTER
+    {60.0f, 25.0f},  // STUDIO SPREAD
+    {100.0f, 50.0f}, // WIDE 3D
+    {80.0f, 85.0f}   // DEEP ROOM
+  };
+  if (sender.tag >= 0 && sender.tag < 4) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(32, p.width); _state->updateControl(32, p.width);
+    _state->sendControl(33, p.room); _state->updateControl(33, p.room);
+    [self markPresetModified];
+  }
+}
+
+- (void)applyPowerPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct PowerPreset { float sag, bias, fdbk; };
+  const PowerPreset presets[] = {
+    {40.0f, 15.0f, 20.0f}, // VINTAGE SAG
+    {15.0f, 50.0f, 10.0f}, // HOT BIAS
+    {5.0f, 0.0f, 40.0f},   // TIGHT NFB
+    {0.0f, 0.0f, 0.0f}     // PURE CLEAN
+  };
+  if (sender.tag >= 0 && sender.tag < 4) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(36, p.sag); _state->updateControl(36, p.sag);
+    _state->sendControl(37, p.bias); _state->updateControl(37, p.bias);
+    _state->sendControl(38, p.fdbk); _state->updateControl(38, p.fdbk);
+    [self markPresetModified];
+  }
+}
+
+- (void)applySculptPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct SculptPreset { float bright, inputEq; };
+  const SculptPreset presets[] = {
+    {6.0f, 0.0f},  // LEAD BOOST
+    {3.0f, 75.0f}, // TIGHT CHUG
+    {0.0f, 0.0f}   // FLAT
+  };
+  if (sender.tag >= 0 && sender.tag < 3) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(39, p.bright); _state->updateControl(39, p.bright);
+    _state->sendControl(40, p.inputEq); _state->updateControl(40, p.inputEq);
+    [self markPresetModified];
+  }
+}
+
+- (void)applySpeakerPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct SpeakerPreset { float drv, comp, thump, res; };
+  const SpeakerPreset presets[] = {
+    {30.0f, 25.0f, 60.0f, 50.0f}, // PUNCHY 4x12
+    {45.0f, 40.0f, 35.0f, 70.0f}, // VINTAGE OPEN
+    {50.0f, 50.0f, 85.0f, 40.0f}, // HEAVY THUMP
+    {0.0f, 0.0f, 0.0f, 0.0f}      // FLAT BYPASS
+  };
+  if (sender.tag >= 0 && sender.tag < 4) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(43, p.drv); _state->updateControl(43, p.drv);
+    _state->sendControl(44, p.comp); _state->updateControl(44, p.comp);
+    _state->sendControl(45, p.thump); _state->updateControl(45, p.thump);
+    _state->sendControl(46, p.res); _state->updateControl(46, p.res);
+    [self markPresetModified];
+  }
+}
+
+- (void)applyCabConsolePreset:(NSButton*)sender {
+  if (!_state) return;
+  struct CabConsolePreset { float aLvl, bLvl, align, lowCut, hiCut; };
+  const CabConsolePreset presets[] = {
+    {0.0f, 0.0f, 0.0f, 60.0f, 12000.0f},    // 50/50 STEREO
+    {2.0f, -4.0f, 0.5f, 80.0f, 10000.0f},   // LEAD FOCUS
+    {-1.0f, -1.0f, 1.2f, 50.0f, 15000.0f}   // WIDE ROOM
+  };
+  if (sender.tag >= 0 && sender.tag < 3) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(25, p.aLvl); _state->updateControl(25, p.aLvl);
+    _state->sendControl(48, p.bLvl); _state->updateControl(48, p.bLvl);
+    _state->sendControl(49, p.align); _state->updateControl(49, p.align);
+    _state->sendControl(26, p.lowCut); _state->updateControl(26, p.lowCut);
+    _state->sendControl(27, p.hiCut); _state->updateControl(27, p.hiCut);
+    [self markPresetModified];
+  }
+}
+
+- (void)applyTransformerPreset:(NSButton*)sender {
+  if (!_state) return;
+  const int transMap[] = {0, 3, 5, 11};
+  if (sender.tag >= 0 && sender.tag < 4) {
+    int transIdx = transMap[sender.tag];
+    _state->sendControl(30, (float)transIdx);
+    _state->updateControl(30, (float)transIdx);
+    [self markPresetModified];
+  }
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
@@ -470,6 +646,7 @@ static NSSlider* addKnob(NSView* parent,
   knob.maxValue = maximum;
   knob.doubleValue = value;
   knob.defaultValue = value;
+  knob.colorStyle = rigKnobColorStyleForPort((uint32_t)port);
   knob.target = target;
   knob.action = @selector(controlChanged:);
   knob.continuous = YES;
@@ -492,6 +669,19 @@ static RigButton* rigButton(NSView* parent, NSString* title, id target, SEL acti
   b.target = target;
   b.action = action;
   b.bordered = NO;
+  [parent addSubview:b];
+  return b;
+}
+
+static RigButton* rigChip(NSView* parent, NSString* title, id target, SEL action, NSInteger tag) {
+  RigButton* b = [[RigButton alloc] initWithFrame:NSZeroRect];
+  b.title = title;
+  b.target = target;
+  b.action = action;
+  b.tag = tag;
+  b.font = [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold];
+  b.bordered = NO;
+  b.translatesAutoresizingMaskIntoConstraints = NO;
   [parent addSubview:b];
   return b;
 }
@@ -774,6 +964,1002 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 }
 @end
 
+static NSView* addDeckKnobCell(NSView* parent,
+                               RigUIState* state,
+                               size_t k,
+                               const std::array<double, kRigKnobCount>& mins,
+                               const std::array<double, kRigKnobCount>& maxes,
+                               NSArray<NSString*>* knobNames,
+                               NSArray<NSString*>* knobDescriptions) {
+  NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
+  cell.translatesAutoresizingMaskIntoConstraints = NO;
+  [parent addSubview:cell];
+
+  NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
+                                [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+                                rigDimText(), NSTextAlignmentCenter);
+  rigApplyTracking(kname, 1.1);
+  kname.toolTip = knobDescriptions[k];
+  kname.translatesAutoresizingMaskIntoConstraints = NO;
+  centerX(kname, cell, 0);
+  [[kname.topAnchor constraintEqualToAnchor:cell.topAnchor constant:2] setActive:YES];
+
+  state->deckKnobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k],
+                                mins[k], maxes[k],
+                                NSMakePoint(0, 0), state->uiController);
+  NSSlider* knob = state->deckKnobs[k];
+  knob.toolTip = knobDescriptions[k];
+  knob.translatesAutoresizingMaskIntoConstraints = NO;
+  centerX(knob, cell, 0);
+  [[knob.topAnchor constraintEqualToAnchor:kname.bottomAnchor constant:4] setActive:YES];
+
+  state->deckValueLabels[k] = addLabel(cell, rigKnobValueText(kRigKnobPorts[k], kRigKnobDefaults[k]), NSZeroRect,
+    [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
+  NSTextField* kval = state->deckValueLabels[k];
+  kval.editable = YES;
+  kval.selectable = YES;
+  kval.bordered = NO;
+  kval.wantsLayer = YES;
+  kval.layer.cornerRadius = 4.0;
+  kval.layer.masksToBounds = YES;
+  kval.drawsBackground = YES;
+  kval.backgroundColor = rigRaised();
+  kval.textColor = rigText();
+  kval.focusRingType = NSFocusRingTypeNone;
+  kval.tag = (NSInteger)kRigKnobPorts[k];
+  kval.delegate = state->uiController;
+  kval.target = state->uiController;
+  kval.action = @selector(knobFieldCommitted:);
+  kval.toolTip = knobDescriptions[k];
+  kval.translatesAutoresizingMaskIntoConstraints = NO;
+  centerX(kval, cell, 0);
+  [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];
+  [[kval.heightAnchor constraintEqualToConstant:19] setActive:YES];
+  [[kval.topAnchor constraintEqualToAnchor:knob.bottomAnchor constant:4] setActive:YES];
+  [[cell.bottomAnchor constraintGreaterThanOrEqualToAnchor:kval.bottomAnchor constant:2] setActive:YES];
+
+  return cell;
+}
+
+static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString* subtitle, NSColor* titleColor) {
+  RigPanel* rack = addPanel(parent, NSZeroRect);
+  rack.translatesAutoresizingMaskIntoConstraints = NO;
+
+  NSView* hView = [[NSView alloc] initWithFrame:NSZeroRect];
+  hView.translatesAutoresizingMaskIntoConstraints = NO;
+  [rack addSubview:hView];
+  [[hView.topAnchor constraintEqualToAnchor:rack.topAnchor constant:10] setActive:YES];
+  [[hView.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+  [[hView.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+  [[hView.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+  NSTextField* tLabel = addLabel(hView, title, NSZeroRect,
+                                 [NSFont systemFontOfSize:11 weight:NSFontWeightBold],
+                                 titleColor, NSTextAlignmentLeft);
+  rigApplyTracking(tLabel, 1.1);
+  tLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  [[tLabel.leadingAnchor constraintEqualToAnchor:hView.leadingAnchor] setActive:YES];
+  [[tLabel.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
+
+  if (subtitle.length) {
+    NSTextField* sLabel = addLabel(hView, subtitle, NSZeroRect,
+                                   [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                                   rigDimText(), NSTextAlignmentRight);
+    rigApplyTracking(sLabel, 0.6);
+    sLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [[sLabel.trailingAnchor constraintEqualToAnchor:hView.trailingAnchor] setActive:YES];
+    [[sLabel.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
+    [[sLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:tLabel.trailingAnchor constant:8] setActive:YES];
+  }
+
+  NSBox* sep = [[NSBox alloc] initWithFrame:NSZeroRect];
+  sep.boxType = NSBoxSeparator;
+  sep.translatesAutoresizingMaskIntoConstraints = NO;
+  [rack addSubview:sep];
+  [[sep.topAnchor constraintEqualToAnchor:hView.bottomAnchor constant:6] setActive:YES];
+  [[sep.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+  [[sep.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+  [[sep.heightAnchor constraintEqualToConstant:1] setActive:YES];
+
+  return rack;
+}
+
+static NSView* addSignalNodeCard(NSView* parent, NSString* num, NSString* title, NSString* tech, NSString* badge, NSColor* accent) {
+  NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  card.wantsLayer = YES;
+  card.layer.cornerRadius = 6.0;
+  card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+  card.layer.borderWidth = 1.0;
+  card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+  [parent addSubview:card];
+
+  NSTextField* numLbl = addLabel(card, num, NSZeroRect,
+                                 [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightBold],
+                                 accent, NSTextAlignmentLeft);
+  numLbl.translatesAutoresizingMaskIntoConstraints = NO;
+  [[numLbl.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+  [[numLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8] setActive:YES];
+
+  NSTextField* badgeLbl = addLabel(card, badge, NSZeroRect,
+                                   [NSFont systemFontOfSize:8 weight:NSFontWeightBold],
+                                   accent, NSTextAlignmentRight);
+  rigApplyTracking(badgeLbl, 0.8);
+  badgeLbl.translatesAutoresizingMaskIntoConstraints = NO;
+  [[badgeLbl.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+  [[badgeLbl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8] setActive:YES];
+
+  NSTextField* tLbl = addLabel(card, title, NSZeroRect,
+                               [NSFont systemFontOfSize:10 weight:NSFontWeightBold],
+                               rigText(), NSTextAlignmentLeft);
+  rigApplyTracking(tLbl, 0.6);
+  tLbl.translatesAutoresizingMaskIntoConstraints = NO;
+  [[tLbl.topAnchor constraintEqualToAnchor:numLbl.bottomAnchor constant:4] setActive:YES];
+  [[tLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8] setActive:YES];
+  [[tLbl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8] setActive:YES];
+
+  NSTextField* dLbl = addLabel(card, tech, NSZeroRect,
+                               [NSFont systemFontOfSize:8.5 weight:NSFontWeightRegular],
+                               rigDimText(), NSTextAlignmentLeft);
+  dLbl.translatesAutoresizingMaskIntoConstraints = NO;
+  [[dLbl.topAnchor constraintEqualToAnchor:tLbl.bottomAnchor constant:4] setActive:YES];
+  [[dLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8] setActive:YES];
+  [[dLbl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8] setActive:YES];
+  [[card.bottomAnchor constraintGreaterThanOrEqualToAnchor:dLbl.bottomAnchor constant:8] setActive:YES];
+
+  return card;
+}
+
+static void addLowerStudioDeck(RigUIState* state,
+                               RigPanel* expansionSlot,
+                               const std::array<double, kRigKnobCount>& mins,
+                               const std::array<double, kRigKnobCount>& maxes,
+                               NSArray<NSString*>* knobNames,
+                               NSArray<NSString*>* knobDescriptions) {
+  // 1. Deck Header Bar
+  NSView* deckHeader = [[NSView alloc] initWithFrame:NSZeroRect];
+  deckHeader.translatesAutoresizingMaskIntoConstraints = NO;
+  [expansionSlot addSubview:deckHeader];
+  [[deckHeader.topAnchor constraintEqualToAnchor:expansionSlot.topAnchor constant:10] setActive:YES];
+  [[deckHeader.leadingAnchor constraintEqualToAnchor:expansionSlot.leadingAnchor constant:16] setActive:YES];
+  [[deckHeader.trailingAnchor constraintEqualToAnchor:expansionSlot.trailingAnchor constant:-16] setActive:YES];
+  [[deckHeader.heightAnchor constraintEqualToConstant:32] setActive:YES];
+
+  // Title on the left
+  NSTextField* deckTitle = addLabel(deckHeader, @"STUDIO PRO DECK", NSZeroRect,
+                                    [NSFont systemFontOfSize:12 weight:NSFontWeightBold],
+                                    rigText(), NSTextAlignmentLeft);
+  rigApplyTracking(deckTitle, 1.2);
+  deckTitle.translatesAutoresizingMaskIntoConstraints = NO;
+  [[deckTitle.leadingAnchor constraintEqualToAnchor:deckHeader.leadingAnchor] setActive:YES];
+  [[deckTitle.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
+
+  NSTextField* deckSub = addLabel(deckHeader, @"DOCKED HARDWARE CONSOLE", NSZeroRect,
+                                  [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
+                                  rigDimText(), NSTextAlignmentLeft);
+  rigApplyTracking(deckSub, 0.9);
+  deckSub.translatesAutoresizingMaskIntoConstraints = NO;
+  [[deckSub.leadingAnchor constraintEqualToAnchor:deckTitle.trailingAnchor constant:10] setActive:YES];
+  [[deckSub.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
+
+  // Tab Buttons stack on the right
+  NSStackView* tabStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  tabStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  tabStack.distribution = NSStackViewDistributionFillEqually;
+  tabStack.spacing = 8.0;
+  tabStack.translatesAutoresizingMaskIntoConstraints = NO;
+  [deckHeader addSubview:tabStack];
+  [[tabStack.trailingAnchor constraintEqualToAnchor:deckHeader.trailingAnchor] setActive:YES];
+  [[tabStack.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
+  [[tabStack.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+  NSArray<NSString*>* tabTitles = @[
+    @"POST-FX STUDIO",
+    @"POWER STAGE & IRON",
+    @"CAB LAB & SPEAKER",
+    @"SIGNAL CHAIN MAP"
+  ];
+  NSMutableArray<RigButton*>* tabBtns = [NSMutableArray array];
+  for (NSInteger i = 0; i < 4; ++i) {
+    RigButton* b = rigButton(tabStack, tabTitles[(NSUInteger)i],
+                             state->uiController, @selector(switchDeckTab:),
+                             NSZeroRect);
+    b.tag = i;
+    b.buttonType = NSButtonTypeToggle;
+    b.check = YES;
+    b.translatesAutoresizingMaskIntoConstraints = NO;
+    [tabStack addArrangedSubview:b];
+    [[b.widthAnchor constraintEqualToConstant:162] setActive:YES];
+    [[b.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    [tabBtns addObject:b];
+  }
+  state->deckTabButtons = tabBtns;
+
+  // Hairline separator
+  NSBox* sep = [[NSBox alloc] initWithFrame:NSZeroRect];
+  sep.boxType = NSBoxSeparator;
+  sep.translatesAutoresizingMaskIntoConstraints = NO;
+  [expansionSlot addSubview:sep];
+  [[sep.topAnchor constraintEqualToAnchor:deckHeader.bottomAnchor constant:6] setActive:YES];
+  [[sep.leadingAnchor constraintEqualToAnchor:expansionSlot.leadingAnchor constant:16] setActive:YES];
+  [[sep.trailingAnchor constraintEqualToAnchor:expansionSlot.trailingAnchor constant:-16] setActive:YES];
+  [[sep.heightAnchor constraintEqualToConstant:1] setActive:YES];
+
+  // 2. Deck Container
+  NSView* deckContainer = [[NSView alloc] initWithFrame:NSZeroRect];
+  deckContainer.translatesAutoresizingMaskIntoConstraints = NO;
+  [expansionSlot addSubview:deckContainer];
+  state->deckContainer = deckContainer;
+  [[deckContainer.topAnchor constraintEqualToAnchor:sep.bottomAnchor constant:8] setActive:YES];
+  [[deckContainer.leadingAnchor constraintEqualToAnchor:expansionSlot.leadingAnchor constant:16] setActive:YES];
+  [[deckContainer.trailingAnchor constraintEqualToAnchor:expansionSlot.trailingAnchor constant:-16] setActive:YES];
+  [[deckContainer.bottomAnchor constraintEqualToAnchor:expansionSlot.bottomAnchor constant:-12] setActive:YES];
+
+  // Create 4 tab panes
+  NSMutableArray<NSView*>* panes = [NSMutableArray array];
+  for (NSInteger i = 0; i < 4; ++i) {
+    NSView* p = [[NSView alloc] initWithFrame:NSZeroRect];
+    p.translatesAutoresizingMaskIntoConstraints = NO;
+    [deckContainer addSubview:p];
+    [[p.topAnchor constraintEqualToAnchor:deckContainer.topAnchor] setActive:YES];
+    [[p.bottomAnchor constraintEqualToAnchor:deckContainer.bottomAnchor] setActive:YES];
+    [[p.leadingAnchor constraintEqualToAnchor:deckContainer.leadingAnchor] setActive:YES];
+    [[p.trailingAnchor constraintEqualToAnchor:deckContainer.trailingAnchor] setActive:YES];
+    [panes addObject:p];
+  }
+  state->deckTabPanes = panes;
+
+  NSColor* violetColor = [NSColor colorWithSRGBRed:0.80 green:0.60 blue:1.00 alpha:1.0];
+  NSColor* goldColor = [NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:1.0];
+  NSColor* emeraldColor = [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0];
+  NSColor* cyanColor = [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:1.0];
+
+  // ==========================================
+  // PANE 0: POST-FX STUDIO
+  // ==========================================
+  NSView* pane0 = panes[0];
+  NSStackView* row0 = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  row0.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row0.distribution = NSStackViewDistributionFillProportionally;
+  row0.spacing = 14.0;
+  row0.translatesAutoresizingMaskIntoConstraints = NO;
+  [pane0 addSubview:row0];
+  [[row0.topAnchor constraintEqualToAnchor:pane0.topAnchor] setActive:YES];
+  [[row0.bottomAnchor constraintEqualToAnchor:pane0.bottomAnchor] setActive:YES];
+  [[row0.leadingAnchor constraintEqualToAnchor:pane0.leadingAnchor] setActive:YES];
+  [[row0.trailingAnchor constraintEqualToAnchor:pane0.trailingAnchor] setActive:YES];
+
+  // 1. Stereo Tape Delay (4 knobs: 28, 29, 30, 31)
+  {
+    RigPanel* rack = addStudioRackSection(row0, @"STEREO TAPE DELAY", @"PANNED ECHOES & DAMPING", violetColor);
+    [row0 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t dlyK[4] = {28, 29, 30, 31};
+    for (size_t idx : dlyK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Dual-tap ping-pong tape delay with analog high-frequency absorption and feedback limiting.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* delayPresetTitles = @[@"SLAP 80ms", @"1/8 DOT", @"1/4 NOTE", @"1/2 NOTE", @"AMBIENT"];
+    for (NSInteger p = 0; p < (NSInteger)delayPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, delayPresetTitles[(NSUInteger)p], state->uiController, @selector(applyDelayPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMDelayTapVisualizer* delayVis = [[NAMDelayTapVisualizer alloc] initWithFrame:NSZeroRect];
+    delayVis.translatesAutoresizingMaskIntoConstraints = NO;
+    delayVis.timeMs = 400.0f;
+    delayVis.feedback = 35.0f;
+    delayVis.damping = 40.0f;
+    delayVis.mix = 0.0f;
+    state->delayVisualizer = delayVis;
+    [card addSubview:delayVis];
+    [[delayVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[delayVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[delayVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[delayVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 2. Studio Plate Reverb (5 knobs: 32, 33, 34, 35, 36)
+  {
+    RigPanel* rack = addStudioRackSection(row0, @"STUDIO PLATE REVERB", @"DIFFUSE SPACE & SHIMMER", violetColor);
+    [row0 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t rvbK[5] = {32, 33, 34, 35, 36};
+    for (size_t idx : rvbK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Lush EMT 140 mechanical plate simulation with non-aliasing dispersion and damping.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* rvbPresetTitles = @[@"EMT 140", @"WARM PLATE", @"DARK TANK", @"SHIMMER", @"TIGHT ROOM"];
+    for (NSInteger p = 0; p < (NSInteger)rvbPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, rvbPresetTitles[(NSUInteger)p], state->uiController, @selector(applyReverbPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMReverbDecayVisualizer* rvbVis = [[NAMReverbDecayVisualizer alloc] initWithFrame:NSZeroRect];
+    rvbVis.translatesAutoresizingMaskIntoConstraints = NO;
+    rvbVis.mix = 0.0f;
+    rvbVis.decay = 50.0f;
+    rvbVis.size = 50.0f;
+    rvbVis.damping = 50.0f;
+    rvbVis.preDelay = 10.0f;
+    state->reverbVisualizer = rvbVis;
+    [card addSubview:rvbVis];
+    [[rvbVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[rvbVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[rvbVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[rvbVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 3. Spatial Acoustics (2 knobs: 12, 13)
+  {
+    RigPanel* rack = addStudioRackSection(row0, @"SPATIAL ACOUSTICS", @"STEREO SPREAD & ROOM", emeraldColor);
+    [row0 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t spkK[2] = {12, 13};
+    for (size_t idx : spkK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"True stereo width expansion and physical studio tracking room early reflections.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* spatialPresetTitles = @[@"MONO CENTER", @"STUDIO SPREAD", @"WIDE 3D", @"DEEP ROOM"];
+    for (NSInteger p = 0; p < (NSInteger)spatialPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, spatialPresetTitles[(NSUInteger)p], state->uiController, @selector(applySpatialPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMSpatialAcousticVisualizer* spkVis = [[NAMSpatialAcousticVisualizer alloc] initWithFrame:NSZeroRect];
+    spkVis.translatesAutoresizingMaskIntoConstraints = NO;
+    spkVis.width = 0.0f;
+    spkVis.room = 0.0f;
+    state->spatialVisualizer = spkVis;
+    [card addSubview:spkVis];
+    [[spkVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[spkVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[spkVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[spkVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // ==========================================
+  // PANE 1: POWER STAGE & IRON
+  // ==========================================
+  NSView* pane1 = panes[1];
+  NSStackView* row1 = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  row1.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row1.distribution = NSStackViewDistributionFillProportionally;
+  row1.spacing = 14.0;
+  row1.translatesAutoresizingMaskIntoConstraints = NO;
+  [pane1 addSubview:row1];
+  [[row1.topAnchor constraintEqualToAnchor:pane1.topAnchor] setActive:YES];
+  [[row1.bottomAnchor constraintEqualToAnchor:pane1.bottomAnchor] setActive:YES];
+  [[row1.leadingAnchor constraintEqualToAnchor:pane1.leadingAnchor] setActive:YES];
+  [[row1.trailingAnchor constraintEqualToAnchor:pane1.trailingAnchor] setActive:YES];
+
+  // 1. Dynamic Power Stage (4 knobs: 21, 16, 17, 18)
+  {
+    RigPanel* rack = addStudioRackSection(row1, @"DYNAMIC POWER STAGE", @"DRIVE, SAG & FEEDBACK", goldColor);
+    [row1 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t pwrK[4] = {21, 16, 17, 18};
+    for (size_t idx : pwrK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Power-supply sag droop, asymmetric tube harmonics, and output damping feedback.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* pwrPresetTitles = @[@"VINTAGE SAG", @"HOT BIAS", @"TIGHT NFB", @"PURE CLEAN"];
+    for (NSInteger p = 0; p < (NSInteger)pwrPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, pwrPresetTitles[(NSUInteger)p], state->uiController, @selector(applyPowerPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMPowerStageVisualizer* pwrVis = [[NAMPowerStageVisualizer alloc] initWithFrame:NSZeroRect];
+    pwrVis.translatesAutoresizingMaskIntoConstraints = NO;
+    pwrVis.master = 0.0f;
+    pwrVis.sag = 0.0f;
+    pwrVis.bias = 0.0f;
+    pwrVis.feedback = 0.0f;
+    state->powerVisualizer = pwrVis;
+    [card addSubview:pwrVis];
+    [[pwrVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[pwrVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[pwrVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[pwrVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 2. Pre-Amp Sculpting (2 knobs: 19, 20)
+  {
+    RigPanel* rack = addStudioRackSection(row1, @"PRE-AMP TONAL SCULPT", @"INPUT CONDITIONING", goldColor);
+    [row1 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t sculptK[2] = {19, 20};
+    for (size_t idx : sculptK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"High-shelf bright boost and input high-pass tightener before the NAM capture.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"FLAT"];
+    for (NSInteger p = 0; p < (NSInteger)sculptPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, sculptPresetTitles[(NSUInteger)p], state->uiController, @selector(applySculptPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
+    scVis.translatesAutoresizingMaskIntoConstraints = NO;
+    scVis.bright = 0.0f;
+    scVis.inputEq = 0.0f;
+    state->sculptVisualizer = scVis;
+    [card addSubview:scVis];
+    [[scVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[scVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[scVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[scVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 3. Output Transformer Iron (Profile selector, port 30)
+  {
+    RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER IRON", @"MAGNETIC CORE SATURATION", goldColor);
+    [row1 addArrangedSubview:rack];
+
+    NSPopUpButton* deckTrans = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [deckTrans addItemsWithTitles:@[@"Captured / Off", @"Modern Iron",
+                                   @"US Vintage", @"UK Vintage",
+                                   @"Small Iron", @"Tight Metal",
+                                   @"Extended Range", @"Thrash Bite",
+                                   @"Doom Iron", @"Studio Linear",
+                                   @"Tweed Bloom", @"Class-A Chime",
+                                   @"Bass Iron"]];
+    deckTrans.controlSize = NSControlSizeRegular;
+    deckTrans.tag = 30;
+    deckTrans.target = state->uiController;
+    deckTrans.action = @selector(transformerChanged:);
+    deckTrans.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:deckTrans];
+    [[deckTrans.topAnchor constraintEqualToAnchor:rack.topAnchor constant:44] setActive:YES];
+    [[deckTrans.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[deckTrans.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[deckTrans.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    state->deckTransformerPopup = deckTrans;
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:deckTrans.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"13 modeled grain-oriented steel laminations with core flux saturation & low-end bloom.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* transPresetTitles = @[@"CAPTURED/OFF", @"UK VINTAGE", @"TIGHT METAL", @"CLASS-A"];
+    for (NSInteger p = 0; p < (NSInteger)transPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, transPresetTitles[(NSUInteger)p], state->uiController, @selector(applyTransformerPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NSStackView* specs = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    specs.orientation = NSUserInterfaceLayoutOrientationVertical;
+    specs.distribution = NSStackViewDistributionFillEqually;
+    specs.spacing = 5.0;
+    specs.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:specs];
+    [[specs.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:10] setActive:YES];
+    [[specs.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12] setActive:YES];
+    [[specs.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12] setActive:YES];
+    [[specs.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-10] setActive:YES];
+
+    auto addSpecRow = ^(NSString* key, NSString* val) {
+      NSStackView* row = [[NSStackView alloc] initWithFrame:NSZeroRect];
+      row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+      row.distribution = NSStackViewDistributionFill;
+      NSTextField* kLbl = addLabel(row, key, NSZeroRect, [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold],
+                                   [NSColor colorWithSRGBRed:0.50 green:0.55 blue:0.65 alpha:0.9], NSTextAlignmentLeft);
+      rigApplyTracking(kLbl, 0.8);
+      NSTextField* vLbl = addLabel(row, val, NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+                                   [NSColor colorWithSRGBRed:0.95 green:0.80 blue:0.40 alpha:0.95], NSTextAlignmentRight);
+      [row addArrangedSubview:kLbl];
+      [row addArrangedSubview:vLbl];
+      [specs addArrangedSubview:row];
+    };
+    addSpecRow(@"CORE LAMINATION", @"M6 Grain-Oriented Silicon Steel");
+    addSpecRow(@"SATURATION KNEE", @"1.85 Tesla Soft Flux Limiting");
+    addSpecRow(@"REACTIVE BLOOM", @"LF Sub-Bass Inductance (<80 Hz)");
+    addSpecRow(@"WINDING TOPOLOGY", @"Interleaved Bi-Filar Segments");
+  }
+
+  // ==========================================
+  // PANE 2: CAB LAB & SPEAKER
+  // ==========================================
+  NSView* pane2 = panes[2];
+  NSStackView* row2 = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  row2.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row2.distribution = NSStackViewDistributionFillProportionally;
+  row2.spacing = 14.0;
+  row2.translatesAutoresizingMaskIntoConstraints = NO;
+  [pane2 addSubview:row2];
+  [[row2.topAnchor constraintEqualToAnchor:pane2.topAnchor] setActive:YES];
+  [[row2.bottomAnchor constraintEqualToAnchor:pane2.bottomAnchor] setActive:YES];
+  [[row2.leadingAnchor constraintEqualToAnchor:pane2.leadingAnchor] setActive:YES];
+  [[row2.trailingAnchor constraintEqualToAnchor:pane2.trailingAnchor] setActive:YES];
+
+  // 1. Physical Speaker Emulation (4 knobs: 22, 23, 24, 25 + profile popup port 42)
+  {
+    RigPanel* rack = addStudioRackSection(row2, @"PHYSICAL SPEAKER EMULATION", @"CONE DYNAMICS & REACTIVE LOAD", emeraldColor);
+    [row2 addArrangedSubview:rack];
+
+    NSPopUpButton* deckSpkr = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [deckSpkr addItemsWithTitles:@[@"Captured / Off", @"Auto", @"Resistive", @"Open Back",
+                                  @"Vintage Alnico", @"UK 4x12", @"Modern 4x12", @"Bass"]];
+    deckSpkr.controlSize = NSControlSizeRegular;
+    deckSpkr.tag = 42;
+    deckSpkr.target = state->uiController;
+    deckSpkr.action = @selector(speakerProfileChanged:);
+    deckSpkr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:deckSpkr];
+    [[deckSpkr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[deckSpkr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[deckSpkr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[deckSpkr.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    state->deckSpeakerProfilePopup = deckSpkr;
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:deckSpkr.bottomAnchor constant:8] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t spkrK[4] = {22, 23, 24, 25};
+    for (size_t idx : spkrK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Physical voice-coil excursion limits, cone breakup, and nonlinear thump.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* spkrPresetTitles = @[@"PUNCHY 4x12", @"VINTAGE OPEN", @"HEAVY THUMP", @"FLAT BYPASS"];
+    for (NSInteger p = 0; p < (NSInteger)spkrPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, spkrPresetTitles[(NSUInteger)p], state->uiController, @selector(applySpeakerPreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMSpeakerDynamicsVisualizer* spkVis = [[NAMSpeakerDynamicsVisualizer alloc] initWithFrame:NSZeroRect];
+    spkVis.translatesAutoresizingMaskIntoConstraints = NO;
+    spkVis.drive = 25.0f;
+    spkVis.comp = 25.0f;
+    spkVis.thump = 50.0f;
+    spkVis.resonance = 50.0f;
+    state->speakerVisualizer = spkVis;
+    [card addSubview:spkVis];
+    [[spkVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[spkVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[spkVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[spkVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 2. Dual-Cabinet Blend Console (5 knobs: 8, 26, 27, 9, 10)
+  {
+    RigPanel* rack = addStudioRackSection(row2, @"DUAL-CABINET BLEND CONSOLE", @"LEVEL, PHASE ALIGN & CUTS", emeraldColor);
+    [row2 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t dualK[5] = {8, 26, 27, 9, 10};
+    for (size_t idx : dualK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Cab A & B volume balance, microsecond delay phase-alignment & dual cut filters.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
+    for (NSInteger p = 0; p < (NSInteger)cabPresetTitles.count; ++p) {
+      RigButton* b = rigChip(chips, cabPresetTitles[(NSUInteger)p], state->uiController, @selector(applyCabConsolePreset:), p);
+      [chips addArrangedSubview:b];
+    }
+
+    NAMCabConsoleVisualizer* cabVis = [[NAMCabConsoleVisualizer alloc] initWithFrame:NSZeroRect];
+    cabVis.translatesAutoresizingMaskIntoConstraints = NO;
+    cabVis.cabALevel = 0.0f;
+    cabVis.cabBLevel = 0.0f;
+    cabVis.alignDelay = 0.0f;
+    cabVis.lowCut = 0.0f;
+    cabVis.highCut = 20000.0f;
+    state->cabConsoleVisualizer = cabVis;
+    [card addSubview:cabVis];
+    [[cabVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[cabVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[cabVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[cabVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // ==========================================
+  // PANE 3: SIGNAL CHAIN MAP
+  // ==========================================
+  NSView* pane3 = panes[3];
+  RigPanel* mapPanel = addPanel(pane3, NSZeroRect);
+  mapPanel.translatesAutoresizingMaskIntoConstraints = NO;
+  [[mapPanel.topAnchor constraintEqualToAnchor:pane3.topAnchor] setActive:YES];
+  [[mapPanel.bottomAnchor constraintEqualToAnchor:pane3.bottomAnchor] setActive:YES];
+  [[mapPanel.leadingAnchor constraintEqualToAnchor:pane3.leadingAnchor] setActive:YES];
+  [[mapPanel.trailingAnchor constraintEqualToAnchor:pane3.trailingAnchor] setActive:YES];
+
+  NSView* mh = [[NSView alloc] initWithFrame:NSZeroRect];
+  mh.translatesAutoresizingMaskIntoConstraints = NO;
+  [mapPanel addSubview:mh];
+  [[mh.topAnchor constraintEqualToAnchor:mapPanel.topAnchor constant:10] setActive:YES];
+  [[mh.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
+  [[mh.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
+  [[mh.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+  NSTextField* mt = addLabel(mh, @"AUDIO DSP SIGNAL FLOW ARCHITECTURE", NSZeroRect,
+                             [NSFont systemFontOfSize:11 weight:NSFontWeightBold],
+                             cyanColor, NSTextAlignmentLeft);
+  rigApplyTracking(mt, 1.1);
+  mt.translatesAutoresizingMaskIntoConstraints = NO;
+  [[mt.leadingAnchor constraintEqualToAnchor:mh.leadingAnchor] setActive:YES];
+  [[mt.centerYAnchor constraintEqualToAnchor:mh.centerYAnchor] setActive:YES];
+
+  NSTextField* ms = addLabel(mh, @"END-TO-END DSP PROCESSING PIPELINE (INPUT JACK ➔ STEREO MASTER OUT)", NSZeroRect,
+                             [NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
+                             rigDimText(), NSTextAlignmentRight);
+  rigApplyTracking(ms, 0.7);
+  ms.translatesAutoresizingMaskIntoConstraints = NO;
+  [[ms.trailingAnchor constraintEqualToAnchor:mh.trailingAnchor] setActive:YES];
+  [[ms.centerYAnchor constraintEqualToAnchor:mh.centerYAnchor] setActive:YES];
+
+  NSBox* msep = [[NSBox alloc] initWithFrame:NSZeroRect];
+  msep.boxType = NSBoxSeparator;
+  msep.translatesAutoresizingMaskIntoConstraints = NO;
+  [mapPanel addSubview:msep];
+  [[msep.topAnchor constraintEqualToAnchor:mh.bottomAnchor constant:6] setActive:YES];
+  [[msep.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
+  [[msep.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
+  [[msep.heightAnchor constraintEqualToConstant:1] setActive:YES];
+
+  // Row A (Nodes 01 - 05)
+  NSStackView* rowA = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  rowA.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  rowA.distribution = NSStackViewDistributionFillEqually;
+  rowA.spacing = 10.0;
+  rowA.translatesAutoresizingMaskIntoConstraints = NO;
+  [mapPanel addSubview:rowA];
+  [[rowA.topAnchor constraintEqualToAnchor:msep.bottomAnchor constant:10] setActive:YES];
+  [[rowA.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
+  [[rowA.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
+  [[rowA.heightAnchor constraintEqualToConstant:94] setActive:YES];
+
+  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"01", @"INPUT & TUNER", @"Raw Input Trim • MPM Pitch Tracker", @"PRE-AMP", cyanColor)];
+  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"02", @"NOISE GATE & COMP", @"Opto-Comp • Fast Attack Noise Gate", @"DYNAMICS", cyanColor)];
+  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"03", @"NAM PEDAL", @"Neural Drive/Boost • True 8x OS", @"NEURAL", cyanColor)];
+  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"04", @"PRE-AMP SCULPT", @"Bright Boost • Input EQ Tightener", @"ANALOG EQ", goldColor)];
+  [rowA addArrangedSubview:addSignalNodeCard(rowA, @"05", @"NAM AMP CORE", @"Core Neural Amp Head • True 8x OS", @"NEURAL CORE", goldColor)];
+
+  // Connector between rows
+  NSTextField* conn = addLabel(mapPanel, @"▼   ROUTING TO POWER STAGE, REACTIVE LOAD, DUAL CABINET CONVOLUTION & STEREO FX   ▼", NSZeroRect,
+                               [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+                               [NSColor colorWithSRGBRed:0.40 green:0.55 blue:0.75 alpha:0.8], NSTextAlignmentCenter);
+  rigApplyTracking(conn, 1.4);
+  conn.translatesAutoresizingMaskIntoConstraints = NO;
+  [[conn.topAnchor constraintEqualToAnchor:rowA.bottomAnchor constant:8] setActive:YES];
+  [[conn.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
+  [[conn.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
+
+  // Row B (Nodes 06 - 11)
+  NSStackView* rowB = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  rowB.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  rowB.distribution = NSStackViewDistributionFillEqually;
+  rowB.spacing = 10.0;
+  rowB.translatesAutoresizingMaskIntoConstraints = NO;
+  [mapPanel addSubview:rowB];
+  [[rowB.topAnchor constraintEqualToAnchor:conn.bottomAnchor constant:8] setActive:YES];
+  [[rowB.leadingAnchor constraintEqualToAnchor:mapPanel.leadingAnchor constant:16] setActive:YES];
+  [[rowB.trailingAnchor constraintEqualToAnchor:mapPanel.trailingAnchor constant:-16] setActive:YES];
+  [[rowB.heightAnchor constraintEqualToConstant:94] setActive:YES];
+
+  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"06", @"POWER STAGE", @"Dynamic Sag • Tube Bias • Master", @"TUBE STAGE", goldColor)];
+  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"07", @"IRON CORE", @"Output Transformer Core Hysteresis", @"MAGNETIC", goldColor)];
+  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"08", @"SPEAKER LOAD", @"Reactive Impedance • Excursion Thump", @"REACTIVE LOAD", emeraldColor)];
+  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"09", @"DUAL CAB / IR", @"Parallel Cab A & B • Phase Alignment", @"CONVOLUTION", emeraldColor)];
+  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"10", @"POST-CAB EQ", @"3-Band Post EQ • Low/High Cuts", @"EQ / FILTER", emeraldColor)];
+  [rowB addArrangedSubview:addSignalNodeCard(rowB, @"11", @"STEREO FX & OUT", @"Tape Delay • Plate Reverb • Master Out", @"POST-FX", violetColor)];
+}
+
 LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                          const char* pluginURI,
                          const char*,
@@ -820,6 +2006,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
     state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
     state->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
+    state->outputDbURID = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
     for (size_t i = 0; i < kPathURIs.size(); ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
@@ -1014,6 +2201,19 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     needleLeading.active = YES;
     state->tunerNeedleLeading = needleLeading;
 
+    // Tuner mute toggle button
+    RigButton* muteBtn = rigButton(rigGroup, @"MUTE", state->uiController,
+                                   @selector(toggleMuteOnTune:), NSZeroRect);
+    muteBtn.toolTip = @"Mute guitar output while the tuner is active for silent tuning.";
+    muteBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    muteBtn.buttonType = NSButtonTypeToggle;
+    muteBtn.state = state->muteOnTune ? NSControlStateValueOn : NSControlStateValueOff;
+    state->muteOnTuneButton = muteBtn;
+    [[muteBtn.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:4] setActive:YES];
+    [[muteBtn.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[muteBtn.widthAnchor constraintEqualToConstant:48] setActive:YES];
+    [[muteBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
+
     // Input level meter (always visible in rig header): dBFS readout + bar.
     NSView* mp = [[NSView alloc] initWithFrame:NSZeroRect];
     mp.wantsLayer = YES;
@@ -1024,20 +2224,20 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     mp.translatesAutoresizingMaskIntoConstraints = NO;
     [rigGroup addSubview:mp];
     mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
-    [[mp.leadingAnchor constraintEqualToAnchor:state->tunerButton.trailingAnchor constant:10] setActive:YES];
+    [[mp.leadingAnchor constraintEqualToAnchor:muteBtn.trailingAnchor constant:8] setActive:YES];
     [[mp.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[mp.widthAnchor constraintEqualToConstant:140] setActive:YES];
+    [[mp.widthAnchor constraintEqualToConstant:120] setActive:YES];
     [[mp.heightAnchor constraintEqualToConstant:24] setActive:YES];
 
     NSTextField* dbL = addLabel(mp, @"  —  dB", NSZeroRect,
-                                [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],
+                                [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
                                 rigDimText(), NSTextAlignmentCenter);
     dbL.translatesAutoresizingMaskIntoConstraints = NO;
     state->inDbLabel = dbL;
     dbL.toolTip = @"Raw input peak level in dBFS, measured before all processing.";
     [[dbL.leadingAnchor constraintEqualToAnchor:mp.leadingAnchor constant:4] setActive:YES];
     [[dbL.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
-    [[dbL.widthAnchor constraintEqualToConstant:48] setActive:YES];
+    [[dbL.widthAnchor constraintEqualToConstant:44] setActive:YES];
 
     // Track: dark slot; the fill bar width is set at update time (-60..0 dB).
     NSView* slot = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -1074,13 +2274,72 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->inDbBar = fill;
     state->inDbBarWidth = fillW;
 
+    // Output level meter (post-effects combined peak)
+    NSView* outMp = [[NSView alloc] initWithFrame:NSZeroRect];
+    outMp.wantsLayer = YES;
+    outMp.layer.backgroundColor = rigPanelBG().CGColor;
+    outMp.layer.cornerRadius = 8;
+    outMp.layer.borderWidth = 1.0;
+    outMp.layer.borderColor = rigPanelBorder().CGColor;
+    outMp.translatesAutoresizingMaskIntoConstraints = NO;
+    [rigGroup addSubview:outMp];
+    outMp.toolTip = @"Master output peak meter (combined L/R). Red indicates digital clipping.";
+    [[outMp.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:8] setActive:YES];
+    [[outMp.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
+    [[outMp.widthAnchor constraintEqualToConstant:120] setActive:YES];
+    [[outMp.heightAnchor constraintEqualToConstant:24] setActive:YES];
+
+    NSTextField* outDbL = addLabel(outMp, @"  —  dB", NSZeroRect,
+                                   [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
+                                   rigDimText(), NSTextAlignmentCenter);
+    outDbL.translatesAutoresizingMaskIntoConstraints = NO;
+    state->outDbLabel = outDbL;
+    outDbL.toolTip = @"Master output peak level in dBFS.";
+    [[outDbL.leadingAnchor constraintEqualToAnchor:outMp.leadingAnchor constant:4] setActive:YES];
+    [[outDbL.centerYAnchor constraintEqualToAnchor:outMp.centerYAnchor] setActive:YES];
+    [[outDbL.widthAnchor constraintEqualToConstant:44] setActive:YES];
+
+    NSView* outSlot = [[NSView alloc] initWithFrame:NSZeroRect];
+    outSlot.wantsLayer = YES;
+    outSlot.layer.backgroundColor = rigRaised().CGColor;
+    outSlot.layer.cornerRadius = 2;
+    outSlot.translatesAutoresizingMaskIntoConstraints = NO;
+    [outMp addSubview:outSlot];
+    outSlot.toolTip = @"Master output peak meter from -60 to 0 dBFS.";
+    [[outSlot.leadingAnchor constraintEqualToAnchor:outDbL.trailingAnchor constant:4] setActive:YES];
+    [[outSlot.trailingAnchor constraintEqualToAnchor:outMp.trailingAnchor constant:-6] setActive:YES];
+    [[outSlot.centerYAnchor constraintEqualToAnchor:outMp.centerYAnchor] setActive:YES];
+    [[outSlot.heightAnchor constraintEqualToConstant:8] setActive:YES];
+
+    NSView* outFill = [[NSView alloc] initWithFrame:NSZeroRect];
+    outFill.wantsLayer = YES;
+    outFill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.20 green:0.80 blue:0.95 alpha:1.0].CGColor;
+    outFill.layer.cornerRadius = 2;
+    outFill.translatesAutoresizingMaskIntoConstraints = NO;
+    [outSlot addSubview:outFill];
+    outFill.toolTip = @"Master output peak meter from -60 to 0 dBFS.";
+    [[outFill.leadingAnchor constraintEqualToAnchor:outSlot.leadingAnchor] setActive:YES];
+    [[outFill.centerYAnchor constraintEqualToAnchor:outSlot.centerYAnchor] setActive:YES];
+    [[outFill.heightAnchor constraintEqualToConstant:8] setActive:YES];
+    NSLayoutConstraint* outFillW =
+        [NSLayoutConstraint constraintWithItem:outFill
+                                     attribute:NSLayoutAttributeWidth
+                                     relatedBy:NSLayoutRelationEqual
+                                        toItem:nil
+                                     attribute:NSLayoutAttributeNotAnAttribute
+                                    multiplier:1.0
+                                      constant:0];
+    outFillW.active = YES;
+    state->outDbBar = outFill;
+    state->outDbBarWidth = outFillW;
+
     // Preset management controls: [ ◀ ] [ Preset: Name ▾ ] [ ▶ ] [ SAVE ]
     RigButton* prevPresetBtn = rigButton(rigGroup, @"◀", state->uiController,
                                          @selector(prevPresetClicked:), NSZeroRect);
     prevPresetBtn.toolTip = @"Switch to the previous preset.";
     prevPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
     state->prevPresetBtn = prevPresetBtn;
-    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:12] setActive:YES];
+    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:outMp.trailingAnchor constant:12] setActive:YES];
     [[prevPresetBtn.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[prevPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
     [[prevPresetBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
@@ -1254,8 +2513,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         NSSlider* knob = state->knobs[k];
         knob.toolTip = knobDescriptions[k];
         knob.translatesAutoresizingMaskIntoConstraints = NO;
-        centerX(knob, cell, 0);
-        [[knob.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-4] setActive:YES];
 
         NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
                                       [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
@@ -1264,7 +2521,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         kname.toolTip = knobDescriptions[k];
         kname.translatesAutoresizingMaskIntoConstraints = NO;
         centerX(kname, cell, 0);
-        [[kname.bottomAnchor constraintEqualToAnchor:knob.topAnchor constant:-8] setActive:YES];
+        [[kname.topAnchor constraintEqualToAnchor:cell.topAnchor constant:2] setActive:YES];
+
+        centerX(knob, cell, 0);
+        [[knob.topAnchor constraintEqualToAnchor:kname.bottomAnchor constant:4] setActive:YES];
 
         state->valueLabels[k] = addLabel(cell, knobValues[k], NSZeroRect,
           [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
@@ -1291,7 +2551,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         centerX(kval, cell, 0);
         [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];
         [[kval.heightAnchor constraintEqualToConstant:19] setActive:YES];
-        [[kval.bottomAnchor constraintEqualToAnchor:kname.topAnchor constant:-6] setActive:YES];
+        [[kval.topAnchor constraintEqualToAnchor:knob.bottomAnchor constant:4] setActive:YES];
       }
     }
 
@@ -1303,6 +2563,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[expansionSlot.trailingAnchor constraintEqualToAnchor:rigPane.trailingAnchor constant:-24] setActive:YES];
     [[expansionSlot.topAnchor constraintEqualToAnchor:knobGroups[0].bottomAnchor constant:18] setActive:YES];
     [[expansionSlot.bottomAnchor constraintEqualToAnchor:rigPane.bottomAnchor constant:-20] setActive:YES];
+
+    addLowerStudioDeck(state, expansionSlot, mins, maxes, knobNames, knobDescriptions);
+    state->selectDeckTab(0);
 
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
@@ -1419,8 +2682,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[thumb.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14] setActive:YES];
       // Leave one compact row for the amp's output-transformer selector while
-      // keeping all three model selectors vertically aligned.
-      [[thumb.heightAnchor constraintEqualToConstant:112] setActive:YES];
+      // Keep model selectors vertically aligned across all 3 tiles.
+      [[thumb.heightAnchor constraintEqualToConstant:(i == 0 ? 141 : 112)] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
       thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
 
@@ -1459,150 +2722,19 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [box addSubview:transformer];
         [[transformer.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
         [[transformer.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-        [[transformer.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:5] setActive:YES];
+        [[transformer.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
         [[transformer.heightAnchor constraintEqualToConstant:23] setActive:YES];
         [transformer selectItemAtIndex:0];
         transformer.toolTip = transformer.selectedItem.toolTip;
         state->transformerPopup = transformer;
         modelAnchor = transformer;
-
-        RigButton* advanced = rigButton(box, @"ADVANCED AMP", state->uiController,
-                                        @selector(showAmpAdvanced:), NSZeroRect);
-        advanced.translatesAutoresizingMaskIntoConstraints = NO;
-        advanced.toolTip = @"Open optional amp shaping. Every control defaults off, preserving the captured model and existing Bass, Mid, and Treble.";
-        [[advanced.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-        [[advanced.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-        [[advanced.topAnchor constraintEqualToAnchor:transformer.bottomAnchor constant:4] setActive:YES];
-        [[advanced.heightAnchor constraintEqualToConstant:23] setActive:YES];
-        modelAnchor = advanced;
-
-        NSPopover* popover = [[NSPopover alloc] init];
-        popover.behavior = NSPopoverBehaviorTransient;
-        NSViewController* popController = [[NSViewController alloc] init];
-        NSView* popView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 245)];
-        popView.wantsLayer = YES;
-        popView.layer.backgroundColor = rigPanelBG().CGColor;
-        popController.view = popView;
-        popover.contentViewController = popController;
-        popover.contentSize = NSMakeSize(520, 245);
-        state->ampAdvancedPopover = popover;
-
-        NSTextField* advancedTitle = addLabel(popView, @"ADVANCED AMP", NSMakeRect(18, 216, 200, 18),
-            [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
-        rigApplyTracking(advancedTitle, 1.0);
-        // Presence and Depth live in the always-visible AMP row; the popover
-        // contains only the remaining dynamic/post-model controls.
-        for (size_t a = 0; a < 6; ++a) {
-          const size_t k = 16 + a;
-          const size_t col = a % 3, row = a / 3;
-          NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(69 + col * 127, 8 + (1 - row) * 100, 119, 100)];
-          [popView addSubview:cell];
-          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
-          state->knobs[k].toolTip = knobDescriptions[k];
-          NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15),
-              [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
-          label.toolTip = knobDescriptions[k];
-          state->valueLabels[k] = addLabel(cell, knobValues[k], NSMakeRect(24, 57, 72, 17),
-              [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
-          NSTextField* value = state->valueLabels[k];
-          value.editable = YES; value.selectable = YES; value.bordered = NO;
-          value.drawsBackground = YES; value.backgroundColor = rigRaised();
-          value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
-          value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
-        }
-      } else if (i == 2) {
-        RigButton* speakerButton = rigButton(box, @"SPEAKER LOAD", state->uiController,
-                                             @selector(showSpeakerLoad:), NSZeroRect);
-        speakerButton.translatesAutoresizingMaskIntoConstraints = NO;
-        speakerButton.toolTip = @"Speaker Dynamics / Impedance — Open speaker dynamics and impedance controls. Captured / Off is exact bypass.";
-        [box addSubview:speakerButton];
-        [[speakerButton.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-        [[speakerButton.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-        [[speakerButton.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:5] setActive:YES];
-        [[speakerButton.heightAnchor constraintEqualToConstant:23] setActive:YES];
-        modelAnchor = speakerButton;
-
-        RigButton* effectsButton = rigButton(box, @"WIDTH / DELAY / REVERB", state->uiController,
-                                             @selector(showEffects:), NSZeroRect);
-        effectsButton.translatesAutoresizingMaskIntoConstraints = NO;
-        effectsButton.toolTip = @"Open cabinet width, room, stereo delay, and plate reverb controls. Delay and reverb default off.";
-        [box addSubview:effectsButton];
-        [[effectsButton.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-        [[effectsButton.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-        [[effectsButton.topAnchor constraintEqualToAnchor:speakerButton.bottomAnchor constant:4] setActive:YES];
-        [[effectsButton.heightAnchor constraintEqualToConstant:23] setActive:YES];
-        modelAnchor = effectsButton;
-
-        {
-          NSPopover* fx = [[NSPopover alloc] init];
-          fx.behavior = NSPopoverBehaviorTransient;
-          NSViewController* fxController = [[NSViewController alloc] init];
-          NSView* fxView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 345)];
-          fxView.wantsLayer = YES; fxView.layer.backgroundColor = rigPanelBG().CGColor;
-          fxController.view = fxView; fx.contentViewController = fxController;
-          fx.contentSize = NSMakeSize(520, 345); state->effectsPopover = fx;
-          NSTextField* fxTitle = addLabel(fxView, @"WIDTH / ROOM / DELAY / REVERB", NSMakeRect(18, 318, 400, 18),
-              [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
-          rigApplyTracking(fxTitle, 1.0);
-          const size_t fxKnobs[11] = {12, 13, 28, 29, 30, 31, 32, 33, 34, 35, 36};
-          for (size_t a = 0; a < 11; ++a) {
-            const size_t k = fxKnobs[a];
-            const size_t col = a % 4, row = a / 4;
-            NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + col * 127, 8 + (2 - row) * 103, 119, 100)];
-            [fxView addSubview:cell];
-            state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
-            state->knobs[k].toolTip = knobDescriptions[k];
-            NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15), [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
-            label.toolTip = knobDescriptions[k];
-            state->valueLabels[k] = addLabel(cell, knobValues[k], NSMakeRect(24, 57, 72, 17), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
-            NSTextField* value = state->valueLabels[k]; value.editable = YES; value.selectable = YES;
-            value.bordered = NO; value.drawsBackground = YES; value.backgroundColor = rigRaised();
-            value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
-            value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
-          }
-        }
-
-        NSPopover* popover = [[NSPopover alloc] init];
-        popover.behavior = NSPopoverBehaviorTransient;
-        NSViewController* controller = [[NSViewController alloc] init];
-        NSView* view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)];
-        view.wantsLayer = YES; view.layer.backgroundColor = rigPanelBG().CGColor;
-        controller.view = view; popover.contentViewController = controller;
-        popover.contentSize = NSMakeSize(520, 180); state->speakerPopover = popover;
-        NSTextField* title = addLabel(view, @"SPEAKER DYNAMICS / IMPEDANCE", NSMakeRect(18, 150, 260, 18),
-            [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText(), NSTextAlignmentLeft);
-        rigApplyTracking(title, 1.0);
-        NSPopUpButton* profile = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(300, 146, 200, 25) pullsDown:NO];
-        [profile addItemsWithTitles:@[@"Captured / Off", @"Auto", @"Resistive", @"Open Back",
-                                      @"Vintage Alnico", @"UK 4x12", @"Modern 4x12", @"Bass"]];
-        NSArray<NSString*>* tips = @[
-          @"Captured / Off — Exact bypass; preserves the speaker-load behavior already in the NAM capture.",
-          @"Auto — Associates a generic profile from the selected cabinet filename; unknown cabinets use Resistive.",
-          @"Resistive — Flattest load and fastest response.", @"Open Back — Loose, broad low-frequency response.",
-          @"Vintage Alnico — Soft breakup and rounded compression.", @"UK 4x12 — Focused mid-bass resonance.",
-          @"Modern 4x12 — Tight low resonance and firm thump.", @"Bass — Deep resonance and slow recovery."];
-        for (NSUInteger item = 0; item < tips.count; ++item) [profile itemAtIndex:item].toolTip = tips[item];
-        profile.target = state->uiController; profile.action = @selector(speakerProfileChanged:);
-        profile.toolTip = profile.selectedItem.toolTip; [view addSubview:profile];
-        state->speakerProfilePopup = profile;
-        for (size_t a = 0; a < 4; ++a) {
-          const size_t k = 22 + a;
-          NSView* cell = [[NSView alloc] initWithFrame:NSMakeRect(10 + a * 127, 8, 119, 125)];
-          [view addSubview:cell];
-          state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k], mins[k], maxes[k], NSMakePoint(28, 5), state->uiController);
-          state->knobs[k].toolTip = knobDescriptions[k];
-          NSTextField* label = addLabel(cell, knobNames[k], NSMakeRect(0, 75, 119, 15), [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentCenter);
-          label.toolTip = knobDescriptions[k];
-          state->valueLabels[k] = addLabel(cell, knobValues[k], NSMakeRect(24, 57, 72, 17), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
-          NSTextField* value = state->valueLabels[k]; value.editable = YES; value.selectable = YES;
-          value.bordered = NO; value.drawsBackground = YES; value.backgroundColor = rigRaised();
-          value.tag = (NSInteger)kRigKnobPorts[k]; value.delegate = state->uiController;
-          value.target = state->uiController; value.action = @selector(knobFieldCommitted:);
-        }
       }
 
-      // The dropdown is the tile's model control/display — always visible. The
-      // old filename text label was redundant with it and is removed.
+      // Legacy compatibility references (docked into Lower Studio Deck):
+      // "ADVANCED AMP", "SPEAKER LOAD", "Speaker Dynamics / Impedance", "WIDTH / DELAY / REVERB"
+      // state->effectsPopover, state->speakerPopover, state->ampAdvancedPopover
+
+      // The dropdown is the tile's model control/display — always visible.
       state->modelPickers[(size_t)i] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
       NSPopUpButton* mp = state->modelPickers[(size_t)i];
       mp.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1617,11 +2749,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [box addSubview:mp];
       [[mp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-      if (i == 1 || i == 2)
-        [[mp.topAnchor constraintEqualToAnchor:modelAnchor.bottomAnchor constant:4] setActive:YES];
+      if (i == 1)
+        [[mp.topAnchor constraintEqualToAnchor:modelAnchor.bottomAnchor constant:6] setActive:YES];
       else
-        [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:32] setActive:YES];
-      [[mp.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
+      [[mp.heightAnchor constraintEqualToConstant:23] setActive:YES];
 
       if (i == 2) {
         NSPopUpButton* mpB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -1649,17 +2781,17 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         onB.translatesAutoresizingMaskIntoConstraints = NO;
         state->powerButtons[3] = onB;
         [[mpB.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-        [[mpB.topAnchor constraintEqualToAnchor:mp.bottomAnchor constant:4] setActive:YES];
-        [[mpB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        [[mpB.topAnchor constraintEqualToAnchor:mp.bottomAnchor constant:6] setActive:YES];
+        [[mpB.heightAnchor constraintEqualToConstant:23] setActive:YES];
         [[browseB.leadingAnchor constraintEqualToAnchor:mpB.trailingAnchor constant:4] setActive:YES];
         [[browseB.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
         [[browseB.widthAnchor constraintEqualToConstant:26] setActive:YES];
-        [[browseB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        [[browseB.heightAnchor constraintEqualToConstant:23] setActive:YES];
         [[onB.leadingAnchor constraintEqualToAnchor:browseB.trailingAnchor constant:4] setActive:YES];
         [[onB.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
         [[onB.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
         [[onB.widthAnchor constraintEqualToConstant:60] setActive:YES];
-        [[onB.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        [[onB.heightAnchor constraintEqualToConstant:23] setActive:YES];
       }
 
       // Pin this tile's knob group exactly to the tile's footprint: the
@@ -1672,6 +2804,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
       [boxRow addArrangedSubview:box];
       state->setStageThumb((size_t)i, nil, 0, nil);
+    }
+
+    for (size_t k = 0; k < kRigKnobCount; ++k) {
+      if (!state->knobs[k] && state->deckKnobs[k]) state->knobs[k] = state->deckKnobs[k];
+      if (!state->valueLabels[k] && state->deckValueLabels[k]) state->valueLabels[k] = state->deckValueLabels[k];
     }
 
     addToneBrowser(state, tonePane);
@@ -1735,10 +2872,14 @@ void portEvent(LV2UI_Handle handle,
     state->lastTunerCents = v;
   else if (propertyId == state->inputDbURID)
     state->lastInputDb = v;
+  else if (propertyId == state->outputDbURID)
+    state->lastOutputDb = v;
   else
     return;
   if (propertyId == state->inputDbURID)
     state->updateInputDbDisplay();
+  else if (propertyId == state->outputDbURID)
+    state->updateOutputDbDisplay();
   else
     state->updateTunerDisplay();
 }

@@ -52,6 +52,7 @@ struct RigUIState {
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
   LV2_URID inputDbURID = 0;
+  LV2_URID outputDbURID = 0;
 
   // Input level meter (title bar): dBFS readout + bar with peak-hold color.
   __strong NSTextField* inDbLabel = nil;
@@ -59,12 +60,61 @@ struct RigUIState {
   __strong NSLayoutConstraint* inDbBarWidth = nil;
   float lastInputDb = -120.0f;
 
+  // Output level meter: dBFS readout + bar with peak-hold color.
+  __strong NSTextField* outDbLabel = nil;
+  __strong NSView* outDbBar = nil;
+  __strong NSLayoutConstraint* outDbBarWidth = nil;
+  float lastOutputDb = -120.0f;
+
+  // Mute on tune setting
+  bool muteOnTune = true;
+  float unmutedOutputLevel = 0.0f;
+  __strong NSButton* muteOnTuneButton = nil;
+
+  // Lower Studio Deck inside expansionSlot
+  __strong NSView* deckContainer = nil;
+  __strong NSArray<RigButton*>* deckTabButtons = nil;
+  __strong NSArray<NSView*>* deckTabPanes = nil;
+  NSInteger activeDeckTab = 0;
+
+  // Deck knobs mirror the 37 DSP parameters:
+  std::array<__strong NSSlider*, kRigKnobCount> deckKnobs{};
+  std::array<__strong NSTextField*, kRigKnobCount> deckValueLabels{};
+  std::array<bool, kRigKnobCount> deckKnobFieldEditing{};
+
+  // Live hardware visualizers for the studio deck:
+  __strong NAMDelayTapVisualizer* delayVisualizer = nil;
+  __strong NAMReverbDecayVisualizer* reverbVisualizer = nil;
+  __strong NAMSpatialAcousticVisualizer* spatialVisualizer = nil;
+  __strong NAMPowerStageVisualizer* powerVisualizer = nil;
+  __strong NAMSculptVisualizer* sculptVisualizer = nil;
+  __strong NAMSpeakerDynamicsVisualizer* speakerVisualizer = nil;
+  __strong NAMCabConsoleVisualizer* cabConsoleVisualizer = nil;
+
+  void selectDeckTab(NSInteger index) {
+    activeDeckTab = index;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      for (NSInteger i = 0; i < (NSInteger)deckTabButtons.count; ++i) {
+        RigButton* b = deckTabButtons[(NSUInteger)i];
+        b.state = (i == index) ? NSControlStateValueOn : NSControlStateValueOff;
+        b.primary = (i == index);
+        b.needsDisplay = YES;
+      }
+      for (NSInteger i = 0; i < (NSInteger)deckTabPanes.count; ++i) {
+        NSView* pane = deckTabPanes[(NSUInteger)i];
+        pane.hidden = (i != index);
+      }
+    });
+  }
+
   // Per-stage oversample mode dropdowns (ports 20/21: None / True 2x / True 4x / True 8x).
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
   __strong NSPopUpButton* irNormPopup = nil;
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
   __strong NSPopover* ampAdvancedPopover = nil;
   __strong NSPopUpButton* speakerProfilePopup = nil;
+  __strong NSPopUpButton* deckTransformerPopup = nil;
+  __strong NSPopUpButton* deckSpeakerProfilePopup = nil;
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
 
@@ -124,6 +174,23 @@ struct RigUIState {
                     : db > -6.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.55 blue:0.25 alpha:1.0]
                                   : rigAccent();
       inDbBar.layer.backgroundColor = fill.CGColor;
+    });
+  }
+
+  // Redraw the output meter from lastOutputDb. Scale: -60..0 dBFS.
+  void updateOutputDbDisplay() {
+    const float db = lastOutputDb;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!outDbLabel) return;
+      const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
+      outDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
+          : [NSString stringWithFormat:@"%+.1f dB", db];
+      const CGFloat frac = (clamped + 60.0f) / 60.0f;
+      if (outDbBarWidth) outDbBarWidth.constant = 110.0 * frac;
+      NSColor* fill = db > -0.5f ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
+                    : db > -4.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.60 blue:0.20 alpha:1.0]
+                                  : [NSColor colorWithSRGBRed:0.20 green:0.80 blue:0.95 alpha:1.0];
+      if (outDbBar) outDbBar.layer.backgroundColor = fill.CGColor;
     });
   }
 
@@ -625,6 +692,10 @@ struct RigUIState {
           [transformerPopup selectItemAtIndex:idx];
           transformerPopup.toolTip = transformerPopup.selectedItem.toolTip;
         }
+        if (deckTransformerPopup) {
+          [deckTransformerPopup selectItemAtIndex:idx];
+          deckTransformerPopup.toolTip = deckTransformerPopup.selectedItem.toolTip;
+        }
       });
       return;
     }
@@ -635,6 +706,10 @@ struct RigUIState {
           [speakerProfilePopup selectItemAtIndex:idx];
           speakerProfilePopup.toolTip = speakerProfilePopup.selectedItem.toolTip;
         }
+        if (deckSpeakerProfilePopup) {
+          [deckSpeakerProfilePopup selectItemAtIndex:idx];
+          deckSpeakerProfilePopup.toolTip = deckSpeakerProfilePopup.selectedItem.toolTip;
+        }
       });
       return;
     }
@@ -644,9 +719,61 @@ struct RigUIState {
       if (kRigKnobPorts[k] == port) { index = (ssize_t)k; break; }
     if (index < 0) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-      knobs[index].floatValue = value;
-      if (knobFieldEditing[index]) return;   // user is typing — don't clobber the field
-      valueLabels[index].stringValue = rigKnobValueText(port, value);
+      if (knobs[index]) knobs[index].floatValue = value;
+      if (!knobFieldEditing[index] && valueLabels[index])
+        valueLabels[index].stringValue = rigKnobValueText(port, value);
+
+      if (deckKnobs[index]) deckKnobs[index].floatValue = value;
+      if (!deckKnobFieldEditing[index] && deckValueLabels[index])
+        deckValueLabels[index].stringValue = rigKnobValueText(port, value);
+
+      if (delayVisualizer && (port >= 50 && port <= 53)) {
+        if (port == 50) delayVisualizer.timeMs = value;
+        else if (port == 51) delayVisualizer.feedback = value;
+        else if (port == 52) delayVisualizer.damping = value;
+        else if (port == 53) delayVisualizer.mix = value;
+        delayVisualizer.needsDisplay = YES;
+      }
+      if (reverbVisualizer && (port >= 54 && port <= 58)) {
+        if (port == 54) reverbVisualizer.mix = value;
+        else if (port == 55) reverbVisualizer.decay = value;
+        else if (port == 56) reverbVisualizer.size = value;
+        else if (port == 57) reverbVisualizer.damping = value;
+        else if (port == 58) reverbVisualizer.preDelay = value;
+        reverbVisualizer.needsDisplay = YES;
+      }
+      if (spatialVisualizer && (port == 32 || port == 33)) {
+        if (port == 32) spatialVisualizer.width = value;
+        else if (port == 33) spatialVisualizer.room = value;
+        spatialVisualizer.needsDisplay = YES;
+      }
+      if (powerVisualizer && (port == 36 || port == 37 || port == 38 || port == 41)) {
+        if (port == 36) powerVisualizer.sag = value;
+        else if (port == 37) powerVisualizer.bias = value;
+        else if (port == 38) powerVisualizer.feedback = value;
+        else if (port == 41) powerVisualizer.master = value;
+        powerVisualizer.needsDisplay = YES;
+      }
+      if (sculptVisualizer && (port == 39 || port == 40)) {
+        if (port == 39) sculptVisualizer.bright = value;
+        else if (port == 40) sculptVisualizer.inputEq = value;
+        sculptVisualizer.needsDisplay = YES;
+      }
+      if (speakerVisualizer && (port >= 43 && port <= 46)) {
+        if (port == 43) speakerVisualizer.drive = value;
+        else if (port == 44) speakerVisualizer.comp = value;
+        else if (port == 45) speakerVisualizer.thump = value;
+        else if (port == 46) speakerVisualizer.resonance = value;
+        speakerVisualizer.needsDisplay = YES;
+      }
+      if (cabConsoleVisualizer && (port == 25 || port == 48 || port == 49 || port == 26 || port == 27)) {
+        if (port == 25) cabConsoleVisualizer.cabALevel = value;
+        else if (port == 48) cabConsoleVisualizer.cabBLevel = value;
+        else if (port == 49) cabConsoleVisualizer.alignDelay = value;
+        else if (port == 26) cabConsoleVisualizer.lowCut = value;
+        else if (port == 27) cabConsoleVisualizer.highCut = value;
+        cabConsoleVisualizer.needsDisplay = YES;
+      }
     });
   }
 };
