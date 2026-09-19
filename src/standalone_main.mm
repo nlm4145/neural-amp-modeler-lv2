@@ -569,7 +569,7 @@ class StandaloneHost {
   NSApp.mainMenu = menu;
 
   _window = [[NSWindow alloc]
-      initWithContentRect:NSMakeRect(0, 0, 1280, 980)
+      initWithContentRect:NSMakeRect(0, 0, 1520, 980)
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                           NSWindowStyleMaskMiniaturizable
                   backing:NSBackingStoreBuffered

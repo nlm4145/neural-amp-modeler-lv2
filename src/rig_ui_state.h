@@ -469,7 +469,7 @@ struct RigUIState {
   // the zoomed size. `state->view` (the widget Element hosts) and ui_resize are
   // sized to base*zoom so the window matches the scaled content.
   void applyZoom() {
-    const CGFloat baseW = 1280.0, baseH = 980.0;
+    const CGFloat baseW = 1520.0, baseH = 980.0;
     const CGFloat z = zoom;
     NSView* container = rigContent ? rigContent : view;
     container.layer.anchorPoint = CGPointMake(0, 0);

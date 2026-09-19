@@ -779,7 +779,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   const CGFloat pad = 24.0;
-  const CGFloat bw = 1280.0 - pad * 2;
+  const CGFloat bw = 1520.0 - pad * 2;
 
   ToneBrowserController* controller = [[ToneBrowserController alloc] init];
   controller.state = state; state->browserController = controller;
@@ -2099,7 +2099,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (size_t i = 0; i < kPathURIs.size(); ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
-    const CGFloat baseW = 1280.0, baseH = 980.0;
+    const CGFloat baseW = 1520.0, baseH = 980.0;
 
     NAMRigRootView* rootView = [[NAMRigRootView alloc] initWithFrame:NSMakeRect(0, 0, baseW, baseH)];
     rootView.wantsLayer = YES;
@@ -2555,7 +2555,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.leadingAnchor constraintEqualToAnchor:rigPane.leadingAnchor constant:24] setActive:YES];
     [[boxRow.trailingAnchor constraintEqualToAnchor:rigPane.trailingAnchor constant:-24] setActive:YES];
     [[boxRow.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:12] setActive:YES];
-    [[boxRow.heightAnchor constraintEqualToConstant:328] setActive:YES];
+    [[boxRow.heightAnchor constraintEqualToConstant:242] setActive:YES];
 
     // Knobs grouped under the tile they relate to: GATE/INPUT under PEDAL,
     // DRIVE/PRESENCE/DEPTH and the tone controls under AMP, OUTPUT under CAB. Each group's LEADING and
@@ -2575,8 +2575,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[group.topAnchor constraintEqualToAnchor:boxRow.bottomAnchor constant:14] setActive:YES];
       [[group.heightAnchor constraintEqualToConstant:110] setActive:YES];
 
-      // Equal-width cells tiled across the group with the same 22pt spacing
-      // the tiles use — knobs stay inside their tile's footprint at any width.
+      // Equal-width cells tiled across the group. All knobs stay full-size
+      // 64pt; the window base width was enlarged so 6-knob tiles fit without
+      // overlap. 6-knob tiles use tighter spacing to fit.
+      const CGFloat cellSpacing = (groupCounts[g] > 4 ? 10.0 : 22.0);
+      const CGFloat knobSide = 64.0;
       NSView* prev = nil;
       for (size_t gi = 0; gi < groupCounts[g]; ++gi) {
         const size_t slot = groupSlots[g][gi];
@@ -2587,7 +2590,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[cell.topAnchor constraintEqualToAnchor:group.topAnchor] setActive:YES];
         [[cell.bottomAnchor constraintEqualToAnchor:group.bottomAnchor] setActive:YES];
         if (prev) {
-          [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:22] setActive:YES];
+          [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:cellSpacing] setActive:YES];
           [[cell.widthAnchor constraintEqualToAnchor:prev.widthAnchor] setActive:YES];
         } else {
           [[cell.leadingAnchor constraintEqualToAnchor:group.leadingAnchor] setActive:YES];
@@ -2614,6 +2617,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
         centerX(knob, cell, 0);
         [[knob.topAnchor constraintEqualToAnchor:kname.bottomAnchor constant:4] setActive:YES];
+        [[knob.widthAnchor constraintEqualToConstant:knobSide] setActive:YES];
+        [[knob.heightAnchor constraintEqualToConstant:knobSide] setActive:YES];
 
         state->valueLabels[k] = addLabel(cell, knobValues[k], NSZeroRect,
           [NSFont monospacedDigitSystemFontOfSize:11.0 weight:NSFontWeightRegular], rigText(), NSTextAlignmentCenter);
