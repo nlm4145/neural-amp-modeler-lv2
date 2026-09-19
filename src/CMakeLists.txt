@@ -30,6 +30,23 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "(amd64)|(AMD64)|(x86_64)")
 	endif (USE_NATIVE_ARCH)
 endif ()
 
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "(aarch64|arm64)" AND NOT MSVC)
+	# AppleClang identifies as "AppleClang", not "Clang", so the check in
+	# deps/NeuralAudio/NeuralAudio/CMakeLists.txt never fires on macOS and
+	# MULTIFRAME_8X8_CONVOLUTION silently defaults to 0. Inject it from here
+	# (before add_subdirectory) so the submodule stays untouched.
+	# Override for A/B benchmarking: -DNAM_MULTIFRAME_FORCE=0 (or 8, etc.)
+	if (DEFINED NAM_MULTIFRAME_FORCE)
+		set(MULTIFRAME_8X8_CONVOLUTION "${NAM_MULTIFRAME_FORCE}" CACHE STRING "Multi-frame 8x8 convolution" FORCE)
+		message(STATUS "NAM_MULTIFRAME_FORCE override: MULTIFRAME_8X8_CONVOLUTION=${MULTIFRAME_8X8_CONVOLUTION}")
+	else()
+		set(MULTIFRAME_8X8_CONVOLUTION "4" CACHE STRING "Multi-frame 8x8 convolution" FORCE)
+	endif()
+	add_compile_options(-mcpu=native -ffp-contract=fast)
+	add_definitions(-DEIGEN_NO_DEBUG)
+	message(STATUS "Enabling ARM64 fast path: -mcpu=native, MULTIFRAME_8X8_CONVOLUTION=${MULTIFRAME_8X8_CONVOLUTION}")
+endif()
+
 add_subdirectory(../deps/NeuralAudio NeuralAudio)
 
 set(SOURCES nam_lv2.cpp
@@ -100,6 +117,26 @@ set_target_properties(neural_amp_modeler_rig
 	PREFIX ""
 	SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 )
+
+# Offline A/B benchmark (EXCLUDE_FROM_ALL: never ships in the bundle).
+# Times model->Process() + True-Nx converters on real .nam files so the
+# MULTIFRAME_8X8_CONVOLUTION effect can be A/B'd against converters and
+# the sample-count multiplier. Build with:
+#   cmake --build <dir> --target nam_bench
+# and select the convolution path with -DNAM_MULTIFRAME_FORCE=0/4/8.
+add_executable(nam_bench EXCLUDE_FROM_ALL
+	../tools/bench_models.cpp
+	oversample.cpp
+	oversample.h)
+target_include_directories(nam_bench PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}
+	${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio
+	${CMAKE_CURRENT_SOURCE_DIR}/../deps/denormal)
+target_link_libraries(nam_bench PRIVATE NeuralAudio)
+if (APPLE)
+	find_library(NAM_BENCH_ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+	target_link_libraries(nam_bench PRIVATE ${NAM_BENCH_ACCELERATE_FRAMEWORK})
+endif()
 
 # Platform
 
