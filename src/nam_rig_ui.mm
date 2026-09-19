@@ -89,6 +89,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)nextPresetClicked:(NSButton*)sender;
 - (void)saveCurrentPreset:(id)sender;
 - (void)savePresetAs:(id)sender;
+- (void)duplicateCurrentPreset:(id)sender;
 - (void)deleteCurrentPreset:(id)sender;
 - (void)revealPresetsInFinder:(id)sender;
 - (void)switchTab:(NSButton*)sender;
@@ -503,12 +504,25 @@ static NSString* stageName(NSInteger stage) {
 - (void)presetPopupChanged:(NSPopUpButton*)sender {
   if (!_state || !_state->presetManager) return;
   NSMenuItem* item = sender.selectedItem;
-  NSString* name = item.representedObject ?: item.title;
-  if (!name.length) return;
+  // Command rows (Save / Save As… / Delete / Duplicate / Reveal) and the
+  // separators carry no representedObject — they fire their own actions via
+  // target/action (or do nothing), so ignore them here instead of treating
+  // their title as a preset name. Just snap the button back to the current
+  // preset; the command's own action runs separately through the responder
+  // chain when applicable.
+  NSString* name = nil;
+  if ([item.representedObject isKindOfClass:[NSString class]])
+    name = item.representedObject;
+  if (!name.length) {
+    _state->resyncPresetPopupSelection();
+    return;
+  }
   RigPreset* preset = [_state->presetManager loadPresetNamed:name];
   if (preset) {
     [preset applyToState:_state];
     _state->updatePresetDisplayTitle();
+  } else {
+    _state->resyncPresetPopupSelection();
   }
 }
 
@@ -548,11 +562,14 @@ static NSString* stageName(NSInteger stage) {
   NSError* err = nil;
   if ([_state->presetManager saveCurrentPresetFromState:_state error:&err]) {
     _state->updatePresetDisplayTitle();
-  } else if (err) {
-    NSAlert* alert = [[NSAlert alloc] init];
-    alert.messageText = @"Save Failed";
-    alert.informativeText = err.localizedDescription;
-    [alert runModal];
+  } else {
+    _state->resyncPresetPopupSelection();
+    if (err) {
+      NSAlert* alert = [[NSAlert alloc] init];
+      alert.messageText = @"Save Failed";
+      alert.informativeText = err.localizedDescription;
+      [alert runModal];
+    }
   }
 }
 
@@ -576,16 +593,24 @@ static NSString* stageName(NSInteger stage) {
   if ([alert runModal] == NSAlertFirstButtonReturn) {
     NSString* name = [input.stringValue stringByTrimmingCharactersInSet:
                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (!name.length) return;
+    if (!name.length) {
+      _state->resyncPresetPopupSelection();
+      return;
+    }
     NSError* err = nil;
     if ([_state->presetManager savePresetNamed:name fromState:_state error:&err]) {
       _state->updatePresetDisplayTitle();
-    } else if (err) {
-      NSAlert* fail = [[NSAlert alloc] init];
-      fail.messageText = @"Save Failed";
-      fail.informativeText = err.localizedDescription;
-      [fail runModal];
+    } else {
+      _state->resyncPresetPopupSelection();
+      if (err) {
+        NSAlert* fail = [[NSAlert alloc] init];
+        fail.messageText = @"Save Failed";
+        fail.informativeText = err.localizedDescription;
+        [fail runModal];
+      }
     }
+  } else {
+    _state->resyncPresetPopupSelection();
   }
 }
 
@@ -593,7 +618,10 @@ static NSString* stageName(NSInteger stage) {
   (void)sender;
   if (!_state || !_state->presetManager) return;
   NSString* cur = _state->presetManager.currentPresetName;
-  if (!cur.length || [cur isEqualToString:@"Default Rig"]) return;
+  if (!cur.length || [cur isEqualToString:@"Default Rig"]) {
+    _state->resyncPresetPopupSelection();
+    return;
+  }
 
   NSAlert* alert = [[NSAlert alloc] init];
   alert.messageText = @"Delete Preset";
@@ -608,7 +636,59 @@ static NSString* stageName(NSInteger stage) {
       RigPreset* nextP = [_state->presetManager loadPresetNamed:_state->presetManager.currentPresetName];
       if (nextP) [nextP applyToState:_state];
       _state->updatePresetDisplayTitle();
+    } else {
+      _state->resyncPresetPopupSelection();
     }
+  } else {
+    _state->resyncPresetPopupSelection();
+  }
+}
+
+- (void)duplicateCurrentPreset:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSString* base = _state->presetManager.currentPresetName.length
+      ? _state->presetManager.currentPresetName : @"Default Rig";
+  NSString* suggestion = [_state->presetManager uniquePresetNameForBase:base];
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Duplicate Preset";
+  alert.informativeText = [NSString stringWithFormat:
+      @"Duplicate '%@' as:", base];
+  [alert addButtonWithTitle:@"Duplicate"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  input.stringValue = suggestion;
+  alert.accessoryView = input;
+  [alert.window setInitialFirstResponder:input];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSString* name = [input.stringValue stringByTrimmingCharactersInSet:
+                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!name.length) name = suggestion;
+    // A taken name (e.g. typed while another duplicate landed) auto-bumps to
+    // the next free "Copy N" instead of failing.
+    if ([_state->presetManager.presetNames containsObject:name])
+      name = [_state->presetManager uniquePresetNameForBase:name];
+    NSError* err = nil;
+    if ([_state->presetManager duplicateCurrentPresetFromState:_state
+                                                      withName:name
+                                                         error:&err]) {
+      RigPreset* dup = [_state->presetManager loadPresetNamed:name];
+      if (dup) [dup applyToState:_state];
+      _state->updatePresetDisplayTitle();
+    } else {
+      _state->resyncPresetPopupSelection();
+      if (err) {
+        NSAlert* fail = [[NSAlert alloc] init];
+        fail.messageText = @"Duplicate Failed";
+        fail.informativeText = err.localizedDescription;
+        [fail runModal];
+      }
+    }
+  } else {
+    _state->resyncPresetPopupSelection();
   }
 }
 
@@ -616,7 +696,9 @@ static NSString* stageName(NSInteger stage) {
   (void)sender;
   if (!_state || !_state->presetManager) return;
   [_state->presetManager revealPresetsInFinder];
-  _state->updatePresetDisplayTitle();
+  // Opening Finder doesn't change the rig, so keep the popup on the current
+  // preset instead of rebuilding (rebuild is harmless but flashes the menu).
+  _state->resyncPresetPopupSelection();
 }
 @end
 static NSTextField* addLabel(NSView* parent,
@@ -863,10 +945,16 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 @end
 @implementation NAMRigHeaderBar
 - (NSView *)hitTest:(NSPoint)point {
+  // NOTE: point is in superview coordinates (AppKit contract). Convert to
+  // self coordinates once, then let each subview hit-test from there. The
+  // manual front-to-back walk (instead of relying solely on super) keeps the
+  // tuner readout panel — which overflows below the 26pt bar — hoverable and
+  // ensures the tuner toggle itself stays clickable.
+  if (!self.superview) return [super hitTest:point];
+  NSPoint pSelf = [self convertPoint:point fromView:self.superview];
   for (NSView *sub in [self.subviews reverseObjectEnumerator]) {
     if (sub.isHidden) continue;
-    NSPoint p = [sub convertPoint:point fromView:self];
-    NSView *hit = [sub hitTest:p];
+    NSView *hit = [sub hitTest:pSelf];
     if (hit) return hit;
   }
   return [super hitTest:point];
@@ -877,10 +965,11 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 @end
 @implementation NAMRigHeaderGroup
 - (NSView *)hitTest:(NSPoint)point {
+  if (!self.superview) return [super hitTest:point];
+  NSPoint pSelf = [self convertPoint:point fromView:self.superview];
   for (NSView *sub in [self.subviews reverseObjectEnumerator]) {
     if (sub.isHidden) continue;
-    NSPoint p = [sub convertPoint:point fromView:self];
-    NSView *hit = [sub hitTest:p];
+    NSView *hit = [sub hitTest:pSelf];
     if (hit) return hit;
   }
   return [super hitTest:point];

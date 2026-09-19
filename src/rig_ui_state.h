@@ -278,11 +278,17 @@ struct RigUIState {
     [[presetPopup menu] addItem:saveAsItem];
 
     NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete Preset"
-                                                        action:@selector(deleteCurrentPreset:)
-                                                 keyEquivalent:@""];
+                                                         action:@selector(deleteCurrentPreset:)
+                                                  keyEquivalent:@""];
     deleteItem.target = (id)uiController;
     deleteItem.enabled = ![cur isEqualToString:@"Default Rig"];
     [[presetPopup menu] addItem:deleteItem];
+
+    NSMenuItem* duplicateItem = [[NSMenuItem alloc] initWithTitle:@"Duplicate Preset"
+                                                           action:@selector(duplicateCurrentPreset:)
+                                                    keyEquivalent:@""];
+    duplicateItem.target = (id)uiController;
+    [[presetPopup menu] addItem:duplicateItem];
 
     [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
 
@@ -301,6 +307,35 @@ struct RigUIState {
     dispatch_async(dispatch_get_main_queue(), ^{
       rebuildPresetMenu();
     });
+  }
+
+  // Snap the popup back to the current preset without a full menu rebuild.
+  // NSPopUpButton keeps whatever row was last picked as its selection — so
+  // after a command row (Save / Save As / Delete / Duplicate / Reveal) is
+  // chosen and its dialog is cancelled, the button would otherwise keep
+  // showing "Delete Preset" etc. Call this synchronously on cancel/failure
+  // paths; success paths use updatePresetDisplayTitle() (full rebuild).
+  // Must run on the main thread (all preset actions do).
+  void resyncPresetPopupSelection() {
+    if (!presetPopup || !presetManager) return;
+    auto resync = ^{
+      NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
+      NSInteger match = -1;
+      NSArray<NSMenuItem*>* items = presetPopup.itemArray;
+      for (NSInteger i = 0; i < (NSInteger)items.count; ++i) {
+        id rep = items[(NSUInteger)i].representedObject;
+        if ([rep isKindOfClass:[NSString class]] && [rep isEqualToString:cur]) {
+          match = i;
+          break;
+        }
+      }
+      if (match >= 0) [presetPopup selectItemAtIndex:match];
+    };
+    if ([NSThread isMainThread]) {
+      resync();
+    } else {
+      dispatch_async(dispatch_get_main_queue(), resync);
+    }
   }
 
   // UI-side persistence: the UI is the single source of truth for the selected

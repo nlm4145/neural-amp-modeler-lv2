@@ -52,9 +52,29 @@ assert "prevPresetClicked:" in ui_mm
 assert "nextPresetClicked:" in ui_mm
 assert "saveCurrentPreset:" in ui_mm
 assert "savePresetAs:" in ui_mm
+assert "duplicateCurrentPreset:" in ui_mm
 assert "deleteCurrentPreset:" in ui_mm
 assert "revealPresetsInFinder:" in ui_mm
 assert "markPresetModified" in ui_mm
+
+# 5b. Verify Duplicate Preset wiring: manager API + menu entry + dialog flow
+assert "uniquePresetNameForBase:" in presets_h
+assert "duplicateCurrentPresetFromState:" in presets_h
+assert "duplicateCurrentPresetFromState:" in presets_mm
+assert "uniquePresetNameForBase" in presets_mm
+assert '"Duplicate Preset"' in ui_state_h, "Preset popup menu must offer Duplicate Preset"
+assert "@selector(duplicateCurrentPreset:)" in ui_state_h
+assert "Duplicate Preset" in ui_mm, "UI must show a Duplicate Preset dialog"
+assert "uniquePresetNameForBase:" in ui_mm, "Duplicate dialog must suggest a unique name"
+
+# 5c. Verify the popup never sticks on a command row: command rows carry no
+# representedObject-based name, and every Cancel/failure path re-syncs the
+# button back to the current preset.
+assert "resyncPresetPopupSelection" in ui_state_h
+assert "representedObject isKindOfClass:[NSString class]" in ui_mm, \
+    "presetPopupChanged must only treat representedObject-backed rows as presets"
+assert ui_mm.count("resyncPresetPopupSelection") >= 8, \
+    "every preset Cancel/failure path must snap the popup back to the current preset"
 
 # 6. Verify dirty tracking is called on adjustments
 assert "[self markPresetModified];" in ui_mm

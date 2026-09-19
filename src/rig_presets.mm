@@ -624,6 +624,100 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   return ok;
 }
 
+- (NSString*)uniquePresetNameForBase:(NSString*)base {
+  NSString* raw = base.length ? base : @"Untitled";
+  NSString* trimmed = [raw stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!trimmed.length) trimmed = @"Untitled";
+  NSSet<NSString*>* existing = [NSSet setWithArray:_presetNames];
+  if (![existing containsObject:trimmed]) return trimmed;
+  // "Foo" -> "Foo Copy", then "Foo Copy 2", "Foo Copy 3", ...
+  // A base that already ends in " Copy" / " Copy N" reuses its stem so
+  // duplicating a duplicate yields "Foo Copy 2", not "Foo Copy Copy".
+  static NSRegularExpression* copySuffix = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    copySuffix = [NSRegularExpression regularExpressionWithPattern:@"^(.*) Copy(?: (\\d+))?$"
+                                                           options:0
+                                                             error:nil];
+  });
+  NSString* stem = trimmed;
+  NSTextCheckingResult* m = [copySuffix firstMatchInString:trimmed
+                                                  options:0
+                                                    range:NSMakeRange(0, trimmed.length)];
+  if (m && m.numberOfRanges >= 2 && [m rangeAtIndex:1].location != NSNotFound) {
+    stem = [trimmed substringWithRange:[m rangeAtIndex:1]];
+  }
+  NSString* candidate = [stem stringByAppendingString:@" Copy"];
+  if (![existing containsObject:candidate]) return candidate;
+  NSUInteger n = 2;
+  while (YES) {
+    NSString* numbered = [candidate stringByAppendingFormat:@" %lu", (unsigned long)n];
+    if (![existing containsObject:numbered]) return numbered;
+    ++n;
+  }
+}
+
+- (BOOL)duplicateCurrentPresetFromState:(RigUIState*)state error:(NSError**)error {
+  NSString* base = _currentPresetName.length ? _currentPresetName : @"Default Rig";
+  return [self duplicateCurrentPresetFromState:state
+                                      withName:[self uniquePresetNameForBase:base]
+                                         error:error];
+}
+
+- (BOOL)duplicateCurrentPresetFromState:(RigUIState*)state
+                               withName:(NSString*)name
+                                  error:(NSError**)error {
+  if (!state) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-1
+                                        userInfo:@{NSLocalizedDescriptionKey: @"No rig state to duplicate from."}];
+    return NO;
+  }
+  NSString* raw = name.length ? name : @"";
+  NSString* trimmed = [raw stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!trimmed.length) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-2
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Enter a name for the duplicated preset."}];
+    return NO;
+  }
+  // An explicit name that already exists fails loudly instead of silently
+  // picking another name (the auto-name path above guarantees uniqueness).
+  if ([_presetNames containsObject:trimmed]) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-4
+                                        userInfo:@{NSLocalizedDescriptionKey:
+                                                   [NSString stringWithFormat:
+                                                    @"A preset named '%@' already exists.", trimmed]}];
+    return NO;
+  }
+  // The duplicate keeps the source preset's uncommitted on-screen edits: if
+  // the user tweaked the rig after loading (isModified), capture the live UI
+  // state rather than re-saving the stale file on disk. Load from disk
+  // directly (not via loadPresetNamed:) to avoid mutating current selection.
+  RigPreset* source = nil;
+  if (_isModified) {
+    source = [RigPreset captureFromState:state name:trimmed];
+  } else {
+    NSString* path = [self.presetsDirectory stringByAppendingPathComponent:
+                      [_currentPresetName.lastPathComponent stringByAppendingPathExtension:@"json"]];
+    source = [RigPreset loadFromFile:path];
+    if (!source) source = [RigPreset captureFromState:state name:trimmed];
+    else source.name = trimmed;
+  }
+  if (!source) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-3
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Could not load the current preset."}];
+    return NO;
+  }
+  source.name = trimmed;
+  // savePreset: selects the new copy and clears the dirty flag.
+  return [self savePreset:source error:error];
+}
+
 - (nullable NSString*)nextPresetName {
   if (_presetNames.count <= 1) return nil;
   NSUInteger idx = [_presetNames indexOfObject:_currentPresetName];
