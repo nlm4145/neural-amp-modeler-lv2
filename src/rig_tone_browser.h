@@ -26,6 +26,10 @@ struct RigUIState;
 @property(nonatomic) NSInteger downloadsCount;
 @property(nonatomic) NSInteger toneId;
 @property(nonatomic) NSInteger stage;
+@property(nonatomic) NSInteger a2Count;
+@property(nonatomic) NSInteger a1Count;
+@property(nonatomic) NSInteger customCount;
+@property(nonatomic) NSInteger irsCount;
 @property(nonatomic) BOOL favorite;
 @property(nonatomic) BOOL local;
 @end
@@ -39,6 +43,8 @@ struct RigUIState;
 @property(nonatomic, strong) NSSearchField* search;
 @property(nonatomic, strong) NSPopUpButton* gear;
 @property(nonatomic, strong) NSPopUpButton* sort;
+@property(nonatomic, strong) NSSegmentedControl* archControl;
+@property(nonatomic, copy) NSString* selectedArch;
 @property(nonatomic, strong) NSTextField* status;
 @property(nonatomic, strong) NSTextField* authStatus;
 @property(nonatomic, strong) RigButton* connectButton;
@@ -77,17 +83,23 @@ struct RigUIState;
 @property(nonatomic) NSTimeInterval rateLimitUntil;
 @property(nonatomic) BOOL loadingNextPage;          // one search page in flight
 @property(nonatomic, copy) NSString* activeSearchPrefix;  // prefix the current page state belongs to
+@property(nonatomic) NSInteger previewGeneration;
+@property(nonatomic, strong) NSURLSessionDataTask* previewTask;
 - (void)loadMoreSearchResults;
 - (void)mergeArchPages:(NSDictionary<NSString*, NSDictionary*>*)fetched page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)downloadAllModels:(ToneItem*)item;
+- (void)downloadTone:(ToneItem*)item withArch:(NSString*)arch;
+- (void)previewTone:(ToneItem*)item withArch:(NSString*)arch;
 - (void)downloadModelStep:(NSInteger)index of:(NSArray*)models item:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
 - (void)finishModelDownload:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
 - (void)reloadLibrary:(id)sender;
 - (void)selectMode:(NSButton*)sender;
 - (void)filterChanged:(id)sender;
 - (void)sortChanged:(id)sender;
+- (void)archChanged:(id)sender;
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort;
++ (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort arch:(NSSegmentedControl*)arch;
 - (void)toggleFavoriteFromCard:(ToneItem*)item;
 - (void)connectTone3000:(id)sender;
 - (void)connectIfNeeded;
@@ -100,6 +112,7 @@ struct RigUIState;
 // Multi-column tone card for the collection-view grid.
 @interface ToneCardItem : NSCollectionViewItem
 @property(nonatomic, copy) void (^onFavToggle)(ToneItem*);
+@property(nonatomic, copy) void (^onDownloadArch)(ToneItem*, NSString*);
 @end
 // RigButton lives in rig_widgets.h (shared with the simple NAM UI).
 #endif

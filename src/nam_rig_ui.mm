@@ -931,8 +931,8 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
   const CGFloat bh = 980.0 - (10.0 + 26.0 + 12.0) - 14.0;
 
-  // Search / tone type / sort row: search query, tone type (gear), and sort order side-by-side.
-  const CGFloat searchW = bw * 0.42;
+  // Search / tone type / sort / arch row: search query, tone type (gear), sort order, and architecture format side-by-side.
+  const CGFloat searchW = bw * 0.32;
   controller.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(24, bh - 38, searchW, 28)];
   controller.search.placeholderString = @"Search Tone3000";
   controller.search.focusRingType = NSFocusRingTypeNone;
@@ -975,7 +975,21 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   controller.sort.action = @selector(sortChanged:);
   controller.sort.toolTip = @"Choose the ordering used for Tone3000 search results.";
   [browser addSubview:controller.sort];
-  [ToneBrowserController restoreFilterSelectionForGear:controller.gear sort:controller.sort];
+
+  const CGFloat archW = 310.0;
+  controller.archControl = [NSSegmentedControl segmentedControlWithLabels:@[@"A2 Default", @"A1 Legacy", @"Custom", @"All"]
+                                                             trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                   target:controller
+                                                                   action:@selector(archChanged:)];
+  controller.archControl.frame = NSMakeRect(24 + searchW + 12 + gearW + 10 + sortW + 12, bh - 38, archW, 28);
+  controller.archControl.controlSize = NSControlSizeSmall;
+  controller.archControl.segmentDistribution = NSSegmentDistributionFillEqually;
+  controller.archControl.selectedSegment = 0;
+  controller.archControl.toolTip = @"Choose model format to download: A2 (Default modern standard), A1 (Legacy standard), Custom architectures, or All formats.";
+  [browser addSubview:controller.archControl];
+
+  [ToneBrowserController restoreFilterSelectionForGear:controller.gear sort:controller.sort arch:controller.archControl];
+  [controller archChanged:nil];
   controller.gear.toolTip = popupTooltip(@"Filters Tone3000 results by capture type.",
                                          controller.gear);
   controller.sort.toolTip = popupTooltip(@"Orders Tone3000 search results.",

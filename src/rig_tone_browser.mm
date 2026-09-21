@@ -160,6 +160,16 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
     }
   }
 
+  NSMutableArray<NSString*>* archInfo = [NSMutableArray array];
+  if (item.a2Count > 0) [archInfo addObject:[NSString stringWithFormat:@"A2 (Modern Standard): %ld model%@", (long)item.a2Count, item.a2Count == 1 ? @"" : @"s"]];
+  if (item.a1Count > 0) [archInfo addObject:[NSString stringWithFormat:@"A1 (Legacy Standard): %ld model%@", (long)item.a1Count, item.a1Count == 1 ? @"" : @"s"]];
+  if (item.customCount > 0) [archInfo addObject:[NSString stringWithFormat:@"Custom Architecture: %ld model%@", (long)item.customCount, item.customCount == 1 ? @"" : @"s"]];
+  if (item.irsCount > 0) [archInfo addObject:[NSString stringWithFormat:@"Impulse Responses: %ld IR%@", (long)item.irsCount, item.irsCount == 1 ? @"" : @"s"]];
+  if (archInfo.count > 0) {
+    if (s.length) [s appendString:@"\n\n"];
+    [s appendFormat:@"Available Formats\n%@", [archInfo componentsJoinedByString:@"\n"]];
+  }
+
   NSDictionary* tone = item.toneData;
   if ([tone isKindOfClass:NSDictionary.class]) {
     NSString* desc = [tone[@"description"] isKindOfClass:NSString.class] ? tone[@"description"] : nil;
@@ -223,7 +233,22 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
   _favButton.image = [NSImage imageWithSystemSymbolName:(item.favorite ? @"star.fill" : @"star") accessibilityDescription:nil];
   _favButton.contentTintColor = item.favorite ? rigAccent() : rigDimText();
 
-  if (item.local) {
+  NSMutableArray<NSString*>* badges = [NSMutableArray array];
+  if (item.a2Count > 0) [badges addObject:[NSString stringWithFormat:@"A2 (%ld)", (long)item.a2Count]];
+  if (item.a1Count > 0) [badges addObject:[NSString stringWithFormat:@"A1 (%ld)", (long)item.a1Count]];
+  if (item.customCount > 0) [badges addObject:[NSString stringWithFormat:@"Custom (%ld)", (long)item.customCount]];
+  if (item.irsCount > 0) [badges addObject:[NSString stringWithFormat:@"IR (%ld)", (long)item.irsCount]];
+
+  if (badges.count > 0) {
+    NSString* badgeText = [badges componentsJoinedByString:@" · "];
+    if (item.local) {
+      _tagField.stringValue = [NSString stringWithFormat:@"%@  ·  Downloaded", badgeText];
+      _tagField.textColor = rigGreen();
+    } else {
+      _tagField.stringValue = badgeText;
+      _tagField.textColor = rigDimText();
+    }
+  } else if (item.local) {
     _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@  ·  Downloaded",
         (long)(item.models.count ?: 1), item.models.count == 1 ? @"" : @"s"];
     _tagField.textColor = rigGreen();
@@ -307,22 +332,69 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
 - (IBAction)favClicked:(id)sender {
   if (self.onFavToggle && self.representedObject) self.onFavToggle((ToneItem*)self.representedObject);
 }
-// Right-click on the card offers "View on Tone3000" — opens the tone's page
-// (https://www.tone3000.com/tones/<id>) in the default browser. Works for both
-// search results and local-library cards: toneItem() builds toneURL with an
-// id-based fallback when the manifest doesn't carry one. The menu is attached
-// to the card's root view; right-clicks on any subview (art, title, star) with
-// no menu of their own climb the responder chain to it.
+// Right-click on the card offers "View on Tone3000" and architecture-specific download actions.
+// Works for both search results and local-library cards. The menu delegate populates
+// model counts dynamically based on the card's available architectures.
 - (void)attachTone3000Menu {
   if (!self.view) return;
   NSMenu *m = [[NSMenu alloc] init];
-  NSMenuItem *openItem = [[NSMenuItem alloc] initWithTitle:@"View on Tone3000"
-                                                   action:@selector(openTone3000:)
-                                            keyEquivalent:@""];
-  openItem.target = self;  // reads self.representedObject at click time
-  openItem.toolTip = @"Open this tone's detail page in your default web browser.";
-  [m addItem:openItem];
+  m.delegate = (id<NSMenuDelegate>)self;
   self.view.menu = m;
+}
+
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+  [menu removeAllItems];
+  ToneItem *item = (ToneItem *)self.representedObject;
+  if (![item isKindOfClass:[ToneItem class]]) return;
+
+  NSMenuItem *openItem = [[NSMenuItem alloc] initWithTitle:@"View on Tone3000"
+                                                    action:@selector(openTone3000:)
+                                             keyEquivalent:@""];
+  openItem.target = self;
+  openItem.toolTip = @"Open this tone's detail page in your default web browser.";
+  [menu addItem:openItem];
+
+  [menu addItem:[NSMenuItem separatorItem]];
+
+  if (item.a2Count > 0) {
+    NSString *title = [NSString stringWithFormat:@"Download A2 Models (%ld)", (long)item.a2Count];
+    NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(downloadA2:) keyEquivalent:@""];
+    it.target = self;
+    [menu addItem:it];
+  }
+  if (item.a1Count > 0) {
+    NSString *title = [NSString stringWithFormat:@"Download A1 Legacy Models (%ld)", (long)item.a1Count];
+    NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(downloadA1:) keyEquivalent:@""];
+    it.target = self;
+    [menu addItem:it];
+  }
+  if (item.customCount > 0) {
+    NSString *title = [NSString stringWithFormat:@"Download Custom Models (%ld)", (long)item.customCount];
+    NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(downloadCustom:) keyEquivalent:@""];
+    it.target = self;
+    [menu addItem:it];
+  }
+
+  NSInteger totalCount = item.a2Count + item.a1Count + item.customCount;
+  NSString *allTitle = totalCount > 0
+      ? [NSString stringWithFormat:@"Download All Formats (%ld)", (long)totalCount]
+      : @"Download All Models";
+  NSMenuItem *allItem = [[NSMenuItem alloc] initWithTitle:allTitle action:@selector(downloadAllArchs:) keyEquivalent:@""];
+  allItem.target = self;
+  [menu addItem:allItem];
+}
+
+- (IBAction)downloadA2:(id)sender {
+  if (self.onDownloadArch && self.representedObject) self.onDownloadArch((ToneItem*)self.representedObject, @"2");
+}
+- (IBAction)downloadA1:(id)sender {
+  if (self.onDownloadArch && self.representedObject) self.onDownloadArch((ToneItem*)self.representedObject, @"1");
+}
+- (IBAction)downloadCustom:(id)sender {
+  if (self.onDownloadArch && self.representedObject) self.onDownloadArch((ToneItem*)self.representedObject, @"custom");
+}
+- (IBAction)downloadAllArchs:(id)sender {
+  if (self.onDownloadArch && self.representedObject) self.onDownloadArch((ToneItem*)self.representedObject, @"all");
 }
 - (IBAction)openTone3000:(id)sender {
   ToneItem *item = (ToneItem *)self.representedObject;
@@ -361,6 +433,18 @@ static NSString* searchCacheDir(void) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     dir = [@("~/Library/Application Support/Axe FX/SearchCache")
+           stringByExpandingTildeInPath];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+  });
+  return dir;
+}
+
+static NSString* previewCacheDir(void) {
+  static NSString* dir = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dir = [@("~/Library/Application Support/Axe FX/PreviewCache")
            stringByExpandingTildeInPath];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir
                               withIntermediateDirectories:YES attributes:nil error:nil];
@@ -442,6 +526,10 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   }
   item.createdAt = createdAt;
   item.downloadsCount = [tone[@"downloads_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"downloads_count"] integerValue] : 0;
+  item.a2Count = [tone[@"a2_models_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"a2_models_count"] integerValue] : 0;
+  item.a1Count = [tone[@"a1_models_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"a1_models_count"] integerValue] : 0;
+  item.customCount = [tone[@"custom_models_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"custom_models_count"] integerValue] : 0;
+  item.irsCount = [tone[@"irs_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"irs_count"] integerValue] : 0;
 
   // Leave `modified` exactly as the original code set it (caller-supplied file
   // date for local items, distant-past for online items). Only the new,
@@ -450,20 +538,22 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   return item;
 }
 @implementation ToneBrowserController
-// Persist the Browse filter dropdowns (gear + sort) to disk on every USER change
+// Persist the Browse filter dropdowns (gear + sort + arch) to disk on every USER change
 // (sender != nil; programmatic [self filterChanged:nil] calls never write), and
 // re-select the saved titles when the popup is built. Element recreates the
-// plugin editor (and these NSPopUpButtons) every time the window is reopened,
-// so without this the selections reset to "All Gear"/"Newest".
+// plugin editor (and these controls) every time the window is reopened,
+// so without this the selections reset.
 - (void)persistFilterSelection {
   NSString* dir = [@("~/Library/Application Support/Axe FX") stringByExpandingTildeInPath];
   [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSString* path = [dir stringByAppendingPathComponent:@"browse-filters.txt"];
-  NSString* line = [NSString stringWithFormat:@"%@\n%@\n",
-                    self.gear.titleOfSelectedItem ?: @"", self.sort.titleOfSelectedItem ?: @""];
+  NSString* line = [NSString stringWithFormat:@"%@\n%@\n%ld\n",
+                    self.gear.titleOfSelectedItem ?: @"",
+                    self.sort.titleOfSelectedItem ?: @"",
+                    (long)self.archControl.selectedSegment];
   [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
-+ (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort {
++ (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort arch:(NSSegmentedControl*)arch {
   NSString* path = [[@("~/Library/Application Support/Axe FX") stringByExpandingTildeInPath]
                     stringByAppendingPathComponent:@"browse-filters.txt"];
   NSString* text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
@@ -476,10 +566,17 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSArray* lines = [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
   NSString* savedGear = lines.count > 0 ? lines[0] : @"";
   NSString* savedSort = lines.count > 1 ? lines[1] : @"";
+  NSInteger savedArch = (lines.count > 2 && [lines[2] length]) ? [lines[2] integerValue] : 0;
   for (NSString* title in gear.itemTitles)
     if ([title isEqualToString:savedGear]) { [gear selectItemWithTitle:title]; break; }
   for (NSString* title in sort.itemTitles)
     if ([title isEqualToString:savedSort]) { [sort selectItemWithTitle:title]; break; }
+  if (arch && savedArch >= 0 && savedArch < arch.segmentCount) {
+    arch.selectedSegment = savedArch;
+  }
+}
++ (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort {
+  [self restoreFilterSelectionForGear:gear sort:sort arch:nil];
 }
 
 - (void)dealloc {
@@ -501,6 +598,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     _allItems = [NSMutableArray array]; _visibleItems = @[];
     _searchResults = [NSMutableArray array];
     _images = [NSMutableDictionary dictionary]; _mode = @"Browse";
+    _selectedArch = @"2";
     _nextSearchPage = 1; _searchTotalPages = 0; _searchGeneration = 0;
     _searchIds = [NSMutableSet set];
     // Prefer the plugin's OWN persisted session. If absent (fresh install / not
@@ -565,7 +663,22 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       NSNumber* key = [tone[@"id"] respondsToSelector:@selector(integerValue)] ? @([tone[@"id"] integerValue]) : nil;
       if (!key) continue;
       ToneItem* existing = byId[key];
-      if (existing) { existing.favorite |= favorite; existing.toneData = tone; if (!favorite) [ordered addObject:existing]; continue; }
+      if (existing) {
+        existing.favorite |= favorite;
+        existing.toneData = tone;
+        if ([tone[@"a2_models_count"] respondsToSelector:@selector(integerValue)])
+          existing.a2Count = [tone[@"a2_models_count"] integerValue];
+        if ([tone[@"a1_models_count"] respondsToSelector:@selector(integerValue)])
+          existing.a1Count = [tone[@"a1_models_count"] integerValue];
+        if ([tone[@"custom_models_count"] respondsToSelector:@selector(integerValue)])
+          existing.customCount = [tone[@"custom_models_count"] integerValue];
+        if ([tone[@"irs_count"] respondsToSelector:@selector(integerValue)])
+          existing.irsCount = [tone[@"irs_count"] integerValue];
+        if ([tone[@"downloads_count"] respondsToSelector:@selector(integerValue)])
+          existing.downloadsCount = [tone[@"downloads_count"] integerValue];
+        if (!favorite) [ordered addObject:existing];
+        continue;
+      }
       ToneItem* item = toneItem(tone, @[], nil); if (!item) continue;
       item.favorite |= favorite; [self.allItems addObject:item]; byId[key] = item; if (!favorite) [ordered addObject:item];
     }
@@ -611,8 +724,13 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
       if (ok) {
         [strongSelf logTone3000:[NSString stringWithFormat:@"FAVORITE %@ -> %ld tone=%ld", adding ? @"PUT" : @"DELETE", (long)status, (long)item.toneId]];
-        strongSelf.status.stringValue = adding ? @"Added to favorites" : @"Removed from favorites";
-        if (!adding) {
+        if (adding) {
+          strongSelf.status.stringValue = @"Favorited — downloading to library…";
+          if (!item.local) {
+            [strongSelf downloadTone:item withArch:strongSelf.selectedArch];
+          }
+        } else {
+          strongSelf.status.stringValue = @"Removed from favorites";
           // Drop the tone from the in-memory union so Favorites mode and the
           // extras section stop offering it (mirrors mergeRemoteTones cleanup).
           NSMutableArray<ToneItem*>* kept = [NSMutableArray array];
@@ -811,6 +929,16 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       ToneItem* existing = byId[key];
       if (existing) {
         existing.toneData = tone;            // refresh metadata in place
+        if ([tone[@"a2_models_count"] respondsToSelector:@selector(integerValue)])
+          existing.a2Count = [tone[@"a2_models_count"] integerValue];
+        if ([tone[@"a1_models_count"] respondsToSelector:@selector(integerValue)])
+          existing.a1Count = [tone[@"a1_models_count"] integerValue];
+        if ([tone[@"custom_models_count"] respondsToSelector:@selector(integerValue)])
+          existing.customCount = [tone[@"custom_models_count"] integerValue];
+        if ([tone[@"irs_count"] respondsToSelector:@selector(integerValue)])
+          existing.irsCount = [tone[@"irs_count"] integerValue];
+        if ([tone[@"downloads_count"] respondsToSelector:@selector(integerValue)])
+          existing.downloadsCount = [tone[@"downloads_count"] integerValue];
         [byId removeObjectForKey:key];       // claimed
       } else {
         ToneItem* item = toneItem(tone, @[], nil);
@@ -1416,7 +1544,29 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   card.onFavToggle = ^(ToneItem *item) {
     [weakSelf toggleFavoriteFromCard:item];
   };
+  card.onDownloadArch = ^(ToneItem *item, NSString *arch) {
+    [weakSelf downloadTone:item withArch:arch];
+  };
   return card;
+}
+
+- (void)archChanged:(id)sender {
+  NSInteger sel = self.archControl.selectedSegment;
+  if (sel == 1) {
+    self.selectedArch = @"1";
+    self.status.stringValue = @"Download Format: A1 Legacy Standard";
+  } else if (sel == 2) {
+    self.selectedArch = @"custom";
+    self.status.stringValue = @"Download Format: Custom Architecture (LSTM, WaveNet)";
+  } else if (sel == 3) {
+    self.selectedArch = @"all";
+    self.status.stringValue = @"Download Format: All Models (A2, A1, Custom)";
+  } else {
+    self.selectedArch = @"2";
+    self.status.stringValue = @"Download Format: A2 Default (Modern Fast Standard)";
+  }
+  if (sender) [self persistFilterSelection];
+  [self.collectionView reloadData];
 }
 
 - (void)collectionView:(NSCollectionView *)collectionView didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
@@ -1427,57 +1577,253 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     [self showModelsForItem:item andLoad:YES];
     return;
   }
-  self.status.stringValue = @"Getting this tone's models…";
-  if (self.accessToken.length) {
-    NSInteger selectedToneId = item.toneId;
-    __weak ToneBrowserController *weakSelf = self;
-    // The /models endpoint is architecture-specific: omitting the param returns
-    // NOTHING even when models exist. Default to A2 (the current default), and
-    // fall back to A1 legacy if that tone only has A1 models.
-    void (^fetch)(NSString*, void (^)(NSArray*)) = ^(NSString *arch, void (^done)(NSArray*)) {
-      __strong ToneBrowserController *s = weakSelf;
-      if (!s) { done(@[]); return; }
-      [s apiGET:[NSString stringWithFormat:@"/models?tone_id=%ld&page=1&page_size=100&architecture=%@", (long)selectedToneId, arch]
-          completion:^(NSDictionary *json, NSInteger status, NSError *error) {
-        done([json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[]);
-      }];
-    };
-    void (^finish)(NSArray*) = ^(NSArray *data) {
+  if (item.favorite) {
+    [self downloadTone:item withArch:self.selectedArch];
+    return;
+  }
+  // Not favorited and not local: preview in rig without saving to permanent library.
+  [self previewTone:item withArch:self.selectedArch];
+}
+
+- (void)fetchModelsForToneId:(NSInteger)toneId arch:(NSString*)arch page:(NSInteger)page accumulated:(NSMutableArray*)models completion:(void (^)(NSArray*))done {
+  NSString *p = [NSString stringWithFormat:@"/models?tone_id=%ld&page=%ld&page_size=100&architecture=%@",
+                 (long)toneId, (long)page, arch];
+  NSDictionary* cached = cachedSearchPageForPath(p, 3600.0);
+  if (cached) {
+    NSArray *data = [cached[@"data"] isKindOfClass:NSArray.class] ? cached[@"data"] : @[];
+    [models addObjectsFromArray:data];
+    NSInteger totalPages = [cached[@"total_pages"] respondsToSelector:@selector(integerValue)]
+        ? [cached[@"total_pages"] integerValue] : 1;
+    if (page < totalPages && data.count > 0) {
+      [self fetchModelsForToneId:toneId arch:arch page:page + 1 accumulated:models completion:done];
+    } else {
+      done(models);
+    }
+    return;
+  }
+  __weak ToneBrowserController* weakSelf = self;
+  [self apiGET:p completion:^(NSDictionary *json, NSInteger status, NSError *error) {
+    ToneBrowserController* s = weakSelf;
+    if (!s) { done(models); return; }
+    if (status == 200 && [json isKindOfClass:NSDictionary.class]) {
+      saveSearchPageForPath(p, json);
+    }
+    NSArray *data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
+    [models addObjectsFromArray:data];
+    NSInteger totalPages = [json[@"total_pages"] respondsToSelector:@selector(integerValue)]
+        ? [json[@"total_pages"] integerValue] : 1;
+    if (page < totalPages && data.count > 0) {
+      [s fetchModelsForToneId:toneId arch:arch page:page + 1 accumulated:models completion:done];
+    } else {
+      done(models);
+    }
+  }];
+}
+
+- (void)previewTone:(ToneItem*)item withArch:(NSString*)requestedArch {
+  if (!self.accessToken.length) {
+    self.status.stringValue = @"Connect Tone3000 to preview tones";
+    return;
+  }
+  NSString* arch = requestedArch.length ? requestedArch : (self.selectedArch.length ? self.selectedArch : @"2");
+  NSInteger selectedToneId = item.toneId;
+  self.previewGeneration++;
+  const NSInteger gen = self.previewGeneration;
+  if (self.previewTask) {
+    [self.previewTask cancel];
+    self.previewTask = nil;
+  }
+
+  self.status.stringValue = [NSString stringWithFormat:@"Loading preview for %@…", item.title ?: @"tone"];
+
+  __weak ToneBrowserController *weakSelf = self;
+  void (^loadModelToRig)(NSDictionary*) = ^(NSDictionary *model) {
+    ToneBrowserController *s = weakSelf;
+    if (!s || s.previewGeneration != gen) return;
+    if (![model isKindOfClass:NSDictionary.class]) {
+      s.status.stringValue = @"No previewable model found";
+      return;
+    }
+    NSString *name = [model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model";
+    NSString *ext = [model[@"model_url"] isKindOfClass:NSString.class] && [model[@"model_url"] pathExtension].length
+        ? [model[@"model_url"] pathExtension] : (item.stage == 2 ? @"wav" : @"nam");
+    NSString *filename = [NSString stringWithFormat:@"preview_%ld_%@_%@.%@",
+                          (long)item.toneId, model[@"id"] ?: @"0", safeFilename(name), ext];
+    NSString *previewPath = [previewCacheDir() stringByAppendingPathComponent:filename];
+
+    void (^sendToRig)(NSString*) = ^(NSString *path) {
       dispatch_async(dispatch_get_main_queue(), ^{
-        ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
-        NSIndexPath *current = strongSelf.collectionView.selectionIndexPaths.anyObject;
-        if (!current || current.item >= (NSInteger)strongSelf.visibleItems.count || strongSelf.visibleItems[current.item].toneId != selectedToneId) return;
-        item.remoteModels = data;
-        if (data.count > 0) {
-          strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models — downloading all…", (unsigned long)data.count];
-          [strongSelf downloadAllModels:item];
-        } else {
-          strongSelf.status.stringValue = @"No downloadable models found";
+        ToneBrowserController *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.previewGeneration != gen) return;
+        if (strongSelf.state) {
+          strongSelf.state->setStageModels((size_t)item.stage, @[path]);
+          strongSelf.state->sendPath((size_t)item.stage, path.fileSystemRepresentation);
+          strongSelf.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
         }
+        strongSelf.status.stringValue = [NSString stringWithFormat:@"Previewing %@ — %@ (Click ★ to save)",
+                                         item.title ?: @"tone", name];
       });
     };
-    // A2 + Custom are the default set (merged, deduped by model id). A1 legacy
-    // is fetched ONLY when neither A2 nor Custom has any models. Verified
-    // against the live API: tone 44691 → arch2=44, arch1=39, arch3=0 rows.
-    void (^fetchMaybeA1)(NSArray*, NSArray*) = ^(NSArray *a2, NSArray *custom) {
-      if (a2.count == 0 && custom.count == 0) {
-        fetch(@"1", ^(NSArray *a1) { finish(a1); });
-        return;
+
+    // Check if preview model is already cached on disk
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:previewPath]) {
+      sendToRig(previewPath);
+      return;
+    }
+
+    // Download single preview model file
+    NSString *urlString = [model[@"model_url"] isKindOfClass:NSString.class] ? model[@"model_url"] : nil;
+    if (!urlString.length) {
+      s.status.stringValue = @"Preview model URL unavailable";
+      return;
+    }
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+    [req setValue:[@"Bearer " stringByAppendingString:s.accessToken] forHTTPHeaderField:@"Authorization"];
+    s.previewTask = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        ToneBrowserController *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.previewGeneration != gen) return;
+        strongSelf.previewTask = nil;
+        NSInteger code = [(NSHTTPURLResponse*)resp statusCode];
+        if (data.length && code >= 200 && code < 300) {
+          [data writeToFile:previewPath options:NSDataWritingAtomic error:nil];
+          sendToRig(previewPath);
+        } else {
+          strongSelf.status.stringValue = @"Preview download failed";
+          [strongSelf logTone3000:[NSString stringWithFormat:@"PREVIEW DOWNLOAD FAILED (%ld): %@", (long)code, err.localizedDescription ?: @""]];
+        }
+      });
+    }];
+    [s.previewTask resume];
+  };
+
+  // Fetch model list (cache-first via fetchModelsForToneId:)
+  NSString *fetchArchParam = [arch isEqualToString:@"all"] ? @"2" : arch;
+  [self fetchModelsForToneId:selectedToneId arch:fetchArchParam page:1 accumulated:[NSMutableArray array] completion:^(NSArray *models) {
+    ToneBrowserController *s = weakSelf;
+    if (!s || s.previewGeneration != gen) return;
+    if (models.count > 0) {
+      loadModelToRig(models.firstObject);
+    } else {
+      // Fallback: if A2 had 0 models, check custom or A1
+      NSString *fallbackArch = [fetchArchParam isEqualToString:@"2"] ? @"custom" : @"1";
+      [s fetchModelsForToneId:selectedToneId arch:fallbackArch page:1 accumulated:[NSMutableArray array] completion:^(NSArray *fallbackModels) {
+        ToneBrowserController *s2 = weakSelf;
+        if (!s2 || s2.previewGeneration != gen) return;
+        if (fallbackModels.count > 0) {
+          loadModelToRig(fallbackModels.firstObject);
+        } else if (![fallbackArch isEqualToString:@"1"]) {
+          [s2 fetchModelsForToneId:selectedToneId arch:@"1" page:1 accumulated:[NSMutableArray array] completion:^(NSArray *a1Models) {
+            ToneBrowserController *s3 = weakSelf;
+            if (!s3 || s3.previewGeneration != gen) return;
+            loadModelToRig(a1Models.firstObject);
+          }];
+        } else {
+          loadModelToRig(nil);
+        }
+      }];
+    }
+  }];
+}
+
+- (void)downloadTone:(ToneItem*)item withArch:(NSString*)requestedArch {
+  if (!self.accessToken.length) {
+    self.status.stringValue = @"Connect Tone3000 to download models";
+    return;
+  }
+  NSString* arch = requestedArch.length ? requestedArch : (self.selectedArch.length ? self.selectedArch : @"2");
+  NSInteger selectedToneId = item.toneId;
+  self.status.stringValue = [NSString stringWithFormat:@"Getting models for %@…", item.title ?: @"this tone"];
+
+  __weak ToneBrowserController *weakSelf = self;
+  void (^fetchArch)(NSString*, void (^)(NSArray*)) = ^(NSString *a, void (^done)(NSArray*)) {
+    __strong ToneBrowserController *s = weakSelf;
+    if (!s) { done(@[]); return; }
+    [s fetchModelsForToneId:selectedToneId arch:a page:1 accumulated:[NSMutableArray array] completion:done];
+  };
+
+  void (^finish)(NSArray*) = ^(NSArray *data) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
+      item.remoteModels = data;
+      if (data.count > 0) {
+        strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models — downloading…", (unsigned long)data.count];
+        [strongSelf downloadAllModels:item];
+      } else {
+        strongSelf.status.stringValue = @"No downloadable models found for selected format";
       }
-      NSMutableArray *merged = [NSMutableArray arrayWithArray:a2];
-      for (NSDictionary *m in custom) {
-        id mid = m[@"id"];
-        BOOL dup = NO;
-        for (NSDictionary *e in a2) if (mid && [e[@"id"] isEqual:mid]) { dup = YES; break; }
-        if (!dup) [merged addObject:m];
+    });
+  };
+
+  if ([arch isEqualToString:@"all"]) {
+    fetchArch(@"2", ^(NSArray *a2) {
+      fetchArch(@"custom", ^(NSArray *custom) {
+        fetchArch(@"1", ^(NSArray *a1) {
+          NSMutableArray *merged = [NSMutableArray arrayWithArray:a2];
+          NSMutableSet *seenIds = [NSMutableSet set];
+          for (NSDictionary *m in a2) if (m[@"id"]) [seenIds addObject:m[@"id"]];
+          for (NSDictionary *m in custom) {
+            if (m[@"id"] && ![seenIds containsObject:m[@"id"]]) {
+              [seenIds addObject:m[@"id"]];
+              [merged addObject:m];
+            }
+          }
+          for (NSDictionary *m in a1) {
+            if (m[@"id"] && ![seenIds containsObject:m[@"id"]]) {
+              [seenIds addObject:m[@"id"]];
+              [merged addObject:m];
+            }
+          }
+          finish(merged);
+        });
+      });
+    });
+  } else if ([arch isEqualToString:@"2"]) {
+    // A2 default: if this tone has A2, fetch it. If it has 0 A2 models (e.g. legacy pack),
+    // fallback gracefully to custom or A1.
+    fetchArch(@"2", ^(NSArray *a2) {
+      if (a2.count > 0) {
+        finish(a2);
+      } else {
+        fetchArch(@"custom", ^(NSArray *custom) {
+          if (custom.count > 0) {
+            finish(custom);
+          } else {
+            fetchArch(@"1", ^(NSArray *a1) {
+              finish(a1);
+            });
+          }
+        });
       }
-      finish(merged);
-    };
-    fetch(@"2", ^(NSArray *a2) {
-      fetch(@"custom", ^(NSArray *custom) { fetchMaybeA1(a2, custom); });
+    });
+  } else if ([arch isEqualToString:@"1"]) {
+    // A1 legacy: fetch A1, fallback to A2 if none.
+    fetchArch(@"1", ^(NSArray *a1) {
+      if (a1.count > 0) {
+        finish(a1);
+      } else {
+        fetchArch(@"2", ^(NSArray *a2) {
+          finish(a2.count > 0 ? a2 : @[]);
+        });
+      }
+    });
+  } else if ([arch isEqualToString:@"custom"]) {
+    // Custom: fetch custom, fallback to A2 if none.
+    fetchArch(@"custom", ^(NSArray *custom) {
+      if (custom.count > 0) {
+        finish(custom);
+      } else {
+        fetchArch(@"2", ^(NSArray *a2) {
+          finish(a2.count > 0 ? a2 : @[]);
+        });
+      }
     });
   } else {
-    self.status.stringValue = @"Connect Tone3000 to download models";
+    fetchArch(arch, ^(NSArray *data) {
+      finish(data);
+    });
   }
 }
 
@@ -1535,7 +1881,21 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* name = [model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model";
   NSString* ext = [model[@"model_url"] isKindOfClass:NSString.class] && [model[@"model_url"] pathExtension].length
       ? [model[@"model_url"] pathExtension] : (item.stage == 2 ? @"wav" : @"nam");
-  NSString* filename = [safeFilename(name) stringByAppendingPathExtension:ext];
+  NSString* baseName = safeFilename(name);
+  NSString* filename = [baseName stringByAppendingPathExtension:ext];
+
+  // Disambiguate if downloads already contains a DIFFERENT model with this exact filename
+  for (NSDictionary* d in downloads) {
+    if ([d[@"local_filename"] isKindOfClass:NSString.class] &&
+        [d[@"local_filename"] isEqualToString:filename] &&
+        ![d[@"model_id"] isEqual:model[@"id"]]) {
+      NSString* archSuffix = model[@"architecture_version"]
+          ? [NSString stringWithFormat:@" (A%@)", model[@"architecture_version"]]
+          : [NSString stringWithFormat:@" (%@)", model[@"id"] ?: @"alt"];
+      filename = [[baseName stringByAppendingString:archSuffix] stringByAppendingPathExtension:ext];
+      break;
+    }
+  }
   NSString* path = [folder stringByAppendingPathComponent:filename];
   self.status.stringValue = [NSString stringWithFormat:@"Downloading model %ld of %ld — %@",
                             (long)index + 1, (long)models.count, name];
@@ -1601,6 +1961,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
     }
   }
+  [self.collectionView reloadData];
 }
 
 @end
