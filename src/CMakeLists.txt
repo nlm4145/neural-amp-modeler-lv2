@@ -207,6 +207,7 @@ if (APPLE)
 		target_link_libraries(axe_fx_standalone PRIVATE NeuralAudio
 			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
+			${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK}
 			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK})
 		target_compile_options(axe_fx_standalone PRIVATE -fobjc-arc)
 		set_target_properties(axe_fx_standalone PROPERTIES
