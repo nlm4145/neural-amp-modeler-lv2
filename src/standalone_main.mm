@@ -37,6 +37,7 @@ constexpr uint32_t kMaxFrames = 4096;
 constexpr size_t kAtomBufferSize = 16384;
 constexpr size_t kMessageSize = 2048;
 constexpr size_t kMessageCount = 64;
+constexpr CGFloat kToolbarStripHeight = 28.0;
 
 struct FixedMessage {
   uint32_t size = 0;
@@ -102,6 +103,7 @@ class StandaloneHost {
 
   bool start(NSWindow* window, NSView* parent, NSString** error) {
     window_ = window;
+    parentView_ = parent;
     sampleRate_ = defaultOutputSampleRate();
     if (sampleRate_ <= 0.0) sampleRate_ = 48000.0;
 
@@ -319,12 +321,17 @@ class StandaloneHost {
   static int resizeUI(LV2UI_Feature_Handle handle, int width, int height) {
     auto* host = static_cast<StandaloneHost*>(handle);
     if (!host->window_) return 1;
-    NSRect content = NSMakeRect(0, 0, width, height);
+    if (host->parentView_) {
+      host->parentView_.frame = NSMakeRect(0, 0, width, height);
+    }
+    NSRect content = NSMakeRect(0, 0, width, height + kToolbarStripHeight);
     NSRect frame = [host->window_ frameRectForContentRect:content];
     NSRect old = host->window_.frame;
     frame.origin.x = old.origin.x;
     frame.origin.y = NSMaxY(old) - frame.size.height;
     [host->window_ setFrame:frame display:YES animate:NO];
+    [host->window_.contentView setNeedsLayout:YES];
+    [host->window_.contentView setNeedsDisplay:YES];
     return 0;
   }
 
@@ -397,15 +404,13 @@ class StandaloneHost {
     inputList.mBuffers[0].mData = input_.data();
     const OSStatus status = AudioUnitRender(audioUnit_, flags, timestamp, 1, frames, &inputList);
     if (status != noErr) {
-      std::fill_n(output_.data(), frames, 0.0f);
-      std::fill_n(outputR_.data(), frames, 0.0f);
-    } else {
-      applyWorkerResponses();
-      buildControlSequence();
-      resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
-      plugin_->process(frames);
-      collectNotifications();
+      std::fill_n(input_.data(), frames, 0.0f);
     }
+    applyWorkerResponses();
+    buildControlSequence();
+    resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
+    plugin_->process(frames);
+    collectNotifications();
 
     if (ioData->mNumberBuffers >= 2 &&
         ioData->mBuffers[0].mNumberChannels == 1 &&
@@ -449,30 +454,36 @@ class StandaloneHost {
                ? rate : 0.0;
   }
 
-  bool startAudio(NSString** error) {
+  bool configureAudioUnit(OSType subType, double streamRate) {
+    if (audioUnit_) {
+      AudioUnitUninitialize(audioUnit_);
+      AudioComponentInstanceDispose(audioUnit_);
+      audioUnit_ = nullptr;
+    }
     AudioComponentDescription description{};
     description.componentType = kAudioUnitType_Output;
-    description.componentSubType = kAudioUnitSubType_VoiceProcessingIO;
+    description.componentSubType = subType;
     description.componentManufacturer = kAudioUnitManufacturer_Apple;
     AudioComponent component = AudioComponentFindNext(nullptr, &description);
     if (!component || AudioComponentInstanceNew(component, &audioUnit_) != noErr)
-      return fail(error, @"Core Audio could not create an input/output device.");
+      return false;
 
     UInt32 enabled = 1;
     if (AudioUnitSetProperty(audioUnit_, kAudioOutputUnitProperty_EnableIO,
                              kAudioUnitScope_Input, 1, &enabled, sizeof(enabled)) != noErr)
-      return fail(error, @"Core Audio could not enable microphone input.");
-    // Keep VoiceProcessingIO solely as a convenient full-duplex default-device
-    // bridge; guitar processing must not receive echo cancellation or AGC.
-    UInt32 bypass = 1;
-    AudioUnitSetProperty(audioUnit_, kAUVoiceIOProperty_BypassVoiceProcessing,
-                         kAudioUnitScope_Global, 0, &bypass, sizeof(bypass));
-    UInt32 agc = 0;
-    AudioUnitSetProperty(audioUnit_, kAUVoiceIOProperty_VoiceProcessingEnableAGC,
-                         kAudioUnitScope_Global, 0, &agc, sizeof(agc));
+      return false;
+
+    if (subType == kAudioUnitSubType_VoiceProcessingIO) {
+      UInt32 bypass = 1;
+      AudioUnitSetProperty(audioUnit_, kAUVoiceIOProperty_BypassVoiceProcessing,
+                           kAudioUnitScope_Global, 0, &bypass, sizeof(bypass));
+      UInt32 agc = 0;
+      AudioUnitSetProperty(audioUnit_, kAUVoiceIOProperty_VoiceProcessingEnableAGC,
+                           kAudioUnitScope_Global, 0, &agc, sizeof(agc));
+    }
 
     AudioStreamBasicDescription inputFormat{};
-    inputFormat.mSampleRate = sampleRate_;
+    inputFormat.mSampleRate = streamRate;
     inputFormat.mFormatID = kAudioFormatLinearPCM;
     inputFormat.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
     inputFormat.mFramesPerPacket = 1;
@@ -489,7 +500,7 @@ class StandaloneHost {
         AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_StreamFormat,
                              kAudioUnitScope_Input, 0, &outputFormat,
                              sizeof(outputFormat)) != noErr)
-      return fail(error, @"Core Audio could not configure floating-point input/stereo output.");
+      return false;
 
     UInt32 maxFrames = kMaxFrames;
     AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_MaximumFramesPerSlice,
@@ -498,11 +509,19 @@ class StandaloneHost {
     if (AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_SetRenderCallback,
                              kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr ||
         AudioUnitInitialize(audioUnit_) != noErr || AudioOutputUnitStart(audioUnit_) != noErr)
-      return fail(error, @"Core Audio could not start. Check microphone permission and the selected system input/output devices.");
+      return false;
     return true;
   }
 
+  bool startAudio(NSString** error) {
+    if (configureAudioUnit(kAudioUnitSubType_HALOutput, sampleRate_)) return true;
+    if (configureAudioUnit(kAudioUnitSubType_VoiceProcessingIO, sampleRate_)) return true;
+    if (sampleRate_ > 48000.0 && configureAudioUnit(kAudioUnitSubType_VoiceProcessingIO, 48000.0)) return true;
+    return fail(error, @"Core Audio could not start. Check microphone permission and the selected system input/output devices.");
+  }
+
   NSWindow* __weak window_ = nil;
+  NSView* __weak parentView_ = nil;
   NSTimer* __strong uiTimer_ = nil;
   AudioUnit audioUnit_ = nullptr;
   double sampleRate_ = 48000.0;
@@ -547,11 +566,41 @@ class StandaloneHost {
 
 }  // namespace
 
+@interface StandaloneContentRootView : NSView
+@end
+
+@implementation StandaloneContentRootView
+- (void)layout {
+  [super layout];
+  for (NSView* sub in self.subviews) {
+    for (NSView* child in sub.subviews) {
+      [child setNeedsLayout:YES];
+    }
+    [sub setNeedsLayout:YES];
+  }
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  [[NSColor colorWithSRGBRed:0.047 green:0.055 blue:0.075 alpha:1.0] setFill];
+  NSRectFill(self.bounds);
+  NSRect stripRect = NSMakeRect(0, self.bounds.size.height - kToolbarStripHeight,
+                                self.bounds.size.width, kToolbarStripHeight);
+  [[NSColor colorWithSRGBRed:0.067 green:0.078 blue:0.106 alpha:1.0] setFill];
+  NSRectFill(stripRect);
+  NSRect sepRect = NSMakeRect(0, self.bounds.size.height - kToolbarStripHeight,
+                              self.bounds.size.width, 1.0);
+  [[NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0] setFill];
+  NSRectFill(sepRect);
+}
+@end
+
 @interface StandaloneAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @end
 
 @implementation StandaloneAppDelegate {
   NSWindow* _window;
+  NSView* _pluginHostView;
   std::unique_ptr<StandaloneHost> _host;
 }
 
@@ -568,20 +617,32 @@ class StandaloneHost {
   appItem.submenu = appMenu;
   NSApp.mainMenu = menu;
 
+  const NSRect initialContent = NSMakeRect(0, 0, 1520, 980 + kToolbarStripHeight);
   _window = [[NSWindow alloc]
-      initWithContentRect:NSMakeRect(0, 0, 1520, 980)
+      initWithContentRect:initialContent
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                           NSWindowStyleMaskMiniaturizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
   _window.title = @"Axe FX";
+  _window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
   _window.delegate = self;
   _window.releasedWhenClosed = NO;
+
+  StandaloneContentRootView* rootContent =
+      [[StandaloneContentRootView alloc] initWithFrame:initialContent];
+  rootContent.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  _window.contentView = rootContent;
+
+  _pluginHostView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 1520, 980)];
+  _pluginHostView.autoresizingMask = NSViewNotSizable;
+  [rootContent addSubview:_pluginHostView];
+
   [_window center];
 
   _host = std::make_unique<StandaloneHost>();
   NSString* error = nil;
-  if (!_host->start(_window, _window.contentView, &error)) {
+  if (!_host->start(_window, _pluginHostView, &error)) {
     NSAlert* alert = [[NSAlert alloc] init];
     alert.messageText = @"Axe FX could not start";
     alert.informativeText = error ?: @"Unknown error";

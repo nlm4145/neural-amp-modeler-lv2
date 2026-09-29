@@ -1194,7 +1194,8 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
       _headerBar.translatesAutoresizingMaskIntoConstraints = YES;
       [self addSubview:_headerBar];
     }
-    _headerBar.frame = NSMakeRect(24.0, 10.0, self.bounds.size.width - 48.0, 26.0);
+    CGFloat topY = self.isFlipped ? 10.0 : (self.bounds.size.height - 34.0);
+    _headerBar.frame = NSMakeRect(24.0, topY, self.bounds.size.width - 48.0, 26.0);
   }
 }
 @end
@@ -2432,6 +2433,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     NAMRigHeaderBar* headerBar = [[NAMRigHeaderBar alloc] initWithFrame:NSMakeRect(46, 0, baseW - 78, 26)];
     headerBar.wantsLayer = YES;
     headerBar.layer.masksToBounds = NO;
+    headerBar.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
     state->headerBar = headerBar;
     rootView.headerBar = headerBar;
 
@@ -3198,6 +3200,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->restoreSelectedPaths();   // re-apply the persisted rig selection
     state->presetManager = [RigPresetManager sharedManager];
     [state->presetManager rescanPresets];
+    if (state->presetManager.currentPresetName.length) {
+      RigPreset* curPreset = [state->presetManager loadPresetNamed:state->presetManager.currentPresetName];
+      if (curPreset) {
+        state->abApplyingCycle = true;
+        [curPreset applyToState:state];
+        state->abApplyingCycle = false;
+      }
+    }
+    state->syncABNameA();
     state->rebuildPresetMenu();
     state->refreshABMenus();
     state->updateABStatus();
