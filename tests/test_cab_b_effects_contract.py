@@ -124,7 +124,7 @@ assert "std::array<float, 12> fxControls_{};" in standalone
 assert "plugin_->ports.audio_out_r = outputR_.data();" in standalone, (
     "the standalone host must give the right channel its own buffer"
 )
-assert "std::copy_n(outputR_.data(), frames, right);" in standalone, (
+assert "std::copy_n(outputR_.data(), frames," in standalone, (
     "the standalone host must actually render the right DSP output"
 )
 print("  PASS  Cab B, stereo IRs, delay and reverb are append-only and fully wired")

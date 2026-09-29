@@ -1158,12 +1158,14 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       static_cast<int>(*ports.ir_normalization + 0.5f)));
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
   const float widthTarget = std::max(0.0f, std::min(1.0f, *ports.stereo_width * 0.01f));
-  const float cab2LevelTarget = dbToLinear(portValue(ports.cab2_level, 0.0f));
+  const float rawCab2Db = portValue(ports.cab2_level, 0.0f);
+  const float cab2LevelTarget = rawCab2Db <= -23.95f ? 0.0f : dbToLinear(rawCab2Db);
   const float glide10 = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate * 0.010));
   const float chunkGlide = 1.0f - std::exp(-static_cast<float>(kEqChunk) /
                                             static_cast<float>(sampleRate * 0.020));
   const float desiredOutput = dbToLinear(*ports.output_level);
-  const float targetCab = dbToLinear(*ports.cab_level);
+  const float rawCabDb = *ports.cab_level;
+  const float targetCab = rawCabDb <= -23.95f ? 0.0f : dbToLinear(rawCabDb);
   const uint32_t fadeSamples = std::max<uint32_t>(1,
       static_cast<uint32_t>(std::lround(sampleRate * 0.005)));
   bool commitRequested = false;
