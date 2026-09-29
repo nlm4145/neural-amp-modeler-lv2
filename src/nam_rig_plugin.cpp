@@ -239,6 +239,39 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   return true;
 }
 
+void Plugin::setSampleRateAndReload(double rate) noexcept {
+  if (rate <= 0.0 || std::fabs(rate - sampleRate) < 0.5) return;
+  sampleRate = rate;
+  for (auto& loader : loaders) {
+    loader.SetExternalSampleRate(static_cast<int>(rate));
+    loader.SetDefaultQualityScaleFactor(1.0f);
+  }
+  tunerSetRates(rate);
+  trimSmoothCoeff = 1.0f - std::exp(-1.0f / static_cast<float>(rate * 0.002));
+  dcBlocker.setRate(rate);
+  dcBlockerR.setRate(rate);
+  for (size_t st = 0; st < kStageCount; ++st) {
+    stageDc[st].setRate(rate);
+    stageDcRate[st] = rate;
+  }
+  cab2Align.initialize(rate, 20.0);
+  delayFx.initialize(rate);
+  reverbFx.initialize(rate);
+  appliedBass = -999.0f;
+  appliedMid = -999.0f;
+  appliedTreble = -999.0f;
+  appliedLowCut = -1.0f;
+  appliedHighCut = -1.0f;
+  osTopologySignature = ~uint64_t{0};
+  setMaxBufferSize(static_cast<int>(maxBufferSize));
+  for (size_t i = 0; i < kStageCount; ++i) {
+    if (!modelPaths[i].empty() && modelPaths[i].size() < MAX_FILE_NAME) {
+      scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(),
+                        modelPaths[i].size(), stageOversample(i));
+    }
+  }
+}
+
 void Plugin::setMaxBufferSize(int size) noexcept {
   maxBufferSize = size;
   for (auto& loader : loaders)
@@ -1169,6 +1202,13 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       haveA = cabProcessed;
     }
     if (!stereoA) std::memcpy(R, L, n * sizeof(float));
+    if (haveA) {
+      for (uint32_t i = 0; i < n; ++i) {
+        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;
+        L[i] *= smoothedCabLevel;
+        R[i] *= smoothedCabLevel;
+      }
+    }
 
     bool haveB = false;
     if (parallelCabs) {
@@ -1275,10 +1315,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
           }
           appliedHighCut = smoothedHighCut;
         }
+        if (!lowCutOn && !highCutOn) continue;
         for (uint32_t i = start; i < start + m; ++i) {
-          smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;
-          float l = L[i] * smoothedCabLevel;
-          float r = R[i] * smoothedCabLevel;
+          float l = L[i];
+          float r = R[i];
           if (lowCutOn) { l = cabLowCutEq.process(l); r = cabLowCutEqR.process(r); }
           if (highCutOn) { l = cabHighCutEq.process(l); r = cabHighCutEqR.process(r); }
           L[i] = l;

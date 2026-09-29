@@ -101,6 +101,55 @@ assert "[(id)selfState->uiController prevPresetClicked:nil];" in ui_state_h, \
     "Left arrow key must select the previous (up) preset"
 assert "[(id)selfState->uiController nextPresetClicked:nil];" in ui_state_h, \
     "Right arrow key must select the next (down) preset"
+assert "headerBar.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];" in ui_mm, \
+    "headerBar must use NSAppearanceNameAqua so preset dropdowns render white with black text"
+cmake_txt = (ROOT / "src" / "CMakeLists.txt").read_text()
+plist_in = (ROOT / "resources" / "standalone-Info.plist.in").read_text()
+assert "-Wl,-platform_version,macos,11.0,14.5" in cmake_txt, \
+    "axe_fx_standalone must link with macOS SDK 14.5 platform_version to match Element's classic opaque white Aqua NSPopUpButton bezel"
+assert "<key>UIDesignRequiresCompatibility</key><true/>" in plist_in, \
+    "standalone-Info.plist.in must enable UIDesignRequiresCompatibility"
+tone_api_mm = (ROOT / "src" / "rig_tone_api.mm").read_text()
+assert "tone3000-session.json" in tone_api_mm, \
+    "Tone3000 session must persist to tone3000-session.json in Application Support so ad-hoc rebuilds do not trigger Keychain password prompts"
+assert "kSecUseAuthenticationUISkip" in tone_api_mm, \
+    "Fallback Keychain queries must set kSecUseAuthenticationUISkip so macOS never shows a modal Keychain password prompt"
+build_standalone_sh = (ROOT / "build-standalone.sh").read_text()
+assert 'CODESIGN_ID="Axe FX Local Signer"' in build_standalone_sh and '--sign "$CODESIGN_ID"' in build_standalone_sh, \
+    "build-standalone.sh must sign Axe FX.app with a persistent local code-signing identity so macOS TCC remembers Microphone permission across rebuilds"
+assert "kMeterUiIntervalSec = 0.5" in ui_state_h, \
+    "Input and output dB meter UI updates must be throttled to a 500ms cadence"
+standalone_mm = (ROOT / "src" / "standalone_main.mm").read_text()
+assert "now - lastCpuUiTime_ < 0.5" in standalone_mm, \
+    "Standalone CPU meter UI updates must be throttled to a 500ms cadence"
+assert "<key>CFBundleIconFile</key><string>AxeFX</string>" in plist_in, \
+    "standalone-Info.plist.in must specify AxeFX as CFBundleIconFile"
+assert (ROOT / "resources" / "AxeFX.icns").exists() and (ROOT / "resources" / "AxeFX.png").exists(), \
+    "AxeFX.icns and AxeFX.png must exist in resources/"
+assert "StandaloneAnimatedAmpView" in standalone_mm and "NSApp.dockTile.contentView = _dockAmpView;" in standalone_mm, \
+    "standalone_main.mm must render an animated amp view in the Dock and top toolbar"
+for required_audio_sym in (
+    "rootContent.audioPopup = _audioPopup;",
+    "@selector(selectInputDevice:)",
+    "@selector(selectInputChannel:)",
+    "@selector(selectOutputDevice:)",
+    "@selector(selectOutputChannel:)",
+    "OUTPUT SOURCE / CHANNEL",
+    "Output 1 + 2 (Stereo Out)",
+    "Output 1 + 2 (Dual Mono)",
+    "@selector(selectSampleRate:)",
+    "@selector(selectBufferSize:)",
+    "configureSplitHAL",
+    "setSampleRateAndReload",
+):
+    assert required_audio_sym in standalone_mm, f"standalone_main.mm missing {required_audio_sym}"
+
+assert '@"CAB A LVL"' in ui_mm, "knobNames[8] must be labeled CAB A LVL"
+assert "const size_t groupCounts[3] = {4, 6, 1};" in ui_mm, \
+    "Cab card must display only 1 knob (OUTPUT) directly underneath, with advanced cab knobs in Dual-Cabinet Blend Console"
+plugin_cpp = (ROOT / "src" / "nam_rig_plugin.cpp").read_text()
+assert "if (haveA) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
+    "cab_level (CAB A LVL) must scale Cab A independently before blending with Cab B"
 
 # 7. Test preset JSON serialization / deserialization round-trip
 sample_preset = {

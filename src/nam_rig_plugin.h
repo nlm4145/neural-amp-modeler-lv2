@@ -210,6 +210,7 @@ public:
   ~Plugin();
 
   bool initialize(double rate, const LV2_Feature* const* features) noexcept;
+  void setSampleRateAndReload(double rate) noexcept;
   void setMaxBufferSize(int size) noexcept;
   void process(uint32_t sampleCount) noexcept;
   void writePath(Stage stage);

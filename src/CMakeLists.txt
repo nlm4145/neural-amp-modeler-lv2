@@ -201,7 +201,13 @@ if (APPLE)
 			rig_presets.h rig_presets.mm
 			rig_tone_api.h rig_tone_api.mm
 			rig_tone_browser.h rig_tone_browser.mm
-			rig_ui_state.h)
+			rig_ui_state.h
+			${CMAKE_SOURCE_DIR}/resources/AxeFX.icns
+			${CMAKE_SOURCE_DIR}/resources/AxeFX.png)
+		set_source_files_properties(
+			${CMAKE_SOURCE_DIR}/resources/AxeFX.icns
+			${CMAKE_SOURCE_DIR}/resources/AxeFX.png
+			PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 		target_include_directories(axe_fx_standalone PRIVATE
 			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
 		target_link_libraries(axe_fx_standalone PRIVATE NeuralAudio

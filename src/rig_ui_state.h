@@ -73,16 +73,21 @@ struct RigUIState {
   LV2_URID outputDbURID = 0;
 
   // Input level meter (title bar): dBFS readout + bar with peak-hold color.
+  static constexpr CFAbsoluteTime kMeterUiIntervalSec = 0.5;
   __strong NSTextField* inDbLabel = nil;
   __strong NSView* inDbBar = nil;
   __strong NSLayoutConstraint* inDbBarWidth = nil;
   float lastInputDb = -120.0f;
+  CFAbsoluteTime lastInputDbUiTime = 0.0;
+  bool inputDbUpdatePending = false;
 
   // Output level meter: dBFS readout + bar with peak-hold color.
   __strong NSTextField* outDbLabel = nil;
   __strong NSView* outDbBar = nil;
   __strong NSLayoutConstraint* outDbBarWidth = nil;
   float lastOutputDb = -120.0f;
+  CFAbsoluteTime lastOutputDbUiTime = 0.0;
+  bool outputDbUpdatePending = false;
 
   // Mute on tune setting
   bool muteOnTune = true;
@@ -244,43 +249,79 @@ struct RigUIState {
     });
   }
 
-  // Redraw the input meter from lastInputDb. Called on the main thread
-  // from portEvent. Scale: -60..0 dBFS mapped across the bar; color shifts
-  // to orange above -6 dB (hot) and red above -1 dB (clip risk).
-  void updateInputDbDisplay() {
+  void applyInputDbDisplayNow() {
+    if (!inDbLabel) return;
     const float db = lastInputDb;
+    const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
+    inDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
+        : [NSString stringWithFormat:@"%+.1f dB", db];
+    const CGFloat frac = (clamped + 60.0f) / 60.0f;
+    if (inDbBarWidth) inDbBarWidth.constant = 110.0 * frac;
+    NSColor* fill = db > -1.0f ? [NSColor colorWithSRGBRed:0.92 green:0.26 blue:0.21 alpha:1.0]
+                  : db > -6.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.55 blue:0.25 alpha:1.0]
+                                : rigAccent();
+    if (inDbBar) inDbBar.layer.backgroundColor = fill.CGColor;
+  }
+
+  // Redraw the input meter from lastInputDb on a 500ms cadence.
+  void updateInputDbDisplay() {
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
-      if (!inDbLabel) return;
-      const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
-      inDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
-          : [NSString stringWithFormat:@"%+.1f dB", db];
-      const CGFloat frac = (clamped + 60.0f) / 60.0f;
-      inDbBarWidth.constant = 110.0 * frac;
-      NSColor* fill = db > -1.0f ? [NSColor colorWithSRGBRed:0.92 green:0.26 blue:0.21 alpha:1.0]
-                    : db > -6.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.55 blue:0.25 alpha:1.0]
-                                  : rigAccent();
-      inDbBar.layer.backgroundColor = fill.CGColor;
+      const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+      const CFAbsoluteTime elapsed = now - lastInputDbUiTime;
+      if (elapsed >= kMeterUiIntervalSec) {
+        lastInputDbUiTime = now;
+        applyInputDbDisplayNow();
+      } else if (!inputDbUpdatePending) {
+        inputDbUpdatePending = true;
+        const double remain = std::max(0.05, kMeterUiIntervalSec - elapsed);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+          if (!alive || !*alive) return;
+          inputDbUpdatePending = false;
+          lastInputDbUiTime = CFAbsoluteTimeGetCurrent();
+          applyInputDbDisplayNow();
+        });
+      }
     });
   }
 
-  // Redraw the output meter from lastOutputDb. Scale: -60..0 dBFS.
-  void updateOutputDbDisplay() {
+  void applyOutputDbDisplayNow() {
+    if (!outDbLabel) return;
     const float db = lastOutputDb;
+    const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
+    outDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
+        : [NSString stringWithFormat:@"%+.1f dB", db];
+    const CGFloat frac = (clamped + 60.0f) / 60.0f;
+    if (outDbBarWidth) outDbBarWidth.constant = 110.0 * frac;
+    NSColor* fill = db > -0.5f ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
+                  : db > -4.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.60 blue:0.20 alpha:1.0]
+                                : [NSColor colorWithSRGBRed:0.20 green:0.80 blue:0.95 alpha:1.0];
+    if (outDbBar) outDbBar.layer.backgroundColor = fill.CGColor;
+  }
+
+  // Redraw the output meter from lastOutputDb on a 500ms cadence.
+  void updateOutputDbDisplay() {
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
-      if (!outDbLabel) return;
-      const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
-      outDbLabel.stringValue = db <= -119.0f ? @"  —  dB"
-          : [NSString stringWithFormat:@"%+.1f dB", db];
-      const CGFloat frac = (clamped + 60.0f) / 60.0f;
-      if (outDbBarWidth) outDbBarWidth.constant = 110.0 * frac;
-      NSColor* fill = db > -0.5f ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
-                    : db > -4.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.60 blue:0.20 alpha:1.0]
-                                  : [NSColor colorWithSRGBRed:0.20 green:0.80 blue:0.95 alpha:1.0];
-      if (outDbBar) outDbBar.layer.backgroundColor = fill.CGColor;
+      const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+      const CFAbsoluteTime elapsed = now - lastOutputDbUiTime;
+      if (elapsed >= kMeterUiIntervalSec) {
+        lastOutputDbUiTime = now;
+        applyOutputDbDisplayNow();
+      } else if (!outputDbUpdatePending) {
+        outputDbUpdatePending = true;
+        const double remain = std::max(0.05, kMeterUiIntervalSec - elapsed);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+          if (!alive || !*alive) return;
+          outputDbUpdatePending = false;
+          lastOutputDbUiTime = CFAbsoluteTimeGetCurrent();
+          applyOutputDbDisplayNow();
+        });
+      }
     });
   }
 

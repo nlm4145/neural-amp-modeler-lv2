@@ -1096,7 +1096,7 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
     NSView *hit = [sub hitTest:pSelf];
     if (hit) return hit;
   }
-  return [super hitTest:point];
+  return nil;
 }
 @end
 
@@ -1111,7 +1111,7 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
     NSView *hit = [sub hitTest:pSelf];
     if (hit) return hit;
   }
-  return [super hitTest:point];
+  return nil;
 }
 @end
 
@@ -2730,7 +2730,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // signal order via kRigKnobDisplayOrder.
     NSArray<NSString*>* knobNames = @[@"GATE", @"RELEASE", @"INPUT", @"COMP",
                                       @"DRIVE", @"BASS", @"MID", @"TREBLE",
-                                      @"CAB LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT",
+                                      @"CAB A LVL", @"LOW CUT", @"HIGH CUT", @"OUTPUT",
                                       @"WIDTH", @"ROOM", @"PRESENCE", @"DEPTH",
                                       @"SAG", @"BIAS", @"NEG FDBK", @"BRIGHT",
                                       @"INPUT EQ", @"MASTER", @"SPKR DRIVE", @"SPKR COMP",
@@ -2754,10 +2754,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Post-cab bass EQ (150 Hz shelf). Shapes the low end of your sound after the cabinet. Turn up to add body, low-frequency warmth, and cabinet weight; turn down to clear up low-end boominess and mud.",
       @"Post-cab midrange EQ (700 Hz bell). Shapes the crucial mid frequencies after the cabinet. Turn up to punch forward and cut through a dense mix; turn down (scoop) for classic aggressive metal rhythm tone.",
       @"Post-cab treble EQ (3 kHz shelf). Shapes top-end brightness after the cabinet. Turn up for crisper pick definition, attack presence, and sheen; turn down to tame harsh digital fizz and ice-pick highs.",
-      @"Cab A level trim. Adjusts the volume immediately after Cabinet A. Use it to level-match different impulse responses or balance the blend between Cab A and Cab B without changing tone.",
+      @"Cab A level trim. Adjusts the volume of Cabinet A independently before it blends with Cabinet B. Use it to level-match different impulse responses or balance the blend between Cab A and Cab B without changing tone.",
       @"Cabinet low cut (high-pass filter). Rolls off sub-bass rumble and low-end flub below the cutoff frequency. Raising this tightens palm mutes and keeps deep lows clear of bass and kick drum frequencies; 0 Hz bypasses.",
       @"Cabinet high cut (low-pass filter). Smooths away harsh top-end sizzle and ultra-high fizz above the cutoff frequency. Lowering this rounds off the highs for a warmer, more organic vintage speaker tone; 20 kHz bypasses.",
-      @"Master output level. Final output volume trim after the entire rig, cabinets, and effects. Adjusts monitoring or recording level into your DAW without altering distortion, tone balance, or compression.",
+      @"Master output level (blended Cab A + B output). Final output volume trim after the cabinets and rig. Adjusts overall output level without altering distortion, tone balance, or Cab A/B blend ratio.",
       @"Stereo cabinet width. Pans Cab A left and Cab B right, and widens the stereo image of stereo impulse responses. 0% is pure dual-mono; higher settings create a wide, immersive wall-of-sound stereo spread.",
       @"Room reflections. Blends in short early reflections of a physical studio tracking room with high-frequency diffusion. Adds realistic acoustic 3D depth and air to dry cabinet IRs. Reverb Size and Reverb Damping shape it too.",
       @"Presence control (post-amp). Boosts or cuts upper-mid harmonics directly after the amp model. Positive values add cutting bite, overtone sparkle, and attack clarity; negative values soften harsh distortion fizz. Separate from post-cab Treble.",
@@ -2803,20 +2803,19 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:12] setActive:YES];
     [[boxRow.heightAnchor constraintEqualToConstant:242] setActive:YES];
 
-    // Stage tiles get widths proportional to their knob counts (4/6/6):
-    // each knob column gets the same pixel width everywhere, so 64pt knobs
-    // and 70pt value boxes fit identically in every tile. The pedal tile is
-    // narrower, amp and cab wider — no squish, no oversized cab card.
-    // NSStackView proportions: use explicit width ratios via constraints
-    // after adding (FillProportionally can't be trusted with custom views).
+    // Stage tiles get widths proportional to their layout units (4/6/6):
+    // the pedal tile is narrower, amp and cab wider — no squish, no oversized
+    // cab card. Under the cab card, only the basic OUTPUT knob is shown while
+    // CAB A LVL, CAB B LVL, ALIGN, LOW CUT, and HIGH CUT live in the
+    // Dual-Cabinet Blend Console.
     const CGFloat tileUnits[3] = {4.0, 6.0, 6.0};
     const CGFloat tileGap = 22.0;
     NSView* knobGroups[3] = {nil, nil, nil};
     RigPanel* tileBoxes[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
-    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {8, 9, 10, 11, 26, 27}};
-    const size_t groupCounts[3] = {4, 6, 6};
+    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 0, 0, 0, 0, 0}};
+    const size_t groupCounts[3] = {4, 6, 1};
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];

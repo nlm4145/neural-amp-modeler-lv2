@@ -7,6 +7,8 @@
   <key>CFBundleIdentifier</key><string>org.neuralampmodeler.lv2.standalone-rig</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Axe FX</string>
+  <key>CFBundleIconFile</key><string>AxeFX</string>
+  <key>CFBundleIconName</key><string>AxeFX</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>@PROJECT_VERSION@</string>
   <key>CFBundleVersion</key><string>@PROJECT_VERSION@</string>

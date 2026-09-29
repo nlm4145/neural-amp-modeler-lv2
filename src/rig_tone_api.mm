@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 #import "rig_tone_api.h"
@@ -26,22 +27,32 @@ static NSString* const kNamRigAccountPrefix = @"apiv1tone3000.";
 static NSString* const kNamRigAccountSuffix = @".refresh-token";
 NSString* const kPluginPublishableKey = @"t3k_pub_ScsutPfmPM2CwvG726tU60R5WN_KChza";
 
-// The plugin keeps its OWN TONE3000 session in a separate keychain entry so it
-// stops depending on NAM Rig. It bootstraps once from NAM Rig's session, then
-// refreshes and persists independently from here on.
+// The plugin and standalone app share a single user-owned session file (0600)
+// in Application Support so ad-hoc rebuilds and switching between Element and
+// Axe FX standalone never trigger macOS Keychain password prompts.
 static NSString* const kPluginKeychainService = @"Axe FX Tone3000";
 static NSString* const kLegacyPluginKeychainService = @"NAM Oversampled Rig Tone3000";
 static NSString* const kPluginKeychainAccount = @"session";
 
+static NSString* pluginSessionFilePath(void) {
+  NSString* dir = [@"~/Library/Application Support/Axe FX" stringByExpandingTildeInPath];
+  [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+  return [dir stringByAppendingPathComponent:@"tone3000-session.json"];
+}
+
 // Reads NAM Rig's stored TONE3000 OAuth session (a JSON blob holding
-// accessToken, refreshToken and expiresAtMilliseconds) from the Keychain.
-// Returns the parsed dictionary, or nil if NAM Rig has no saved session.
+// accessToken, refreshToken and expiresAtMilliseconds) from the Keychain
+// silently (never showing a Keychain password prompt).
 NSDictionary* namRigSession(void) {
   NSDictionary* query = @{
-    (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-    (__bridge id)kSecAttrService:kNamRigKeychainService,
-    (__bridge id)kSecReturnData:@YES,
-    (__bridge id)kSecReturnAttributes:@YES,
+    (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService: kNamRigKeychainService,
+    (__bridge id)kSecUseAuthenticationUI: (__bridge id)kSecUseAuthenticationUISkip,
+    (__bridge id)kSecReturnData: @YES,
+    (__bridge id)kSecReturnAttributes: @YES,
   };
   CFTypeRef result = nullptr;
   if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) != errSecSuccess) return nil;
@@ -54,53 +65,61 @@ NSDictionary* namRigSession(void) {
   return [json isKindOfClass:NSDictionary.class] ? json : nil;
 }
 
+// Writes (or updates) the plugin's own TONE3000 session to the user-owned
+// session file (0600) in ~/Library/Application Support/Axe FX/.
+void savePluginSession(NSDictionary* session) {
+  if (!session) return;
+  NSData* json = [NSJSONSerialization dataWithJSONObject:session
+                                                 options:NSJSONWritingPrettyPrinted
+                                                   error:nil];
+  if (!json) return;
+  NSString* path = pluginSessionFilePath();
+  if ([json writeToFile:path options:NSDataWritingAtomic error:nil]) {
+    chmod(path.fileSystemRepresentation, S_IRUSR | S_IWUSR);
+  }
+}
+
 // Reads the plugin's own stored TONE3000 session (same JSON shape as NAM
-// Rig's: accessToken, refreshToken, expiresAtMilliseconds) from the Keychain.
+// Rig's: accessToken, refreshToken, expiresAtMilliseconds) from disk first,
+// falling back silently (without UI prompts) to any legacy Keychain entry.
 NSDictionary* pluginSession(void) {
+  NSString* path = pluginSessionFilePath();
+  NSDictionary* diskSession = jsonDictionaryAtPath(path);
+  if ([diskSession isKindOfClass:NSDictionary.class] &&
+      [diskSession[@"accessToken"] isKindOfClass:NSString.class]) {
+    return diskSession;
+  }
   for (NSString* service in @[kPluginKeychainService, kLegacyPluginKeychainService]) {
     NSDictionary* query = @{
-      (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-      (__bridge id)kSecAttrService:service,
-      (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
-      (__bridge id)kSecReturnData:@YES,
+      (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService: service,
+      (__bridge id)kSecAttrAccount: kPluginKeychainAccount,
+      (__bridge id)kSecUseAuthenticationUI: (__bridge id)kSecUseAuthenticationUISkip,
+      (__bridge id)kSecReturnData: @YES,
     };
     CFDataRef data = nullptr;
     if (SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef*)&data) != errSecSuccess) continue;
     NSData* nsdata = (__bridge_transfer NSData*)data;
     id json = [NSJSONSerialization JSONObjectWithData:nsdata options:0 error:nil];
-    if ([json isKindOfClass:NSDictionary.class]) return json;
+    if ([json isKindOfClass:NSDictionary.class]) {
+      savePluginSession(json);
+      return json;
+    }
   }
   return nil;
-}
-
-// Writes (or updates) the plugin's own TONE3000 session in the Keychain.
-void savePluginSession(NSDictionary* session) {
-  if (!session) return;
-  NSData* json = [NSJSONSerialization dataWithJSONObject:session options:0 error:nil];
-  if (!json) return;
-  NSDictionary* query = @{
-    (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-    (__bridge id)kSecAttrService:kPluginKeychainService,
-    (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
-  };
-  NSDictionary* update = @{(__bridge id)kSecValueData: json};
-  OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)update);
-  if (status == errSecItemNotFound) {
-    NSMutableDictionary* add = [query mutableCopy];
-    add[(__bridge id)kSecValueData] = json;
-    SecItemAdd((__bridge CFDictionaryRef)add, nullptr);
-  }
 }
 
 // Deletes the plugin's own TONE3000 session. Used when the stored refresh
 // token has been rotated server-side ("refresh_token_already_used"): keeping
 // it poisons every request with a 401 and "REFRESH failed" forever.
 void clearPluginSession(void) {
+  [[NSFileManager defaultManager] removeItemAtPath:pluginSessionFilePath() error:nil];
   for (NSString* service in @[kPluginKeychainService, kLegacyPluginKeychainService]) {
     NSDictionary* query = @{
-      (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-      (__bridge id)kSecAttrService:service,
-      (__bridge id)kSecAttrAccount:kPluginKeychainAccount,
+      (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService: service,
+      (__bridge id)kSecAttrAccount: kPluginKeychainAccount,
+      (__bridge id)kSecUseAuthenticationUI: (__bridge id)kSecUseAuthenticationUISkip,
     };
     SecItemDelete((__bridge CFDictionaryRef)query);
   }
@@ -115,7 +134,7 @@ void clearPluginSession(void) {
 
 NSData* randomDataOfLength(size_t len) {
   NSMutableData* d = [NSMutableData dataWithLength:len];
-  SecRandomCopyBytes(kSecRandomDefault, len, d.mutableBytes);
+  (void)SecRandomCopyBytes(kSecRandomDefault, len, d.mutableBytes);
   return d;
 }
 
