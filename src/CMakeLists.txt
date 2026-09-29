@@ -151,6 +151,8 @@ if (APPLE)
 	find_library(SECURITY_FRAMEWORK Security REQUIRED)
 	find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
 	find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
+	find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+	find_library(COREIMAGE_FRAMEWORK CoreImage REQUIRED)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
 
 	add_library(neural_amp_modeler_ui MODULE
@@ -175,7 +177,7 @@ if (APPLE)
 		rig_tone_browser.h rig_tone_browser.mm
 		rig_ui_state.h)
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
-	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK})
+	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
 	set_target_properties(neural_amp_modeler_rig_ui PROPERTIES
 		PREFIX ""

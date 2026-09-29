@@ -85,6 +85,12 @@ assert 'NSString* modTitle = [cur stringByAppendingString:@" *"];' in ui_state_h
     "refreshABMenus must add '<cur> *' to Menu B when preset is modified"
 assert '([name isEqualToString:cur] && presetManager.isModified)' not in ui_state_h, \
     "Main preset popup (Menu A) must keep the base preset name without '*' so Menu B holds '<cur> *'"
+assert "applyABDropdownHighlight(presetPopup, abCycling && abShowingA);" in ui_state_h, \
+    "updateABStatus must highlight presetPopup yellow when A is active during A/B testing"
+assert "applyABDropdownHighlight(abPresetB, abCycling && !abShowingA);" in ui_state_h, \
+    "updateABStatus must highlight abPresetB yellow when B is active during A/B testing"
+assert 'filterWithName:@"CIColorMatrix"' in ui_state_h, \
+    "applyABDropdownHighlight must use CIColorMatrix to tint the active white dropdown yellow"
 
 # 7. Test preset JSON serialization / deserialization round-trip
 sample_preset = {

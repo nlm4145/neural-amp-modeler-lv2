@@ -3,6 +3,8 @@
 
 #ifdef __OBJC__
 #import <Cocoa/Cocoa.h>
+#import <CoreImage/CoreImage.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
@@ -425,7 +427,29 @@ struct RigUIState {
     updateABStatus();
   }
 
+  static void applyABDropdownHighlight(NSPopUpButton* popup, bool highlighted) {
+    if (!popup) return;
+    popup.wantsLayer = YES;
+    if (highlighted) {
+      CIFilter* tint = [CIFilter filterWithName:@"CIColorMatrix"];
+      if (tint) {
+        [tint setDefaults];
+        [tint setValue:[CIVector vectorWithX:1.0 Y:0.0 Z:0.0 W:0.0] forKey:@"inputRVector"];
+        [tint setValue:[CIVector vectorWithX:0.0 Y:0.86 Z:0.0 W:0.0] forKey:@"inputGVector"];
+        [tint setValue:[CIVector vectorWithX:0.0 Y:0.0 Z:0.22 W:0.0] forKey:@"inputBVector"];
+        [tint setValue:[CIVector vectorWithX:0.0 Y:0.0 Z:0.0 W:1.0] forKey:@"inputAVector"];
+        [tint setValue:[CIVector vectorWithX:0.0 Y:0.0 Z:0.0 W:0.0] forKey:@"inputBiasVector"];
+        popup.contentFilters = @[tint];
+      }
+    } else if (popup.contentFilters.count > 0) {
+      popup.contentFilters = @[];
+    }
+    [popup setNeedsDisplay:YES];
+  }
+
   void updateABStatus() {
+    applyABDropdownHighlight(presetPopup, abCycling && abShowingA);
+    applyABDropdownHighlight(abPresetB, abCycling && !abShowingA);
     if (!abStatusLabel) return;
     NSString* showing = abShowingA ? @"A" : @"B";
     NSString* name = abShowingA ? abNameA : abNameB;

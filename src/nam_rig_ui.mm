@@ -557,6 +557,7 @@ static NSString* stageName(NSInteger stage) {
   }
   RigPreset* preset = [_state->presetManager loadPresetNamed:name];
   if (preset) {
+    if (_state->abCycling) _state->stopAB();
     _state->abUserChoseB = false;
     _state->abModifiedPreset = nil;
     _state->abApplyingCycle = true;
@@ -576,6 +577,7 @@ static NSString* stageName(NSInteger stage) {
   if (prev) {
     RigPreset* preset = [_state->presetManager loadPresetNamed:prev];
     if (preset) {
+      if (_state->abCycling) _state->stopAB();
       _state->abUserChoseB = false;
       _state->abModifiedPreset = nil;
       _state->abApplyingCycle = true;
@@ -594,6 +596,7 @@ static NSString* stageName(NSInteger stage) {
   if (next) {
     RigPreset* preset = [_state->presetManager loadPresetNamed:next];
     if (preset) {
+      if (_state->abCycling) _state->stopAB();
       _state->abUserChoseB = false;
       _state->abModifiedPreset = nil;
       _state->abApplyingCycle = true;
