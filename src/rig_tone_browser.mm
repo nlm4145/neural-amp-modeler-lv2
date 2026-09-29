@@ -1862,6 +1862,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
           @"downloaded_at": [[NSDate date] description]
         }];
         if (strongSelf.state && stage < strongSelf.state->selectedPaths.size()) {
+          strongSelf.state->refreshStageArchitectureUI(stage);
           NSString *curSel = [NSString stringWithUTF8String:strongSelf.state->selectedPaths[stage].c_str()];
           if ([curSel isEqualToString:previewPath]) {
             strongSelf.state->sendPath(stage, previewPath.fileSystemRepresentation);
@@ -1910,6 +1911,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
 
       NSMutableArray<NSString*>* previewPaths = [NSMutableArray arrayWithCapacity:models.count];
+      NSMutableArray<NSDictionary*>* initialDownloads = [NSMutableArray arrayWithCapacity:models.count];
       NSMutableSet<NSString*>* usedFilenames = [NSMutableSet set];
       for (NSDictionary *model in models) {
         if (![model isKindOfClass:NSDictionary.class]) continue;
@@ -1936,11 +1938,23 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
           [fm copyItemAtPath:legacyPath toPath:previewPath error:nil];
         }
         [previewPaths addObject:previewPath];
+        [initialDownloads addObject:@{
+          @"model_id": model[@"id"] ?: @0,
+          @"original_model": model,
+          @"local_filename": filename,
+          @"status": @"queued"
+        }];
       }
 
       if (previewPaths.count == 0) {
         strongSelf.status.stringValue = @"No previewable model found";
         return;
+      }
+
+      NSDictionary *initialManifest = @{@"powered_by": @"Tone3000", @"tone": item.toneData ?: @{}, @"downloads": initialDownloads};
+      NSData *initialJson = [NSJSONSerialization dataWithJSONObject:initialManifest options:NSJSONWritingPrettyPrinted error:nil];
+      if (initialJson) {
+        [initialJson writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
       }
 
       const size_t stage = (size_t)item.stage;
@@ -1958,6 +1972,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       }
 
       if (strongSelf.state) {
+        BOOL changedTone = (stage < strongSelf.state->selectedToneIds.size() &&
+                            strongSelf.state->selectedToneIds[stage] != item.toneId);
         if (stage < strongSelf.state->selectedPaths.size() && initialSelection.length) {
           strongSelf.state->selectedPaths[stage] = initialSelection.fileSystemRepresentation;
           strongSelf.state->persistSelectedPaths();
@@ -1966,6 +1982,9 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
         strongSelf.state->setStageThumb(stage, item.artworkPath, item.toneId, item.imageURL);
         if (initialSelection.length && [fm fileExistsAtPath:initialSelection]) {
           strongSelf.state->sendPath(stage, initialSelection.fileSystemRepresentation);
+        }
+        if (changedTone) {
+          strongSelf.state->markModified();
         }
       }
 
@@ -2012,6 +2031,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (load && self.state) {
       self.state->sendPath((size_t)item.stage, item.models.firstObject.fileSystemRepresentation);
       self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
+      self.state->markModified();
       self.status.stringValue = [NSString stringWithFormat:@"%lu models — loaded", (unsigned long)item.models.count];
     }
   }
@@ -2169,6 +2189,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (chosen.length) {
       self.state->sendPath(stage, chosen.fileSystemRepresentation);
       self.state->setStageThumb(stage, item.artworkPath, item.toneId, item.imageURL);
+      self.state->markModified();
     }
   }
   [self.collectionView reloadData];

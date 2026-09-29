@@ -79,4 +79,13 @@ assert "setStageModels((size_t)item.stage, @[path])" not in browser_mm, \
 assert "previewModelStepWithModels:" in browser_mm, \
     "previewTone:withArch: must sequentially cache all preview models in the pack"
 
+# 11. Verify Rig pane single stage header architecture badge
+state_h = (ROOT / "src/rig_ui_state.h").read_text()
+assert "stageHeaderArchBadges" in state_h, "RigUIState missing stageHeaderArchBadges"
+assert "inspectModelArch(NSString* path)" in state_h, "RigUIState missing inspectModelArch metadata inspector"
+assert "updateStageArchBadge" in state_h, "RigUIState missing updateStageArchBadge"
+assert "refreshStageArchitectureUI" in state_h, "RigUIState missing refreshStageArchitectureUI"
+assert "state->stageHeaderArchBadges[(size_t)i] = hdrArch;" in ui, "nam_rig_ui.mm must mount stageHeaderArchBadges"
+assert "thumbArch" not in ui, "nam_rig_ui.mm must not duplicate architecture badges inside the artwork well"
+
 print("  PASS  Tone3000 architecture badges, segmented control, and download contract verified")

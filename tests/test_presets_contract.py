@@ -76,8 +76,15 @@ assert "representedObject isKindOfClass:[NSString class]" in ui_mm, \
 assert ui_mm.count("resyncPresetPopupSelection") >= 8, \
     "every preset Cancel/failure path must snap the popup back to the current preset"
 
-# 6. Verify dirty tracking is called on adjustments
+# 6. Verify dirty tracking is called on adjustments and defaults A/B slot B to "<preset> *"
 assert "[self markPresetModified];" in ui_mm
+assert "abModifiedPreset" in ui_state_h, "RigUIState must maintain abModifiedPreset snapshot for modified B slot"
+assert "abModifiedToken()" in ui_state_h, "RigUIState must define abModifiedToken() for modified B slot"
+assert "abUserChoseB" in ui_state_h, "RigUIState must track whether user manually overrode B slot"
+assert 'NSString* modTitle = [cur stringByAppendingString:@" *"];' in ui_state_h, \
+    "refreshABMenus must add '<cur> *' to Menu B when preset is modified"
+assert '([name isEqualToString:cur] && presetManager.isModified)' not in ui_state_h, \
+    "Main preset popup (Menu A) must keep the base preset name without '*' so Menu B holds '<cur> *'"
 
 # 7. Test preset JSON serialization / deserialization round-trip
 sample_preset = {

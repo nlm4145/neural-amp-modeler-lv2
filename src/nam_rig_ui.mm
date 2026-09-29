@@ -144,11 +144,8 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 - (void)markPresetModified {
-  if (!_state || !_state->presetManager) return;
-  if (!_state->presetManager.isModified) {
-    _state->presetManager.isModified = YES;
-    _state->updatePresetDisplayTitle();
-  }
+  if (!_state) return;
+  _state->markModified();
 }
 - (void)chooseModel:(NSButton*)sender {
   if (!_state || sender.tag < 0 || sender.tag > 3) return;
@@ -560,7 +557,11 @@ static NSString* stageName(NSInteger stage) {
   }
   RigPreset* preset = [_state->presetManager loadPresetNamed:name];
   if (preset) {
+    _state->abUserChoseB = false;
+    _state->abModifiedPreset = nil;
+    _state->abApplyingCycle = true;
     [preset applyToState:_state];
+    _state->abApplyingCycle = false;
     _state->syncABNameA();
     _state->updatePresetDisplayTitle();
   } else {
@@ -575,7 +576,11 @@ static NSString* stageName(NSInteger stage) {
   if (prev) {
     RigPreset* preset = [_state->presetManager loadPresetNamed:prev];
     if (preset) {
+      _state->abUserChoseB = false;
+      _state->abModifiedPreset = nil;
+      _state->abApplyingCycle = true;
       [preset applyToState:_state];
+      _state->abApplyingCycle = false;
       _state->syncABNameA();
       _state->updatePresetDisplayTitle();
     }
@@ -589,7 +594,11 @@ static NSString* stageName(NSInteger stage) {
   if (next) {
     RigPreset* preset = [_state->presetManager loadPresetNamed:next];
     if (preset) {
+      _state->abUserChoseB = false;
+      _state->abModifiedPreset = nil;
+      _state->abApplyingCycle = true;
       [preset applyToState:_state];
+      _state->abApplyingCycle = false;
       _state->syncABNameA();
       _state->updatePresetDisplayTitle();
     }
@@ -605,6 +614,8 @@ static NSString* stageName(NSInteger stage) {
   }
   NSError* err = nil;
   if ([_state->presetManager saveCurrentPresetFromState:_state error:&err]) {
+    _state->abUserChoseB = false;
+    _state->abModifiedPreset = nil;
     _state->updatePresetDisplayTitle();
   } else {
     _state->resyncPresetPopupSelection();
@@ -643,6 +654,8 @@ static NSString* stageName(NSInteger stage) {
     }
     NSError* err = nil;
     if ([_state->presetManager savePresetNamed:name fromState:_state error:&err]) {
+      _state->abUserChoseB = false;
+      _state->abModifiedPreset = nil;
       _state->updatePresetDisplayTitle();
     } else {
       _state->resyncPresetPopupSelection();
@@ -677,8 +690,14 @@ static NSString* stageName(NSInteger stage) {
   if ([alert runModal] == NSAlertFirstButtonReturn) {
     NSError* err = nil;
     if ([_state->presetManager deletePresetNamed:cur error:&err]) {
+      _state->abUserChoseB = false;
+      _state->abModifiedPreset = nil;
       RigPreset* nextP = [_state->presetManager loadPresetNamed:_state->presetManager.currentPresetName];
-      if (nextP) [nextP applyToState:_state];
+      if (nextP) {
+        _state->abApplyingCycle = true;
+        [nextP applyToState:_state];
+        _state->abApplyingCycle = false;
+      }
       _state->updatePresetDisplayTitle();
     } else {
       _state->resyncPresetPopupSelection();
@@ -719,8 +738,14 @@ static NSString* stageName(NSInteger stage) {
     if ([_state->presetManager duplicateCurrentPresetFromState:_state
                                                       withName:name
                                                          error:&err]) {
+      _state->abUserChoseB = false;
+      _state->abModifiedPreset = nil;
       RigPreset* dup = [_state->presetManager loadPresetNamed:name];
-      if (dup) [dup applyToState:_state];
+      if (dup) {
+        _state->abApplyingCycle = true;
+        [dup applyToState:_state];
+        _state->abApplyingCycle = false;
+      }
       _state->updatePresetDisplayTitle();
     } else {
       _state->resyncPresetPopupSelection();
@@ -755,11 +780,16 @@ static NSString* stageName(NSInteger stage) {
   NSString* name = sender.selectedItem.representedObject;
   if (![name isKindOfClass:[NSString class]]) return;
   _state->abNameB = name;
+  _state->abUserChoseB = ![name isEqualToString:RigUIState::abModifiedToken()];
   // Changing B mid-cycle stops on the newly picked preset: predictable and
   // hands-free (no surprise switch a second later).
   if (_state->abCycling) {
     _state->stopAB();
-    _state->applyPresetByName(name);
+    if ([name isEqualToString:RigUIState::abModifiedToken()]) {
+      _state->abApplyCycle(name);
+    } else {
+      _state->applyPresetByName(name);
+    }
     _state->abShowingA = NO;
     _state->updateABStatus();
   } else {
@@ -3006,42 +3036,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.heightAnchor constraintEqualToConstant:(i == 0 ? 141 : 112)] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
       thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
-
-      NSTextField* thumbArch = [[NSTextField alloc] initWithFrame:NSZeroRect];
-      thumbArch.editable = NO; thumbArch.selectable = NO; thumbArch.drawsBackground = NO; thumbArch.bordered = NO;
-      thumbArch.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightBold];
-      thumbArch.alignment = NSTextAlignmentCenter;
-      thumbArch.wantsLayer = YES;
-      thumbArch.layer.cornerRadius = 6.0;
-      thumbArch.layer.borderWidth = 1.0;
-      thumbArch.layer.masksToBounds = YES;
-      thumbArch.translatesAutoresizingMaskIntoConstraints = NO;
-      thumbArch.hidden = YES;
-      [box addSubview:thumbArch];
-      [[thumbArch.leadingAnchor constraintEqualToAnchor:thumb.leadingAnchor constant:8] setActive:YES];
-      [[thumbArch.bottomAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:-8] setActive:YES];
-      [[thumbArch.heightAnchor constraintEqualToConstant:20] setActive:YES];
-      state->stageArchBadges[(size_t)i] = thumbArch;
-      state->updateStageArchBadge((size_t)i, nil);
-
-      if (i == 2) {
-        NSTextField* thumbArchB = [[NSTextField alloc] initWithFrame:NSZeroRect];
-        thumbArchB.editable = NO; thumbArchB.selectable = NO; thumbArchB.drawsBackground = NO; thumbArchB.bordered = NO;
-        thumbArchB.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightBold];
-        thumbArchB.alignment = NSTextAlignmentCenter;
-        thumbArchB.wantsLayer = YES;
-        thumbArchB.layer.cornerRadius = 6.0;
-        thumbArchB.layer.borderWidth = 1.0;
-        thumbArchB.layer.masksToBounds = YES;
-        thumbArchB.translatesAutoresizingMaskIntoConstraints = NO;
-        thumbArchB.hidden = YES;
-        [box addSubview:thumbArchB];
-        [[thumbArchB.trailingAnchor constraintEqualToAnchor:thumb.trailingAnchor constant:-8] setActive:YES];
-        [[thumbArchB.bottomAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:-8] setActive:YES];
-        [[thumbArchB.heightAnchor constraintEqualToConstant:20] setActive:YES];
-        state->stageArchBadges[3] = thumbArchB;
-        state->updateStageArchBadge(3, nil);
-      }
 
       NSView* modelAnchor = thumb;
       if (i == 1) {

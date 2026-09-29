@@ -333,6 +333,9 @@ struct RigUIState {
   // Hands-free A/B preset compare: alternates between the active preset (A =
   // whatever is in the main preset window) and a memorized B preset, driven
   // by a UI-side timer so the player can audition while playing (no clicks).
+  // When the active preset is modified, B defaults to "<currentPreset> *" so
+  // the user can immediately A/B the saved preset against their modified edits,
+  // while still allowing any other saved preset to be chosen from Menu B.
   // NSTimer must be invalidated before teardown (cleanup() calls stopAB()).
   __strong NSPopUpButton* abPresetB = nil;
   __strong NSSlider* abIntervalSlider = nil;
@@ -340,19 +343,58 @@ struct RigUIState {
   __strong NSButton* abCycleBtn = nil;
   __strong NSTextField* abStatusLabel = nil;
   __strong NSTimer* abTimer = nil;
+  __strong RigPreset* abModifiedPreset = nil;  // live snapshot of "<currentPresetName> *"
   NSString* abNameA = nil;   // snapshot of the active preset taken at START
   NSString* abNameB = nil;   // B slot memorized from the B dropdown
   double abIntervalSec = 4.0;
   bool abShowingA = true;
   bool abCycling = false;
+  bool abUserChoseB = false;     // true only when the user manually selects a different preset in Menu B
+  bool abApplyingCycle = false;  // suppresses markModified() while applying a preset or cycling A/B
+
+  static NSString* abModifiedToken() {
+    return @"__AB_MODIFIED__";
+  }
+
+  void captureModifiedABState() {
+    if (!presetManager || abApplyingCycle) return;
+    if (abCycling && abShowingA) return;
+    NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
+    abModifiedPreset = [RigPreset captureFromState:this name:[cur stringByAppendingString:@" *"]];
+  }
+
+  void markModified() {
+    if (!presetManager || abApplyingCycle) return;
+    BOOL wasModified = presetManager.isModified;
+    presetManager.isModified = YES;
+    captureModifiedABState();
+    BOOL missingModItem = abPresetB && ([abPresetB indexOfItemWithRepresentedObject:abModifiedToken()] < 0);
+    if (!wasModified || missingModItem) {
+      if (!wasModified) abUserChoseB = false;
+      updatePresetDisplayTitle();
+    } else if (!abUserChoseB && abPresetB) {
+      NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
+      NSInteger idx = [abPresetB indexOfItemWithRepresentedObject:abModifiedToken()];
+      if (idx >= 0) {
+        [abPresetB itemAtIndex:idx].title = [cur stringByAppendingString:@" *"];
+        if (abPresetB.indexOfSelectedItem != idx) {
+          [abPresetB selectItemAtIndex:idx];
+        }
+        abNameB = abModifiedToken();
+        updateABStatus();
+      }
+    }
+  }
 
   void applyPresetByName(NSString* name) {
     if (!name.length || !presetManager || !uiController) return;
+    abApplyingCycle = true;
     RigPreset* preset = [presetManager loadPresetNamed:name];
     if (preset) {
       [preset applyToState:this];
       updatePresetDisplayTitle();
     }
+    abApplyingCycle = false;
   }
 
   // Cycle apply: loads the preset's DSP state WITHOUT touching
@@ -361,11 +403,17 @@ struct RigUIState {
   // same value — only the status readout flips to show the sounding side.
   void abApplyCycle(NSString* name) {
     if (!name.length || !presetManager) return;
-    NSString* path = [[presetManager presetsDirectory]
-        stringByAppendingPathComponent:
-            [[name lastPathComponent] stringByAppendingPathExtension:@"json"]];
-    RigPreset* preset = [RigPreset loadFromFile:path];
-    if (preset) [preset applyToState:this];
+    abApplyingCycle = true;
+    if ([name isEqualToString:abModifiedToken()]) {
+      if (abModifiedPreset) [abModifiedPreset applyToState:this];
+    } else {
+      NSString* path = [[presetManager presetsDirectory]
+          stringByAppendingPathComponent:
+              [[name lastPathComponent] stringByAppendingPathExtension:@"json"]];
+      RigPreset* preset = [RigPreset loadFromFile:path];
+      if (preset) [preset applyToState:this];
+    }
+    abApplyingCycle = false;
   }
 
   // Drives the A/B cycle and the status readout. Runs on the main thread.
@@ -381,6 +429,10 @@ struct RigUIState {
     if (!abStatusLabel) return;
     NSString* showing = abShowingA ? @"A" : @"B";
     NSString* name = abShowingA ? abNameA : abNameB;
+    if ([name isEqualToString:abModifiedToken()]) {
+      NSString* cur = presetManager ? (presetManager.currentPresetName ?: @"Default Rig") : @"Default Rig";
+      name = [cur stringByAppendingString:@" *"];
+    }
     if (!name.length) name = @"—";
     abStatusLabel.stringValue = abCycling
         ? [NSString stringWithFormat:@"%@: %@", showing, name]
@@ -390,20 +442,31 @@ struct RigUIState {
   void refreshABMenus() {
     if (!abPresetB || !presetManager) return;
     NSArray<NSString*>* names = presetManager.presetNames ?: @[];
+    NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
     NSString* keep = nil;
     if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
       keep = abPresetB.selectedItem.representedObject;
     if (!keep.length) keep = abNameB;
     [abPresetB removeAllItems];
+    if (presetManager.isModified) {
+      NSString* modTitle = [cur stringByAppendingString:@" *"];
+      NSMenuItem* modItem = [[NSMenuItem alloc] initWithTitle:modTitle action:NULL keyEquivalent:@""];
+      modItem.representedObject = abModifiedToken();
+      [[abPresetB menu] addItem:modItem];
+    }
     for (NSString* name in names) {
       NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:name action:NULL keyEquivalent:@""];
       item.representedObject = name;
       [[abPresetB menu] addItem:item];
     }
-    NSInteger match = keep.length ? [abPresetB indexOfItemWithRepresentedObject:keep] : -1;
+    NSInteger match = -1;
+    if (presetManager.isModified && !abUserChoseB) {
+      match = [abPresetB indexOfItemWithRepresentedObject:abModifiedToken()];
+    } else if (keep.length) {
+      match = [abPresetB indexOfItemWithRepresentedObject:keep];
+    }
     if (match < 0 && names.count) {
       // Default B to something other than the active preset when possible.
-      NSString* cur = presetManager.currentPresetName;
       NSString* fallback = nil;
       for (NSString* name in names) {
         if (![name isEqualToString:cur]) { fallback = name; break; }
@@ -430,7 +493,12 @@ struct RigUIState {
 
   void startAB() {
     if (presetManager) {
+      if (presetManager.isModified && !abCycling) {
+        captureModifiedABState();
+      }
+      BOOL wasModified = presetManager.isModified;
       [presetManager rescanPresets];
+      presetManager.isModified = wasModified;
       refreshABMenus();
       // A is always the live active preset — snapshot it now.
       NSString* cur = presetManager.currentPresetName;
@@ -474,12 +542,17 @@ struct RigUIState {
       abCycleBtn.title = @"START";
       abCycleBtn.state = NSControlStateValueOff;
     }
-    // Restore the main window to the A side (the cycle never moved it, so
-    // just re-apply A's sound and snap A back to the live selection).
-    if (abNameA.length) {
+    // If B is the modified state of the current preset, restore that modified
+    // state on STOP so the user's unsaved tweaks remain active; otherwise
+    // restore A while preserving any modified snapshot.
+    if (presetManager && presetManager.isModified && abModifiedPreset &&
+        [abNameB isEqualToString:abModifiedToken()]) {
+      abApplyCycle(abModifiedToken());
+      presetManager.isModified = YES;
+    } else if (abNameA.length) {
+      BOOL wasModified = presetManager ? presetManager.isModified : NO;
       abApplyCycle(abNameA);
-      RigPreset* a = [presetManager loadPresetNamed:abNameA];
-      if (a) [a applyToState:this];
+      if (presetManager) presetManager.isModified = wasModified;
     }
     syncABNameA();
     updatePresetDisplayTitle();
@@ -497,10 +570,7 @@ struct RigUIState {
     NSInteger match = -1;
     NSInteger i = 0;
     for (NSString* name in presetManager.presetNames) {
-      NSString* title = ([name isEqualToString:cur] && presetManager.isModified)
-          ? [name stringByAppendingString:@" *"]
-          : name;
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title action:NULL keyEquivalent:@""];
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:name action:NULL keyEquivalent:@""];
       item.representedObject = name;
       [[presetPopup menu] addItem:item];
       if ([name isEqualToString:cur]) match = i;
@@ -986,12 +1056,7 @@ struct RigUIState {
 
   static NSString* formattedModelMenuTitle(NSString* path) {
     if (!path.length) return @"—";
-    RigModelArchInfo info = inspectModelArch(path);
-    NSString* clean = cleanModelDisplayName(path);
-    if (info.menuTag.length) {
-      return [NSString stringWithFormat:@"%@  %@", info.menuTag, clean];
-    }
-    return clean;
+    return cleanModelDisplayName(path);
   }
 
   static void applyArchBadgeStyle(NSTextField* badge, const RigModelArchInfo& info, NSString* prefix = nil) {
@@ -1032,11 +1097,6 @@ struct RigUIState {
     RigModelArchInfo info = inspectModelArch(path);
     if (stage < stageHeaderArchBadges.size() && stageHeaderArchBadges[stage]) {
       applyArchBadgeStyle(stageHeaderArchBadges[stage], info, nil);
-    }
-    if (stage < stageArchBadges.size() && stageArchBadges[stage]) {
-      NSString* prefix = (stage == 3) ? @"CAB B" : nil;
-      applyArchBadgeStyle(stageArchBadges[stage], info, prefix);
-      stageArchBadges[stage].hidden = [info.category isEqualToString:@"none"];
     }
   }
 
