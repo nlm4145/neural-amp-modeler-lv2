@@ -527,9 +527,17 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   NSMenuItem* item = sender.selectedItem;
   NSString* path = item.representedObject;
-  sender.toolTip = _state->modelPickerTooltip((size_t)sender.tag, path);
+  const size_t stage = (size_t)sender.tag;
+  sender.toolTip = _state->modelPickerTooltip(stage, path);
   if (path.length) {
-    _state->sendPath((size_t)sender.tag, path.fileSystemRepresentation);
+    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+      _state->sendPath(stage, path.fileSystemRepresentation);
+    } else if (stage < _state->selectedPaths.size()) {
+      _state->rememberAvailablePath(stage, path.fileSystemRepresentation);
+      _state->selectedPaths[stage] = path.fileSystemRepresentation;
+      _state->persistSelectedPaths();
+      _state->displayPath(stage, path.fileSystemRepresentation);
+    }
     [self markPresetModified];
   }
 }
@@ -2671,7 +2679,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[abToggle.heightAnchor constraintEqualToConstant:24] setActive:YES];
     [[abToggle.trailingAnchor constraintLessThanOrEqualToAnchor:rigGroup.trailingAnchor constant:-8] setActive:YES];
 
-    NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB · NAM / WAV IR"];
+    NSArray<NSString*>* names = @[@"PEDAL", @"AMP", @"CAB"];
     // Quality is fixed at 100% — no knob, the DSP never scales model quality.
     // Display names indexed by kRigKnobPorts order; cells are laid out in
     // signal order via kRigKnobDisplayOrder.
@@ -2898,7 +2906,25 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [header addSubview:nmL];
       [[nmL.leadingAnchor constraintEqualToAnchor:numL.trailingAnchor constant:8] setActive:YES];
       [[nmL.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
-      [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:header.trailingAnchor constant:-70] setActive:YES];
+      [nmL setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+
+      NSTextField* hdrArch = [[NSTextField alloc] initWithFrame:NSZeroRect];
+      hdrArch.editable = NO; hdrArch.selectable = NO; hdrArch.drawsBackground = NO; hdrArch.bordered = NO;
+      hdrArch.font = [NSFont systemFontOfSize:9.5 weight:NSFontWeightBold];
+      hdrArch.alignment = NSTextAlignmentCenter;
+      hdrArch.lineBreakMode = NSLineBreakByTruncatingTail;
+      hdrArch.wantsLayer = YES;
+      hdrArch.layer.cornerRadius = 5.0;
+      hdrArch.layer.borderWidth = 1.0;
+      hdrArch.layer.masksToBounds = YES;
+      hdrArch.translatesAutoresizingMaskIntoConstraints = NO;
+      [hdrArch setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [header addSubview:hdrArch];
+      [[hdrArch.leadingAnchor constraintEqualToAnchor:nmL.trailingAnchor constant:8] setActive:YES];
+      [[hdrArch.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
+      [[hdrArch.heightAnchor constraintEqualToConstant:18] setActive:YES];
+      state->stageHeaderArchBadges[(size_t)i] = hdrArch;
+      state->updateStageArchBadge((size_t)i, nil);
 
       state->powerButtons[(size_t)i] = rigButton(header, @"ON", state->uiController,
                                                  @selector(controlChanged:), NSZeroRect);
@@ -2930,15 +2956,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [header addSubview:so];
         [[so.trailingAnchor constraintEqualToAnchor:onBtn.leadingAnchor constant:-8] setActive:YES];
         [[so.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
-        [[so.widthAnchor constraintEqualToConstant:104] setActive:YES];
+        [[so.widthAnchor constraintEqualToConstant:94] setActive:YES];
         [[so.heightAnchor constraintEqualToConstant:24] setActive:YES];
         [so selectItemAtIndex:3];        // default True 8x = TTL default
         so.toolTip = popupTooltip(
             [NSString stringWithFormat:@"Sets %@-stage oversampling.", stageName(i)], so);
         state->stageOsPopup[(size_t)i] = so;
-        // Keep the stage name label clear of the popup.
-        [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
-                                                      constant:-8] setActive:YES];
+        // Keep the stage architecture badge clear of the popup.
+        [[hdrArch.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
+                                                          constant:-6] setActive:YES];
       } else {
         NSPopUpButton* norm = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         [norm addItemsWithTitles:@[@"Preserve", @"Peak", @"Loudness", @"Original"]];
@@ -2962,8 +2988,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [norm selectItemAtIndex:2];
         norm.toolTip = popupTooltip(@"Sets WAV impulse-response gain handling. Changes glide smoothly.", norm);
         state->irNormPopup = norm;
-        [[nmL.trailingAnchor constraintLessThanOrEqualToAnchor:norm.leadingAnchor
-                                                      constant:-8] setActive:YES];
+        [[hdrArch.trailingAnchor constraintLessThanOrEqualToAnchor:norm.leadingAnchor
+                                                          constant:-6] setActive:YES];
       }
 
       NSImageView* thumb = [[NSImageView alloc] initWithFrame:NSZeroRect];
@@ -2980,6 +3006,42 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.heightAnchor constraintEqualToConstant:(i == 0 ? 141 : 112)] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
       thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
+
+      NSTextField* thumbArch = [[NSTextField alloc] initWithFrame:NSZeroRect];
+      thumbArch.editable = NO; thumbArch.selectable = NO; thumbArch.drawsBackground = NO; thumbArch.bordered = NO;
+      thumbArch.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightBold];
+      thumbArch.alignment = NSTextAlignmentCenter;
+      thumbArch.wantsLayer = YES;
+      thumbArch.layer.cornerRadius = 6.0;
+      thumbArch.layer.borderWidth = 1.0;
+      thumbArch.layer.masksToBounds = YES;
+      thumbArch.translatesAutoresizingMaskIntoConstraints = NO;
+      thumbArch.hidden = YES;
+      [box addSubview:thumbArch];
+      [[thumbArch.leadingAnchor constraintEqualToAnchor:thumb.leadingAnchor constant:8] setActive:YES];
+      [[thumbArch.bottomAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:-8] setActive:YES];
+      [[thumbArch.heightAnchor constraintEqualToConstant:20] setActive:YES];
+      state->stageArchBadges[(size_t)i] = thumbArch;
+      state->updateStageArchBadge((size_t)i, nil);
+
+      if (i == 2) {
+        NSTextField* thumbArchB = [[NSTextField alloc] initWithFrame:NSZeroRect];
+        thumbArchB.editable = NO; thumbArchB.selectable = NO; thumbArchB.drawsBackground = NO; thumbArchB.bordered = NO;
+        thumbArchB.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightBold];
+        thumbArchB.alignment = NSTextAlignmentCenter;
+        thumbArchB.wantsLayer = YES;
+        thumbArchB.layer.cornerRadius = 6.0;
+        thumbArchB.layer.borderWidth = 1.0;
+        thumbArchB.layer.masksToBounds = YES;
+        thumbArchB.translatesAutoresizingMaskIntoConstraints = NO;
+        thumbArchB.hidden = YES;
+        [box addSubview:thumbArchB];
+        [[thumbArchB.trailingAnchor constraintEqualToAnchor:thumb.trailingAnchor constant:-8] setActive:YES];
+        [[thumbArchB.bottomAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:-8] setActive:YES];
+        [[thumbArchB.heightAnchor constraintEqualToConstant:20] setActive:YES];
+        state->stageArchBadges[3] = thumbArchB;
+        state->updateStageArchBadge(3, nil);
+      }
 
       NSView* modelAnchor = thumb;
       if (i == 1) {
@@ -3142,6 +3204,9 @@ void cleanup(LV2UI_Handle handle) {
     state->stopABTimer();   // invalidate the A/B timer before teardown (do not call stopAB() which queues UI rebuilds)
     if (state->uiController) {
       state->uiController.state = nullptr;
+    }
+    if (state->browserController) {
+      state->browserController.state = nullptr;
     }
   }
   [state->headerBar removeFromSuperview];

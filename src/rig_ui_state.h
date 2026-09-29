@@ -281,6 +281,8 @@ struct RigUIState {
   std::array<__strong NSTextField*, 4> pathLabels{};
   std::array<__strong NSButton*, 4> powerButtons{};
   std::array<__strong NSImageView*, 3> stageImages{};
+  std::array<__strong NSTextField*, 3> stageHeaderArchBadges{};
+  std::array<__strong NSTextField*, 4> stageArchBadges{};
   // auto-cab is always on — no toggle or status label needed
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
   std::array<__strong NSTextField*, kRigKnobCount> valueLabels{};
@@ -753,6 +755,315 @@ struct RigUIState {
     write(controller, port, sizeof(value), 0, &value);
   }
 
+  struct RigModelArchInfo {
+    NSString* badgeText;      // e.g. @"A2 · WAVENET", @"A1 · WAVENET", @"CUSTOM · WAVENET", @"CUSTOM · LSTM", @"WAV IR"
+    NSString* menuTag;        // e.g. @"[A2 · WaveNet]", @"[A1 · WaveNet]", @"[Custom · WaveNet]", @"[WAV IR]"
+    NSString* detailSummary;  // e.g. @"A2 Standard · Slimmable WaveNet (48 kHz)"
+    NSString* category;       // @"a2", @"a1", @"custom", @"ir", @"none"
+  };
+
+  static RigModelArchInfo inspectModelArch(NSString* path) {
+    if (!path.length) {
+      return {@"NO MODEL", @"", @"No model loaded", @"none"};
+    }
+    NSString* ext = path.pathExtension.lowercaseString;
+    if ([ext isEqualToString:@"wav"] || [ext isEqualToString:@"wave"] ||
+        [ext isEqualToString:@"aif"] || [ext isEqualToString:@"aiff"] ||
+        [ext isEqualToString:@"flac"]) {
+      return {@"WAV IR", @"[WAV IR]", @"WAV Impulse Response", @"ir"};
+    }
+
+    static NSMutableDictionary<NSString*, NSDictionary*>* sArchCache = nil;
+    static NSMutableDictionary<NSString*, NSDictionary*>* sManifestCache = nil;
+    if (!sArchCache) sArchCache = [NSMutableDictionary dictionary];
+    if (!sManifestCache) sManifestCache = [NSMutableDictionary dictionary];
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL exists = [fm fileExistsAtPath:path];
+    unsigned long long fileSize = 0;
+    if (exists) {
+      NSDictionary* attr = [fm attributesOfItemAtPath:path error:nil];
+      fileSize = [attr fileSize];
+    }
+    NSString* cacheKey = [NSString stringWithFormat:@"%@|%llu", path, fileSize];
+    NSDictionary* cached = exists && fileSize > 0 ? sArchCache[cacheKey] : nil;
+    if (cached) {
+      return {cached[@"badge"], cached[@"menu"], cached[@"detail"], cached[@"cat"]};
+    }
+
+    // Check sibling _tone3000.json metadata first (relays architecture_version even before download finishes).
+    NSString* t3kArchVer = nil;
+    NSString* folder = [path stringByDeletingLastPathComponent];
+    NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+    if ([fm fileExistsAtPath:manifestPath]) {
+      NSDictionary* mAttr = [fm attributesOfItemAtPath:manifestPath error:nil];
+      NSString* mKey = [NSString stringWithFormat:@"%@|%llu", manifestPath, [mAttr fileSize]];
+      NSDictionary* manifest = sManifestCache[mKey];
+      if (!manifest) {
+        NSData* mData = [NSData dataWithContentsOfFile:manifestPath];
+        if (mData) {
+          id obj = [NSJSONSerialization JSONObjectWithData:mData options:0 error:nil];
+          if ([obj isKindOfClass:NSDictionary.class]) {
+            manifest = obj;
+            sManifestCache[mKey] = manifest;
+          }
+        }
+      }
+      NSArray* downloads = [manifest[@"downloads"] isKindOfClass:NSArray.class] ? manifest[@"downloads"] : nil;
+      NSString* fileBase = path.lastPathComponent;
+      NSString* stem = [fileBase stringByDeletingPathExtension];
+      for (NSDictionary* dl in downloads) {
+        if (![dl isKindOfClass:NSDictionary.class]) continue;
+        NSString* localFn = [dl[@"local_filename"] isKindOfClass:NSString.class] ? dl[@"local_filename"] : @"";
+        NSDictionary* orig = [dl[@"original_model"] isKindOfClass:NSDictionary.class] ? dl[@"original_model"] : nil;
+        NSString* origName = [orig[@"name"] isKindOfClass:NSString.class] ? orig[@"name"] : @"";
+        if ([localFn isEqualToString:fileBase] || (origName.length && [stem hasSuffix:origName])) {
+          id av = orig[@"architecture_version"];
+          if ([av isKindOfClass:NSString.class]) t3kArchVer = [(NSString*)av lowercaseString];
+          else if ([av respondsToSelector:@selector(stringValue)]) t3kArchVer = [[av stringValue] lowercaseString];
+          break;
+        }
+      }
+    }
+
+    RigModelArchInfo result = {@"NAM MODEL", @"[NAM]", @"NAM Neural Model", @"a2"};
+    if ([t3kArchVer isEqualToString:@"2"]) {
+      result = {@"A2 · WAVENET", @"[A2 · WaveNet]", @"A2 Standard · WaveNet", @"a2"};
+    } else if ([t3kArchVer isEqualToString:@"1"]) {
+      result = {@"A1 · WAVENET", @"[A1 · WaveNet]", @"A1 Legacy · WaveNet", @"a1"};
+    } else if ([t3kArchVer isEqualToString:@"custom"]) {
+      result = {@"CUSTOM · NAM", @"[Custom]", @"Custom Architecture", @"custom"};
+    }
+
+    if (exists && fileSize > 0 && fileSize < 25 * 1024 * 1024) {
+      NSData* data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+      NSDictionary* json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+      if ([json isKindOfClass:NSDictionary.class]) {
+        NSString* arch = [json[@"architecture"] isKindOfClass:NSString.class] ? json[@"architecture"] : nil;
+        NSString* version = [json[@"version"] isKindOfClass:NSString.class] ? json[@"version"] : @"";
+        NSDictionary* config = [json[@"config"] isKindOfClass:NSDictionary.class] ? json[@"config"] : nil;
+        int sr = [json[@"sample_rate"] respondsToSelector:@selector(intValue)] ? [json[@"sample_rate"] intValue] : 48000;
+        if (sr <= 0) sr = 48000;
+        int srKhz = sr / 1000;
+
+        if ([arch isEqualToString:@"SlimmableContainer"]) {
+          result = {
+            @"A2 · WAVENET",
+            @"[A2 · WaveNet]",
+            [NSString stringWithFormat:@"A2 Standard · Slimmable WaveNet (3ch/8ch · %d kHz)", srKhz],
+            @"a2"
+          };
+        } else if ([arch isEqualToString:@"WaveNet"]) {
+          NSArray* layers = [config[@"layers"] isKindOfClass:NSArray.class] ? config[@"layers"] : @[];
+          NSDictionary* l0 = layers.count > 0 && [layers[0] isKindOfClass:NSDictionary.class] ? layers[0] : nil;
+          NSDictionary* l1 = layers.count > 1 && [layers[1] isKindOfClass:NSDictionary.class] ? layers[1] : nil;
+          int ch0 = [l0[@"channels"] respondsToSelector:@selector(intValue)] ? [l0[@"channels"] intValue] : 0;
+          int ch1 = [l1[@"channels"] respondsToSelector:@selector(intValue)] ? [l1[@"channels"] intValue] : 0;
+          NSUInteger dil0 = [l0[@"dilations"] isKindOfClass:NSArray.class] ? [l0[@"dilations"] count] : 0;
+          bool gated = [l0[@"gated"] boolValue] || [l1[@"gated"] boolValue];
+
+          bool isA2 = [t3kArchVer isEqualToString:@"2"] || (layers.count == 1 && dil0 == 23);
+          bool isExplicitCustom = [t3kArchVer isEqualToString:@"custom"];
+          bool isA1Official = !isExplicitCustom && layers.count == 2 && !gated && (dil0 == 10 || dil0 == 7) &&
+                              ((ch0 == 16 && ch1 == 8) || (ch0 == 12 && ch1 == 6) || (ch0 == 6 && ch1 == 3) ||
+                               (ch0 == 8 && ch1 == 4) || (ch0 == 4 && ch1 == 2) || (ch0 == 2 && ch1 == 1));
+          if (isA2) {
+            if (ch0 == 3) {
+              result = {
+                @"A2 LITE · WAVENET",
+                @"[A2 Lite · WaveNet]",
+                [NSString stringWithFormat:@"A2 Lite · WaveNet (1L · 3ch · %d kHz)", srKhz],
+                @"a2"
+              };
+            } else {
+              result = {
+                @"A2 · WAVENET",
+                @"[A2 · WaveNet]",
+                [NSString stringWithFormat:@"A2 Standard · WaveNet (1L · %dch · %d kHz)", ch0 > 0 ? ch0 : 8, srKhz],
+                @"a2"
+              };
+            }
+          } else if (isA1Official || [t3kArchVer isEqualToString:@"1"]) {
+            NSString* sub = @"Standard";
+            NSString* badge = @"A1 · WAVENET";
+            NSString* tag = @"[A1 · WaveNet]";
+            if ((ch0 == 12 && ch1 == 6) || (ch0 == 6 && ch1 == 3)) {
+              sub = @"Lite"; badge = @"A1 LITE · WAVENET"; tag = @"[A1 Lite · WaveNet]";
+            } else if (ch0 == 8 && ch1 == 4) {
+              sub = @"Feather"; badge = @"A1 FEATHER · WAVENET"; tag = @"[A1 Feather · WaveNet]";
+            } else if ((ch0 == 4 && ch1 == 2) || (ch0 == 2 && ch1 == 1)) {
+              sub = @"Nano"; badge = @"A1 NANO · WAVENET"; tag = @"[A1 Nano · WaveNet]";
+            }
+            result = {
+              badge,
+              tag,
+              [NSString stringWithFormat:@"A1 %@ · WaveNet (%luL · %d→%dch · %d kHz)",
+               sub, (unsigned long)layers.count, ch0, ch1, srKhz],
+              @"a1"
+            };
+          } else {
+            NSString* chSummary = ch0 > 0 ? [NSString stringWithFormat:@"%dch", ch0] : @"custom";
+            if (layers.count == 2 && ch0 > 0 && ch1 > 0 && ch0 != ch1) {
+              chSummary = [NSString stringWithFormat:@"%d→%dch", ch0, ch1];
+            }
+            result = {
+              @"CUSTOM · WAVENET",
+              @"[Custom · WaveNet]",
+              [NSString stringWithFormat:@"Custom · WaveNet (%luL · %@ · %d kHz)",
+               (unsigned long)layers.count, chSummary, srKhz],
+              @"custom"
+            };
+          }
+        } else if ([arch isEqualToString:@"LSTM"]) {
+          int numLayers = [config[@"num_layers"] respondsToSelector:@selector(intValue)] ? [config[@"num_layers"] intValue] : 0;
+          int hiddenSize = [config[@"hidden_size"] respondsToSelector:@selector(intValue)] ? [config[@"hidden_size"] intValue] : 0;
+          NSString* badge = (numLayers > 0 && hiddenSize > 0)
+              ? [NSString stringWithFormat:@"CUSTOM · LSTM %d×%d", numLayers, hiddenSize]
+              : @"CUSTOM · LSTM";
+          NSString* tag = (numLayers > 0 && hiddenSize > 0)
+              ? [NSString stringWithFormat:@"[Custom · LSTM %d×%d]", numLayers, hiddenSize]
+              : @"[Custom · LSTM]";
+          result = {
+            badge,
+            tag,
+            [NSString stringWithFormat:@"Custom · LSTM (%d layer%@ × %d hidden · %d kHz)",
+             numLayers, numLayers == 1 ? @"" : @"s", hiddenSize, srKhz],
+            @"custom"
+          };
+        } else if ([arch isEqualToString:@"ConvNet"]) {
+          result = {@"CUSTOM · CONVNET", @"[Custom · ConvNet]",
+                    [NSString stringWithFormat:@"Custom · ConvNet (%d kHz)", srKhz], @"custom"};
+        } else if ([arch isEqualToString:@"Linear"]) {
+          result = {@"LINEAR · NAM", @"[Linear]",
+                    [NSString stringWithFormat:@"Linear NAM Model (%d kHz)", srKhz], @"custom"};
+        } else if (arch.length) {
+          result = {
+            [NSString stringWithFormat:@"CUSTOM · %@", arch.uppercaseString],
+            [NSString stringWithFormat:@"[Custom · %@]", arch],
+            [NSString stringWithFormat:@"Custom · %@ (%@ · %d kHz)", arch, version.length ? version : @"NAM", srKhz],
+            @"custom"
+          };
+        } else if ([json[@"layers"] isKindOfClass:NSArray.class] && [json[@"layers"] count] > 0) {
+          NSDictionary* firstLayer = [json[@"layers"][0] isKindOfClass:NSDictionary.class] ? json[@"layers"][0] : nil;
+          NSString* ltype = [firstLayer[@"type"] isKindOfClass:NSString.class] ? [firstLayer[@"type"] uppercaseString] : @"RNN";
+          result = {
+            [NSString stringWithFormat:@"AIDA-X · %@", ltype],
+            [NSString stringWithFormat:@"[AIDA-X · %@]", ltype],
+            [NSString stringWithFormat:@"AIDA-X / RTNeural (%@)", ltype],
+            @"custom"
+          };
+        }
+        sArchCache[cacheKey] = @{
+          @"badge": result.badgeText ?: @"NAM",
+          @"menu": result.menuTag ?: @"[NAM]",
+          @"detail": result.detailSummary ?: @"NAM Model",
+          @"cat": result.category ?: @"a2"
+        };
+      }
+    }
+    return result;
+  }
+
+  static NSString* cleanModelDisplayName(NSString* path) {
+    if (!path.length) return @"—";
+    NSString* fn = path.lastPathComponent;
+    // Strip legacy "preview_<toneId>_<modelId>_" prefix if present.
+    if ([fn hasPrefix:@"preview_"]) {
+      NSArray<NSString*>* parts = [fn componentsSeparatedByString:@"_"];
+      if (parts.count >= 4) {
+        NSRange first = [fn rangeOfString:@"_"];
+        NSRange second = [fn rangeOfString:@"_" options:0 range:NSMakeRange(NSMaxRange(first), fn.length - NSMaxRange(first))];
+        if (second.location != NSNotFound) {
+          NSRange third = [fn rangeOfString:@"_" options:0 range:NSMakeRange(NSMaxRange(second), fn.length - NSMaxRange(second))];
+          if (third.location != NSNotFound && NSMaxRange(third) < fn.length) {
+            fn = [fn substringFromIndex:NSMaxRange(third)];
+          }
+        }
+      }
+    }
+    return fn;
+  }
+
+  static NSString* formattedModelMenuTitle(NSString* path) {
+    if (!path.length) return @"—";
+    RigModelArchInfo info = inspectModelArch(path);
+    NSString* clean = cleanModelDisplayName(path);
+    if (info.menuTag.length) {
+      return [NSString stringWithFormat:@"%@  %@", info.menuTag, clean];
+    }
+    return clean;
+  }
+
+  static void applyArchBadgeStyle(NSTextField* badge, const RigModelArchInfo& info, NSString* prefix = nil) {
+    if (!badge) return;
+    if ([info.category isEqualToString:@"none"]) {
+      badge.stringValue = prefix.length ? [NSString stringWithFormat:@"%@ · —", prefix] : @"—";
+      badge.textColor = rigDimText();
+      badge.layer.backgroundColor = [NSColor colorWithSRGBRed:0.14 green:0.15 blue:0.18 alpha:0.78].CGColor;
+      badge.layer.borderColor = [NSColor colorWithSRGBRed:0.32 green:0.35 blue:0.42 alpha:0.45].CGColor;
+      badge.toolTip = @"No model loaded for this stage.";
+      return;
+    }
+    NSString* label = prefix.length
+        ? [NSString stringWithFormat:@"%@: %@", prefix, info.badgeText]
+        : info.badgeText;
+    badge.stringValue = [NSString stringWithFormat:@"  %@  ", label];
+    badge.toolTip = [NSString stringWithFormat:@"Underlying Architecture: %@", info.detailSummary];
+    if ([info.category isEqualToString:@"a2"]) {
+      badge.textColor = [NSColor colorWithSRGBRed:0.38 green:0.86 blue:1.00 alpha:1.0];
+      badge.layer.backgroundColor = [NSColor colorWithSRGBRed:0.06 green:0.20 blue:0.30 alpha:0.90].CGColor;
+      badge.layer.borderColor = [NSColor colorWithSRGBRed:0.25 green:0.78 blue:0.98 alpha:0.72].CGColor;
+    } else if ([info.category isEqualToString:@"a1"]) {
+      badge.textColor = [NSColor colorWithSRGBRed:0.42 green:0.94 blue:0.78 alpha:1.0];
+      badge.layer.backgroundColor = [NSColor colorWithSRGBRed:0.06 green:0.23 blue:0.20 alpha:0.90].CGColor;
+      badge.layer.borderColor = [NSColor colorWithSRGBRed:0.32 green:0.86 blue:0.70 alpha:0.72].CGColor;
+    } else if ([info.category isEqualToString:@"custom"]) {
+      badge.textColor = [NSColor colorWithSRGBRed:1.00 green:0.68 blue:0.28 alpha:1.0];
+      badge.layer.backgroundColor = [NSColor colorWithSRGBRed:0.28 green:0.16 blue:0.05 alpha:0.92].CGColor;
+      badge.layer.borderColor = [NSColor colorWithSRGBRed:1.00 green:0.60 blue:0.20 alpha:0.78].CGColor;
+    } else if ([info.category isEqualToString:@"ir"]) {
+      badge.textColor = [NSColor colorWithSRGBRed:0.45 green:0.92 blue:0.58 alpha:1.0];
+      badge.layer.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.23 blue:0.12 alpha:0.90].CGColor;
+      badge.layer.borderColor = [NSColor colorWithSRGBRed:0.32 green:0.84 blue:0.48 alpha:0.72].CGColor;
+    }
+  }
+
+  void updateStageArchBadge(size_t stage, NSString* path) {
+    RigModelArchInfo info = inspectModelArch(path);
+    if (stage < stageHeaderArchBadges.size() && stageHeaderArchBadges[stage]) {
+      applyArchBadgeStyle(stageHeaderArchBadges[stage], info, nil);
+    }
+    if (stage < stageArchBadges.size() && stageArchBadges[stage]) {
+      NSString* prefix = (stage == 3) ? @"CAB B" : nil;
+      applyArchBadgeStyle(stageArchBadges[stage], info, prefix);
+      stageArchBadges[stage].hidden = [info.category isEqualToString:@"none"];
+    }
+  }
+
+  void refreshStageArchitectureUI(size_t stage) {
+    if (stage >= modelPickers.size()) return;
+    auto alive = this->isAlive;
+    auto refresh = ^{
+      if (!alive || !*alive) return;
+      NSPopUpButton* picker = modelPickers[stage];
+      if (!picker) return;
+      for (NSMenuItem* item in picker.itemArray) {
+        NSString* rep = [item.representedObject isKindOfClass:NSString.class] ? item.representedObject : nil;
+        if (rep.length) {
+          item.title = formattedModelMenuTitle(rep);
+          item.toolTip = modelPickerTooltip(stage, rep);
+        }
+      }
+      NSString* cur = [picker.selectedItem.representedObject isKindOfClass:NSString.class]
+          ? picker.selectedItem.representedObject
+          : (!selectedPaths[stage].empty() ? [NSString stringWithUTF8String:selectedPaths[stage].c_str()] : nil);
+      picker.toolTip = modelPickerTooltip(stage, cur);
+      updateStageArchBadge(stage, cur);
+    };
+    if ([NSThread isMainThread]) refresh();
+    else dispatch_async(dispatch_get_main_queue(), refresh);
+  }
+
   static NSString* modelPickerTooltip(size_t stage, NSString* path) {
     NSString* role = stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
     NSString* behavior = stage == 2
@@ -760,9 +1071,12 @@ struct RigUIState {
         : stage == 3
         ? @"Select the second cabinet (Cab B) NAM model or WAV impulse response. It runs parallel to Cab A."
         : [NSString stringWithFormat:@"Select the active %@ NAM model.", role];
-    return path.length
-        ? [NSString stringWithFormat:@"%@ Current file: %@", behavior, path]
-        : [NSString stringWithFormat:@"%@ No model is currently loaded.", behavior];
+    if (!path.length) {
+      return [NSString stringWithFormat:@"%@ No model is currently loaded.", behavior];
+    }
+    RigModelArchInfo info = inspectModelArch(path);
+    return [NSString stringWithFormat:@"%@\nArchitecture: %@\nCurrent file: %@",
+            behavior, info.detailSummary, path];
   }
 
   void displayPath(size_t stage, const char* path) {
@@ -775,17 +1089,18 @@ struct RigUIState {
     dispatch_async(dispatch_get_main_queue(), ^{
       if (copy.empty()) {
         [picker removeAllItems];
-        [picker addItemWithTitle:@"No model loaded"];
+        [picker addItemWithTitle:(stage == 3 ? @"No Cab B loaded" : @"No model loaded")];
         picker.itemArray.firstObject.enabled = NO;
         picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
         for (NSString* p in savedPaths) {
-          NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:p.lastPathComponent action:NULL keyEquivalent:@""];
+          NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:formattedModelMenuTitle(p) action:NULL keyEquivalent:@""];
           it.representedObject = p; it.toolTip = modelPickerTooltip(stage, p);
           [[picker menu] addItem:it];
         }
         [picker selectItemAtIndex:0];
         picker.enabled = savedPaths.count == 0 ? NO : YES;
         picker.toolTip = modelPickerTooltip(stage, nil);
+        updateStageArchBadge(stage, nil);
         return;
       }
       NSString* full = [NSString stringWithUTF8String:copy.c_str()];
@@ -793,19 +1108,25 @@ struct RigUIState {
       NSInteger match = -1;
       for (NSInteger i = 0; i < (NSInteger)items.count; ++i) {
         NSString* rep = items[(NSUInteger)i].representedObject;
-        if (rep && [rep isEqualToString:full]) { match = i; break; }
+        if (rep && [rep isEqualToString:full]) {
+          items[(NSUInteger)i].title = formattedModelMenuTitle(full);
+          items[(NSUInteger)i].toolTip = modelPickerTooltip(stage, full);
+          match = i;
+          break;
+        }
       }
       if (match >= 0) {
         [picker selectItemAtIndex:match];
         picker.enabled = YES;
       } else {
-        NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:full.lastPathComponent action:NULL keyEquivalent:@""];
+        NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:formattedModelMenuTitle(full) action:NULL keyEquivalent:@""];
         it.representedObject = full; it.toolTip = modelPickerTooltip(stage, full);
         [[picker menu] addItem:it];
         [picker selectItem:it];
         picker.enabled = YES;
       }
       picker.toolTip = modelPickerTooltip(stage, full);
+      updateStageArchBadge(stage, full);
     });
   }
 
@@ -830,17 +1151,18 @@ struct RigUIState {
       if (!picker) return;
       [picker removeAllItems];
       for (NSString* p in paths) {
-        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:(p.length ? p.lastPathComponent : @"—")
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:(p.length ? formattedModelMenuTitle(p) : @"—")
                                                       action:NULL keyEquivalent:@""];
         item.representedObject = p;
         item.toolTip = modelPickerTooltip(stage, p);
         [[picker menu] addItem:item];
       }
       if (paths.count == 0) {
-        [picker addItemWithTitle:@"No model loaded"];
+        [picker addItemWithTitle:(stage == 3 ? @"No Cab B loaded" : @"No model loaded")];
         picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
         picker.enabled = NO;
         picker.toolTip = modelPickerTooltip(stage, nil);
+        updateStageArchBadge(stage, nil);
       } else {
         picker.enabled = YES;
         NSInteger selected = 0;
@@ -852,8 +1174,9 @@ struct RigUIState {
             }
         }
         [picker selectItemAtIndex:selected];
-        picker.toolTip = modelPickerTooltip(stage,
-            picker.selectedItem.representedObject);
+        NSString* activePath = picker.selectedItem.representedObject;
+        picker.toolTip = modelPickerTooltip(stage, activePath);
+        updateStageArchBadge(stage, activePath);
       }
       picker.hidden = NO;
     };

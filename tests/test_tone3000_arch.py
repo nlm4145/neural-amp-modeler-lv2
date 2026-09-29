@@ -72,5 +72,11 @@ assert "[strongSelf downloadTone:item withArch:strongSelf.selectedArch];" in bro
     "toggleFavoriteFromCard must download newly favorited tones to library"
 assert "cachedSearchPageForPath(p, 3600.0)" in browser_mm, \
     "fetchModelsForToneId must cache model lists to avoid repeat network requests"
+assert "strongSelf.state->setStageModels(stage, previewPaths);" in browser_mm, \
+    "previewTone:withArch: must populate stage model dropdown with all previewPaths in the pack"
+assert "setStageModels((size_t)item.stage, @[path])" not in browser_mm, \
+    "previewTone:withArch: must not restrict stage dropdown to a single preview file"
+assert "previewModelStepWithModels:" in browser_mm, \
+    "previewTone:withArch: must sequentially cache all preview models in the pack"
 
 print("  PASS  Tone3000 architecture badges, segmented control, and download contract verified")

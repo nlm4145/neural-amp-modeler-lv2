@@ -91,6 +91,7 @@ struct RigUIState;
 - (void)downloadAllModels:(ToneItem*)item;
 - (void)downloadTone:(ToneItem*)item withArch:(NSString*)arch;
 - (void)previewTone:(ToneItem*)item withArch:(NSString*)arch;
+- (void)expandIncompletePreviewStagesIfNeeded;
 - (void)downloadModelStep:(NSInteger)index of:(NSArray*)models item:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
 - (void)finishModelDownload:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
 - (void)reloadLibrary:(id)sender;

@@ -759,6 +759,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* fresh = [session[@"accessToken"] isKindOfClass:NSString.class] ? session[@"accessToken"] : nil;
   if (fresh.length) self.accessToken = fresh;
   if (!self.accessToken.length) { return; }
+  [self expandIncompletePreviewStagesIfNeeded];
   NSDictionary* sortValues = @{@"Newest":@"newest", @"Trending":@"trending",
                                @"Most Downloaded":@"downloads-all-time", @"Oldest":@"oldest",
                                @"Best Match":@"best-match"};
@@ -1479,6 +1480,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     dispatch_async(dispatch_get_main_queue(), ^{
       ToneBrowserController* selfRef = weakSelf; if (!selfRef) return;
       selfRef.allItems = items; [selfRef filterChanged:nil]; [selfRef refreshOnline];
+      [selfRef expandIncompletePreviewStagesIfNeeded];
     });
   });
 }
@@ -1575,6 +1577,19 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   ToneItem *item = self.visibleItems[path.item];
   if (item.local) {
     [self showModelsForItem:item andLoad:YES];
+    NSInteger expectedCount = 0;
+    if ([self.selectedArch isEqualToString:@"all"]) {
+      expectedCount = item.a2Count + item.a1Count + item.customCount + item.irsCount;
+    } else if ([self.selectedArch isEqualToString:@"1"]) {
+      expectedCount = item.a1Count > 0 ? item.a1Count : (item.a2Count > 0 ? item.a2Count : item.irsCount);
+    } else if ([self.selectedArch isEqualToString:@"custom"]) {
+      expectedCount = item.customCount > 0 ? item.customCount : (item.a2Count > 0 ? item.a2Count : item.irsCount);
+    } else {
+      expectedCount = item.a2Count > 0 ? item.a2Count : (item.customCount > 0 ? item.customCount : (item.a1Count > 0 ? item.a1Count : item.irsCount));
+    }
+    if ((NSInteger)item.models.count < expectedCount && self.accessToken.length) {
+      [self downloadTone:item withArch:self.selectedArch];
+    }
     return;
   }
   if (item.favorite) {
@@ -1620,141 +1635,15 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   }];
 }
 
-- (void)previewTone:(ToneItem*)item withArch:(NSString*)requestedArch {
-  if (!self.accessToken.length) {
-    self.status.stringValue = @"Connect Tone3000 to preview tones";
-    return;
-  }
+- (void)fetchRemoteModelsForToneId:(NSInteger)selectedToneId
+                              arch:(NSString*)requestedArch
+                        completion:(void (^)(NSArray<NSDictionary*>*))finish {
   NSString* arch = requestedArch.length ? requestedArch : (self.selectedArch.length ? self.selectedArch : @"2");
-  NSInteger selectedToneId = item.toneId;
-  self.previewGeneration++;
-  const NSInteger gen = self.previewGeneration;
-  if (self.previewTask) {
-    [self.previewTask cancel];
-    self.previewTask = nil;
-  }
-
-  self.status.stringValue = [NSString stringWithFormat:@"Loading preview for %@…", item.title ?: @"tone"];
-
-  __weak ToneBrowserController *weakSelf = self;
-  void (^loadModelToRig)(NSDictionary*) = ^(NSDictionary *model) {
-    ToneBrowserController *s = weakSelf;
-    if (!s || s.previewGeneration != gen) return;
-    if (![model isKindOfClass:NSDictionary.class]) {
-      s.status.stringValue = @"No previewable model found";
-      return;
-    }
-    NSString *name = [model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model";
-    NSString *ext = [model[@"model_url"] isKindOfClass:NSString.class] && [model[@"model_url"] pathExtension].length
-        ? [model[@"model_url"] pathExtension] : (item.stage == 2 ? @"wav" : @"nam");
-    NSString *filename = [NSString stringWithFormat:@"preview_%ld_%@_%@.%@",
-                          (long)item.toneId, model[@"id"] ?: @"0", safeFilename(name), ext];
-    NSString *previewPath = [previewCacheDir() stringByAppendingPathComponent:filename];
-
-    void (^sendToRig)(NSString*) = ^(NSString *path) {
-      dispatch_async(dispatch_get_main_queue(), ^{
-        ToneBrowserController *strongSelf = weakSelf;
-        if (!strongSelf || strongSelf.previewGeneration != gen) return;
-        if (strongSelf.state) {
-          strongSelf.state->setStageModels((size_t)item.stage, @[path]);
-          strongSelf.state->sendPath((size_t)item.stage, path.fileSystemRepresentation);
-          strongSelf.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
-        }
-        strongSelf.status.stringValue = [NSString stringWithFormat:@"Previewing %@ — %@ (Click ★ to save)",
-                                         item.title ?: @"tone", name];
-      });
-    };
-
-    // Check if preview model is already cached on disk
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:previewPath]) {
-      sendToRig(previewPath);
-      return;
-    }
-
-    // Download single preview model file
-    NSString *urlString = [model[@"model_url"] isKindOfClass:NSString.class] ? model[@"model_url"] : nil;
-    if (!urlString.length) {
-      s.status.stringValue = @"Preview model URL unavailable";
-      return;
-    }
-
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
-    [req setValue:[@"Bearer " stringByAppendingString:s.accessToken] forHTTPHeaderField:@"Authorization"];
-    s.previewTask = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-      dispatch_async(dispatch_get_main_queue(), ^{
-        ToneBrowserController *strongSelf = weakSelf;
-        if (!strongSelf || strongSelf.previewGeneration != gen) return;
-        strongSelf.previewTask = nil;
-        NSInteger code = [(NSHTTPURLResponse*)resp statusCode];
-        if (data.length && code >= 200 && code < 300) {
-          [data writeToFile:previewPath options:NSDataWritingAtomic error:nil];
-          sendToRig(previewPath);
-        } else {
-          strongSelf.status.stringValue = @"Preview download failed";
-          [strongSelf logTone3000:[NSString stringWithFormat:@"PREVIEW DOWNLOAD FAILED (%ld): %@", (long)code, err.localizedDescription ?: @""]];
-        }
-      });
-    }];
-    [s.previewTask resume];
-  };
-
-  // Fetch model list (cache-first via fetchModelsForToneId:)
-  NSString *fetchArchParam = [arch isEqualToString:@"all"] ? @"2" : arch;
-  [self fetchModelsForToneId:selectedToneId arch:fetchArchParam page:1 accumulated:[NSMutableArray array] completion:^(NSArray *models) {
-    ToneBrowserController *s = weakSelf;
-    if (!s || s.previewGeneration != gen) return;
-    if (models.count > 0) {
-      loadModelToRig(models.firstObject);
-    } else {
-      // Fallback: if A2 had 0 models, check custom or A1
-      NSString *fallbackArch = [fetchArchParam isEqualToString:@"2"] ? @"custom" : @"1";
-      [s fetchModelsForToneId:selectedToneId arch:fallbackArch page:1 accumulated:[NSMutableArray array] completion:^(NSArray *fallbackModels) {
-        ToneBrowserController *s2 = weakSelf;
-        if (!s2 || s2.previewGeneration != gen) return;
-        if (fallbackModels.count > 0) {
-          loadModelToRig(fallbackModels.firstObject);
-        } else if (![fallbackArch isEqualToString:@"1"]) {
-          [s2 fetchModelsForToneId:selectedToneId arch:@"1" page:1 accumulated:[NSMutableArray array] completion:^(NSArray *a1Models) {
-            ToneBrowserController *s3 = weakSelf;
-            if (!s3 || s3.previewGeneration != gen) return;
-            loadModelToRig(a1Models.firstObject);
-          }];
-        } else {
-          loadModelToRig(nil);
-        }
-      }];
-    }
-  }];
-}
-
-- (void)downloadTone:(ToneItem*)item withArch:(NSString*)requestedArch {
-  if (!self.accessToken.length) {
-    self.status.stringValue = @"Connect Tone3000 to download models";
-    return;
-  }
-  NSString* arch = requestedArch.length ? requestedArch : (self.selectedArch.length ? self.selectedArch : @"2");
-  NSInteger selectedToneId = item.toneId;
-  self.status.stringValue = [NSString stringWithFormat:@"Getting models for %@…", item.title ?: @"this tone"];
-
   __weak ToneBrowserController *weakSelf = self;
   void (^fetchArch)(NSString*, void (^)(NSArray*)) = ^(NSString *a, void (^done)(NSArray*)) {
     __strong ToneBrowserController *s = weakSelf;
     if (!s) { done(@[]); return; }
     [s fetchModelsForToneId:selectedToneId arch:a page:1 accumulated:[NSMutableArray array] completion:done];
-  };
-
-  void (^finish)(NSArray*) = ^(NSArray *data) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
-      item.remoteModels = data;
-      if (data.count > 0) {
-        strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models — downloading…", (unsigned long)data.count];
-        [strongSelf downloadAllModels:item];
-      } else {
-        strongSelf.status.stringValue = @"No downloadable models found for selected format";
-      }
-    });
   };
 
   if ([arch isEqualToString:@"all"]) {
@@ -1781,8 +1670,6 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       });
     });
   } else if ([arch isEqualToString:@"2"]) {
-    // A2 default: if this tone has A2, fetch it. If it has 0 A2 models (e.g. legacy pack),
-    // fallback gracefully to custom or A1.
     fetchArch(@"2", ^(NSArray *a2) {
       if (a2.count > 0) {
         finish(a2);
@@ -1799,24 +1686,34 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       }
     });
   } else if ([arch isEqualToString:@"1"]) {
-    // A1 legacy: fetch A1, fallback to A2 if none.
     fetchArch(@"1", ^(NSArray *a1) {
       if (a1.count > 0) {
         finish(a1);
       } else {
         fetchArch(@"2", ^(NSArray *a2) {
-          finish(a2.count > 0 ? a2 : @[]);
+          if (a2.count > 0) {
+            finish(a2);
+          } else {
+            fetchArch(@"custom", ^(NSArray *custom) {
+              finish(custom);
+            });
+          }
         });
       }
     });
   } else if ([arch isEqualToString:@"custom"]) {
-    // Custom: fetch custom, fallback to A2 if none.
     fetchArch(@"custom", ^(NSArray *custom) {
       if (custom.count > 0) {
         finish(custom);
       } else {
         fetchArch(@"2", ^(NSArray *a2) {
-          finish(a2.count > 0 ? a2 : @[]);
+          if (a2.count > 0) {
+            finish(a2);
+          } else {
+            fetchArch(@"1", ^(NSArray *a1) {
+              finish(a1);
+            });
+          }
         });
       }
     });
@@ -1825,6 +1722,286 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       finish(data);
     });
   }
+}
+
+- (void)expandIncompletePreviewStagesIfNeeded {
+  if (!self.state || !self.accessToken.length) return;
+  for (size_t s = 0; s < 3; ++s) {
+    long tid = self.state->selectedToneIds[s];
+    if (tid <= 0) continue;
+    const std::string& selPath = self.state->selectedPaths[s];
+    if (selPath.empty()) continue;
+    NSString *selStr = [NSString stringWithUTF8String:selPath.c_str()];
+    if (![selStr containsString:@"/PreviewCache/"]) continue;
+    const auto& avail = self.state->availableModelPaths[s];
+    BOOL legacyFlat = [selStr.lastPathComponent hasPrefix:@"preview_"];
+    if (avail.size() <= 1 || legacyFlat) {
+      ToneItem *stub = nil;
+      for (ToneItem *it in self.allItems) {
+        if (it.toneId == (NSInteger)tid) { stub = it; break; }
+      }
+      if (!stub) {
+        stub = [[ToneItem alloc] init];
+        stub.toneId = (NSInteger)tid;
+        stub.stage = (NSInteger)s;
+        stub.title = [NSString stringWithFormat:@"Tone #%ld", tid];
+        if (!self.state->selectedImageURLs[s].empty()) {
+          stub.imageURL = [NSString stringWithUTF8String:self.state->selectedImageURLs[s].c_str()];
+        }
+        stub.artworkPath = artworkForTone(stub.toneId, stub.stage);
+      }
+      [self previewTone:stub withArch:self.selectedArch];
+      break;
+    }
+  }
+}
+
+- (void)previewModelStepWithModels:(NSArray<NSDictionary*>*)models
+                             paths:(NSArray<NSString*>*)paths
+                         attempted:(NSMutableIndexSet*)attempted
+                         downloads:(NSMutableArray<NSDictionary*>*)downloads
+                              item:(ToneItem*)item
+                            folder:(NSString*)folder
+                        generation:(NSInteger)gen {
+  if (self.previewGeneration != gen) return;
+  NSFileManager *fm = [NSFileManager defaultManager];
+  const size_t stage = (size_t)item.stage;
+
+  NSInteger targetIndex = NSNotFound;
+  // Prioritize whichever model is currently selected in the Rig dropdown if not yet on disk.
+  if (self.state && stage < self.state->selectedPaths.size() && !self.state->selectedPaths[stage].empty()) {
+    NSString *curSel = [NSString stringWithUTF8String:self.state->selectedPaths[stage].c_str()];
+    NSUInteger selIdx = [paths indexOfObject:curSel];
+    if (selIdx != NSNotFound && ![attempted containsIndex:selIdx]) {
+      NSDictionary *m = models[selIdx];
+      NSUInteger expected = [m[@"size"] respondsToSelector:@selector(longLongValue)] ? [m[@"size"] longLongValue] : 0;
+      BOOL exists = [fm fileExistsAtPath:curSel];
+      if (exists && expected > 0) {
+        NSDictionary *attr = [fm attributesOfItemAtPath:curSel error:nil];
+        if ([attr fileSize] != expected) exists = NO;
+      }
+      if (!exists) {
+        targetIndex = (NSInteger)selIdx;
+      }
+    }
+  }
+
+  // Otherwise scan sequentially for the first uncached model, recording already-cached ones.
+  if (targetIndex == NSNotFound) {
+    for (NSUInteger i = 0; i < models.count && i < paths.count; ++i) {
+      if ([attempted containsIndex:i]) continue;
+      NSDictionary *m = models[i];
+      NSString *p = paths[i];
+      NSUInteger expected = [m[@"size"] respondsToSelector:@selector(longLongValue)] ? [m[@"size"] longLongValue] : 0;
+      if ([fm fileExistsAtPath:p]) {
+        NSDictionary *attr = [fm attributesOfItemAtPath:p error:nil];
+        if (!expected || [attr fileSize] == expected) {
+          [attempted addIndex:i];
+          [downloads addObject:@{
+            @"model_id": m[@"id"] ?: @0,
+            @"original_model": m,
+            @"local_filename": p.lastPathComponent,
+            @"bytes": @([attr fileSize]),
+            @"status": @"downloaded",
+            @"downloaded_at": [[NSDate date] description]
+          }];
+          continue;
+        }
+      }
+      targetIndex = (NSInteger)i;
+      break;
+    }
+  }
+
+  if (targetIndex == NSNotFound) {
+    NSDictionary *manifest = @{@"powered_by": @"Tone3000", @"tone": item.toneData ?: @{}, @"downloads": downloads};
+    NSData *json = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:nil];
+    if (json) {
+      [json writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
+    }
+    self.status.stringValue = [NSString stringWithFormat:@"Previewing %@ — %lu model%@ ready (Click ★ to save)",
+                               item.title ?: @"tone",
+                               (unsigned long)paths.count,
+                               paths.count == 1 ? @"" : @"s"];
+    return;
+  }
+
+  [attempted addIndex:(NSUInteger)targetIndex];
+  NSDictionary *model = models[(NSUInteger)targetIndex];
+  NSString *previewPath = paths[(NSUInteger)targetIndex];
+  NSString *name = [model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model";
+  NSString *urlString = [model[@"model_url"] isKindOfClass:NSString.class] ? model[@"model_url"] : nil;
+  if (!urlString.length) {
+    [self previewModelStepWithModels:models paths:paths attempted:attempted downloads:downloads item:item folder:folder generation:gen];
+    return;
+  }
+
+  self.status.stringValue = [NSString stringWithFormat:@"Previewing %@ — loading %lu of %lu (%@)…",
+                             item.title ?: @"tone",
+                             (unsigned long)attempted.count,
+                             (unsigned long)models.count,
+                             name];
+
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+  [req setValue:[@"Bearer " stringByAppendingString:self.accessToken] forHTTPHeaderField:@"Authorization"];
+  __weak ToneBrowserController *weakSelf = self;
+  self.previewTask = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ToneBrowserController *strongSelf = weakSelf;
+      if (!strongSelf || strongSelf.previewGeneration != gen) return;
+      strongSelf.previewTask = nil;
+      NSInteger code = [(NSHTTPURLResponse*)resp statusCode];
+      if (data.length && code >= 200 && code < 300) {
+        [data writeToFile:previewPath options:NSDataWritingAtomic error:nil];
+        [downloads addObject:@{
+          @"model_id": model[@"id"] ?: @0,
+          @"original_model": model,
+          @"local_filename": previewPath.lastPathComponent,
+          @"bytes": @(data.length),
+          @"status": @"downloaded",
+          @"downloaded_at": [[NSDate date] description]
+        }];
+        if (strongSelf.state && stage < strongSelf.state->selectedPaths.size()) {
+          NSString *curSel = [NSString stringWithUTF8String:strongSelf.state->selectedPaths[stage].c_str()];
+          if ([curSel isEqualToString:previewPath]) {
+            strongSelf.state->sendPath(stage, previewPath.fileSystemRepresentation);
+          }
+        }
+      } else {
+        [strongSelf logTone3000:[NSString stringWithFormat:@"PREVIEW DOWNLOAD FAILED (%@, %ld): %@",
+                                 name, (long)code, err.localizedDescription ?: @""]];
+      }
+      [strongSelf previewModelStepWithModels:models paths:paths attempted:attempted downloads:downloads item:item folder:folder generation:gen];
+    });
+  }];
+  [self.previewTask resume];
+}
+
+- (void)previewTone:(ToneItem*)item withArch:(NSString*)requestedArch {
+  if (!self.accessToken.length) {
+    self.status.stringValue = @"Connect Tone3000 to preview tones";
+    return;
+  }
+  NSString* arch = requestedArch.length ? requestedArch : (self.selectedArch.length ? self.selectedArch : @"2");
+  NSInteger selectedToneId = item.toneId;
+  self.previewGeneration++;
+  const NSInteger gen = self.previewGeneration;
+  if (self.previewTask) {
+    [self.previewTask cancel];
+    self.previewTask = nil;
+  }
+
+  self.status.stringValue = [NSString stringWithFormat:@"Loading preview for %@…", item.title ?: @"tone"];
+
+  __weak ToneBrowserController *weakSelf = self;
+  [self fetchRemoteModelsForToneId:selectedToneId arch:arch completion:^(NSArray<NSDictionary*>* models) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ToneBrowserController *strongSelf = weakSelf;
+      if (!strongSelf || strongSelf.previewGeneration != gen) return;
+      if (models.count == 0) {
+        strongSelf.status.stringValue = @"No previewable model found";
+        return;
+      }
+      item.remoteModels = models;
+
+      NSString *folder = [[previewCacheDir() stringByAppendingPathComponent:
+                           [NSString stringWithFormat:@"%ld", (long)item.toneId]] copy];
+      NSFileManager *fm = [NSFileManager defaultManager];
+      [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+
+      NSMutableArray<NSString*>* previewPaths = [NSMutableArray arrayWithCapacity:models.count];
+      NSMutableSet<NSString*>* usedFilenames = [NSMutableSet set];
+      for (NSDictionary *model in models) {
+        if (![model isKindOfClass:NSDictionary.class]) continue;
+        NSString *name = [model[@"name"] isKindOfClass:NSString.class] ? model[@"name"] : @"Tone3000 Model";
+        NSString *ext = [model[@"model_url"] isKindOfClass:NSString.class] && [model[@"model_url"] pathExtension].length
+            ? [model[@"model_url"] pathExtension] : (item.stage == 2 ? @"wav" : @"nam");
+        NSString *baseName = safeFilename(name);
+        NSString *filename = [baseName stringByAppendingPathExtension:ext];
+        if ([usedFilenames containsObject:filename]) {
+          NSString *archSuffix = model[@"architecture_version"]
+              ? [NSString stringWithFormat:@" (A%@)", model[@"architecture_version"]]
+              : [NSString stringWithFormat:@" (%@)", model[@"id"] ?: @"alt"];
+          filename = [[baseName stringByAppendingString:archSuffix] stringByAppendingPathExtension:ext];
+          if ([usedFilenames containsObject:filename]) {
+            filename = [[baseName stringByAppendingFormat:@" (%@)", model[@"id"] ?: @"alt"] stringByAppendingPathExtension:ext];
+          }
+        }
+        [usedFilenames addObject:filename];
+        NSString *previewPath = [folder stringByAppendingPathComponent:filename];
+        NSString *legacyName = [NSString stringWithFormat:@"preview_%ld_%@_%@.%@",
+                                (long)item.toneId, model[@"id"] ?: @"0", baseName, ext];
+        NSString *legacyPath = [previewCacheDir() stringByAppendingPathComponent:legacyName];
+        if (![fm fileExistsAtPath:previewPath] && [fm fileExistsAtPath:legacyPath]) {
+          [fm copyItemAtPath:legacyPath toPath:previewPath error:nil];
+        }
+        [previewPaths addObject:previewPath];
+      }
+
+      if (previewPaths.count == 0) {
+        strongSelf.status.stringValue = @"No previewable model found";
+        return;
+      }
+
+      const size_t stage = (size_t)item.stage;
+      NSString *initialSelection = previewPaths.firstObject;
+      if (strongSelf.state && stage < strongSelf.state->selectedPaths.size() &&
+          strongSelf.state->selectedToneIds[stage] == item.toneId &&
+          !strongSelf.state->selectedPaths[stage].empty()) {
+        NSString *cur = [NSString stringWithUTF8String:strongSelf.state->selectedPaths[stage].c_str()];
+        for (NSString *p in previewPaths) {
+          if ([cur isEqualToString:p] || [cur.lastPathComponent hasSuffix:p.lastPathComponent]) {
+            initialSelection = p;
+            break;
+          }
+        }
+      }
+
+      if (strongSelf.state) {
+        if (stage < strongSelf.state->selectedPaths.size() && initialSelection.length) {
+          strongSelf.state->selectedPaths[stage] = initialSelection.fileSystemRepresentation;
+          strongSelf.state->persistSelectedPaths();
+        }
+        strongSelf.state->setStageModels(stage, previewPaths);
+        strongSelf.state->setStageThumb(stage, item.artworkPath, item.toneId, item.imageURL);
+        if (initialSelection.length && [fm fileExistsAtPath:initialSelection]) {
+          strongSelf.state->sendPath(stage, initialSelection.fileSystemRepresentation);
+        }
+      }
+
+      [strongSelf previewModelStepWithModels:models
+                                       paths:previewPaths
+                                   attempted:[NSMutableIndexSet indexSet]
+                                   downloads:[NSMutableArray array]
+                                        item:item
+                                      folder:folder
+                                  generation:gen];
+    });
+  }];
+}
+
+- (void)downloadTone:(ToneItem*)item withArch:(NSString*)requestedArch {
+  if (!self.accessToken.length) {
+    self.status.stringValue = @"Connect Tone3000 to download models";
+    return;
+  }
+  NSString* arch = requestedArch.length ? requestedArch : (self.selectedArch.length ? self.selectedArch : @"2");
+  NSInteger selectedToneId = item.toneId;
+  self.status.stringValue = [NSString stringWithFormat:@"Getting models for %@…", item.title ?: @"this tone"];
+
+  __weak ToneBrowserController *weakSelf = self;
+  [self fetchRemoteModelsForToneId:selectedToneId arch:arch completion:^(NSArray<NSDictionary*>* data) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
+      item.remoteModels = data;
+      if (data.count > 0) {
+        strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models — downloading…", (unsigned long)data.count];
+        [strongSelf downloadAllModels:item];
+      } else {
+        strongSelf.status.stringValue = @"No downloadable models found for selected format";
+      }
+    });
+  }];
 }
 
 // Populate the selected stage's tile selector and load the first model.
@@ -1911,6 +2088,25 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       return;
     }
   }
+  // Reuse cached preview file if already downloaded during preview:
+  NSString* previewCandidate = [[previewCacheDir() stringByAppendingPathComponent:
+                                 [NSString stringWithFormat:@"%ld", (long)item.toneId]]
+                                stringByAppendingPathComponent:filename];
+  if ([fm fileExistsAtPath:previewCandidate]) {
+    NSDictionary* attr = [fm attributesOfItemAtPath:previewCandidate error:nil];
+    if (!expected || [attr fileSize] == expected) {
+      [fm removeItemAtPath:path error:nil];
+      if ([fm copyItemAtPath:previewCandidate toPath:path error:nil]) {
+        NSDictionary* download = @{@"model_id": model[@"id"] ?: @0, @"original_model": model,
+                                   @"local_filename": filename, @"bytes": @([attr fileSize]),
+                                   @"status": @"downloaded", @"downloaded_at": [[NSDate date] description]};
+        if (existing) [downloads removeObjectIdenticalTo:existing];
+        [downloads addObject:download];
+        [self downloadModelStep:index + 1 of:models item:item folder:folder downloads:downloads];
+        return;
+      }
+    }
+  }
   NSString* urlString = [model[@"model_url"] isKindOfClass:NSString.class] ? model[@"model_url"] : nil;
   if (!urlString.length) {
     [self downloadModelStep:index + 1 of:models item:item folder:folder downloads:downloads];
@@ -1955,10 +2151,24 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   item.models = paths; item.local = YES;
   self.status.stringValue = [NSString stringWithFormat:@"%ld models ready — %@", (long)paths.count, item.title];
   if (self.state) {
-    self.state->setStageModels((size_t)item.stage, item.models);
-    if (paths.count) {
-      self.state->sendPath((size_t)item.stage, paths.firstObject.fileSystemRepresentation);
-      self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
+    const size_t stage = (size_t)item.stage;
+    NSString* chosen = paths.firstObject;
+    if (stage < self.state->selectedPaths.size() && !self.state->selectedPaths[stage].empty()) {
+      NSString* cur = [NSString stringWithUTF8String:self.state->selectedPaths[stage].c_str()];
+      for (NSString* p in paths) {
+        if ([cur isEqualToString:p] || [cur.lastPathComponent isEqualToString:p.lastPathComponent]) {
+          chosen = p;
+          break;
+        }
+      }
+    }
+    if (chosen.length && stage < self.state->selectedPaths.size()) {
+      self.state->selectedPaths[stage] = chosen.fileSystemRepresentation;
+    }
+    self.state->setStageModels(stage, item.models);
+    if (chosen.length) {
+      self.state->sendPath(stage, chosen.fileSystemRepresentation);
+      self.state->setStageThumb(stage, item.artworkPath, item.toneId, item.imageURL);
     }
   }
   [self.collectionView reloadData];
