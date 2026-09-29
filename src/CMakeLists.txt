@@ -209,7 +209,8 @@ if (APPLE)
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
 			${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK}
 			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK})
-		target_compile_options(axe_fx_standalone PRIVATE -fobjc-arc)
+		target_compile_options(axe_fx_standalone PRIVATE -fobjc-arc -mmacosx-version-min=11.0)
+		target_link_options(axe_fx_standalone PRIVATE "-Wl,-platform_version,macos,11.0,14.5")
 		set_target_properties(axe_fx_standalone PROPERTIES
 			OUTPUT_NAME "Axe FX"
 			MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/resources/standalone-Info.plist.in")

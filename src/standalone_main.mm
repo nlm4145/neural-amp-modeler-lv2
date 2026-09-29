@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
@@ -204,6 +205,13 @@ class StandaloneHost {
 
   double sampleRate() const { return sampleRate_; }
 
+  void setCpuMeterViews(NSTextField* label, NSView* barFill, NSView* barSlot) {
+    cpuLabel_ = label;
+    cpuBarFill_ = barFill;
+    cpuBarSlot_ = barSlot;
+    updateCpuDisplay();
+  }
+
  private:
   struct WorkItem { std::vector<uint8_t> data; };
   struct WorkResponse { std::vector<uint8_t> data; };
@@ -379,6 +387,30 @@ class StandaloneHost {
     // Output controls are cheap to poll at UI rate (tuner and auto-cab state).
     for (uint32_t port : {11u, 17u, 18u, 29u})
       uiDescriptor_->port_event(uiHandle_, port, sizeof(float), 0, &controls_[port - 4]);
+
+    updateCpuDisplay();
+  }
+
+  void updateCpuDisplay() {
+    const float pct = cpuLoadPercent_.load(std::memory_order_relaxed);
+    const float clamped = std::max(0.0f, std::min(100.0f, pct));
+    if (cpuLabel_) {
+      cpuLabel_.stringValue = [NSString stringWithFormat:@"CPU %4.1f%%", clamped];
+    }
+    if (cpuBarFill_ && cpuBarSlot_) {
+      const CGFloat slotW = cpuBarSlot_.bounds.size.width;
+      const CGFloat fillW = std::max<CGFloat>(0.0, std::min<CGFloat>(slotW, slotW * (clamped / 100.0f)));
+      cpuBarFill_.frame = NSMakeRect(0, 0, fillW, cpuBarSlot_.bounds.size.height);
+      NSColor* fillColor =
+          clamped > 80.0f ? [NSColor colorWithSRGBRed:0.95 green:0.22 blue:0.20 alpha:1.0]
+        : clamped > 50.0f ? [NSColor colorWithSRGBRed:1.00 green:0.60 blue:0.20 alpha:1.0]
+                          : [NSColor colorWithSRGBRed:0.20 green:0.82 blue:0.96 alpha:1.0];
+      cpuBarFill_.layer.backgroundColor = fillColor.CGColor;
+    }
+    if (window_ && (++subtitleTick_ % 6 == 1)) {
+      window_.subtitle = [NSString stringWithFormat:@"Live input · %.0f Hz · CPU %.1f%%",
+                                                    sampleRate_, clamped];
+    }
   }
 
   static OSStatus render(void* context, AudioUnitRenderActionFlags* flags,
@@ -396,6 +428,8 @@ class StandaloneHost {
             std::memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
       return noErr;
     }
+
+    const auto t0 = std::chrono::steady_clock::now();
 
     AudioBufferList inputList{};
     inputList.mNumberBuffers = 1;
@@ -432,6 +466,20 @@ class StandaloneHost {
       } else if (destination) {
         for (UInt32 frame = 0; frame < frames; ++frame)
           destination[frame] = 0.5f * (output_[frame] + outputR_[frame]);
+      }
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    if (sampleRate_ > 0.0 && frames > 0) {
+      const double elapsedSec = std::chrono::duration<double>(t1 - t0).count();
+      const double budgetSec = static_cast<double>(frames) / sampleRate_;
+      if (budgetSec > 0.0) {
+        float pct = static_cast<float>((elapsedSec / budgetSec) * 100.0);
+        if (pct < 0.0f) pct = 0.0f;
+        if (pct > 100.0f) pct = 100.0f;
+        const float prev = cpuLoadPercent_.load(std::memory_order_relaxed);
+        const float smoothed = prev <= 0.001f ? pct : (0.88f * prev + 0.12f * pct);
+        cpuLoadPercent_.store(smoothed, std::memory_order_relaxed);
       }
     }
     return noErr;
@@ -522,6 +570,11 @@ class StandaloneHost {
 
   NSWindow* __weak window_ = nil;
   NSView* __weak parentView_ = nil;
+  NSTextField* __weak cpuLabel_ = nil;
+  NSView* __weak cpuBarFill_ = nil;
+  NSView* __weak cpuBarSlot_ = nil;
+  std::atomic<float> cpuLoadPercent_{0.0f};
+  uint32_t subtitleTick_ = 0;
   NSTimer* __strong uiTimer_ = nil;
   AudioUnit audioUnit_ = nullptr;
   double sampleRate_ = 48000.0;
@@ -567,6 +620,7 @@ class StandaloneHost {
 }  // namespace
 
 @interface StandaloneContentRootView : NSView
+@property(nonatomic, strong) NSView* cpuPill;
 @end
 
 @implementation StandaloneContentRootView
@@ -577,6 +631,17 @@ class StandaloneHost {
       [child setNeedsLayout:YES];
     }
     [sub setNeedsLayout:YES];
+  }
+  if (_cpuPill) {
+    const CGFloat pillW = 136.0;
+    const CGFloat pillH = 24.0;
+    const CGFloat pillX = self.bounds.size.width - 24.0 - pillW;
+    const CGFloat pillY = self.bounds.size.height - kToolbarStripHeight + (kToolbarStripHeight - pillH) / 2.0;
+    _cpuPill.frame = NSMakeRect(pillX, pillY, pillW, pillH);
+    if (self.subviews.lastObject != _cpuPill) {
+      [_cpuPill removeFromSuperview];
+      [self addSubview:_cpuPill positioned:NSWindowAbove relativeTo:nil];
+    }
   }
 }
 
@@ -638,6 +703,37 @@ class StandaloneHost {
   _pluginHostView.autoresizingMask = NSViewNotSizable;
   [rootContent addSubview:_pluginHostView];
 
+  // Top-right CPU meter pill in the header toolbar strip (matches input/output dB pills).
+  NSView* cpuPill = [[NSView alloc] initWithFrame:NSMakeRect(1520 - 24 - 136, 980 + 2, 136, 24)];
+  cpuPill.wantsLayer = YES;
+  cpuPill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0].CGColor;
+  cpuPill.layer.cornerRadius = 8.0;
+  cpuPill.layer.borderWidth = 1.0;
+  cpuPill.layer.borderColor = [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0].CGColor;
+  cpuPill.toolTip = @"Real-time audio DSP CPU load (% of audio callback buffer budget).";
+
+  NSTextField* cpuLabel = [NSTextField labelWithString:@"CPU  0.0%"];
+  cpuLabel.font = [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium];
+  cpuLabel.textColor = [NSColor colorWithSRGBRed:0.86 green:0.89 blue:0.95 alpha:1.0];
+  cpuLabel.alignment = NSTextAlignmentLeft;
+  cpuLabel.frame = NSMakeRect(8, 4, 68, 16);
+  [cpuPill addSubview:cpuLabel];
+
+  NSView* cpuSlot = [[NSView alloc] initWithFrame:NSMakeRect(78, 8, 50, 8)];
+  cpuSlot.wantsLayer = YES;
+  cpuSlot.layer.backgroundColor = [NSColor colorWithSRGBRed:0.125 green:0.145 blue:0.188 alpha:1.0].CGColor;
+  cpuSlot.layer.cornerRadius = 2.0;
+  [cpuPill addSubview:cpuSlot];
+
+  NSView* cpuFill = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 0, 8)];
+  cpuFill.wantsLayer = YES;
+  cpuFill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.20 green:0.82 blue:0.96 alpha:1.0].CGColor;
+  cpuFill.layer.cornerRadius = 2.0;
+  [cpuSlot addSubview:cpuFill];
+
+  rootContent.cpuPill = cpuPill;
+  [rootContent addSubview:cpuPill positioned:NSWindowAbove relativeTo:nil];
+
   [_window center];
 
   _host = std::make_unique<StandaloneHost>();
@@ -650,7 +746,9 @@ class StandaloneHost {
     [NSApp terminate:nil];
     return;
   }
-  _window.subtitle = [NSString stringWithFormat:@"Live input · %.0f Hz", _host->sampleRate()];
+  _host->setCpuMeterViews(cpuLabel, cpuFill, cpuSlot);
+  _window.subtitle = [NSString stringWithFormat:@"Live input · %.0f Hz · CPU 0.0%%", _host->sampleRate()];
+  [rootContent setNeedsLayout:YES];
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 }

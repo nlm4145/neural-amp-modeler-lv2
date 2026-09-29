@@ -12,6 +12,7 @@
   <key>CFBundleVersion</key><string>@PROJECT_VERSION@</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>UIDesignRequiresCompatibility</key><true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>Axe FX needs audio input to process your instrument live.</string>
 </dict>
