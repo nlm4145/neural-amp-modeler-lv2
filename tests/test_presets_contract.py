@@ -91,6 +91,16 @@ assert "applyABDropdownHighlight(abPresetB, abCycling && !abShowingA);" in ui_st
     "updateABStatus must highlight abPresetB yellow when B is active during A/B testing"
 assert 'filterWithName:@"CIColorMatrix"' in ui_state_h, \
     "applyABDropdownHighlight must use CIColorMatrix to tint the active white dropdown yellow"
+assert "installKeyEventMonitor" in ui_state_h and "state->installKeyEventMonitor();" in ui_mm, \
+    "UI must install a local key event monitor for Cmd+S and arrow keys"
+assert "stopKeyEventMonitor" in ui_state_h and "state->stopKeyEventMonitor();" in ui_mm, \
+    "UI must remove the local key event monitor on teardown"
+assert "[(id)selfState->uiController saveCurrentPreset:nil];" in ui_state_h, \
+    "Cmd+S must save the current preset"
+assert "[(id)selfState->uiController prevPresetClicked:nil];" in ui_state_h, \
+    "Left arrow key must select the previous (up) preset"
+assert "[(id)selfState->uiController nextPresetClicked:nil];" in ui_state_h, \
+    "Right arrow key must select the next (down) preset"
 
 # 7. Test preset JSON serialization / deserialization round-trip
 sample_preset = {

@@ -37,11 +37,19 @@
 @class NAMRigUIController;
 @class ToneBrowserController;
 
+@interface NSObject (NAMRigPresetShortcuts)
+- (void)saveCurrentPreset:(id)sender;
+- (void)savePresetAs:(id)sender;
+- (void)prevPresetClicked:(id)sender;
+- (void)nextPresetClicked:(id)sender;
+@end
+
 struct RigUIState {
   std::shared_ptr<bool> isAlive = std::make_shared<bool>(true);
 
   ~RigUIState() {
     if (isAlive) *isAlive = false;
+    stopKeyEventMonitor();
     stopABTimer();
   }
 
@@ -550,6 +558,69 @@ struct RigUIState {
                                             selector:@selector(abTimerFired:)
                                             userInfo:nil
                                              repeats:YES];
+  }
+
+  __strong id keyEventMonitor = nil;
+
+  void stopKeyEventMonitor() {
+    if (keyEventMonitor) {
+      [NSEvent removeMonitor:keyEventMonitor];
+      keyEventMonitor = nil;
+    }
+  }
+
+  void installKeyEventMonitor() {
+    stopKeyEventMonitor();
+    auto alive = this->isAlive;
+    RigUIState* selfState = this;
+    keyEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+        handler:^NSEvent* _Nullable(NSEvent* event) {
+      if (!alive || !*alive || !selfState->view || !selfState->uiController) return event;
+      NSWindow* win = selfState->view.window;
+      if (!win || !win.isKeyWindow || selfState->view.isHiddenOrHasHiddenAncestor) return event;
+      if ([NSApp modalWindow] != nil) return event;
+
+      NSEventModifierFlags mods = event.modifierFlags &
+          (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+           NSEventModifierFlagControl | NSEventModifierFlagShift);
+      NSString* chars = [event.charactersIgnoringModifiers lowercaseString] ?: @"";
+
+      // Cmd+S saves the current preset (Cmd+Shift+S opens Save Preset As...)
+      if (mods == NSEventModifierFlagCommand &&
+          ([chars isEqualToString:@"s"] || event.keyCode == 1)) {
+        if ([win.firstResponder isKindOfClass:[NSText class]]) {
+          [win makeFirstResponder:nil];
+        }
+        [(id)selfState->uiController saveCurrentPreset:nil];
+        return nil;
+      }
+      if (mods == (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
+          ([chars isEqualToString:@"s"] || event.keyCode == 1)) {
+        if ([win.firstResponder isKindOfClass:[NSText class]]) {
+          [win makeFirstResponder:nil];
+        }
+        [(id)selfState->uiController savePresetAs:nil];
+        return nil;
+      }
+
+      // Left / Right arrows move up / down in preset selection when not editing text
+      if (mods == 0) {
+        BOOL isEditingText = [win.firstResponder isKindOfClass:[NSText class]];
+        if (!isEditingText) {
+          const unsigned short kc = event.keyCode;
+          const unichar ch = chars.length > 0 ? [chars characterAtIndex:0] : 0;
+          if (kc == 123 || ch == NSLeftArrowFunctionKey) {
+            [(id)selfState->uiController prevPresetClicked:nil];
+            return nil;
+          }
+          if (kc == 124 || ch == NSRightArrowFunctionKey) {
+            [(id)selfState->uiController nextPresetClicked:nil];
+            return nil;
+          }
+        }
+      }
+      return event;
+    }];
   }
 
   void stopABTimer() {

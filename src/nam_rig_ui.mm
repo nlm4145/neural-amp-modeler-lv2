@@ -251,6 +251,9 @@ static NSString* stageName(NSInteger stage) {
   _state->sendControl((uint32_t)port, (float)clamped);
   _state->updateControl((uint32_t)port, (float)clamped);
   [self markPresetModified];
+  if ([sender.window.firstResponder isKindOfClass:[NSText class]]) {
+    [sender.window makeFirstResponder:nil];
+  }
 }
 
 // Tuner on/off: drives the tuner_enable port and updates active button state.
@@ -1118,6 +1121,13 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 @end
 
 @implementation NAMRigRootView
+- (void)mouseDown:(NSEvent*)event {
+  if ([self.window.firstResponder isKindOfClass:[NSText class]]) {
+    [self.window makeFirstResponder:nil];
+  }
+  [super mouseDown:event];
+}
+
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
   if (!self.window) {
@@ -2619,7 +2629,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     // Preset management controls: [ ◀ ] [ Preset: Name ▾ ] [ ▶ ] [ SAVE ]
     RigButton* prevPresetBtn = rigButton(rigGroup, @"◀", state->uiController,
                                          @selector(prevPresetClicked:), NSZeroRect);
-    prevPresetBtn.toolTip = @"Switch to the previous preset.";
+    prevPresetBtn.toolTip = @"Switch to the previous preset (Left Arrow ←).";
     prevPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
     state->prevPresetBtn = prevPresetBtn;
     [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:outMp.trailingAnchor constant:12] setActive:YES];
@@ -2631,7 +2641,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     presetPop.controlSize = NSControlSizeSmall;
     presetPop.target = state->uiController;
     presetPop.action = @selector(presetPopupChanged:);
-    presetPop.toolTip = @"Active preset. Click to select a preset, save, or manage presets.";
+    presetPop.toolTip = @"Active preset. Click to select a preset, use ←/→ to step up/down through presets, or press ⌘S to save.";
     presetPop.translatesAutoresizingMaskIntoConstraints = NO;
     [rigGroup addSubview:presetPop];
     state->presetPopup = presetPop;
@@ -2642,7 +2652,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     RigButton* nextPresetBtn = rigButton(rigGroup, @"▶", state->uiController,
                                          @selector(nextPresetClicked:), NSZeroRect);
-    nextPresetBtn.toolTip = @"Switch to the next preset.";
+    nextPresetBtn.toolTip = @"Switch to the next preset (Right Arrow →).";
     nextPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
     state->nextPresetBtn = nextPresetBtn;
     [[nextPresetBtn.leadingAnchor constraintEqualToAnchor:presetPop.trailingAnchor constant:4] setActive:YES];
@@ -3191,6 +3201,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->rebuildPresetMenu();
     state->refreshABMenus();
     state->updateABStatus();
+    state->installKeyEventMonitor();
     return state;
   }
 }
@@ -3198,6 +3209,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 void cleanup(LV2UI_Handle handle) {
   auto* state = static_cast<RigUIState*>(handle);
   if (state) {
+    state->stopKeyEventMonitor();
     state->stopABTimer();   // invalidate the A/B timer before teardown (do not call stopAB() which queues UI rebuilds)
     if (state->uiController) {
       state->uiController.state = nullptr;

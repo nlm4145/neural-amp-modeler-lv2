@@ -42,6 +42,9 @@
 // (incremental deltas, so toggling Shift can't make the value leap).
 - (void)mouseDown:(NSEvent*)event {
   if (!self.enabled) return;
+  if ([self.window.firstResponder isKindOfClass:[NSText class]]) {
+    [self.window makeFirstResponder:nil];
+  }
   if (event.clickCount == 2) {
     self.doubleValue = self.defaultValue;
     [self sendAction:self.action to:self.target];
