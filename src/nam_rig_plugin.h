@@ -41,6 +41,7 @@
 
 namespace NAMRig {
 class WavIR;
+class CabinetWorker;
 static constexpr unsigned int MAX_FILE_NAME = 1024;
 
 enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 };
@@ -212,7 +213,9 @@ public:
   bool initialize(double rate, const LV2_Feature* const* features) noexcept;
   void setSampleRateAndReload(double rate) noexcept;
   void setMaxBufferSize(int size) noexcept;
-  void process(uint32_t sampleCount) noexcept;
+  void process(uint32_t sampleCount, uint64_t cabinetDeadlineTicks = 0) noexcept;
+  // The standalone host owns this executor; change it only with audio stopped.
+  void setCabinetWorker(CabinetWorker* worker) noexcept { cabinetWorker = worker; }
   void writePath(Stage stage);
   void writeAllPaths();
 
@@ -236,6 +239,8 @@ public:
                                   const LV2_Feature* const* features);
 
 private:
+  CabinetWorker* cabinetWorker = nullptr;
+  uint64_t cabinetDeadlineTicks = 0;
   struct URIs {
     LV2_URID atomObject;
     LV2_URID atomInt;

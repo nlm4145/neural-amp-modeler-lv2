@@ -1,4 +1,5 @@
 #include "nam_rig_plugin.h"
+#include "cabinet_worker.h"
 
 #include <algorithm>
 #include <cassert>
@@ -331,8 +332,8 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                              message->oversampleMode, message->generation,
                              {}, nullptr, nullptr, nullptr, false};
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
-  const int requestedMode = Plugin::decodeOversample(
-      static_cast<float>(message->oversampleMode));
+  const int requestedMode = message->stage == Stage::Cab2 ? Plugin::kOsLegacy2
+      : Plugin::decodeOversample(static_cast<float>(message->oversampleMode));
 
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
@@ -462,7 +463,9 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   const int desiredMode = index == 0 ? rig->osRequested[0]
                         : index == stageIndex(Stage::Cab2) ? Plugin::kOsLegacy2
                                                            : rig->osRequested[1];
-  if (Plugin::decodeOversample((float)message->oversampleMode) != desiredMode) {
+  const int responseMode = index == stageIndex(Stage::Cab2) ? Plugin::kOsLegacy2
+      : Plugin::decodeOversample((float)message->oversampleMode);
+  if (responseMode != desiredMode) {
     // The mode changed while an initial/path load was in flight, before
     // reloadModelsForOversample() had an installed model to reschedule.
     // Reuse the completed response's path and load it for the latest domain.
@@ -481,8 +484,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   pending.model = message->model;
   pending.ir = message->ir;
   pending.irRight = message->irRight;
-  pending.oversampleMode = Plugin::decodeOversample(
-      static_cast<float>(message->oversampleMode));
+  pending.oversampleMode = responseMode;
   pending.fullRig = message->fullRig;
   std::memcpy(pending.path, message->path, MAX_FILE_NAME);
   pending.ready = true;
@@ -515,7 +517,8 @@ void Plugin::tunerSetRates(double rate) {
   tuner.lp2.reset();
 }
 
-void Plugin::process(uint32_t sampleCount) noexcept {
+void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
+  cabinetDeadlineTicks = deadlineTicks;
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
       !ports.audio_out_r || !ports.stereo_width || !ports.room ||
       !ports.presence || !ports.depth || !ports.sag || !ports.bias ||
@@ -1186,6 +1189,23 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     bool stereoA = false;
     if (parallelCabs) std::memcpy(preCab.data(), L, n * sizeof(float));
 
+    struct CabJob {
+      Plugin* plugin;
+      NeuralAudio::NeuralModel* model;
+      float* samples;
+      uint32_t count;
+      double rate;
+    } job{this, models[3], cabBL.data(), n, sampleRate};
+    bool cabBDispatched = false;
+    if (cabinetWorker && parallelCabs && enabled[2] && models[2] && !irs[2] &&
+        models[3] && !irs[3]) {
+      std::memcpy(job.samples, preCab.data(), n * sizeof(float));
+      cabBDispatched = cabinetWorker->submit([](void* context) noexcept {
+        auto& j = *static_cast<CabJob*>(context);
+        j.plugin->runModel(3, j.model, j.samples, j.count, j.rate);
+      }, &job, cabinetDeadlineTicks);
+    }
+
     if (enabled[2]) {
       if (irs[2]) {
         if (irsRight[2]) {
@@ -1216,7 +1236,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     if (parallelCabs) {
       float* BL = cabBL.data();
       float* BR = cabBR.data();
-      std::memcpy(BL, preCab.data(), n * sizeof(float));
+      if (!cabBDispatched) std::memcpy(BL, preCab.data(), n * sizeof(float));
       if (irs[3]) {
         if (irsRight[3]) {
           std::memcpy(BR, BL, n * sizeof(float));
@@ -1225,7 +1245,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         irs[3]->process(BL, n, norm);
         if (!irsRight[3]) std::memcpy(BR, BL, n * sizeof(float));
       } else {
-        runModel(3, models[3], BL, n, sampleRate);
+        // Always finish the published job before touching B, switching models,
+        // or leaving this slice. A timeout cannot safely retry recurrent DSP.
+        if (cabBDispatched) cabinetWorker->wait();
+        else runModel(3, models[3], BL, n, sampleRate);
         std::memcpy(BR, BL, n * sizeof(float));
       }
       const int cabFactor = haveA && models[2] && !irs[2]
@@ -1550,7 +1573,8 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
     pending.irRight = nullptr;
     pending.ready = false;
   }
-  LV2LoadModelMsg message{kWorkTypeLoad, stage, decodeOversample((float)mode),
+  LV2LoadModelMsg message{kWorkTypeLoad, stage,
+                          stage == Stage::Cab2 ? kOsLegacy2 : decodeOversample((float)mode),
                           ++loadGeneration[index], {}};
   std::memcpy(message.path, path, length);
   message.path[length] = '\0';

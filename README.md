@@ -121,6 +121,31 @@ the desired guitar interface as the system input and output before launching.
 To build and install without launching, pass `--no-launch`. For a non-system
 destination, set `INSTALL_DIR` when invoking the script.
 
+#### Experimental dual-NAM cabinet threading
+
+Launch the built app with `AXE_FX_PARALLEL_CABS=1` to process Cab B on a
+prestarted real-time helper while Cab A runs on the audio thread:
+
+```bash
+AXE_FX_PARALLEL_CABS=1 "build-standalone/src/Axe FX.app/Contents/MacOS/Axe FX"
+```
+
+This applies only when both enabled cabinets are NAM models. WAV IRs, single
+cabinets, LV2 hosts, and devices without a usable audio workgroup stay serial.
+Model quality, oversampling, blend math, and reported latency are unchanged;
+each Cab B job completes in the same buffer before mixing. Workgroup membership
+helps macOS coordinate the threads, but does not pin them to performance cores
+or guarantee a speedup. Wakeup overhead can outweigh savings on small models.
+The option defaults off pending real-device dropout/deadline measurements.
+
+Build and run the worker/lifecycle and bit-equality checks independently:
+
+```bash
+cmake --build build-standalone --target verify_cabinet_worker verify_parallel_cabs
+build-standalone/src/verify_cabinet_worker
+build-standalone/src/verify_parallel_cabs --benchmark
+```
+
 ## CMake Options
 
 ```-DUSE_NATIVE_ARCH=ON```: If you have a relatively modern x64 processor, you can pass ```-DUSE_NATIVE_ARCH=ON``` on your cmake command line to enable certain processor-specific optimizations.

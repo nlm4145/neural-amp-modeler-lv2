@@ -1,6 +1,8 @@
 #import <Cocoa/Cocoa.h>
 #import <AudioUnit/AudioUnit.h>
 #import <CoreAudio/CoreAudio.h>
+#include <os/workgroup.h>
+#include <mach/mach_time.h>
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/util.h>
@@ -18,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -29,6 +32,7 @@
 #include <vector>
 
 #include "nam_rig_plugin.h"
+#include "cabinet_worker.h"
 
 extern "C" const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index);
 
@@ -613,6 +617,16 @@ class StandaloneHost {
   }
 
   void stopAudioUnits() {
+    // CoreAudio must finish its callback (and that callback's cab job) before
+    // the helper leaves the old workgroup or its AudioUnit is disposed.
+    // Close the callback gate even if CoreAudio reports a stop error. New
+    // callbacks render silence; only the existing callback owns the cab wait.
+    renderState_.fetch_or(kRenderSuspended, std::memory_order_acq_rel);
+    if (audioUnit_) AudioOutputUnitStop(audioUnit_);
+    while (renderState_.load(std::memory_order_acquire) & kRenderActive)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (plugin_) plugin_->setCabinetWorker(nullptr);
+    cabinetWorker_.stop();
     if (inputUnit_) {
       AudioOutputUnitStop(inputUnit_);
       AudioUnitUninitialize(inputUnit_);
@@ -1148,15 +1162,26 @@ class StandaloneHost {
 
   OSStatus renderAudio(AudioUnitRenderActionFlags* flags, const AudioTimeStamp* timestamp,
                        UInt32 frames, AudioBufferList* ioData) noexcept {
-    if (frames > kMaxFrames || !ioData || ioData->mNumberBuffers == 0) {
+    uint32_t expected = 0;
+    if (frames > kMaxFrames || !ioData || ioData->mNumberBuffers == 0 ||
+        !renderState_.compare_exchange_strong(expected, kRenderActive,
+                                              std::memory_order_acquire)) {
       if (ioData)
         for (UInt32 i = 0; i < ioData->mNumberBuffers; ++i)
           if (ioData->mBuffers[i].mData)
             std::memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
       return noErr;
     }
+    struct RenderGuard {
+      std::atomic<uint32_t>& state;
+      ~RenderGuard() { state.fetch_and(~kRenderActive, std::memory_order_release); }
+    } guard{renderState_};
 
     const auto t0 = std::chrono::steady_clock::now();
+    // The helper arrives after capture and amp processing. Use the remaining
+    // callback budget, reserving 10% for blending/EQ/FX, not a fresh full period.
+    const uint64_t cabinetDeadline = mach_absolute_time() +
+        static_cast<uint64_t>(frames * audioTicksPerFrame_ * 0.9);
 
     if (useSplitInputUnit_) {
       if (inputUnit_) {
@@ -1177,7 +1202,7 @@ class StandaloneHost {
     applyWorkerResponses();
     buildControlSequence();
     resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
-    plugin_->process(frames);
+    plugin_->process(frames, cabinetDeadline);
     collectNotifications();
 
     // The block peak only drives the animated amp icons; skip the scan while
@@ -1345,7 +1370,7 @@ class StandaloneHost {
     if (AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_SetRenderCallback,
                              kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr ||
         AudioUnitInitialize(audioUnit_) != noErr ||
-        AudioOutputUnitStart(audioUnit_) != noErr) {
+        !startOutputAudio(streamRate)) {
       stopAudioUnits();
       return false;
     }
@@ -1466,7 +1491,7 @@ class StandaloneHost {
                              kAudioUnitScope_Input, 0, &outCallback,
                              sizeof(outCallback)) != noErr ||
         AudioUnitInitialize(audioUnit_) != noErr ||
-        AudioOutputUnitStart(audioUnit_) != noErr) {
+        !startOutputAudio(streamRate)) {
       stopAudioUnits();
       return false;
     }
@@ -1529,11 +1554,35 @@ class StandaloneHost {
     AURenderCallbackStruct callback{render, this};
     if (AudioUnitSetProperty(audioUnit_, kAudioUnitProperty_SetRenderCallback,
                              kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr ||
-        AudioUnitInitialize(audioUnit_) != noErr || AudioOutputUnitStart(audioUnit_) != noErr) {
+        AudioUnitInitialize(audioUnit_) != noErr || !startOutputAudio(streamRate)) {
       stopAudioUnits();
       return false;
     }
     return true;
+  }
+
+  bool startOutputAudio(double streamRate) {
+    mach_timebase_info_data_t timebase{};
+    mach_timebase_info(&timebase);
+    audioTicksPerFrame_ = timebase.numer > 0
+        ? 1.0e9 * timebase.denom / (timebase.numer * streamRate) : 0.0;
+    // Experimental opt-in until real-device deadline benchmarks are available.
+    const char* parallel = std::getenv("AXE_FX_PARALLEL_CABS");
+    if (parallel && std::strcmp(parallel, "1") == 0) {
+      void* rawGroup = nullptr;
+      UInt32 size = sizeof(rawGroup);
+      if (AudioUnitGetProperty(audioUnit_, kAudioOutputUnitProperty_OSWorkgroup,
+                               kAudioUnitScope_Global, 0, &rawGroup, &size) == noErr && rawGroup) {
+        // AudioUnitGetProperty returns +1; ARC releases our reference after
+        // the helper has retained it for its entire join/leave lifetime.
+        os_workgroup_t group = (__bridge_transfer os_workgroup_t)rawGroup;
+        if (os_workgroup_max_parallel_threads(group, nullptr) > 1 &&
+            cabinetWorker_.start((__bridge void*)group, bufferSize_ / streamRate))
+          plugin_->setCabinetWorker(&cabinetWorker_);
+      }
+    }
+    renderState_.store(0, std::memory_order_release);
+    return AudioOutputUnitStart(audioUnit_) == noErr;
   }
 
   bool startAudio(NSString** error) {
@@ -1613,6 +1662,10 @@ class StandaloneHost {
   }
 
   NSWindow* __weak window_ = nil;
+  NAMRig::CabinetWorker cabinetWorker_;
+  static constexpr uint32_t kRenderActive = 1, kRenderSuspended = 2;
+  std::atomic<uint32_t> renderState_{kRenderSuspended};
+  double audioTicksPerFrame_ = 0.0;
   NSView* __weak parentView_ = nil;
   NSTextField* __weak cpuLabel_ = nil;
   NSView* __weak cpuBarFill_ = nil;

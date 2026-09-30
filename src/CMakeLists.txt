@@ -58,6 +58,7 @@ set(NA_SOURCES ../deps/NeuralAudio/NeuralAudio/NeuralModel.h)
 add_library(neural_amp_modeler SHARED ${SOURCES} ${NA_SOURCES})
 
 set(RIG_SOURCES nam_rig_lv2.cpp
+	cabinet_worker.cpp cabinet_worker.h
 	nam_rig_plugin.cpp
 	nam_rig_plugin.h
 	dynamics.h
@@ -154,6 +155,15 @@ if (APPLE)
 	find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 	find_library(COREIMAGE_FRAMEWORK CoreImage REQUIRED)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
+	add_executable(verify_cabinet_worker EXCLUDE_FROM_ALL
+		../tests/verify_cabinet_worker.cpp cabinet_worker.cpp)
+	target_include_directories(verify_cabinet_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	add_executable(verify_parallel_cabs EXCLUDE_FROM_ALL
+		../tests/verify_parallel_cabs.cpp nam_rig_plugin.cpp wav_ir.cpp
+		oversample.cpp cabinet_worker.cpp)
+	target_include_directories(verify_parallel_cabs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+	target_link_libraries(verify_parallel_cabs PRIVATE NeuralAudio ${ACCELERATE_FRAMEWORK})
 
 	add_library(neural_amp_modeler_ui MODULE
 		nam_ui.mm
@@ -190,6 +200,7 @@ if (APPLE)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
 		add_executable(axe_fx_standalone MACOSX_BUNDLE
 			standalone_main.mm
+			cabinet_worker.cpp cabinet_worker.h
 			nam_rig_plugin.cpp nam_rig_plugin.h
 			wav_ir.cpp wav_ir.h
 			oversample.cpp oversample.h oversample_modes.h
