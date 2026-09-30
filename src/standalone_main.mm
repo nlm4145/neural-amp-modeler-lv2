@@ -560,8 +560,8 @@ class StandaloneHost {
       return fail(error, @"The rig DSP could not be initialized.");
     }
 
-    resetSequence(controlBuffer_, sizeof(LV2_Atom_Sequence_Body));
-    resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
+    resetSequence(controlBuffer_, sizeof(LV2_Atom_Sequence_Body), true);
+    resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom), true);
     plugin_->ports.control = reinterpret_cast<LV2_Atom_Sequence*>(controlBuffer_.data());
     plugin_->ports.notify = reinterpret_cast<LV2_Atom_Sequence*>(notifyBuffer_.data());
     plugin_->ports.audio_in = input_.data();
@@ -601,6 +601,7 @@ class StandaloneHost {
     if (!uiHandle_) return fail(error, @"The native rig UI could not be created.");
 
     if (!startAudio(error)) return false;
+    observeDisplaySleep();
     uiTimer_ = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
                                                 target:[NSBlockOperation blockOperationWithBlock:^{
                                                   this->drainUIEvents();
@@ -629,6 +630,7 @@ class StandaloneHost {
   void stop() {
     [uiTimer_ invalidate];
     uiTimer_ = nil;
+    stopObservingDisplaySleep();
     stopAudioUnits();
     if (uiDescriptor_ && uiHandle_) {
       uiDescriptor_->cleanup(uiHandle_);
@@ -937,8 +939,14 @@ class StandaloneHost {
     return 0;
   }
 
-  void resetSequence(std::array<uint8_t, kAtomBufferSize>& buffer, uint32_t size) {
-    std::memset(buffer.data(), 0, buffer.size());
+  // Only the sequence header needs clearing: readers stop at atom.size, the
+  // forge overwrites whatever it appends, and buildControlSequence() zeroes
+  // its own event padding. Pass fullClear only at setup, never per block
+  // (clearing both 16 KB buffers every callback was pure audio-thread churn).
+  void resetSequence(std::array<uint8_t, kAtomBufferSize>& buffer, uint32_t size,
+                     bool fullClear = false) {
+    if (fullClear) std::memset(buffer.data(), 0, buffer.size());
+    else std::memset(buffer.data(), 0, sizeof(LV2_Atom_Sequence));
     auto* sequence = reinterpret_cast<LV2_Atom_Sequence*>(buffer.data());
     sequence->atom.type = atomSequence_;
     sequence->atom.size = size;
@@ -986,20 +994,52 @@ class StandaloneHost {
     updateAnimatedAmpIcons();
   }
 
+  // Animation is purely cosmetic, so it only runs while someone can see it:
+  // the header icon while the window is actually on screen (not minimized,
+  // hidden, or fully covered), the Dock icon while the display is awake and
+  // this login session is in front. When nothing is visible the audio thread
+  // also stops computing the peak that drives them (ampIconsVisible_).
   void updateAnimatedAmpIcons() {
+    const bool headerVisible = headerAmpView_ && window_ && !NSApp.isHidden &&
+        (window_.occlusionState & NSWindowOcclusionStateVisible) != 0;
+    const bool dockVisible = dockAmpView_ && !displayAsleep_;
+    ampIconsVisible_.store(headerVisible || dockVisible, std::memory_order_relaxed);
+    if (!headerVisible && !dockVisible) return;
+
     ampPhase_ += 0.085;
     const float sig = signalLevel_.load(std::memory_order_relaxed);
-    if (headerAmpView_) {
+    if (headerVisible) {
       headerAmpView_.phase = ampPhase_;
       headerAmpView_.signalLevel = sig;
       [headerAmpView_ setNeedsDisplay:YES];
     }
-    if (dockAmpView_ && (++dockFrameTick_ % 3 == 0)) {
+    if (dockVisible && (++dockFrameTick_ % 3 == 0)) {
       dockAmpView_.phase = ampPhase_;
       dockAmpView_.signalLevel = sig;
       [dockAmpView_ setNeedsDisplay:YES];
       [[NSApp dockTile] display];
     }
+  }
+
+  void observeDisplaySleep() {
+    NSNotificationCenter* center = [[NSWorkspace sharedWorkspace] notificationCenter];
+    auto setAsleep = [this, center](NSNotificationName name, bool asleep) {
+      id token = [center addObserverForName:name
+                                     object:nil
+                                      queue:[NSOperationQueue mainQueue]
+                                 usingBlock:^(NSNotification*) { this->displayAsleep_ = asleep; }];
+      if (token) displayObservers_.push_back(token);
+    };
+    setAsleep(NSWorkspaceScreensDidSleepNotification, true);
+    setAsleep(NSWorkspaceScreensDidWakeNotification, false);
+    setAsleep(NSWorkspaceSessionDidResignActiveNotification, true);
+    setAsleep(NSWorkspaceSessionDidBecomeActiveNotification, false);
+  }
+
+  void stopObservingDisplaySleep() {
+    NSNotificationCenter* center = [[NSWorkspace sharedWorkspace] notificationCenter];
+    for (id token : displayObservers_) [center removeObserver:token];
+    displayObservers_.clear();
   }
 
   void updateCpuDisplay() {
@@ -1140,18 +1180,22 @@ class StandaloneHost {
     plugin_->process(frames);
     collectNotifications();
 
-    float blockPeak = 0.0f;
-    for (UInt32 i = 0; i < frames; ++i) {
-      const float a = std::fabs(output_[i]);
-      const float b = std::fabs(outputR_[i]);
-      if (a > blockPeak) blockPeak = a;
-      if (b > blockPeak) blockPeak = b;
+    // The block peak only drives the animated amp icons; skip the scan while
+    // neither icon is on screen (the main thread publishes that flag).
+    if (ampIconsVisible_.load(std::memory_order_relaxed)) {
+      float blockPeak = 0.0f;
+      for (UInt32 i = 0; i < frames; ++i) {
+        const float a = std::fabs(output_[i]);
+        const float b = std::fabs(outputR_[i]);
+        if (a > blockPeak) blockPeak = a;
+        if (b > blockPeak) blockPeak = b;
+      }
+      const float prevSig = signalLevel_.load(std::memory_order_relaxed);
+      const float normPeak = std::min(1.0f, blockPeak * 1.8f);
+      const float nextSig = normPeak > prevSig ? (0.4f * prevSig + 0.6f * normPeak)
+                                               : (0.92f * prevSig + 0.08f * normPeak);
+      signalLevel_.store(nextSig, std::memory_order_relaxed);
     }
-    const float prevSig = signalLevel_.load(std::memory_order_relaxed);
-    const float normPeak = std::min(1.0f, blockPeak * 1.8f);
-    const float nextSig = normPeak > prevSig ? (0.4f * prevSig + 0.6f * normPeak)
-                                             : (0.92f * prevSig + 0.08f * normPeak);
-    signalLevel_.store(nextSig, std::memory_order_relaxed);
 
     const int outCh = outputChannel_.load(std::memory_order_relaxed);
     auto writeChannelSample = [&](UInt32 chIdx, UInt32 frameIdx, float* chPtr, UInt32 stride) {
@@ -1577,6 +1621,9 @@ class StandaloneHost {
   StandaloneAnimatedAmpView* __weak dockAmpView_ = nil;
   std::atomic<float> cpuLoadPercent_{0.0f};
   std::atomic<float> signalLevel_{0.0f};
+  std::atomic<bool> ampIconsVisible_{true};
+  bool displayAsleep_ = false;
+  std::vector<id> displayObservers_;
   double ampPhase_ = 0.0;
   uint32_t dockFrameTick_ = 0;
   CFAbsoluteTime lastCpuUiTime_ = 0.0;
