@@ -180,6 +180,7 @@ public:
     float* reverb_damping;     // in: port 57, %
     float* reverb_predelay;    // in: port 58, ms
     float* cab2_polarity;      // in: port 59, invert both Cab B channels (0/1)
+    std::array<float*, kTransformerControlCount> transformer_adjustments; // in: ports 60..70
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -194,7 +195,10 @@ public:
   static_assert(offsetof(Ports, cab2_enabled) == 47 * sizeof(void*));
   static_assert(offsetof(Ports, reverb_predelay) == 58 * sizeof(void*));
   static_assert(offsetof(Ports, cab2_polarity) == 59 * sizeof(void*));
-  static constexpr uint32_t kPortCount = 60;
+  static_assert(offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*));
+  static constexpr uint32_t kPortCount = 71;
+  static_assert(kPortCount == kTransformerControlFirstPort + kTransformerControlCount);
+  static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
   double sampleRate = 0.0;

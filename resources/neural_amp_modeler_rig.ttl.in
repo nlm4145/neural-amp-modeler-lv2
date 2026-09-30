@@ -4,6 +4,7 @@
 @prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
 @prefix opts:  <http://lv2plug.in/ns/ext/options#> .
 @prefix patch: <http://lv2plug.in/ns/ext/patch#> .
+@prefix pprops: <http://lv2plug.in/ns/ext/port-props#> .
 @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix state: <http://lv2plug.in/ns/ext/state#> .
 @prefix units: <http://lv2plug.in/ns/extensions/units#> .
@@ -18,6 +19,9 @@
 	a lv2:Parameter ; rdfs:label "Cab Model" ; rdfs:range atom:Path .
 <@NAM_RIG_LV2_ID@-cab2-model>
 	a lv2:Parameter ; rdfs:label "Cab B Model" ; rdfs:range atom:Path .
+
+<@NAM_RIG_LV2_ID@-transformer-ratio>
+	a units:Unit ; rdfs:label "Ratio" ; units:symbol "x" ; units:render "%f x" .
 
 <@NAM_RIG_LV2_ID@>
 	a lv2:Plugin, lv2:SimulatorPlugin, doap:Project ;
@@ -308,4 +312,57 @@
 					lv2:portProperty lv2:toggled, lv2:integer ;
 					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Normal" ],
 						[ rdfs:value 1.0 ; rdfs:label "Inverted" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 60 ;
+					lv2:symbol "transformer_low_cut" ; lv2:name "Transformer Low Cut Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 61 ;
+					lv2:symbol "transformer_high_cut" ; lv2:name "Transformer High Cut Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 62 ;
+					lv2:symbol "transformer_drive" ; lv2:name "Transformer Drive Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 63 ;
+					lv2:symbol "transformer_mix" ; lv2:name "Transformer Saturation Mix Trim" ;
+					lv2:default 0.0 ; lv2:minimum -100.0 ; lv2:maximum 100.0 ; units:unit units:pc ;
+					rdfs:comment "Additive percentage points relative to the factory profile."
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 64 ;
+					lv2:symbol "transformer_flux" ; lv2:name "Transformer Flux Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 65 ;
+					lv2:symbol "transformer_voice_freq" ; lv2:name "Transformer Voice Frequency Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 66 ;
+					lv2:symbol "transformer_voice_gain" ; lv2:name "Transformer Voice Gain Trim" ;
+					lv2:default 0.0 ; lv2:minimum -12.0 ; lv2:maximum 12.0 ; units:unit units:db
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 67 ;
+					lv2:symbol "transformer_voice_q" ; lv2:name "Transformer Voice Q Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 68 ;
+					lv2:symbol "transformer_leakage_freq" ; lv2:name "Transformer Leakage Frequency Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 69 ;
+					lv2:symbol "transformer_leakage_gain" ; lv2:name "Transformer Leakage Gain Trim" ;
+					lv2:default 0.0 ; lv2:minimum -12.0 ; lv2:maximum 12.0 ; units:unit units:db
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 70 ;
+					lv2:symbol "transformer_leakage_q" ; lv2:name "Transformer Leakage Q Ratio" ;
+					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
+					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
 				] .

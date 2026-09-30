@@ -1,0 +1,253 @@
+================================================================================
+DUAL CABINET BOOMINESS & SOUND QUALITY EVALUATION
+Repository: /Users/personal/Documents/Github/neural-amp-modeler-lv2
+Commit Range Evaluated: ffb705edcee093f4744f156484f4e7deace76706 .. 8be2720 (HEAD)
+================================================================================
+
+1. COMMIT-BY-COMMIT EVALUATION (ffb705e -> HEAD 8be2720)
+--------------------------------------------------------------------------------
+
+* ffb705e ("too many changes to count")
+  badaebc ("independently scaled cabs")
+  ecd85db ("some cab change bugs")
+  - In Plugin::processPostChain (src/nam_rig_plugin.cpp:1234-1240), `cab_level`
+    (port 25, CAB A LVL) was moved out of the post-blend Low/High Cut loop
+    (src/nam_rig_plugin.cpp:1363-1371) so that it scales Cab A ONLY prior to
+    blending with Cab B, rather than scaling the combined Cab A + Cab B sum.
+  - Both `cab_level` (port 25) and `cab2_level` (port 48) now treat -24 dB
+    (`<= -23.95f`) as a hard mute (`0.0f` linear gain, displayed as "OFF").
+  - Added preset v1 -> v2 migration in RigPreset (src/rig_presets.mm:291-309)
+    that adds `cab_level` to `cab2_level` when loading v1 presets so legacy
+    sessions keep the same effective Cab B level.
+  - Added `Plugin::setSampleRateAndReload(double rate)` for standalone sample
+    rate changes, standalone device/channel selection, file-based Tone3000
+    session persistence, and 500ms UI meter throttling.
+
+* 542eac4 ("minor tweaks to prevent cpu drain when not used")
+  - In StandaloneHost::resetSequence (src/standalone_main.mm:946-953) and
+    StandaloneHost::updateAnimatedAmpIcons (src/standalone_main.mm:1002-1021),
+    avoids memset-ing the full 16 KB atom buffers every audio callback (clears
+    only the 16-byte header) and pauses UI icon peak scanning when the window
+    and Dock icon are occluded/asleep.
+  - Zero impact on audio quality.
+
+* 0ee62bb ("round 1")
+  - Added CabinetWorker (src/cabinet_worker.h, src/cabinet_worker.cpp) for
+    opt-in (`AXE_FX_PARALLEL_CABS=1`) parallel execution of Cab B `.nam` models
+    in the standalone app.
+  - Fixed a critical bug in Plugin::scheduleModelLoad
+    (src/nam_rig_plugin.cpp:1596-1598), Plugin::work
+    (src/nam_rig_plugin.cpp:337-338), and Plugin::workResponse
+    (src/nam_rig_plugin.cpp:465-470):
+    Previously (since commit 2ce62ed on Sep 18), `Plugin::decodeOversample`
+    mapped `kOsLegacy2` (1) to `kOsTrue2` (4), while `workResponse` checked
+    against `desiredMode = kOsLegacy2` (1) for Stage::Cab2. Because `4 != 1`
+    was always true, Stage::Cab2 was trapped in an infinite worker reload loop
+    where Cab B models/IRs were repeatedly discarded and rescheduled.
+
+* e2f8eba ("commit")
+  - Expanded `cab2_delay` (port 49, ALIGN) from `0..10 ms` to `-10..+10 ms`
+    ("signed alignment") by adding a second AlignDelay instance (`cabAlign`) on
+    Cab A for negative delay values (`std::max(-alignmentMs, 0.0f)` in
+    src/nam_rig_plugin.cpp:1241-1249), while `cab2Align` handles positive delay
+    values (`std::max(alignmentMs, 0.0f) + domainDelayMs` in
+    src/nam_rig_plugin.cpp:1275-1276).
+  - Added `cab2_polarity` (port 59, `B POL INV` toggle button) to invert Cab B
+    polarity (`polarityTarget = -1.0f` vs `+1.0f`, smoothed with `glide10` in
+    src/nam_rig_plugin.cpp:1278-1286).
+  - Initialized `primed_ = false` in `AlignDelay::initialize()`
+    (src/space_fx.h:58).
+
+* 49f55c0 ("1 build script"), a1a9cdc (merge), 84e698f ("Update nam_rig_ui.mm"),
+  18d37b6 ("side by side cab loadeer dropdown"), 8be2720 ("buttons to drop down")
+  - Unified `build.sh` and `build-standalone.sh`.
+  - Removed duplicate Transformer dropdown from the main Amp tile, placed Cab A
+    and Cab B model pickers side-by-side in the Cab tile, and converted Studio
+    Pro Deck preset chip buttons into `addSlotPresetDropdown` menus.
+  - Zero DSP changes.
+
+
+================================================================================
+2. WHY THE "BOOMY FIX" COMMITS DO NOT FIX DUAL-CABINET BOOMINESS
+================================================================================
+
+Allowing negative phase alignment (`-10..+10 ms`), polarity inversion
+(`B POL INV`), and independent Cab A/B level trims does not fix dual-cabinet
+boominess at default settings, and dialing in phase/delay adjustments to fight
+boominess typically degrades the tone further.
+
+A. Equal-Power Summing (`0.7071`) Causes an Automatic +3 dB Low-End Boost
+   When Dual Cabs Are Active
+   ----------------------------------------------------------------------
+   Look at the dual-cabinet stereo blend math in `Plugin::processPostChain`
+   (src/nam_rig_plugin.cpp:1320-1326):
+
+     if (haveA && haveB) {
+       const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - w);
+       const float near = std::cos(theta);
+       const float far = std::sin(theta);
+       outL = aL * near + bL * far;
+       outR = aR * far + bR * near;
+     }
+
+   - At default `stereo_width = 0%` (`w = 0`, `theta = pi/4`), both `near` and
+     `far` equal `sqrt(2)/2 ~= 0.7071` (-3.01 dB).
+   - An equal-power pan/mix law (`-3 dB` per branch, `near^2 + far^2 = 1`) only
+     preserves unity loudness for UNCORRELATED signals:
+     * In the MIDS and HIGHS (500 Hz - 6 kHz), two different cabinet captures
+       have different speaker breakup modes, mic capsule distances, and phase
+       dispersion, so their mid/high energy is partially uncorrelated and sums
+       close to 0 dB (power sum: `sqrt(0.5 + 0.5) = 1.0`).
+     * In the LOW END (60 - 250 Hz)—where the fundamental cabinet resonance
+       ("thump"/"boom" around 80-140 Hz) lives—wavelengths are huge (~10 ms at
+       100 Hz) and almost all guitar cabinets are minimum-phase and COHERENT
+       (in-phase) with one another.
+     * When two coherent low-frequency signals are scaled by `0.7071` and
+       summed (`0.7071 * A + 0.7071 * B`), they sum in amplitude to `1.4142x` =
+       +3.01 dB!
+     * Even when `stereo_width` is increased (`w -> 1`), both speakers or
+       headphone drivers radiate that coherent 80-200 Hz fundamental into the
+       room/listener, producing a persistent ~3 dB low-frequency shelf boost
+       relative to the mids/highs the moment Cab B is engaged.
+
+B. Why Phase Alignment (`cab2_delay`) & Polarity (`cab2_polarity`) Cannot Fix
+   Dual-Cab Boominess (and Often Make It Worse)
+   --------------------------------------------------------------------------
+   - Phase alignment (`ALIGN` near 0 ms) maximizes low-end boom:
+     Aligning time-of-arrival between two captures brings their low-frequency
+     fundamentals into maximum phase coherence, which MAXIMIZES constructive
+     low-end summing (+3 dB).
+   - Small delays (0.5 - 2.0 ms, including the built-in `LEAD FOCUS` 0.5 ms and
+     `WIDE ROOM` 1.2 ms presets in `applyCabConsolePreset:`,
+     src/nam_rig_ui.mm:486-493) scoop the mids while keeping the bass boom:
+     * A delay `dt` creates its first destructive comb-filter cancellation
+       notch at `f = 1 / (2 * dt)`:
+       - At `dt = 0.5 ms`, the first notch is at 1000 Hz (scooping midrange
+         attack/definition).
+       - At `dt = 1.2 ms`, the first notch is at 417 Hz (hollowing out lower-mid
+         body).
+     * Meanwhile, at 100 Hz (period = 10 ms), a `0.5 - 1.2 ms` delay is only
+       18 to 43 degrees of phase shift, so 100 Hz STILL sums almost completely
+       constructively (+2.4 to +2.9 dB)! Scooping 400-1000 Hz while leaving
+       100 Hz boosted makes the dual-cabinet blend sound even boomier and more
+       hollow.
+   - Polarity inversion (`B POL INV`):
+     With near-zero delay, inverting Cab B cancels the fundamental bass
+     completely, leaving a thin, nasal, out-of-phase comb-filtered tone rather
+     than a natural cabinet balance.
+
+C. Moving `cab_level` to Cab-A-Only (`ffb705e`) Changed Nothing at Default 0 dB
+   ----------------------------------------------------------------------------
+   - At default `0 dB` trims (`cab_level = 0 dB`, `cab2_level = 0 dB`), moving
+     `cab_level` before the sum is a `1.0x` unity multiplier either way—the
+     audio output at default settings is bit-identical to before.
+   - Furthermore, if you previously pulled `cab_level` down (e.g. -3 dB) to
+     tame dual-cab boominess when it scaled the post-blend sum, turning down
+     `cab_level` now only attenuates Cab A while leaving Cab B at full volume.
+
+D. Shared Pre-Cab Speaker Impedance Resonance (`speaker_thump` / `speaker_resonance`)
+   ----------------------------------------------------------------------------------
+   - When `speaker_profile` is active (or set to `Auto`, which resolves from
+     Cab A's path in `src/nam_rig_plugin.cpp:933-934`), `SpeakerDynamics`
+     imparts nonlinear low-frequency excursion (`speaker_thump`) and resonant
+     impedance peaks (`speaker_resonance`) to the shared post-amp signal BEFORE
+     it splits to Cab A and Cab B (`src/nam_rig_plugin.cpp:1013-1016`). Both
+     cabinets then reinforce that same pre-boosted low-end resonance in-phase.
+
+
+================================================================================
+3. CHANGES & INTERACTIONS THAT CRITICALLY HURT SOUND QUALITY
+================================================================================
+
+A. Dual-Cab `.nam` Oversampling Mismatch, Extra Filter Cascade, and Integer
+   Latency Compensation Error (Cemented in `0ee62bb`)
+   ------------------------------------------------------------------------
+   - In SINGLE-CAB mode (`parallelCabs == false`), when Cab A is a `.nam`
+     model, Pedal + Amp + Cab A run inside ONE shared True-Nx upsample/
+     downsample cascade (`processTrueGroup` in
+     `src/nam_rig_plugin.cpp:1064-1093`).
+   - As soon as Cab B is enabled (`parallelCabs == true`), line 1065 of
+     `src/nam_rig_plugin.cpp` (`const bool deferredCab = st == 2 && (irs[2] !=
+     nullptr || parallelCabs);`) forces Cab A out of the Amp's True-Nx domain:
+     1. The Amp's True-8x stream is downsampled back to base rate after the Amp.
+     2. Cab A (`.nam`) is then upsampled to 8x and downsampled back to 1x a
+        SECOND time via `Plugin::processTrueCab`
+        (`src/nam_rig_plugin.cpp:1225-1229`), putting Cab A through 6 extra
+        half-band filter passes (3 up + 3 down at 8x).
+     3. Meanwhile, Cab B (`.nam`) is hardcoded to `kOsLegacy2` (base rate, no
+        True oversampling) in `Plugin::stageOversample`
+        (`src/nam_rig_plugin.h:417-420`), `Plugin::scheduleModelLoad`
+        (`src/nam_rig_plugin.cpp:1596-1598`), and `Plugin::work`
+        (`src/nam_rig_plugin.cpp:337-338`).
+     4. To compensate for Cab A's extra `processTrueCab` cascade latency,
+        `src/nam_rig_plugin.cpp:1270-1276` delays Cab B by an INTEGER number of
+        base-rate frames (`cascadeLatencyFrames(cabFactor)` = 23 / 35 / 41
+        frames for 2x / 4x / 8x).
+   - WHY THIS HURTS SOUND QUALITY:
+     The 3-stage half-band cascade (`23 + 12 + 6` taps across 2x/4x/8x) has a
+     non-integer group delay (~40.5 to 41.25 samples) plus frequency-dependent
+     phase dispersion near Nyquist, whereas `cascadeLatencyFrames(8)` delays
+     Cab B by an integer 41 samples with zero half-band phase shift. Blending
+     a `.nam` Cab A (which went through `processTrueCab`) with Cab B (`.wav` or
+     `.nam` at base rate) introduces a ~0.5-sample fractional delay mismatch +
+     high-frequency phase rotation, causing high-frequency phase cancellation
+     (comb-filter roll-off in the top octave) that makes the dual-cab blend
+     sound noticeably darker, duller, and boomier.
+
+B. Non-WaveNet (e.g. LSTM) `.nam` Models in True-Nx vs Cab2 Legacy Mode
+   ---------------------------------------------------------------------
+   - In `deps/NeuralAudio/NeuralAudio/NeuralModel.cpp:92-130`,
+     `OversampleNAMConfig` only adapts sample rates for `"architecture":
+     "WaveNet"` (`if (arch != "WaveNet") return;`).
+   - Any LSTM `.nam` model loaded into a True-Nx stage runs at Nx the sample
+     rate without dilation scaling, whereas the same `.nam` model loaded into
+     Cab B runs at 1x base rate (`kOsLegacy2`).
+
+C. High-Frequency Loss from Linear Interpolation in `AlignDelay`
+   (`e2f8eba` / `src/space_fx.h:35-42`)
+   -------------------------------------------------------------
+   - At `cab2_delay == 0.0 ms` (with `domainDelayMs == 0`), `AlignDelay` is a
+     bit-exact bypass (`src/space_fx.h:73-79`).
+   - However, whenever ANY non-zero fractional delay is dialed in on `ALIGN`
+     (either positive on Cab B or negative on Cab A via `cabAlign` added in
+     `e2f8eba`), `DelayLine::readFrac` (`src/space_fx.h:35-42`) uses 1st-order
+     linear interpolation:
+
+       const float a = read(whole);
+       const float b = read(whole + 1);
+       return a + (b - a) * frac;
+
+   - At a half-sample fractional offset (`frac = 0.5`), linear interpolation is
+     a 2-point moving average filter `H(w) = cos(w / 2)`, which attenuates high
+     frequencies by up to -3 dB at 12 kHz and -6 dB at 16 kHz (at 48 kHz sample
+     rate) on the delayed cabinet—dulling pick attack and top-end air while
+     leaving low-frequency boom untouched.
+
+
+================================================================================
+4. RECOMMENDED DSP FIXES FOR DUAL-CABINET BOOMINESS & SOUND QUALITY
+================================================================================
+
+1. Compensate Coherent Low-Frequency Summing in Dual-Cabinet Mode:
+   - When both `haveA` and `haveB` are active (`parallelCabs`), the `< 200 Hz`
+     bass region sums coherently (+3 dB with `0.7071` equal-power weights),
+     while `> 250 Hz` sums closer to uncorrelated power (0 dB).
+   - Fix: Either apply an automatic ~-3 dB low-shelf trim (around 180-220 Hz)
+     whenever both Cab A and Cab B are active (scaled by their relative levels
+     so muting one cab restores 0 dB), or use a frequency-dependent crossover/
+     pan law that sums `< 180 Hz` with coherent amplitude compensation (`0.5`
+     /-6 dB) and `> 250 Hz` with equal-power compensation (`0.7071` / -3 dB).
+
+2. Replace Linear Interpolation in `DelayLine::readFrac` with Allpass or
+   3rd-Order Lagrange / Cubic Interpolation (`src/space_fx.h:35-42`):
+   - A 4-point (3rd-order) Lagrange or Thiran allpass fractional delay
+     preserves flat high-frequency magnitude response across the entire audio
+     band when adjusting `ALIGN` (`cab2_delay`).
+
+3. Run Parallel `.nam` Cab A at Base Rate (Matching Cab B) or Keep Cab A in the
+   Amp's Oversampled Domain Without a Second Cascade:
+   - Avoid downsampling after the Amp only to immediately re-upsample and
+     re-downsample Cab A in `processTrueCab` while Cab B runs at base rate.
+   - Running both `.nam` cabinets at the same rate domain eliminates the extra
+     6 half-band filter passes on Cab A and eliminates the fractional group-
+     delay / phase-dispersion mismatch between Cab A and Cab B.

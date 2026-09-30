@@ -907,10 +907,18 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // Output-transformer profiles are part of the amp block.  Changes use the
   // same click-safe zero crossing as model and bypass changes; the existing
   // capture remains bit-identical by default (profile 0).
-  const int desiredTransformer = ports.transformer_type
-      ? OutputTransformer::clampProfile(
-            static_cast<int>(*ports.transformer_type + 0.5f))
+  const float transformerSelection = portValue(ports.transformer_type, 0.0f);
+  const int desiredTransformer = std::isfinite(transformerSelection)
+      ? static_cast<int>(std::clamp(transformerSelection, 0.0f,
+            static_cast<float>(OutputTransformer::kBassIron)) + 0.5f)
       : OutputTransformer::kCaptured;
+  TransformerAdjustments transformerAdjustments;
+  for (size_t i = 0; i < transformerAdjustments.size(); ++i) {
+    const auto& c = kTransformerControls[i];
+    const float value = portValue(ports.transformer_adjustments[i], c.defaultValue);
+    transformerAdjustments[i] = std::isfinite(value)
+        ? std::clamp(value, c.minimum, c.maximum) : c.defaultValue;
+  }
   if (!transformerLatched) {
     transformerRequested = transformerApplied = desiredTransformer;
     transformerLatched = true;
@@ -1009,7 +1017,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                                  *ports.presence, *ports.depth, *ports.sag,
                                  *ports.bias, *ports.negative_feedback,
                                  *ports.master);
-      outputTransformer.process(samples, count, domainRate, transformerApplied);
+      outputTransformer.process(samples, count, domainRate, transformerApplied,
+                                transformerAdjustments);
       speakerDynamics.process(samples, count, domainRate, speakerApplied,
                               *ports.speaker_drive, *ports.speaker_compression,
                               *ports.speaker_thump, *ports.speaker_resonance,

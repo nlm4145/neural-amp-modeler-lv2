@@ -14,7 +14,7 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
   static NSDictionary<NSNumber*, NSString*>* map = nil;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    map = @{
+    NSMutableDictionary* symbols = [@{
       @4: @"input_level",
       @5: @"output_level",
       @7: @"pedal_enabled",
@@ -62,7 +62,11 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
       @57: @"reverb_damping",
       @58: @"reverb_predelay",
       @59: @"cab2_polarity"
-    };
+    } mutableCopy];
+    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+      symbols[@(NAMRig::kTransformerControlFirstPort + i)] =
+          [NSString stringWithUTF8String:NAMRig::kTransformerControls[i].symbol];
+    map = [symbols copy];
   });
   return map;
 }
@@ -205,6 +209,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[21] = static_cast<float>(NAMRig::kOversampleTrue8);
   p->_controls[24] = 2.0f;  // Loudness
   p->_controls[30] = 0.0f;  // Captured / Off
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+    p->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
   p->_controls[42] = 0.0f;  // Captured / Off
 
   return p;
@@ -270,6 +276,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   // Load controls: first from numeric "ports" if present
   preset->_controls[59] = 0.0f;  // Legacy presets default to normal polarity.
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+    preset->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
   NSDictionary* portsDict = root[@"ports"];
   if ([portsDict isKindOfClass:[NSDictionary class]]) {
     for (NSString* key in portsDict) {
@@ -409,11 +417,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   // Transformer
-  if (state->transformerPopup) {
-    p->_stages[1].transformer = static_cast<float>(state->transformerPopup.indexOfSelectedItem);
-  } else {
-    p->_stages[1].transformer = 0.0f;
-  }
+  p->_stages[1].transformer = static_cast<float>(state->transformerProfile);
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+    p->_controls[NAMRig::kTransformerControlFirstPort + i] = state->transformerAdjustments[i];
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -453,6 +459,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
 - (void)applyToState:(RigUIState*)state {
   if (!state) return;
+  state->cancelTransformerEditing();
 
   // 1. Stage powers (ports 7, 8, 9, 47)
   state->sendControl(7, _stages[0].enabled ? 1.0f : 0.0f);
@@ -473,6 +480,13 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   state->updateControl(24, _stages[2].irNormalization);
   state->sendControl(30, _stages[1].transformer);
   state->updateControl(30, _stages[1].transformer);
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i) {
+    const uint32_t port = NAMRig::kTransformerControlFirstPort + i;
+    auto it = _controls.find(port);
+    const float value = it != _controls.end() ? it->second : NAMRig::kTransformerControlDefaults[i];
+    state->sendControl(port, value);
+    state->updateControl(port, value);
+  }
   state->sendControl(42, self.speakerProfile);
   state->updateControl(42, self.speakerProfile);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;

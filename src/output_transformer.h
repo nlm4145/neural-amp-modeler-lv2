@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "transformer_controls.h"
+
 namespace NAMRig {
 
 // Lightweight output-transformer coloration for the amp stage.  A NAM amp
@@ -33,8 +35,56 @@ public:
   static constexpr int kBassIron = 12;
   static constexpr int kProfileCount = 13;
 
+  struct Parameters {
+    double lowCutHz;
+    double highCutHz;
+    double leakageHz;
+    double leakageDb;
+    double leakageQ;
+    double voiceHz;
+    double voiceDb;
+    double voiceQ;
+    double fluxHz;
+    double drive;
+    double saturationMix;
+    double asymmetry;
+    double makeup;
+  };
+
   static int clampProfile(int profile) {
     return std::max(kCaptured, std::min(kBassIron, profile));
+  }
+
+  static Parameters parametersForProfile(
+      int profile,
+      const TransformerAdjustments& adjustments = kTransformerControlDefaults) {
+    Parameters p = kProfiles_[clampProfile(profile)];
+    const auto trim = [&](size_t i) -> double {
+      const auto& c = kTransformerControls[i];
+      return std::isfinite(adjustments[i])
+          ? std::clamp(adjustments[i], c.minimum, c.maximum) : c.defaultValue;
+    };
+    p.lowCutHz = std::clamp(p.lowCutHz * trim(0), 5.0, 300.0);
+    p.highCutHz = std::clamp(p.highCutHz * trim(1), 2000.0, 24000.0);
+    p.drive = std::clamp(p.drive * trim(2), 0.5, 10.0);
+    p.saturationMix = std::clamp(p.saturationMix + trim(3) * 0.01, 0.0, 1.0);
+    p.fluxHz = std::clamp(p.fluxHz * trim(4), 20.0, 400.0);
+    p.voiceHz = std::clamp(p.voiceHz * trim(5), 100.0, 12000.0);
+    p.voiceDb = std::clamp(p.voiceDb + trim(6), -12.0, 12.0);
+    p.voiceQ = std::clamp(p.voiceQ * trim(7), 0.2, 4.0);
+    p.leakageHz = std::clamp(p.leakageHz * trim(8), 100.0, 12000.0);
+    p.leakageDb = std::clamp(p.leakageDb + trim(9), -12.0, 12.0);
+    p.leakageQ = std::clamp(p.leakageQ * trim(10), 0.2, 4.0);
+    return p;
+  }
+
+  static std::array<float, 11> controlValues(const Parameters& p) {
+    return {static_cast<float>(p.lowCutHz), static_cast<float>(p.highCutHz),
+            static_cast<float>(p.drive), static_cast<float>(p.saturationMix * 100.0),
+            static_cast<float>(p.fluxHz), static_cast<float>(p.voiceHz),
+            static_cast<float>(p.voiceDb), static_cast<float>(p.voiceQ),
+            static_cast<float>(p.leakageHz), static_cast<float>(p.leakageDb),
+            static_cast<float>(p.leakageQ)};
   }
 
   void reset() {
@@ -44,16 +94,41 @@ public:
     leakage_.reset();
     voice_.reset();
     highCut_.reset();
+    chunkRemaining_ = 0;
   }
 
-  void process(float* samples, size_t count, double sampleRate, int profile) {
+  void process(float* samples, size_t count, double sampleRate, int profile,
+               const TransformerAdjustments& adjustments = kTransformerControlDefaults) {
     if (!samples || count == 0) return;
     profile = clampProfile(profile);
+    sampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate) : 48000.0;
+    TransformerAdjustments target;
+    for (size_t i = 0; i < target.size(); ++i) {
+      const auto& c = kTransformerControls[i];
+      target[i] = std::isfinite(adjustments[i])
+          ? std::clamp(adjustments[i], c.minimum, c.maximum) : c.defaultValue;
+    }
     if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5)
-      configure(profile, sampleRate);
+      configure(profile, sampleRate, target);
     if (profile_ == kCaptured) return;
 
     for (size_t i = 0; i < count; ++i) {
+      if (chunkRemaining_ == 0) {
+        bool changed = false;
+        TransformerAdjustments smoothed;
+        for (size_t j = 0; j < target.size(); ++j) {
+          const double previous = adjustments_[j];
+          adjustments_[j] += smoothCoeff_ * (target[j] - adjustments_[j]);
+          if (std::fabs(target[j] - adjustments_[j]) < 1.0e-7)
+            adjustments_[j] = target[j];
+          changed = changed || adjustments_[j] != previous;
+          smoothed[j] = static_cast<float>(adjustments_[j]);
+        }
+        if (changed) applyParameters(parametersForProfile(profile_, smoothed));
+        // Keep this cadence across calls, including partial host blocks.
+        chunkRemaining_ = 32;
+      }
+      --chunkRemaining_;
       double x = highPass_.process(samples[i]);
       x = voice_.process(x);
 
@@ -83,23 +158,7 @@ private:
     void reset() { z1 = z2 = 0.0; }
   };
 
-  struct Profile {
-    double lowCutHz;
-    double highCutHz;
-    double leakageHz;
-    double leakageDb;
-    double leakageQ;
-    double voiceHz;
-    double voiceDb;
-    double voiceQ;
-    double fluxHz;
-    double drive;
-    double saturationMix;
-    double asymmetry;
-    double makeup;
-  };
-
-  static constexpr Profile kProfiles_[kProfileCount] = {
+  static constexpr Parameters kProfiles_[kProfileCount] = {
       {5.0, 24000.0, 9000.0, 0.0, 1.0, 2500.0, 0.0, 0.707, 90.0, 1.0, 0.0, 0.0, 1.0},
       // Broad-band, oversized modern iron: almost linear, gently rounded.
       {10.0, 22000.0, 8500.0, 0.60, 1.20, 3200.0, 0.50, 0.65, 90.0, 1.60, 0.24, 0.000, 1.020},
@@ -169,18 +228,28 @@ private:
     f.a2 = (1.0 - alpha / A) / a0;
   }
 
-  void configure(int profile, double rate) {
+  void configure(int profile, double rate, const TransformerAdjustments& target) {
     profile_ = clampProfile(profile);
-    sampleRate_ = std::max(8000.0, rate);
+    sampleRate_ = rate;
     reset();
+    std::copy(target.begin(), target.end(), adjustments_.begin());
+    smoothCoeff_ = 1.0 - std::exp(-32.0 / (sampleRate_ * 0.020));
     if (profile_ == kCaptured) return;
-    const Profile& p = kProfiles_[profile_];
+    applyParameters(parametersForProfile(profile_, target));
+  }
+
+  void applyParameters(const Parameters& p) {
     const double band = sampleRate_ * 0.42;
     setHighPass(highPass_, p.lowCutHz, sampleRate_);
-    setPeaking(voice_, p.voiceHz, p.voiceDb, p.voiceQ, sampleRate_);
+    setPeaking(voice_, std::min(p.voiceHz, band), p.voiceDb, p.voiceQ, sampleRate_);
     setPeaking(leakage_, std::min(p.leakageHz, band * 0.9), p.leakageDb,
                p.leakageQ, sampleRate_);
     setLowPass(highCut_, std::min(p.highCutHz, band), sampleRate_);
+    // Both flux samples must use the same drive curve, or the inverse
+    // integrator amplifies the curve change into a voltage impulse.
+    if (p.drive != drive_)
+      saturatedFlux_ =
+          (sigmoid(p.drive * flux_ + p.asymmetry) - sigmoid(p.asymmetry)) / p.drive;
     fluxCoeff_ = 1.0 - std::exp(-2.0 * kPi * p.fluxHz / sampleRate_);
     drive_ = p.drive;
     saturationMix_ = p.saturationMix;
@@ -190,6 +259,9 @@ private:
 
   int profile_ = kCaptured;
   double sampleRate_ = 0.0;
+  std::array<double, kTransformerControlCount> adjustments_{};
+  double smoothCoeff_ = 1.0;
+  size_t chunkRemaining_ = 0;
   Biquad highPass_, leakage_, voice_, highCut_;
   double flux_ = 0.0;
   double saturatedFlux_ = 0.0;

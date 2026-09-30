@@ -49,6 +49,7 @@ struct RigUIState {
 
   ~RigUIState() {
     if (isAlive) *isAlive = false;
+    [transformerPopover close];
     stopKeyEventMonitor();
     stopABTimer();
   }
@@ -111,6 +112,14 @@ struct RigUIState {
   __strong NAMSpatialAcousticVisualizer* spatialVisualizer = nil;
   __strong NAMPowerStageVisualizer* powerVisualizer = nil;
   __strong NAMSculptVisualizer* sculptVisualizer = nil;
+  __strong NAMTransformerVisualizer* transformerVisualizer = nil;
+  std::array<__strong NSTextField*, 4> transformerSpecLabels{};
+  int transformerProfile = NAMRig::OutputTransformer::kCaptured;
+  NAMRig::TransformerAdjustments transformerAdjustments = NAMRig::kTransformerControlDefaults;
+  __strong NSPopover* transformerPopover = nil;
+  std::array<__strong NSSlider*, NAMRig::kTransformerControlCount> transformerSliders{};
+  std::array<__strong NSTextField*, NAMRig::kTransformerControlCount> transformerFields{};
+  std::array<bool, NAMRig::kTransformerControlCount> transformerFieldEditing{};
   __strong NAMSpeakerDynamicsVisualizer* speakerVisualizer = nil;
   __strong NAMCabConsoleVisualizer* cabConsoleVisualizer = nil;
   __strong RigButton* cab2PolarityButton = nil;
@@ -620,7 +629,12 @@ struct RigUIState {
         handler:^NSEvent* _Nullable(NSEvent* event) {
       if (!alive || !*alive || !selfState->view || !selfState->uiController) return event;
       NSWindow* win = selfState->view.window;
-      if (!win || !win.isKeyWindow || selfState->view.isHiddenOrHasHiddenAncestor) return event;
+      NSWindow* editorWindow = selfState->transformerPopover.contentViewController.view.window;
+      if (!win || selfState->view.isHiddenOrHasHiddenAncestor) return event;
+      if (!win.isKeyWindow) {
+        if (!editorWindow.isKeyWindow) return event;
+        win = editorWindow;
+      }
       if ([NSApp modalWindow] != nil) return event;
 
       NSEventModifierFlags mods = event.modifierFlags &
@@ -647,7 +661,7 @@ struct RigUIState {
       }
 
       // Left / Right arrows move up / down in preset selection when not editing text
-      if (mods == 0) {
+      if (mods == 0 && win == selfState->view.window) {
         BOOL isEditingText = [win.firstResponder isKindOfClass:[NSText class]];
         if (!isEditingText) {
           const unsigned short kc = event.keyCode;
@@ -862,8 +876,11 @@ struct RigUIState {
 
   float currentPortValueForSlot(uint32_t port) const {
     if (port == 30) {
-      NSPopUpButton* p = deckTransformerPopup ?: transformerPopup;
-      return p ? (float)p.indexOfSelectedItem : 0.0f;
+      return (float)transformerProfile;
+    }
+    if (port >= NAMRig::kTransformerControlFirstPort &&
+        port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
+      return transformerAdjustments[port - NAMRig::kTransformerControlFirstPort];
     }
     if (port == 42) {
       NSPopUpButton* p = deckSpeakerProfilePopup ?: speakerProfilePopup;
@@ -1646,8 +1663,92 @@ struct RigUIState {
     }
   }
 
+  void cancelTransformerEditing() {
+    const auto values = NAMRig::OutputTransformer::controlValues(
+        NAMRig::OutputTransformer::parametersForProfile(transformerProfile, transformerAdjustments));
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (!transformerFieldEditing[i]) continue;
+      transformerFieldEditing[i] = false;
+      NSTextField* field = transformerFields[i];
+      field.stringValue = transformerValueText(i, values[i]);
+      [field abortEditing];
+      [field.window makeFirstResponder:nil];
+    }
+  }
+
+  static NSString* transformerValueText(size_t index, float value) {
+    if (index == 6 || index == 9)
+      return [NSString stringWithFormat:@"%+.2f dB", value];
+    if (index == 3) return [NSString stringWithFormat:@"%.1f%%", value];
+    if (index == 2) return [NSString stringWithFormat:@"%.2fx", value];
+    if (index == 7 || index == 10) return [NSString stringWithFormat:@"%.2f", value];
+    return [NSString stringWithFormat:@"%.0f Hz", value];
+  }
+
+  std::array<float, 2> transformerControlRange(size_t index) const {
+    static constexpr float mins[] = {5, 2000, 0.5f, 0, 20, 100, -12, 0.2f, 100, -12, 0.2f};
+    static constexpr float maxes[] = {300, 24000, 10, 100, 400, 12000, 12, 4, 12000, 12, 4};
+    const auto base = NAMRig::OutputTransformer::controlValues(
+        NAMRig::OutputTransformer::parametersForProfile(transformerProfile));
+    const auto& c = NAMRig::kTransformerControls[index];
+    const bool ratio = c.defaultValue == 1.0f;
+    return {std::max(mins[index], ratio ? base[index] * c.minimum : base[index] + c.minimum),
+            std::min(maxes[index], ratio ? base[index] * c.maximum : base[index] + c.maximum)};
+  }
+
+  void updateTransformerTelemetry(int idx) {
+    idx = NAMRig::OutputTransformer::clampProfile(idx);
+    const auto p = NAMRig::OutputTransformer::parametersForProfile(idx, transformerAdjustments);
+    if (transformerVisualizer) {
+      transformerVisualizer.profile = idx;
+      transformerVisualizer.parameters = p;
+    }
+    NSArray<NSString*>* vals = idx == 0
+        ? @[@"Linear (Captured)", @"0% (Transparent)", @"Flat (0.0 dB)", @"None (0.0 dB)"]
+        : @[[NSString stringWithFormat:@"%.0f Hz - %.1f kHz", p.lowCutHz, p.highCutHz / 1000.0],
+            [NSString stringWithFormat:@"%.2fx / %.0f%% Mix", p.drive, p.saturationMix * 100.0],
+            [NSString stringWithFormat:@"%+.1f dB @ %.2f kHz", p.voiceDb, p.voiceHz / 1000.0],
+            [NSString stringWithFormat:@"%+.1f dB @ %.2f kHz", p.leakageDb, p.leakageHz / 1000.0]];
+    for (size_t i = 0; i < 4; ++i) {
+      if (transformerSpecLabels[i]) {
+        transformerSpecLabels[i].stringValue = vals[i];
+      }
+    }
+    const auto values = NAMRig::OutputTransformer::controlValues(p);
+    for (size_t i = 0; i < values.size(); ++i) {
+      NSSlider* slider = transformerSliders[i];
+      if (slider) {
+        const auto range = transformerControlRange(i);
+        const bool log = NAMRig::kTransformerControls[i].logarithmic;
+        slider.minValue = log ? std::log(range[0]) : range[0];
+        slider.maxValue = log ? std::log(range[1]) : range[1];
+        slider.doubleValue = log ? std::log(values[i]) : values[i];
+        slider.enabled = idx != 0;
+      }
+      if (transformerFields[i]) {
+        transformerFields[i].enabled = idx != 0;
+        if (!transformerFieldEditing[i])
+          transformerFields[i].stringValue = transformerValueText(i, values[i]);
+      }
+    }
+  }
+
   void updateControl(uint32_t port, float value) {
     auto alive = this->isAlive;
+    if (port >= NAMRig::kTransformerControlFirstPort &&
+        port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
+      const size_t index = port - NAMRig::kTransformerControlFirstPort;
+      const auto& c = NAMRig::kTransformerControls[index];
+      const float trim = std::isfinite(value) ? std::clamp(value, c.minimum, c.maximum) : c.defaultValue;
+      auto updateTransformer = ^{
+        if (!alive || !*alive) return;
+        transformerAdjustments[index] = trim;
+        updateTransformerTelemetry(transformerProfile);
+      };
+      if ([NSThread isMainThread]) updateTransformer();
+      else dispatch_async(dispatch_get_main_queue(), updateTransformer);
+      return;
+    }
     if (port == 59) {
       const bool inverted = value >= 0.5f;
       auto updatePolarity = ^{
@@ -1705,9 +1806,10 @@ struct RigUIState {
     }
     if (port == 30) {
       const int idx = NAMRig::OutputTransformer::clampProfile(
-          (int)(value + 0.5f));
-      dispatch_async(dispatch_get_main_queue(), ^{
+          std::isfinite(value) ? (int)std::clamp(value + 0.5f, 0.0f, 12.0f) : 0);
+      auto updateTransformer = ^{
         if (!alive || !*alive) return;
+        transformerProfile = idx;
         if (transformerPopup) {
           [transformerPopup selectItemAtIndex:idx];
           transformerPopup.toolTip = transformerPopup.selectedItem.toolTip;
@@ -1716,7 +1818,10 @@ struct RigUIState {
           [deckTransformerPopup selectItemAtIndex:idx];
           deckTransformerPopup.toolTip = deckTransformerPopup.selectedItem.toolTip;
         }
-      });
+        updateTransformerTelemetry(idx);
+      };
+      if ([NSThread isMainThread]) updateTransformer();
+      else dispatch_async(dispatch_get_main_queue(), updateTransformer);
       return;
     }
     if (port == 42) {

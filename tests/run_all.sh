@@ -141,6 +141,33 @@ else
   echo "  (skipped: plugin/model unavailable or harness build failed)"
 fi
 
+# This harness installs an identity amp internally; its CLI takes only the rig
+# library, unlike verify_transformer_switch's external model/rate/mode arguments.
+echo "== tests/verify_transformer_controls.cpp (editable trims / base and True 8x) =="
+if [ -f "$RIG_SO" ] && \
+    clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc -Ideps/lv2/include \
+      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+      tests/verify_transformer_controls.cpp -o /tmp/verify_transformer_controls \
+      2>/dev/null; then
+  /tmp/verify_transformer_controls "$RIG_SO" || status=1
+else
+  echo "  (skipped: plugin unavailable or harness build failed)"
+fi
+
+# Opt in to AppKit runtime checks with a freshly built UI and WindowServer.
+if [ -n "${RIG_UI_SO:-}" ]; then
+  echo "== tests/verify_transformer_ui.mm (editable controls and presets) =="
+  if [ -f "$RIG_UI_SO" ] && clang++ -std=c++20 $CXX_EXTRA -fobjc-arc \
+      -Isrc -Ideps/lv2/include tests/verify_transformer_ui.mm src/rig_knobs.cpp \
+      -framework Cocoa -framework QuartzCore -framework CoreImage \
+      -o /tmp/verify_transformer_ui; then
+    /tmp/verify_transformer_ui "$RIG_UI_SO" || status=1
+  else
+    echo "  (failed: requested UI unavailable or harness build failed)"
+    status=1
+  fi
+fi
+
 # Most of the Python tests are source-contract guards that need nothing but
 # the standard library; only the numeric mirrors import numpy. Run everything
 # with the plain interpreter first and fall back to `uv run --with numpy` only

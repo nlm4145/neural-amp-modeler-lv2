@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -83,9 +84,307 @@ void check(bool ok, const char* label) {
   std::printf("  %s  %s\n", ok ? "PASS" : "FAIL", label);
   if (!ok) ++failures;
 }
+
+// Independent reference of the pre-edit processing path. Keep the original
+// arithmetic order so neutral trims must reproduce factory audio bit-for-bit.
+std::vector<float> factoryReference(std::vector<float> samples, double rate, int profile) {
+  if (profile == Tx::kCaptured) return samples;
+  const auto p = Tx::parametersForProfile(profile);
+  struct Filter {
+    double b0, b1, b2, a1, a2, z1 = 0, z2 = 0;
+    double process(double x) {
+      const double y = b0 * x + z1;
+      z1 = b1 * x - a1 * y + z2;
+      z2 = b2 * x - a2 * y;
+      return y;
+    }
+  };
+  const auto cut = [&](double hz, bool highPass) {
+    const double w = 2.0 * kPi * hz / rate;
+    const double c = std::cos(w), s = std::sin(w);
+    const double alpha = s / (2.0 * 0.7071067811865476), a0 = 1.0 + alpha;
+    const double b0 = (highPass ? 1.0 + c : 1.0 - c) * 0.5 / a0;
+    return Filter{b0, (highPass ? -(1.0 + c) : 1.0 - c) / a0,
+                  b0, -2.0 * c / a0, (1.0 - alpha) / a0};
+  };
+  const auto bell = [&](double hz, double db, double q) {
+    const double A = std::pow(10.0, db / 40.0), w = 2.0 * kPi * hz / rate;
+    const double c = std::cos(w), s = std::sin(w);
+    const double alpha = s / (2.0 * q), a0 = 1.0 + alpha / A;
+    return Filter{(1.0 + alpha * A) / a0, -2.0 * c / a0,
+                  (1.0 - alpha * A) / a0, -2.0 * c / a0,
+                  (1.0 - alpha / A) / a0};
+  };
+  auto hp = cut(p.lowCutHz, true), lp = cut(std::min(p.highCutHz, rate * 0.42), false);
+  auto voice = bell(p.voiceHz, p.voiceDb, p.voiceQ);
+  auto leak = bell(std::min(p.leakageHz, rate * 0.42 * 0.9), p.leakageDb, p.leakageQ);
+  const double coeff = 1.0 - std::exp(-2.0 * kPi * p.fluxHz / rate);
+  const auto sigmoid = [](double x) { return x / std::sqrt(1.0 + x * x); };
+  double flux = 0, saturatedFlux = 0;
+  for (float& sample : samples) {
+    const double x = voice.process(hp.process(sample));
+    flux += coeff * (x - flux);
+    const double saturated = (sigmoid(p.drive * flux + p.asymmetry) -
+                              sigmoid(p.asymmetry)) / p.drive;
+    const double core = (saturated - (1.0 - coeff) * saturatedFlux) / coeff;
+    saturatedFlux = saturated;
+    sample = static_cast<float>(lp.process(leak.process(
+        x + p.saturationMix * (core - x))) * p.makeup);
+  }
+  return samples;
+}
+
+void verifyAdjustments() {
+  using NAMRig::TransformerAdjustments;
+  const auto defaults = NAMRig::kTransformerControlDefaults;
+  const double expected[Tx::kProfileCount][13] = {
+      {5,24000,9000,0,1,2500,0,.707,90,1,0,0,1},
+      {10,22000,8500,.60,1.20,3200,.50,.65,90,1.60,.24,0,1.020},
+      {18,17500,7000,1.20,1.10,1750,-1.20,.68,105,2.20,.38,.025,1.080},
+      {40,10500,5600,1.80,1,2400,1.75,.82,130,3.25,.52,.040,1},
+      {68,7500,4200,2.40,.90,1050,2.20,.72,165,4.80,.68,.065,.930},
+      {58,18000,7800,1,1.20,3400,1.80,.78,115,2.30,.32,.012,1.030},
+      {30,20000,8200,.70,1.20,4200,1.25,.74,78,1.90,.27,.010,1.020},
+      {72,14000,6500,1.60,1.10,2850,2.75,.88,150,3,.44,.028,1.010},
+      {22,8500,4600,2,.90,950,1.90,.75,95,4.50,.70,.060,.940},
+      {7,23000,9500,.40,1.30,4600,.90,.70,78,1.60,.18,.005,1.020},
+      {25,9000,4800,1.50,.90,850,1.50,.70,105,4.10,.64,.070,.950},
+      {44,15500,7200,2.20,1.10,3300,2.35,.78,138,2.75,.45,.060,1},
+      {11,13500,6000,.80,1.10,1350,-.85,.70,68,1.65,.22,.010,1.030}};
+  const double Tx::Parameters::* fields[] = {
+      &Tx::Parameters::lowCutHz, &Tx::Parameters::highCutHz,
+      &Tx::Parameters::leakageHz, &Tx::Parameters::leakageDb, &Tx::Parameters::leakageQ,
+      &Tx::Parameters::voiceHz, &Tx::Parameters::voiceDb, &Tx::Parameters::voiceQ,
+      &Tx::Parameters::fluxHz, &Tx::Parameters::drive, &Tx::Parameters::saturationMix,
+      &Tx::Parameters::asymmetry, &Tx::Parameters::makeup};
+  bool factoryExact = true, metadata = true;
+  for (size_t i = 0; i < defaults.size(); ++i)
+    metadata &= defaults[i] == NAMRig::kTransformerControls[i].defaultValue;
+  for (int profile = 0; profile < Tx::kProfileCount; ++profile) {
+    const auto p = Tx::parametersForProfile(profile, defaults);
+    for (size_t i = 0; i < 13; ++i) factoryExact &= p.*fields[i] == expected[profile][i];
+  }
+  check(factoryExact && metadata, "neutral trims preserve all 13 factory fields in every profile");
+
+  TransformerAdjustments edited = {2, .5f, 2, 10, 2, 2, -3, 2, .5f, 3, 2};
+  const auto p = Tx::parametersForProfile(Tx::kUKVintage, edited);
+  const std::array<float, 11> effective = {80,5250,6.5f,62,260,4800,-1.25f,1.64f,2800,4.8f,2};
+  const auto values = Tx::controlValues(p);
+  bool mapping = true;
+  for (size_t i = 0; i < values.size(); ++i) mapping &= std::fabs(values[i] - effective[i]) < 1.0e-5f;
+  check(mapping && p.asymmetry == .040 && p.makeup == 1,
+        "control order maps ratios, additive dB and mix percentage points correctly");
+
+  std::vector<float> input(48000);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = .35f * std::sin(2 * kPi * 82 * i / 48000) +
+               .2f * std::sin(2 * kPi * 997 * i / 48000) +
+               .1f * std::sin(2 * kPi * 5701 * i / 48000);
+  bool exactAudio = true;
+  for (double rate : {44100.0,48000.0,96000.0,192000.0,768000.0}) {
+    for (int profile = 0; profile < Tx::kProfileCount; ++profile) {
+      auto audio = input;
+      Tx tx;
+      tx.process(audio.data(), audio.size(), rate, profile, defaults);
+      const auto reference = factoryReference(input, rate, profile);
+      exactAudio &= std::memcmp(audio.data(), reference.data(), audio.size() * sizeof(float)) == 0;
+    }
+  }
+  check(exactAudio, "neutral audio is bit-exact against the original DSP at base/oversampled rates");
+
+  auto factory = input;
+  Tx base;
+  base.process(factory.data(), factory.size(), 48000, Tx::kUKVintage);
+  bool allAudible = true;
+  for (size_t control = 0; control < defaults.size(); ++control) {
+    auto trims = defaults;
+    trims[control] = NAMRig::kTransformerControls[control].maximum;
+    auto audio = input;
+    Tx tx;
+    tx.process(audio.data(), audio.size(), 48000, Tx::kUKVintage, trims);
+    double energy = 0;
+    for (size_t i = input.size() / 2; i < input.size(); ++i) {
+      const double difference = audio[i] - factory[i];
+      energy += difference * difference;
+    }
+    allAudible &= std::sqrt(energy / (input.size() / 2)) > 1.0e-4;
+  }
+  check(allAudible, "each of the 11 edits changes the audio measurably");
+
+  bool partitionExact = true, historyPreserved = true, settles = true;
+  for (double rate : {8000.0,48000.0,96000.0,192000.0,768000.0}) {
+    const size_t length = static_cast<size_t>(rate * .3);
+    std::vector<float> whole(length), split;
+    for (size_t i = 0; i < length; ++i) whole[i] = .3f * std::sin(2 * kPi * 997 * i / rate);
+    split = whole;
+    Tx a, b;
+    size_t begin = 0;
+    const size_t boundaries[] = {101, static_cast<size_t>(rate * .15), length};
+    for (size_t event = 0; event < 3; ++event) {
+      const auto& trims = event == 1 ? edited : defaults;
+      a.process(whole.data() + begin, boundaries[event] - begin, rate, Tx::kUKVintage, trims);
+      size_t offset = begin, chunk = 0;
+      constexpr size_t chunks[] = {1,17,31,64,511,7,1024};
+      while (offset < boundaries[event]) {
+        const size_t count = std::min(chunks[chunk++ % 7], boundaries[event] - offset);
+        b.process(split.data() + offset, count, rate, Tx::kUKVintage, trims);
+        offset += count;
+      }
+      begin = boundaries[event];
+    }
+    partitionExact &= std::memcmp(whole.data(), split.data(), length * sizeof(float)) == 0;
+
+    Tx unchanged, moving;
+    auto reference = input, glide = input;
+    unchanged.process(reference.data(), 101, rate, Tx::kUKVintage);
+    moving.process(glide.data(), 101, rate, Tx::kUKVintage);
+    unchanged.process(reference.data() + 101, 27, rate, Tx::kUKVintage);
+    moving.process(glide.data() + 101, 27, rate, Tx::kUKVintage, edited);
+    historyPreserved &= std::memcmp(reference.data(), glide.data(), 128 * sizeof(float)) == 0;
+
+    auto wet = std::vector<float>(length, .2f), smooth = wet;
+    Tx instant, gradual;
+    instant.process(wet.data(), length, rate, Tx::kUKVintage, edited);
+    gradual.process(smooth.data(), 32, rate, Tx::kUKVintage);
+    gradual.process(smooth.data() + 32, length - 32, rate, Tx::kUKVintage, edited);
+    double difference = 0;
+    for (size_t i = length - 100; i < length; ++i) difference += std::fabs(wet[i] - smooth[i]);
+    settles &= difference / 100 < 1.0e-4;
+  }
+  check(partitionExact, "automated trims are bit-exact across arbitrary block partitions at all rates");
+  check(historyPreserved, "trim edits retain filter/flux histories and the partial 32-sample cadence");
+  check(settles, "20 ms trim glide settles at base and True 8x rates");
+
+  Tx tail;
+  std::array<float, 64> impulse{};
+  impulse[0] = .5f;
+  tail.process(impulse.data(), 32, 48000, Tx::kUKVintage);
+  auto gentle = defaults;
+  gentle[6] = 1;
+  tail.process(impulse.data() + 32, 32, 48000, Tx::kUKVintage, gentle);
+  double tailEnergy = 0;
+  for (size_t i = 32; i < impulse.size(); ++i) tailEnergy += std::fabs(impulse[i]);
+  check(tailEnergy > .001, "filter and flux impulse tails survive a trim update at a chunk boundary");
+
+  bool gradualAtBoundary = true;
+  for (double rate : {48000.0,768000.0}) {
+    const size_t warmup = static_cast<size_t>(rate * .1) / 32 * 32;
+    std::vector<float> warm(warmup);
+    for (size_t i = 0; i < warm.size(); ++i) warm[i] = .3f * std::sin(2 * kPi * 2400 * i / rate);
+    Tx moving;
+    moving.process(warm.data(), warm.size(), rate, Tx::kUKVintage);
+    Tx factory = moving;
+    std::array<float, 32> neutralBlock{}, glideBlock{};
+    for (size_t i = 0; i < neutralBlock.size(); ++i)
+      neutralBlock[i] = .3f * std::sin(2 * kPi * 2400 * (warmup + i) / rate);
+    glideBlock = neutralBlock;
+    factory.process(neutralBlock.data(), neutralBlock.size(), rate, Tx::kUKVintage);
+    auto trims = defaults;
+    trims[6] = 12;
+    moving.process(glideBlock.data(), glideBlock.size(), rate, Tx::kUKVintage, trims);
+    double delta = 0;
+    for (size_t i = 0; i < neutralBlock.size(); ++i) delta += std::fabs(glideBlock[i] - neutralBlock[i]);
+    gradualAtBoundary &= delta > 0 && delta / neutralBlock.size() < .01;
+  }
+  check(gradualAtBoundary, "a full +12 dB gain edit starts gradually rather than jumping at a chunk boundary");
+
+  // Sustained bass holds appreciable flux at each 32-sample update. A stale
+  // saturated history turns drive changes into impulses in the inverse path.
+  for (double rate : {48000.0,768000.0}) {
+    for (int edit = 0; edit < 3; ++edit) {
+      const size_t warmup = static_cast<size_t>(rate * .12) + 5;
+      const size_t span = static_cast<size_t>(rate * .09) + 7;
+      std::vector<float> whole(warmup + 4 * span), split;
+      for (size_t i = 0; i < whole.size(); ++i)
+        whole[i] = .9f * std::sin(2 * kPi * 41.2 * i / rate);
+      split = whole;
+      Tx moving, partitioned;
+      auto trims = defaults;
+      trims[2] = .25f;
+      trims[3] = 100;
+      trims[4] = .25f;
+      moving.process(whole.data(), warmup, rate, Tx::kModern, trims);
+      partitioned.process(split.data(), warmup, rate, Tx::kModern, trims);
+      Tx unchanged = moving;
+      std::vector<float> reference(whole.size() - warmup);
+      for (size_t i = 0; i < reference.size(); ++i)
+        reference[i] = .9f * std::sin(2 * kPi * 41.2 * (warmup + i) / rate);
+      unchanged.process(reference.data(), reference.size(), rate, Tx::kModern, trims);
+      for (size_t event = 0; event < 4; ++event) {
+        const float target = event % 2 == 0 ? 4.0f : .25f;
+        if (edit != 1) trims[2] = target;
+        if (edit != 0) trims[4] = target;
+        const size_t begin = warmup + event * span;
+        moving.process(whole.data() + begin, span, rate, Tx::kModern, trims);
+        constexpr size_t chunks[] = {1,17,31,64,511,7,1024};
+        size_t offset = 0, chunk = 0;
+        while (offset < span) {
+          const size_t count = std::min(chunks[chunk++ % 7], span - offset);
+          partitioned.process(split.data() + begin + offset, count, rate, Tx::kModern, trims);
+          offset += count;
+        }
+      }
+      double peak = 0, step = 0, curvature = 0, difference = 0;
+      bool finite = true;
+      for (size_t i = warmup; i < whole.size(); ++i) {
+        finite &= std::isfinite(whole[i]);
+        peak = std::max(peak, std::fabs(static_cast<double>(whole[i])));
+        step = std::max(step, std::fabs(static_cast<double>(whole[i]) - whole[i - 1]));
+        curvature = std::max(curvature, std::fabs(static_cast<double>(whole[i]) -
+            2.0 * whole[i - 1] + whole[i - 2]));
+        difference += std::fabs(whole[i] - reference[i - warmup]);
+      }
+      char label[256];
+      std::snprintf(label, sizeof(label),
+          "%s glide at %.0f kHz: peak %.4f, step %.5f, curvature %.5f, partition-exact",
+          edit == 0 ? "drive" : edit == 1 ? "flux" : "drive + flux", rate / 1000,
+          peak, step, curvature);
+      // Allow the intended 32-sample curve glide, but reject inverse-path
+      // impulses. Oversampling must reduce steps, not merely hide their peaks.
+      const double rateScale = 48000.0 / rate;
+      check(finite && peak < 1.0 && step < .03 * rateScale &&
+                curvature < .03 * rateScale * rateScale &&
+                difference / reference.size() > .01 &&
+                std::memcmp(whole.data(), split.data(), whole.size() * sizeof(float)) == 0,
+            label);
+    }
+  }
+
+  bool safe = true, offExact = true, bounded = true;
+  const float malformed[] = {std::numeric_limits<float>::quiet_NaN(),
+      std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), 0};
+  const float minima[] = {5,2000,.5f,0,20,100,-12,.2f,100,-12,.2f};
+  const float maxima[] = {300,24000,10,100,400,12000,12,4,12000,12,4};
+  for (float value : malformed) {
+    TransformerAdjustments trims;
+    trims.fill(value);
+    for (int profile = 0; profile < Tx::kProfileCount; ++profile) {
+      const auto controls = Tx::controlValues(Tx::parametersForProfile(profile, trims));
+      for (size_t i = 0; i < controls.size(); ++i)
+        bounded &= std::isfinite(controls[i]) && controls[i] >= minima[i] && controls[i] <= maxima[i];
+      for (double rate : {8000.0,48000.0,768000.0}) {
+        auto audio = input;
+        Tx tx;
+        tx.process(audio.data(), 101, rate, profile);
+        tx.process(audio.data() + 101, audio.size() - 101, rate, profile, trims);
+        for (float sample : audio) safe &= std::isfinite(sample);
+        if (profile == Tx::kCaptured)
+          offExact &= std::memcmp(audio.data(), input.data(), audio.size() * sizeof(float)) == 0;
+      }
+    }
+  }
+  auto bypass = input;
+  Tx off;
+  off.process(bypass.data(), bypass.size(), 48000, Tx::kCaptured, edited);
+  offExact &= std::memcmp(bypass.data(), input.data(), input.size() * sizeof(float)) == 0;
+  check(bounded && safe, "NaN/Inf/extreme trims stay within absolute limits and produce finite audio");
+  check(offExact, "Off stays bit-transparent with edited and malformed trims");
+}
 } // namespace
 
 int main() {
+  verifyAdjustments();
   // ---- Existing sessions must be numerically untouched at the default. ----
   std::vector<float> dry(4096);
   for (size_t i = 0; i < dry.size(); ++i)

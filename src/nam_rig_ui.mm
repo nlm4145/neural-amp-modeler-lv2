@@ -77,6 +77,9 @@ static NSString* stageName(NSInteger stage) {
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)transformerChanged:(NSPopUpButton*)sender;
+- (void)showTransformerControls:(NSButton*)sender;
+- (void)transformerControlChanged:(NSControl*)sender;
+- (void)resetTransformerControls:(id)sender;
 - (void)showAmpAdvanced:(NSButton*)sender;
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
 - (void)showSpeakerLoad:(NSButton*)sender;
@@ -203,6 +206,8 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+    if (_state->transformerFields[i] == f) _state->transformerFieldEditing[i] = true;
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     if (_state->valueLabels[k] == f) _state->knobFieldEditing[k] = true;
     if (_state->deckValueLabels[k] == f) _state->deckKnobFieldEditing[k] = true;
@@ -212,6 +217,12 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i) {
+    if (_state->transformerFields[i] != f) continue;
+    _state->transformerFieldEditing[i] = false;
+    [self transformerControlChanged:f];
+    return;
+  }
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     if (_state->valueLabels[k] == f || _state->deckValueLabels[k] == f) {
       _state->knobFieldEditing[k] = false;
@@ -335,8 +346,160 @@ static NSString* stageName(NSInteger stage) {
 - (void)transformerChanged:(NSPopUpButton*)sender {
   sender.toolTip = sender.selectedItem.toolTip;
   if (!_state) return;
-  _state->sendControl(30, (float)sender.indexOfSelectedItem);
+  const float val = (float)sender.indexOfSelectedItem;
+  _state->sendControl(30, val);
+  _state->updateControl(30, val);
+  [self resetTransformerControls:sender];
+}
+
+- (void)resetTransformerControls:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  _state->cancelTransformerEditing();
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i) {
+    const uint32_t port = NAMRig::kTransformerControlFirstPort + i;
+    _state->sendControl(port, NAMRig::kTransformerControlDefaults[i]);
+    _state->updateControl(port, NAMRig::kTransformerControlDefaults[i]);
+  }
   [self markPresetModified];
+}
+
+- (void)transformerControlChanged:(NSControl*)sender {
+  if (!_state || _state->transformerProfile == 0) return;
+  const NSInteger index = sender.tag - NAMRig::kTransformerControlFirstPort;
+  if (index < 0 || index >= (NSInteger)NAMRig::kTransformerControlCount) return;
+  const auto& c = NAMRig::kTransformerControls[index];
+  const auto range = _state->transformerControlRange(index);
+  double value;
+  const bool field = [sender isKindOfClass:NSTextField.class];
+  if (field) {
+    NSScanner* scanner = [NSScanner scannerWithString:sender.stringValue];
+    if (![scanner scanDouble:&value] || !std::isfinite(value)) {
+      _state->transformerFieldEditing[index] = false;
+      _state->updateTransformerTelemetry(_state->transformerProfile);
+      return;
+    }
+    NSString* suffix = [[sender.stringValue substringFromIndex:scanner.scanLocation]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString* unit = (index == 6 || index == 9) ? @"dB"
+        : index == 3 ? @"%" : index == 2 ? @"x"
+        : (index == 7 || index == 10) ? @"" : @"Hz";
+    if (suffix.length && [suffix caseInsensitiveCompare:unit] != NSOrderedSame) {
+      _state->transformerFieldEditing[index] = false;
+      _state->updateTransformerTelemetry(_state->transformerProfile);
+      return;
+    }
+    const auto current = NAMRig::OutputTransformer::controlValues(
+        NAMRig::OutputTransformer::parametersForProfile(_state->transformerProfile,
+                                                       _state->transformerAdjustments));
+    // Enter followed by focus loss must not re-commit a rounded display value.
+    if ([sender.stringValue isEqualToString:RigUIState::transformerValueText(index, current[index])]) {
+      _state->transformerFieldEditing[index] = false;
+      return;
+    }
+  } else {
+    value = c.logarithmic ? std::exp(sender.doubleValue) : sender.doubleValue;
+  }
+  value = std::clamp(value, (double)range[0], (double)range[1]);
+  const auto base = NAMRig::OutputTransformer::controlValues(
+      NAMRig::OutputTransformer::parametersForProfile(_state->transformerProfile));
+  const float trim = c.defaultValue == 1.0f ? value / base[index] : value - base[index];
+  const uint32_t port = NAMRig::kTransformerControlFirstPort + index;
+  if (field) _state->transformerFieldEditing[index] = false;
+  if (std::fabs(trim - _state->transformerAdjustments[index]) > 1.0e-6f) {
+    _state->sendControl(port, trim);
+    _state->updateControl(port, trim);
+    [self markPresetModified];
+  } else {
+    _state->updateTransformerTelemetry(_state->transformerProfile);
+  }
+}
+
+- (void)showTransformerControls:(NSButton*)sender {
+  if (!_state) return;
+  [_state->transformerPopover close];
+  _state->transformerSliders.fill(nil);
+  _state->transformerFields.fill(nil);
+  _state->transformerFieldEditing.fill(false);
+  const size_t starts[] = {0, 2, 5, 8};
+  const size_t counts[] = {2, 3, 3, 3};
+  const NSInteger group = sender.tag;
+  if (group < 0 || group > 3) return;
+  NSArray<NSString*>* titles = @[@"Passband", @"Core Flux", @"Voice Peak", @"Leakage Resonance"];
+  NSArray<NSString*>* names = @[@"Low Cut", @"High Cut", @"Core Drive", @"Saturation Mix", @"Flux Frequency",
+                                @"Voice Frequency", @"Voice Gain", @"Voice Q",
+                                @"Leakage Frequency", @"Leakage Gain", @"Leakage Q"];
+  NSArray<NSString*>* descriptions = @[
+    @"Low-frequency bandwidth limit. Higher values tighten bass before core saturation.",
+    @"High-frequency bandwidth limit. Lower values soften the top end.",
+    @"Drive into the magnetic core. Higher values saturate earlier, especially on low notes.",
+    @"Blend of the saturated core-voltage path with the linear path.",
+    @"Frequency of the leaky flux integrator. Sets the core's low-frequency saturation behavior.",
+    @"Center frequency of the transformer voicing bell.", @"Boost or cut of the voicing bell.",
+    @"Voicing bandwidth. Higher Q makes a narrower peak.",
+    @"Center frequency of the winding leakage resonance.", @"Boost or cut of the leakage resonance.",
+    @"Leakage resonance bandwidth. Higher Q makes a narrower peak."
+  ];
+  const CGFloat height = 106 + counts[group] * 44;
+  RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, 390, height)];
+  NSTextField* heading = [NSTextField labelWithString:titles[group]];
+  heading.frame = NSMakeRect(16, height - 34, 350, 20);
+  heading.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+  heading.textColor = rigText();
+  [content addSubview:heading];
+  NSTextField* hint = [NSTextField labelWithString:_state->transformerProfile == 0
+      ? @"Select an iron core model to enable these controls."
+      : @"Drag a slider or enter a value. Edits are saved with your rig."];
+  hint.frame = NSMakeRect(16, height - 54, 358, 17);
+  hint.font = [NSFont systemFontOfSize:10];
+  hint.textColor = rigDimText();
+  [content addSubview:hint];
+  for (size_t row = 0; row < counts[group]; ++row) {
+    const size_t i = starts[group] + row;
+    const CGFloat y = height - 90 - row * 44;
+    NSTextField* label = [NSTextField labelWithString:names[i]];
+    label.frame = NSMakeRect(16, y + 6, 112, 17);
+    label.font = [NSFont systemFontOfSize:10 weight:NSFontWeightMedium];
+    label.textColor = rigDimText();
+    label.toolTip = descriptions[i];
+    [content addSubview:label];
+    NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(128, y, 140, 28)];
+    slider.controlSize = NSControlSizeSmall;
+    slider.continuous = YES;
+    slider.tag = NAMRig::kTransformerControlFirstPort + i;
+    slider.target = self;
+    slider.action = @selector(transformerControlChanged:);
+    slider.toolTip = descriptions[i];
+    [content addSubview:slider];
+    _state->transformerSliders[i] = slider;
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(280, y + 4, 94, 22)];
+    field.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+    field.textColor = rigText();
+    field.backgroundColor = rigRaised();
+    field.focusRingType = NSFocusRingTypeNone;
+    field.alignment = NSTextAlignmentCenter;
+    field.tag = slider.tag;
+    field.delegate = self;
+    field.target = self;
+    field.action = @selector(transformerControlChanged:);
+    field.toolTip = descriptions[i];
+    [content addSubview:field];
+    _state->transformerFields[i] = field;
+  }
+  NSButton* reset = [NSButton buttonWithTitle:@"Reset Model Tweaks" target:self action:@selector(resetTransformerControls:)];
+  reset.frame = NSMakeRect(16, 12, 160, 26);
+  reset.controlSize = NSControlSizeSmall;
+  reset.toolTip = @"Restore all four transformer sections to the selected factory model.";
+  [content addSubview:reset];
+  NSViewController* controller = [[NSViewController alloc] init];
+  controller.view = content;
+  NSPopover* popover = [[NSPopover alloc] init];
+  popover.contentViewController = controller;
+  popover.behavior = NSPopoverBehaviorTransient;
+  popover.contentSize = content.frame.size;
+  _state->transformerPopover = popover;
+  _state->updateTransformerTelemetry(_state->transformerProfile);
+  [popover showRelativeToRect:sender.bounds ofView:sender preferredEdge:NSRectEdgeMaxY];
 }
 
 - (void)showAmpAdvanced:(NSButton*)sender {
@@ -374,6 +537,7 @@ static NSString* stageName(NSInteger stage) {
   }
   _state->sendControl(59, 0.0f);
   _state->updateControl(59, 0.0f);
+  [self resetTransformerControls:sender];
   [self markPresetModified];
 }
 
@@ -504,12 +668,11 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)applyTransformerPreset:(NSButton*)sender {
   if (!_state) return;
-  const int transMap[] = {0, 3, 5, 11};
-  if (sender.tag >= 0 && sender.tag < 4) {
-    int transIdx = transMap[sender.tag];
+  if (sender.tag >= 0 && sender.tag < NAMRig::OutputTransformer::kProfileCount) {
+    int transIdx = (int)sender.tag;
     _state->sendControl(30, (float)transIdx);
     _state->updateControl(30, (float)transIdx);
-    [self markPresetModified];
+    [self resetTransformerControls:sender];
   }
 }
 
@@ -551,6 +714,9 @@ static NSString* stageName(NSInteger stage) {
     _state->rebuildSlotPresetMenu(slotIdx);
     NSDictionary* values = rep[@"values"];
     if ([values isKindOfClass:[NSDictionary class]]) {
+      // Existing transformer slot presets stored only the model selector.
+      if ([spec[@"key"] isEqualToString:@"transformer"])
+        [self resetTransformerControls:sender];
       for (id portKey in values) {
         if (![portKey isKindOfClass:[NSString class]]) continue;
         id valObj = values[portKey];
@@ -1854,7 +2020,7 @@ static void addLowerStudioDeck(RigUIState* state,
   NSView* pane1 = panes[1];
   NSStackView* row1 = [[NSStackView alloc] initWithFrame:NSZeroRect];
   row1.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  row1.distribution = NSStackViewDistributionFillProportionally;
+  row1.distribution = NSStackViewDistributionFill;
   row1.spacing = 14.0;
   row1.translatesAutoresizingMaskIntoConstraints = NO;
   [pane1 addSubview:row1];
@@ -1863,10 +2029,15 @@ static void addLowerStudioDeck(RigUIState* state,
   [[row1.leadingAnchor constraintEqualToAnchor:pane1.leadingAnchor] setActive:YES];
   [[row1.trailingAnchor constraintEqualToAnchor:pane1.trailingAnchor] setActive:YES];
 
+  RigPanel* pwrRackRef = nil;
+  RigPanel* sculptRackRef = nil;
+  RigPanel* transRackRef = nil;
+
   // 1. Dynamic Power Stage (4 knobs: 21, 16, 17, 18)
   {
     RigPanel* rack = addStudioRackSection(row1, @"DYNAMIC POWER STAGE", @"DRIVE, SAG & FEEDBACK", goldColor);
     [row1 addArrangedSubview:rack];
+    pwrRackRef = rack;
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
     kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -1937,6 +2108,7 @@ static void addLowerStudioDeck(RigUIState* state,
   {
     RigPanel* rack = addStudioRackSection(row1, @"PRE-AMP TONAL SCULPT", @"INPUT CONDITIONING", goldColor);
     [row1 addArrangedSubview:rack];
+    sculptRackRef = rack;
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
     kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -2005,6 +2177,25 @@ static void addLowerStudioDeck(RigUIState* state,
   {
     RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER IRON", @"MAGNETIC CORE SATURATION", goldColor);
     [row1 addArrangedSubview:rack];
+    transRackRef = rack;
+
+    // 108pt top control & telemetry zone (matches kr height in sibling racks so all 3 inner cards align at Y=158)
+    NSView* topZone = [[NSView alloc] initWithFrame:NSZeroRect];
+    topZone.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:topZone];
+    [[topZone.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[topZone.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[topZone.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[topZone.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    NSTextField* coreLbl = addLabel(topZone, @"IRON CORE MODEL", NSZeroRect,
+                                    [NSFont systemFontOfSize:9.5 weight:NSFontWeightSemibold],
+                                    rigDimText(), NSTextAlignmentLeft);
+    rigApplyTracking(coreLbl, 1.0);
+    coreLbl.translatesAutoresizingMaskIntoConstraints = NO;
+    [[coreLbl.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor constant:2] setActive:YES];
+    [[coreLbl.topAnchor constraintEqualToAnchor:topZone.topAnchor constant:6] setActive:YES];
+    [coreLbl setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     NSPopUpButton* deckTrans = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [deckTrans addItemsWithTitles:@[@"Captured / Off", @"Modern Iron",
@@ -2031,20 +2222,85 @@ static void addLowerStudioDeck(RigUIState* state,
     ];
     for (NSUInteger item = 0; item < transformerDescriptions.count; ++item)
       [deckTrans itemAtIndex:item].toolTip = transformerDescriptions[item];
-    deckTrans.controlSize = NSControlSizeRegular;
+    deckTrans.controlSize = NSControlSizeSmall;
+    deckTrans.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium];
     deckTrans.tag = 30;
     deckTrans.target = state->uiController;
     deckTrans.action = @selector(transformerChanged:);
     deckTrans.translatesAutoresizingMaskIntoConstraints = NO;
-    [rack addSubview:deckTrans];
-    [[deckTrans.topAnchor constraintEqualToAnchor:rack.topAnchor constant:44] setActive:YES];
-    [[deckTrans.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
-    [[deckTrans.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
-    [[deckTrans.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    [topZone addSubview:deckTrans];
+    [[deckTrans.leadingAnchor constraintEqualToAnchor:coreLbl.trailingAnchor constant:10] setActive:YES];
+    [[deckTrans.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor] setActive:YES];
+    [[deckTrans.centerYAnchor constraintEqualToAnchor:coreLbl.centerYAnchor] setActive:YES];
+    [[deckTrans.heightAnchor constraintEqualToConstant:24] setActive:YES];
     [deckTrans selectItemAtIndex:0];
     deckTrans.toolTip = deckTrans.selectedItem.toolTip;
     state->deckTransformerPopup = deckTrans;
     state->transformerPopup = deckTrans;
+
+    // 2x2 Hardware Core Spec Pill Grid inside topZone (y = 32..106)
+    NSStackView* specGrid = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    specGrid.orientation = NSUserInterfaceLayoutOrientationVertical;
+    specGrid.distribution = NSStackViewDistributionFillEqually;
+    specGrid.spacing = 6.0;
+    specGrid.translatesAutoresizingMaskIntoConstraints = NO;
+    [topZone addSubview:specGrid];
+    [[specGrid.topAnchor constraintEqualToAnchor:deckTrans.bottomAnchor constant:8] setActive:YES];
+    [[specGrid.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor] setActive:YES];
+    [[specGrid.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor] setActive:YES];
+    [[specGrid.bottomAnchor constraintEqualToAnchor:topZone.bottomAnchor constant:-2] setActive:YES];
+
+    NSArray<NSString*>* specTitles = @[@"PASSBAND", @"CORE FLUX", @"VOICE PEAK", @"LEAKAGE"];
+    for (NSUInteger rowIdx = 0; rowIdx < 2; ++rowIdx) {
+      NSStackView* sRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
+      sRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+      sRow.distribution = NSStackViewDistributionFillEqually;
+      sRow.spacing = 6.0;
+      sRow.translatesAutoresizingMaskIntoConstraints = NO;
+      [specGrid addArrangedSubview:sRow];
+      [[sRow.leadingAnchor constraintEqualToAnchor:specGrid.leadingAnchor] setActive:YES];
+      [[sRow.trailingAnchor constraintEqualToAnchor:specGrid.trailingAnchor] setActive:YES];
+
+      for (NSUInteger colIdx = 0; colIdx < 2; ++colIdx) {
+        const size_t pillIdx = rowIdx * 2 + colIdx;
+        NSView* pill = [[NSView alloc] initWithFrame:NSZeroRect];
+        pill.translatesAutoresizingMaskIntoConstraints = NO;
+        pill.wantsLayer = YES;
+        pill.layer.cornerRadius = 5.0;
+        pill.layer.backgroundColor = rigRaised().CGColor;
+        pill.layer.borderWidth = 1.0;
+        pill.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.75].CGColor;
+        [sRow addArrangedSubview:pill];
+        [[pill.topAnchor constraintEqualToAnchor:sRow.topAnchor] setActive:YES];
+        [[pill.bottomAnchor constraintEqualToAnchor:sRow.bottomAnchor] setActive:YES];
+
+        NSButton* kLbl = [NSButton buttonWithTitle:[specTitles[pillIdx] stringByAppendingString:@"  EDIT"]
+                                           target:state->uiController action:@selector(showTransformerControls:)];
+        kLbl.bordered = NO;
+        kLbl.font = [NSFont systemFontOfSize:7.5 weight:NSFontWeightBold];
+        kLbl.contentTintColor = [NSColor colorWithSRGBRed:0.52 green:0.56 blue:0.66 alpha:0.95];
+        kLbl.alignment = NSTextAlignmentLeft;
+        kLbl.tag = pillIdx;
+        kLbl.toolTip = @"Edit this section's transformer parameters.";
+        [pill addSubview:kLbl];
+        kLbl.translatesAutoresizingMaskIntoConstraints = NO;
+        [[kLbl.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:8] setActive:YES];
+        [[kLbl.topAnchor constraintEqualToAnchor:pill.topAnchor constant:4] setActive:YES];
+        [[kLbl.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-6] setActive:YES];
+        [[kLbl.heightAnchor constraintEqualToConstant:12] setActive:YES];
+
+        NSTextField* vLbl = addLabel(pill, @"—", NSZeroRect,
+                                     [NSFont monospacedDigitSystemFontOfSize:9.5 weight:NSFontWeightSemibold],
+                                     [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.32 alpha:0.98],
+                                     NSTextAlignmentLeft);
+        vLbl.lineBreakMode = NSLineBreakByTruncatingTail;
+        vLbl.translatesAutoresizingMaskIntoConstraints = NO;
+        [[vLbl.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:8] setActive:YES];
+        [[vLbl.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-6] setActive:YES];
+        [[vLbl.bottomAnchor constraintEqualToAnchor:pill.bottomAnchor constant:-4] setActive:YES];
+        state->transformerSpecLabels[pillIdx] = vLbl;
+      }
+    }
 
     NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
     card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2053,12 +2309,12 @@ static void addLowerStudioDeck(RigUIState* state,
     card.layer.borderWidth = 1.0;
     card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
     [rack addSubview:card];
-    [[card.topAnchor constraintEqualToAnchor:deckTrans.bottomAnchor constant:10] setActive:YES];
+    [[card.topAnchor constraintEqualToAnchor:topZone.bottomAnchor constant:10] setActive:YES];
     [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"13 modeled grain-oriented steel laminations with core flux saturation & low-end bloom.",
+    NSTextField* desc = addLabel(card, @"Factory iron profiles with editable bandwidth, voicing and core saturation.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2066,49 +2322,33 @@ static void addLowerStudioDeck(RigUIState* state,
     [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
     [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
 
-    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
-    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    chips.distribution = NSStackViewDistributionFillEqually;
-    chips.spacing = 6.0;
-    chips.translatesAutoresizingMaskIntoConstraints = NO;
-    [card addSubview:chips];
-    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
-    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
-    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
-    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+    NSMutableArray<NSNumber*>* transformerPorts = [NSMutableArray arrayWithObject:@30];
+    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+      [transformerPorts addObject:@(NAMRig::kTransformerControlFirstPort + i)];
+    NSPopUpButton* presets = addSlotPresetDropdown(card, state, @"transformer", @"Output Transformer Iron",
+        transformerPorts, @[@"Captured / Off", @"Modern Iron", @"US Vintage", @"UK Vintage", @"Small Iron",
+                            @"Tight Metal", @"Extended Range", @"Thrash Bite", @"Doom Iron", @"Studio Linear",
+                            @"Tweed Bloom", @"Class-A Chime", @"Bass Iron"], @selector(applyTransformerPreset:));
+    [[presets.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[presets.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[presets.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
 
-    NSArray<NSString*>* transPresetTitles = @[@"CAPTURED/OFF", @"UK VINTAGE", @"TIGHT METAL", @"CLASS-A"];
-    addSlotPresetDropdown(chips, state, @"transformer", @"Output Transformer Iron",
-                          @[@30], transPresetTitles, @selector(applyTransformerPreset:));
+    NAMTransformerVisualizer* transVis = [[NAMTransformerVisualizer alloc] initWithFrame:NSZeroRect];
+    transVis.translatesAutoresizingMaskIntoConstraints = NO;
+    transVis.profile = 0;
+    state->transformerVisualizer = transVis;
+    [card addSubview:transVis];
+    [[transVis.topAnchor constraintEqualToAnchor:presets.bottomAnchor constant:8] setActive:YES];
+    [[transVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[transVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[transVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
 
-    NSStackView* specs = [[NSStackView alloc] initWithFrame:NSZeroRect];
-    specs.orientation = NSUserInterfaceLayoutOrientationVertical;
-    specs.distribution = NSStackViewDistributionFillEqually;
-    specs.spacing = 5.0;
-    specs.translatesAutoresizingMaskIntoConstraints = NO;
-    [card addSubview:specs];
-    [[specs.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:10] setActive:YES];
-    [[specs.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12] setActive:YES];
-    [[specs.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12] setActive:YES];
-    [[specs.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-10] setActive:YES];
+    state->updateTransformerTelemetry(0);
+  }
 
-    auto addSpecRow = ^(NSString* key, NSString* val) {
-      NSStackView* row = [[NSStackView alloc] initWithFrame:NSZeroRect];
-      row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-      row.distribution = NSStackViewDistributionFill;
-      NSTextField* kLbl = addLabel(row, key, NSZeroRect, [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold],
-                                   [NSColor colorWithSRGBRed:0.50 green:0.55 blue:0.65 alpha:0.9], NSTextAlignmentLeft);
-      rigApplyTracking(kLbl, 0.8);
-      NSTextField* vLbl = addLabel(row, val, NSZeroRect, [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
-                                   [NSColor colorWithSRGBRed:0.95 green:0.80 blue:0.40 alpha:0.95], NSTextAlignmentRight);
-      [row addArrangedSubview:kLbl];
-      [row addArrangedSubview:vLbl];
-      [specs addArrangedSubview:row];
-    };
-    addSpecRow(@"CORE LAMINATION", @"M6 Grain-Oriented Silicon Steel");
-    addSpecRow(@"SATURATION KNEE", @"1.85 Tesla Soft Flux Limiting");
-    addSpecRow(@"REACTIVE BLOOM", @"LF Sub-Bass Inductance (<80 Hz)");
-    addSpecRow(@"WINDING TOPOLOGY", @"Interleaved Bi-Filar Segments");
+  if (pwrRackRef && sculptRackRef && transRackRef) {
+    [[sculptRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.74] setActive:YES];
+    [[transRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.86] setActive:YES];
   }
 
   // ==========================================
@@ -3435,7 +3675,8 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 59) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 &&
+      port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

@@ -590,6 +590,8 @@ class StandaloneHost {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &fxControls_[port - 47];
     }
+    for (size_t i = 0; i < transformerControls_.size(); ++i)
+      plugin_->ports.transformer_adjustments[i] = &transformerControls_[i];
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -931,6 +933,12 @@ class StandaloneHost {
     }
     if (format == 0 && port >= 47 && port <= 59 && size == sizeof(float)) {
       host->fxControls_[port - 47] = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kTransformerControlFirstPort &&
+        port < NAMRig::Plugin::kPortCount && size == sizeof(float)) {
+      host->transformerControls_[port - NAMRig::kTransformerControlFirstPort] =
+          *static_cast<const float*>(buffer);
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1720,6 +1728,7 @@ class StandaloneHost {
   std::array<float, 8> advancedControls_{};
   std::array<float, 5> speakerControls_{};
   std::array<float, 13> fxControls_{};
+  NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

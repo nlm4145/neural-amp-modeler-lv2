@@ -2,6 +2,8 @@
 // gradient panel, the flat button, and image-decode helpers.
 #pragma once
 
+#include "output_transformer.h"
+
 #ifdef __OBJC__
 #import <Cocoa/Cocoa.h>
 
@@ -67,6 +69,11 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @interface NAMSculptVisualizer : NSView
 @property(nonatomic) float bright;
 @property(nonatomic) float inputEq;
+@end
+
+@interface NAMTransformerVisualizer : NSView
+@property(nonatomic) int profile;
+@property(nonatomic) NAMRig::OutputTransformer::Parameters parameters;
 @end
 
 @interface NAMSpeakerDynamicsVisualizer : NSView

@@ -15,7 +15,8 @@ ports = {
         r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
     )
 }
-assert sorted(ports) == list(range(60)), "ports must remain contiguous through 59"
+assert sorted(ports) == list(range(71)), "ports 0..59 must remain contiguous before transformer trims append at 60..70"
+assert "kPortCount = 71" in header
 expected = ["speaker_profile", "speaker_drive", "speaker_compression",
             "speaker_thump", "speaker_resonance"]
 for index, symbol in enumerate(expected, 42):

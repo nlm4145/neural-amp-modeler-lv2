@@ -1014,6 +1014,184 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
 }
 @end
 
+@implementation NAMTransformerVisualizer
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.profile = NAMRig::OutputTransformer::kCaptured;
+    self.toolTip = @"Illustrative core flux transfer and linear filters at 48 kHz (including makeup). Not the full level-dependent audio response; flux frequency controls the core's memory.";
+  }
+  return self;
+}
+- (BOOL)isFlipped { return NO; }
+- (void)setProfile:(int)p {
+  _profile = NAMRig::OutputTransformer::clampProfile(p);
+  self.parameters = NAMRig::OutputTransformer::parametersForProfile(_profile);
+}
+- (void)setParameters:(NAMRig::OutputTransformer::Parameters)p {
+  _parameters = p;
+  self.needsDisplay = YES;
+}
+
+- (void)drawRect:(NSRect)dirty {
+  NSRect r = self.bounds;
+  if (r.size.width < 10 || r.size.height < 10) return;
+
+  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
+  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [bg fill];
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  bg.lineWidth = 1.0;
+  [bg stroke];
+
+  const int idx = _profile;
+  const auto& p = _parameters;
+
+  NSDictionary* headerAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
+  };
+  [@"CORE FLUX SATURATION & PASSBAND" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+
+  NSString* stat = (idx == 0)
+      ? @"BYPASS  •  CAPTURED RESPONSE"
+      : [NSString stringWithFormat:@"FLUX: %.0fHz  •  DRV: %.1fx  •  SAT: %.0f%%",
+         p.fluxHz, p.drive, p.saturationMix * 100.0];
+  NSDictionary* statAttrs = @{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
+  };
+  NSSize ssz = [stat sizeWithAttributes:statAttrs];
+  [stat drawAtPoint:NSMakePoint(r.size.width - 14 - ssz.width, r.size.height - 18) withAttributes:statAttrs];
+
+  const CGFloat topM = 22.0;
+  const CGFloat botM = 10.0;
+  const CGFloat plotH = r.size.height - topM - botM;
+  if (plotH < 8.0) return;
+
+  // Split view: Left 36% = Core Flux Transfer, Right 64% = Linear Passband & Leakage
+  const CGFloat splitX = std::round(r.size.width * 0.36);
+
+  NSBezierPath* sep = [NSBezierPath bezierPath];
+  [sep moveToPoint:NSMakePoint(splitX, botM)];
+  [sep lineToPoint:NSMakePoint(splitX, r.size.height - topM)];
+  sep.lineWidth = 1.0;
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.8] setStroke];
+  [sep stroke];
+
+  // Left: Static flux transfer, not a hysteresis loop or voltage-domain response.
+  const CGFloat bhCx = splitX * 0.5;
+  const CGFloat bhCy = botM + plotH * 0.5;
+  const CGFloat bhW = splitX - 24.0;
+  const CGFloat bhH = plotH - 6.0;
+
+  NSBezierPath* bhAxes = [NSBezierPath bezierPath];
+  [bhAxes moveToPoint:NSMakePoint(bhCx - bhW * 0.5, bhCy)];
+  [bhAxes lineToPoint:NSMakePoint(bhCx + bhW * 0.5, bhCy)];
+  [bhAxes moveToPoint:NSMakePoint(bhCx, bhCy - bhH * 0.5)];
+  [bhAxes lineToPoint:NSMakePoint(bhCx, bhCy + bhH * 0.5)];
+  bhAxes.lineWidth = 0.75;
+  [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.6] setStroke];
+  [bhAxes stroke];
+
+  NSBezierPath* bhCurve = [NSBezierPath bezierPath];
+  const int bhPts = 40;
+  const auto sigmoid = [](double x) { return x / std::sqrt(1.0 + x * x); };
+  const double bias = sigmoid(p.asymmetry);
+  for (int i = 0; i <= bhPts; ++i) {
+    double x = ((double)i / (double)bhPts) * 2.0 - 1.0;
+    double ySat = (sigmoid(p.drive * x + p.asymmetry) - bias) / p.drive;
+    double y = (idx == 0) ? x : x + p.saturationMix * (ySat - x);
+    CGFloat px = bhCx + x * (bhW * 0.46);
+    CGFloat py = bhCy + y * (bhH * 0.45);
+    if (i == 0) [bhCurve moveToPoint:NSMakePoint(px, py)];
+    else [bhCurve lineToPoint:NSMakePoint(px, py)];
+  }
+  bhCurve.lineWidth = 2.2;
+  [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:(idx == 0 ? 0.45 : 0.95)] setStroke];
+  [bhCurve stroke];
+
+  // Right: DSP's linear RBJ filters at a fixed reference rate, excluding core saturation.
+  const CGFloat eqLeft = splitX + 12.0;
+  const CGFloat eqRight = r.size.width - 12.0;
+  const CGFloat eqW = eqRight - eqLeft;
+  const CGFloat eqMidY = botM + plotH * 0.48;
+
+  NSBezierPath* eqBase = [NSBezierPath bezierPath];
+  [eqBase moveToPoint:NSMakePoint(eqLeft, eqMidY)];
+  [eqBase lineToPoint:NSMakePoint(eqRight, eqMidY)];
+  eqBase.lineWidth = 0.75;
+  CGFloat dashPat[2] = {2.0, 3.0};
+  [eqBase setLineDash:dashPat count:2 phase:0.0];
+  [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
+  [eqBase stroke];
+
+  NSBezierPath* eqCurve = [NSBezierPath bezierPath];
+  const int eqPts = 128;
+  const double rate = 48000.0;
+  const double band = rate * 0.42;
+  const double pi = 3.14159265358979323846;
+  enum class Filter { HighPass, LowPass, Peak };
+  const auto rbj = [&](Filter type, double cutoff, double gainDb, double q) {
+    const double w = 2.0 * pi * cutoff / rate;
+    const double c = std::cos(w), alpha = std::sin(w) / (2.0 * q);
+    const double A = std::pow(10.0, gainDb / 40.0);
+    if (type == Filter::HighPass)
+      return std::array<double, 6>{(1.0 + c) * 0.5, -(1.0 + c), (1.0 + c) * 0.5,
+                                 1.0 + alpha, -2.0 * c, 1.0 - alpha};
+    if (type == Filter::LowPass)
+      return std::array<double, 6>{(1.0 - c) * 0.5, 1.0 - c, (1.0 - c) * 0.5,
+                                 1.0 + alpha, -2.0 * c, 1.0 - alpha};
+    return std::array<double, 6>{1.0 + alpha * A, -2.0 * c, 1.0 - alpha * A,
+                               1.0 + alpha / A, -2.0 * c, 1.0 - alpha / A};
+  };
+  const auto highPass = rbj(Filter::HighPass, p.lowCutHz, 0.0, 0.7071067811865476);
+  const auto voice = rbj(Filter::Peak, std::min(p.voiceHz, band), p.voiceDb, p.voiceQ);
+  const auto leakage = rbj(Filter::Peak, std::min(p.leakageHz, band * 0.9), p.leakageDb, p.leakageQ);
+  const auto highCut = rbj(Filter::LowPass, std::min(p.highCutHz, band), 0.0, 0.7071067811865476);
+  const auto magnitudeDb = [&](const std::array<double, 6>& f, double hz) {
+    const double w = 2.0 * pi * hz / rate;
+    const double c = std::cos(w), s = std::sin(w);
+    const double c2 = std::cos(2.0 * w), s2 = std::sin(2.0 * w);
+    const double numerator = std::hypot(f[0] + f[1] * c + f[2] * c2, f[1] * s + f[2] * s2);
+    const double denominator = std::hypot(f[3] + f[4] * c + f[5] * c2, f[4] * s + f[5] * s2);
+    return 20.0 * std::log10(std::max(1.0e-12, numerator / denominator));
+  };
+  // Map log frequency 20 Hz .. 20 kHz across [0..1]
+  const float logMin = std::log10(20.0f);
+  const float logMax = std::log10(20000.0f);
+  for (int i = 0; i <= eqPts; ++i) {
+    float frac = (float)i / (float)eqPts;
+    float hz = std::pow(10.0f, logMin + frac * (logMax - logMin));
+    double db = 0.0;
+    if (idx != 0) {
+      db = magnitudeDb(highPass, hz) + magnitudeDb(voice, hz)
+         + magnitudeDb(leakage, hz) + magnitudeDb(highCut, hz)
+         + 20.0 * std::log10(p.makeup);
+      db = std::max(-10.0, std::min(6.0, db));
+    }
+    CGFloat px = eqLeft + frac * eqW;
+    CGFloat py = eqMidY + (db / 10.0f) * (plotH * 0.42);
+    py = std::max(botM + 2.0, std::min(botM + plotH - 2.0, py));
+    if (i == 0) [eqCurve moveToPoint:NSMakePoint(px, py)];
+    else [eqCurve lineToPoint:NSMakePoint(px, py)];
+  }
+
+  NSBezierPath* eqFill = [eqCurve copy];
+  [eqFill lineToPoint:NSMakePoint(eqRight, botM)];
+  [eqFill lineToPoint:NSMakePoint(eqLeft, botM)];
+  [eqFill closePath];
+
+  NSGradient* fg = [[NSGradient alloc]
+      initWithStartingColor:[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:(idx == 0 ? 0.12 : 0.30)]
+                endingColor:[NSColor colorWithSRGBRed:0.25 green:0.15 blue:0.04 alpha:0.02]];
+  [fg drawInBezierPath:eqFill angle:270.0];
+
+  eqCurve.lineWidth = 2.0;
+  [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:(idx == 0 ? 0.45 : 0.95)] setStroke];
+  [eqCurve stroke];
+}
+@end
+
 @implementation NAMSpeakerDynamicsVisualizer
 - (BOOL)isFlipped { return NO; }
 - (void)setDrive:(float)v { _drive = v; self.needsDisplay = YES; }

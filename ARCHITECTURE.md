@@ -63,6 +63,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 50–53 | `delay_time`/`delay_feedback`/`delay_damping`/`delay_mix` | in | Stereo delay after the cabinets; mix 0 = exact bypass |
 | 54–58 | `reverb_mix`/`reverb_decay`/`reverb_size`/`reverb_damping`/`reverb_predelay` | in | Plate reverb after the delay; mix 0 = exact bypass (Room stays independent) |
 | 59 | `cab2_polarity` | in | toggled/integer; 0 = normal, 1 = inverted Cab B polarity (default 0) |
+| 60–70 | `transformer_low_cut`/`transformer_high_cut`/`transformer_drive`/`transformer_mix`/`transformer_flux`/`transformer_voice_freq`/`transformer_voice_gain`/`transformer_voice_q`/`transformer_leakage_freq`/`transformer_leakage_gain`/`transformer_leakage_q` | in | Iron core model trims: frequency/drive/Q ratios default 1, gain offsets default 0 dB, mix offset defaults to 0 percentage points |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
@@ -74,6 +75,16 @@ Polarity is saved/captured/applied with presets, including A/B snapshots; a
 missing legacy value always applies 0. Reset to Default restores 0, while
 cabinet quick presets preserve the user's polarity selection. The UI requests
 host notifications for both alignment and polarity.
+
+Transformer trims preserve existing factory sounds and saved sessions. The four
+spec cards open editors showing absolute Hz/dB/Q/drive/mix values derived from
+the selected model and its trims; the DSP and UI share the profile definitions.
+Selecting a factory model in the UI or Reset Model Tweaks restores neutral trims;
+host profile automation preserves trims. Rig presets, A/B snapshots, and the
+transformer slot preset menu capture all 11 trims. Missing legacy values restore
+neutral trims. Captured / Off remains exact bypass and disables the editors.
+Live trims glide over approximately 20 ms at the amp's processing-domain rate,
+on a persistent 32-sample cadence, without resetting filter or core histories.
 
 ## "Oversampling" reality — and TRUE oversampling (2x, optional)
 
