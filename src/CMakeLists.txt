@@ -184,7 +184,7 @@ if (APPLE)
 		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 	)
 
-	option(BUILD_AXE_FX_STANDALONE "Build the native macOS Axe FX app" OFF)
+	option(BUILD_AXE_FX_STANDALONE "Build the native macOS Axe FX app" ON)
 	if (BUILD_AXE_FX_STANDALONE)
 		find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)

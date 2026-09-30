@@ -227,7 +227,9 @@ NeuralAudio's oversampling multiplies WaveNet dilations by
 
 ## Build & install
 
-`./build.sh` = cmake configure → build → install bundle to
-`~/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2/` → ad-hoc codesign →
-dlopen smoke check. Build intermediates live OUTSIDE the repo. A rebuilt
-`.so` does nothing until the DAW re-instantiates the plugin (reload Element).
+`./build.sh` = cmake configure → build both LV2 plugins and Axe FX standalone simultaneously →
+install bundle to `~/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2/` → codesign →
+dlopen smoke check → install standalone to `/Applications/Axe FX.app` (signed with persistent
+local keychain identity for macOS microphone permissions) → relaunch running audio apps.
+Build intermediates live OUTSIDE the repo. A rebuilt `.so` does nothing until the DAW
+re-instantiates the plugin (reload Element).

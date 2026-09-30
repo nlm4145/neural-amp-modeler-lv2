@@ -82,13 +82,34 @@ and the Tone3000 API/OAuth rules.
 
 ## Building
 
+### Quick start (macOS)
+
+To simultaneously build and install both the LV2 plugin (for hosts/DAWs like Element) and the native standalone application (`/Applications/Axe FX.app`):
+
+```bash
+./build.sh
+```
+
+This single script:
+1. Configures CMake and compiles both the LV2 plugin bundle and the native macOS standalone app in parallel.
+2. Installs the LV2 bundle to `~/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2`.
+3. Signs `Axe FX.app` with a persistent local identity (preserving macOS Microphone/TCC permissions) and installs it to `/Applications/Axe FX.app`.
+4. Relaunches whichever application was running (`Element` or `Axe FX`), or launches `Axe FX` if neither was running.
+
+Options:
+- `./build.sh --no-launch` — build and install without launching applications.
+- `./build.sh --element` — specifically launch/reopen Element.
+- `./build.sh --standalone` — specifically launch/reopen Axe FX standalone.
+
+### Manual build
+
 First clone the repository:
 ```bash
 git clone --recurse-submodules -j4 https://github.com/mikeoliphant/neural-amp-modeler-lv2
 cd neural-amp-modeler-lv2/build
 ```
 
-Then compile the plugin using:
+Then compile using:
 
 **Linux/MacOS**
 ```bash
@@ -104,22 +125,7 @@ cmake --build . --config=release -j4
 
 Note - you'll have to change the Visual Studio version if you are using a different one.
 
-After building, the plugin will be in **build/neural_amp_modeler.lv2**.
-
-### Native macOS standalone app
-
-The rig can also run directly against the system's selected audio input and
-output, without a DAW or LV2 host:
-
-```bash
-./build-standalone.sh
-```
-
-This builds the app, installs it as `/Applications/Axe FX.app`, and
-launches it. On its first launch, macOS asks for microphone permission. Select
-the desired guitar interface as the system input and output before launching.
-To build and install without launching, pass `--no-launch`. For a non-system
-destination, set `INSTALL_DIR` when invoking the script.
+After building, the plugin will be in **build/neural_amp_modeler.lv2** (and on macOS, the standalone app will be in **build/src/Axe FX.app**).
 
 ## CMake Options
 

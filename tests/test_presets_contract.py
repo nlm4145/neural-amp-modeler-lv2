@@ -114,9 +114,9 @@ assert "tone3000-session.json" in tone_api_mm, \
     "Tone3000 session must persist to tone3000-session.json in Application Support so ad-hoc rebuilds do not trigger Keychain password prompts"
 assert "kSecUseAuthenticationUISkip" in tone_api_mm, \
     "Fallback Keychain queries must set kSecUseAuthenticationUISkip so macOS never shows a modal Keychain password prompt"
-build_standalone_sh = (ROOT / "build-standalone.sh").read_text()
-assert 'CODESIGN_ID="Axe FX Local Signer"' in build_standalone_sh and '--sign "$CODESIGN_ID"' in build_standalone_sh, \
-    "build-standalone.sh must sign Axe FX.app with a persistent local code-signing identity so macOS TCC remembers Microphone permission across rebuilds"
+build_sh = (ROOT / "build.sh").read_text()
+assert 'CODESIGN_ID="Axe FX Local Signer"' in build_sh and '--sign "$CODESIGN_ID"' in build_sh, \
+    "build.sh must sign Axe FX.app with a persistent local code-signing identity so macOS TCC remembers Microphone permission across rebuilds"
 assert "kMeterUiIntervalSec = 0.5" in ui_state_h, \
     "Input and output dB meter UI updates must be throttled to a 500ms cadence"
 standalone_mm = (ROOT / "src" / "standalone_main.mm").read_text()
