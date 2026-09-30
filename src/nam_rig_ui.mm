@@ -3080,9 +3080,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[thumb.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[thumb.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14] setActive:YES];
-      // Leave one compact extra row on the cab tile for Cab B while keeping
-      // the bottom model selectors vertically aligned across all 3 tiles.
-      [[thumb.heightAnchor constraintEqualToConstant:(i < 2 ? 141 : 112)] setActive:YES];
+      // Keep artwork wells and model selectors vertically aligned across all 3 tiles.
+      [[thumb.heightAnchor constraintEqualToConstant:141] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
       thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
 
@@ -3102,13 +3101,17 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [mp itemAtIndex:0].toolTip = RigUIState::modelPickerTooltip((size_t)i, nil);
       mp.toolTip = RigUIState::modelPickerTooltip((size_t)i, nil);
       mp.enabled = NO;
+      mp.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+      [mp setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [mp setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
       [box addSubview:mp];
       [[mp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-      [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
       [[mp.heightAnchor constraintEqualToConstant:23] setActive:YES];
 
-      if (i == 2) {
+      if (i < 2) {
+        [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+      } else {
         NSPopUpButton* mpB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         state->modelPickers[3] = mpB;
         mpB.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3120,6 +3123,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [mpB itemAtIndex:0].toolTip = RigUIState::modelPickerTooltip(3, nil);
         mpB.toolTip = RigUIState::modelPickerTooltip(3, nil);
         mpB.enabled = NO;
+        mpB.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+        [mpB setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [mpB setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         [box addSubview:mpB];
         RigButton* browseB = rigButton(box, @"…", state->uiController, @selector(chooseModel:), NSZeroRect);
         browseB.tag = 3;
@@ -3133,9 +3139,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         onB.toolTip = @"Enable the second cabinet. Cab A pans left and Cab B pans right by the Width amount. Changes use a short click-free fade.";
         onB.translatesAutoresizingMaskIntoConstraints = NO;
         state->powerButtons[3] = onB;
-        [[mpB.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-        [[mpB.topAnchor constraintEqualToAnchor:mp.bottomAnchor constant:6] setActive:YES];
+        [[mpB.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:6] setActive:YES];
+        [[mpB.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
         [[mpB.heightAnchor constraintEqualToConstant:23] setActive:YES];
+        [[mpB.widthAnchor constraintEqualToAnchor:mp.widthAnchor] setActive:YES];
         [[browseB.leadingAnchor constraintEqualToAnchor:mpB.trailingAnchor constant:4] setActive:YES];
         [[browseB.centerYAnchor constraintEqualToAnchor:mpB.centerYAnchor] setActive:YES];
         [[browseB.widthAnchor constraintEqualToConstant:26] setActive:YES];
