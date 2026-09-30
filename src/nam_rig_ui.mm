@@ -1809,6 +1809,23 @@ static void addLowerStudioDeck(RigUIState* state,
                                    @"Doom Iron", @"Studio Linear",
                                    @"Tweed Bloom", @"Class-A Chime",
                                    @"Bass Iron"]];
+    NSArray<NSString*>* transformerDescriptions = @[
+      @"Captured / Off — Adds no transformer processing, preserving the output-transformer response already present in the NAM capture.",
+      @"Modern Iron — Oversized, wide-bandwidth response with firm lows, open highs, gentle saturation, and very little sag.",
+      @"US Vintage — Deep, rounded lows with restrained presence, warm asymmetric harmonics, and moderate vintage compression.",
+      @"UK Vintage — Tighter bass, pronounced mid-bass bark, earlier core saturation, and a compressed classic-stack feel.",
+      @"Small Iron — Narrower bandwidth, strong low-mid character, early breakup, softened highs, and the most vintage-style compression.",
+      @"Tight Metal — Trims sub-bass flub while retaining pick attack, upper-mid definition, air, and fast recovery.",
+      @"Extended Range — Preserves low-tuned fundamentals and high-end clarity with disciplined resonance, low saturation, and minimal sag.",
+      @"Thrash Bite — Lean, controlled lows with an aggressive upper-mid cut, harder core drive, and quick response.",
+      @"Doom Iron — Large low-frequency bloom, dark rolled-off highs, heavy core saturation, and pronounced slow sag.",
+      @"Studio Linear — Wide, clean headroom with subtle low-end weight, polished presence, restrained harmonics, and almost no sag.",
+      @"Tweed Bloom — Loose warm lows, rich low mids, a soft top end, asymmetric breakup, and deep touch-sensitive sag.",
+      @"Class-A Chime — Controlled bass, open highs, a clear presence lift, lively asymmetric harmonics, and moderate compression.",
+      @"Bass Iron — Extended deep fundamentals, subdued upper mids, high headroom, restrained saturation, and minimal sag."
+    ];
+    for (NSUInteger item = 0; item < transformerDescriptions.count; ++item)
+      [deckTrans itemAtIndex:item].toolTip = transformerDescriptions[item];
     deckTrans.controlSize = NSControlSizeRegular;
     deckTrans.tag = 30;
     deckTrans.target = state->uiController;
@@ -1819,7 +1836,10 @@ static void addLowerStudioDeck(RigUIState* state,
     [[deckTrans.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
     [[deckTrans.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
     [[deckTrans.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    [deckTrans selectItemAtIndex:0];
+    deckTrans.toolTip = deckTrans.selectedItem.toolTip;
     state->deckTransformerPopup = deckTrans;
+    state->transformerPopup = deckTrans;
 
     NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
     card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1922,6 +1942,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[deckSpkr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
     [[deckSpkr.heightAnchor constraintEqualToConstant:26] setActive:YES];
     state->deckSpeakerProfilePopup = deckSpkr;
+    state->speakerProfilePopup = deckSpkr;
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
     kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -3059,54 +3080,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[thumb.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[thumb.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14] setActive:YES];
-      // Leave one compact row for the amp's output-transformer selector while
-      // Keep model selectors vertically aligned across all 3 tiles.
-      [[thumb.heightAnchor constraintEqualToConstant:(i == 0 ? 141 : 112)] setActive:YES];
+      // Leave one compact extra row on the cab tile for Cab B while keeping
+      // the bottom model selectors vertically aligned across all 3 tiles.
+      [[thumb.heightAnchor constraintEqualToConstant:(i < 2 ? 141 : 112)] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
       thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
-
-      NSView* modelAnchor = thumb;
-      if (i == 1) {
-        NSPopUpButton* transformer =
-            [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [transformer addItemsWithTitles:@[@"Captured / Off", @"Modern Iron",
-                                           @"US Vintage", @"UK Vintage",
-                                           @"Small Iron", @"Tight Metal",
-                                           @"Extended Range", @"Thrash Bite",
-                                           @"Doom Iron", @"Studio Linear",
-                                           @"Tweed Bloom", @"Class-A Chime",
-                                           @"Bass Iron"]];
-        NSArray<NSString*>* transformerDescriptions = @[
-          @"Captured / Off — Adds no transformer processing, preserving the output-transformer response already present in the NAM capture.",
-          @"Modern Iron — Oversized, wide-bandwidth response with firm lows, open highs, gentle saturation, and very little sag.",
-          @"US Vintage — Deep, rounded lows with restrained presence, warm asymmetric harmonics, and moderate vintage compression.",
-          @"UK Vintage — Tighter bass, pronounced mid-bass bark, earlier core saturation, and a compressed classic-stack feel.",
-          @"Small Iron — Narrower bandwidth, strong low-mid character, early breakup, softened highs, and the most vintage-style compression.",
-          @"Tight Metal — Trims sub-bass flub while retaining pick attack, upper-mid definition, air, and fast recovery.",
-          @"Extended Range — Preserves low-tuned fundamentals and high-end clarity with disciplined resonance, low saturation, and minimal sag.",
-          @"Thrash Bite — Lean, controlled lows with an aggressive upper-mid cut, harder core drive, and quick response.",
-          @"Doom Iron — Large low-frequency bloom, dark rolled-off highs, heavy core saturation, and pronounced slow sag.",
-          @"Studio Linear — Wide, clean headroom with subtle low-end weight, polished presence, restrained harmonics, and almost no sag.",
-          @"Tweed Bloom — Loose warm lows, rich low mids, a soft top end, asymmetric breakup, and deep touch-sensitive sag.",
-          @"Class-A Chime — Controlled bass, open highs, a clear presence lift, lively asymmetric harmonics, and moderate compression.",
-          @"Bass Iron — Extended deep fundamentals, subdued upper mids, high headroom, restrained saturation, and minimal sag."
-        ];
-        for (NSUInteger item = 0; item < transformerDescriptions.count; ++item)
-          [transformer itemAtIndex:item].toolTip = transformerDescriptions[item];
-        transformer.controlSize = NSControlSizeSmall;
-        transformer.target = state->uiController;
-        transformer.action = @selector(transformerChanged:);
-        transformer.translatesAutoresizingMaskIntoConstraints = NO;
-        [box addSubview:transformer];
-        [[transformer.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
-        [[transformer.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-        [[transformer.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
-        [[transformer.heightAnchor constraintEqualToConstant:23] setActive:YES];
-        [transformer selectItemAtIndex:0];
-        transformer.toolTip = transformer.selectedItem.toolTip;
-        state->transformerPopup = transformer;
-        modelAnchor = transformer;
-      }
 
       // Legacy compatibility references (docked into Lower Studio Deck):
       // "ADVANCED AMP", "SPEAKER LOAD", "Speaker Dynamics / Impedance", "WIDTH / DELAY / REVERB"
@@ -3127,10 +3105,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [box addSubview:mp];
       [[mp.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
-      if (i == 1)
-        [[mp.topAnchor constraintEqualToAnchor:modelAnchor.bottomAnchor constant:6] setActive:YES];
-      else
-        [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
+      [[mp.topAnchor constraintEqualToAnchor:thumb.bottomAnchor constant:8] setActive:YES];
       [[mp.heightAnchor constraintEqualToConstant:23] setActive:YES];
 
       if (i == 2) {
