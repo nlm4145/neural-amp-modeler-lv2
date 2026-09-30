@@ -226,6 +226,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   // Includes the user's 10 ms alignment range plus the short True-Nx
   // converter delay used by a parallel Cab A NAM model.
   cab2Align.initialize(rate, 20.0);
+  cabAlign.initialize(rate, 10.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
 
@@ -256,6 +257,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
     stageDcRate[st] = rate;
   }
   cab2Align.initialize(rate, 20.0);
+  cabAlign.initialize(rate, 10.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
   appliedBass = -999.0f;
@@ -1169,6 +1171,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const float desiredOutput = dbToLinear(*ports.output_level);
   const float rawCabDb = *ports.cab_level;
   const float targetCab = rawCabDb <= -23.95f ? 0.0f : dbToLinear(rawCabDb);
+  const float alignmentMs = std::max(-10.0f, std::min(10.0f,
+      portValue(ports.cab2_delay, 0.0f)));
+  const float polarityTarget = portValue(ports.cab2_polarity, 0.0f) >= 0.5f
+      ? -1.0f : 1.0f;
   const uint32_t fadeSamples = std::max<uint32_t>(1,
       static_cast<uint32_t>(std::lround(sampleRate * 0.005)));
   bool commitRequested = false;
@@ -1178,6 +1184,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     cab2Align.reset();
     cab2AlignActive = false;
   }
+  if (!parallelCabs) smoothedCab2Polarity = polarityTarget;
 
   for (uint32_t off = 0; off < count; off += sliceMax) {
     const uint32_t n = std::min(sliceMax, count - off);
@@ -1231,6 +1238,15 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         R[i] *= smoothedCabLevel;
       }
     }
+    if (haveA && parallelCabs) {
+      // Delay either capture without subtracting Cab A's converter latency
+      // from B's compensation. Zero-delay calls maintain history for sign flips.
+      cabAlign.process(L, R, n, std::max(-alignmentMs, 0.0f));
+      cabAlignActive = true;
+    } else if (cabAlignActive) {
+      cabAlign.reset();
+      cabAlignActive = false;
+    }
 
     bool haveB = false;
     if (parallelCabs) {
@@ -1257,12 +1273,16 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
           ? static_cast<float>(1000.0 * cascadeLatencyFrames(cabFactor) / sampleRate)
           : 0.0f;
       cab2Align.process(BL, BR, n,
-                        portValue(ports.cab2_delay, 0.0f) + domainDelayMs);
+                        std::max(alignmentMs, 0.0f) + domainDelayMs);
       cab2AlignActive = true;
       for (uint32_t i = 0; i < n; ++i) {
         smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;
-        BL[i] *= smoothedCab2Level;
-        BR[i] *= smoothedCab2Level;
+        // Snap above float-rounding stalls so equal captures can fully cancel
+        // and returning to normal restores an exact +1 gain.
+        glideValue(smoothedCab2Polarity, polarityTarget, glide10, 1.0e-3f);
+        const float cabBGain = smoothedCab2Level * smoothedCab2Polarity;
+        BL[i] *= cabBGain;
+        BR[i] *= cabBGain;
       }
       haveB = true;
       cabProcessed = true;

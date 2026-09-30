@@ -16,7 +16,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/amp_advanced.h` | Pre-amp Bright/Input EQ and the virtual power stage: a negative-feedback loop solved exactly per sample, with Presence/Depth in the feedback path, Sag as supply headroom, Bias plus envelope-driven bias excursion, Master as drive |
 | `src/output_transformer.h` | Optional post-power-stage/pre-cab output-transformer profiles: bandwidth, flux-domain core saturation (leaky integrator → saturator → inverse), asymmetry, voicing, high leakage resonance |
 | `src/speaker_dynamics.h` | Speaker impedance curve (low resonance + rising voice-coil inductance, both scaled down by Negative Feedback), Thump, excursion compression (lowers the resonance Q), low-band-only Speaker Drive |
-| `src/space_fx.h` | `AlignDelay` (Cab B alignment), `StereoDelay` (damped, soft-limited feedback), `PlateReverb` (Dattorro tank + diffused early-reflection cluster for Room) |
+| `src/space_fx.h` | `AlignDelay` (cabinet alignment), `StereoDelay` (damped, soft-limited feedback), `PlateReverb` (Dattorro tank + diffused early-reflection cluster for Room) |
 | `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
@@ -59,15 +59,21 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto matches whole tokens of the cab file name. |
 | 47 | `cab2_enabled` | in | toggle; Cab B runs parallel to Cab A from the same post-amp tap (default off) |
 | 48 | `cab2_level` | in | dB trim on Cab B |
-| 49 | `cab2_delay` | in | 0–10 ms alignment delay on Cab B |
+| 49 | `cab2_delay` | in | -10 to +10 ms alignment; negative delays Cab A, positive delays Cab B, 0 adds no user delay (default 0) |
 | 50–53 | `delay_time`/`delay_feedback`/`delay_damping`/`delay_mix` | in | Stereo delay after the cabinets; mix 0 = exact bypass |
 | 54–58 | `reverb_mix`/`reverb_decay`/`reverb_size`/`reverb_damping`/`reverb_predelay` | in | Plate reverb after the delay; mix 0 = exact bypass (Room stays independent) |
+| 59 | `cab2_polarity` | in | toggled/integer; 0 = normal, 1 = inverted Cab B polarity (default 0) |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.
+
+Polarity is saved/captured/applied with presets, including A/B snapshots; a
+missing legacy value always applies 0. Reset to Default restores 0, while
+cabinet quick presets preserve the user's polarity selection. The UI requests
+host notifications for both alignment and polarity.
 
 ## "Oversampling" reality — and TRUE oversampling (2x, optional)
 
@@ -146,10 +152,12 @@ Related DSP-chain guarantees:
 
 - Cabinets: a stereo WAV IR loads both channels (`WavIR::load(..., channel)`);
   the IR limit is 170 ms (`WavIR::kMaxSeconds`). Cab B takes the same post-amp
-  tap as Cab A, then alignment delay, level, and equal-power spread by Width.
+  tap as Cab A, then alignment/polarity, level, and equal-power spread by Width.
   While Cab B is active a `.nam` Cab A leaves the amp's shared True group but
   retains an independent True domain matching the rate it was loaded for; Cab B
-  is delayed by that converter latency before its user alignment delay. All
+  is delayed by that converter latency. This pipeline compensation is unchanged:
+  signed user alignment additionally delays A for negative values or B for
+  positive values (up to 10 ms), with no added user delay at 0. All
   post-chain processing
   (cabs, trims, EQ, fade, effects) runs in maxBufferSize slices on internal
   stereo buffers; the two output ports may alias.

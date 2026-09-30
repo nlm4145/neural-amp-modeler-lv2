@@ -29,13 +29,15 @@ expected = [
     "cab2_enabled", "cab2_level", "cab2_delay",
     "delay_time", "delay_feedback", "delay_damping", "delay_mix",
     "reverb_mix", "reverb_decay", "reverb_size", "reverb_damping",
-    "reverb_predelay",
+    "reverb_predelay", "cab2_polarity",
 ]
 for index, symbol in enumerate(expected, 47):
     assert ports[index] == symbol, f"port {index} must append {symbol}"
 assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
-assert "kPortCount = 59" in header
+assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
+assert "kPortCount = 60" in header
+assert sorted(ports) == list(range(60)), "all original ports must stay contiguous and polarity must append"
 
 
 def port_default(index: int) -> float:
@@ -49,8 +51,16 @@ def port_default(index: int) -> float:
 
 
 # Everything new must be inaudible on an existing session.
-for index in (47, 48, 49, 53, 54):
+for index in (47, 48, 49, 53, 54, 59):
     assert port_default(index) == 0.0, f"port {index} must default to off/neutral"
+
+alignment_port = re.search(r"lv2:index\s+49\s*;(?:(?!lv2:index).)*", ttl, re.S).group()
+polarity_port = re.search(r"lv2:index\s+59\s*;(?:(?!lv2:index).)*", ttl, re.S).group()
+assert re.search(r"lv2:minimum\s+-10\.0\s*;\s*lv2:maximum\s+10\.0", alignment_port)
+assert "units:unit units:ms" in alignment_port
+assert re.search(r"lv2:minimum\s+0\.0\s*;\s*lv2:maximum\s+1\.0", polarity_port)
+assert "lv2:toggled" in polarity_port and "lv2:integer" in polarity_port
+assert 'rdfs:label "Normal"' in polarity_port and 'rdfs:label "Inverted"' in polarity_port
 
 # Stage 3 exists, is parallel, and carries its own path parameter.
 assert "Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 }" in header
@@ -79,9 +89,17 @@ assert "processTrueCab(2, L, n, factor)" in dsp, (
 assert "latencyFrames += cascadeLatencyFrames(cabFactor);" in dsp, (
     "the independent Cab A converter must be reported to the host"
 )
-assert "portValue(ports.cab2_delay, 0.0f) + domainDelayMs" in dsp, (
-    "Cab B must compensate the parallel Cab A converter before user alignment"
+assert "portValue(ports.cab2_delay, 0.0f)" in dsp, "signed alignment must retain a null-safe neutral default"
+b_alignment = re.search(r"cab2Align\.process\(BL, BR, n,\s*(.*?)\);", dsp, re.S)
+assert b_alignment, "Cab B must keep its stereo alignment delay"
+assert "domainDelayMs" in b_alignment.group(1), "Cab B must retain the parallel Cab A converter compensation"
+positive_delay = re.search(r"std::max\(\s*(\w+)\s*,\s*0\.0f\s*\)", b_alignment.group(1))
+assert positive_delay, "only positive signed alignment may be added to Cab B compensation"
+signed_control = positive_delay.group(1)
+assert re.search(rf"\w+\.process\(L, R, n,\s*std::max\(-{signed_control},\s*0\.0f\)\)", dsp), (
+    "the same signed alignment's negative half must delay both Cab A channels"
 )
+assert "portValue(ports.cab2_polarity, 0.0f)" in dsp, "unconnected polarity must default to normal"
 assert "smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;" in dsp
 assert "if (haveA && haveB)" in dsp and "outL = bL;" in dsp, (
     "Cab B alone must replace the dry Cab A branch instead of mixing with it"
@@ -116,11 +134,41 @@ assert "effectsPopover" in ui and "effectsPopover" in state
 assert "B ON" in ui and "onB.tag = 47;" in ui, "Cab B needs its own enable toggle"
 assert "modelPickers[3]" in ui, "Cab B needs its own model picker"
 assert "std::array<LV2_URID, 4> pathURIDs{}" in state
-assert "port >= 4 && port <= 58" in ui, "the UI must accept control echoes for every port"
-assert "for (uint32_t port = 47; port <= 58; ++port)" in standalone, (
+assert "port >= 4 && port <= 59" in ui, "the UI must accept control echoes for every port"
+assert "for (uint32_t port = 47; port <= 59; ++port)" in standalone, (
     "the standalone host must connect the new ports"
 )
-assert "std::array<float, 12> fxControls_{};" in standalone
+assert "std::array<float, 13> fxControls_{};" in standalone
+assert "port >= 47 && port <= 59 && size == sizeof(float)" in standalone, (
+    "standalone control writes must include appended polarity"
+)
+fx_defaults = re.search(r"fxControls_\s*=\s*\{([^}]+)\}", standalone).group(1)
+fx_defaults = [float(value.strip().removesuffix("f")) for value in fx_defaults.split(",")]
+assert len(fx_defaults) == 13 and fx_defaults[-1] == 0.0
+assert 'rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59)' in ui
+assert "state->cab2PolarityButton = invertB;" in ui
+assert "if (port == 59)" in state and "cab2PolarityButton.state = inverted ?" in state
+ui_ttl = (ROOT / "resources/neural_amp_modeler_rig_ui.ttl.in").read_text()
+for symbol in ("cab2_delay", "cab2_polarity"):
+    assert re.search(rf'lv2:symbol "{symbol}"\s*;\s*ui:notifyType atom:Float', ui_ttl), (
+        f"UI must subscribe to host automation of {symbol}"
+    )
+reset = re.search(r"- \(void\)resetAllKnobs:[^\n]*\{(.*?)\n\}", ui, re.S).group(1)
+assert "_state->sendControl(59, 0.0f);" in reset and "_state->updateControl(59, 0.0f);" in reset
+quick_preset = re.search(r"- \(void\)applyCabConsolePreset:[^\n]*\{(.*?)\n\}", ui, re.S).group(1)
+assert "sendControl(59," not in quick_preset and "updateControl(59," not in quick_preset, (
+    "cabinet quick presets must preserve the independent polarity selection"
+)
+knob_ports = re.search(r"kRigKnobPorts\s*\{([^}]+)\}", knobs).group(1)
+knob_ports = [int(value) for value in re.findall(r"\d+", knob_ports)]
+mins = re.search(r"kRigKnobCount> mins\s*\{([^}]+)\}", ui).group(1)
+maxes = re.search(r"kRigKnobCount> maxes\s*\{([^}]+)\}", ui).group(1)
+mins = [float(value.strip()) for value in mins.split(",")]
+maxes = [float(value.strip()) for value in maxes.split(",")]
+assert mins[knob_ports.index(49)] == -10.0 and maxes[knob_ports.index(49)] == 10.0
+assert re.search(r'case 49:.*std::fabs\(value\).*@"%\+\.2f ms"', theme), (
+    "negative alignment must display its sign instead of OFF"
+)
 assert "plugin_->ports.audio_out_r = outputR_.data();" in standalone, (
     "the standalone host must give the right channel its own buffer"
 )

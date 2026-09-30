@@ -1,5 +1,7 @@
 #import "rig_theme.h"
 
+#include <cmath>
+
 // ---- NAM Rig-style theme (deep blue-black + electric blue accent) ----
 NSColor* rigBG(void)        { return [NSColor colorWithSRGBRed:0.047 green:0.051 blue:0.066 alpha:1.0]; }
 NSColor* rigPanelBG(void)   { return [NSColor colorWithSRGBRed:0.094 green:0.102 blue:0.129 alpha:1.0]; }
@@ -43,7 +45,7 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 45: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 46: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 48: return value <= -23.95f ? @"OFF" : [NSString stringWithFormat:@"%+.1f dB", value];
-    case 49: return value < 0.005f ? @"OFF" : [NSString stringWithFormat:@"%.2f ms", value];
+    case 49: return std::fabs(value) < 0.005f ? @"OFF" : [NSString stringWithFormat:@"%+.2f ms", value];
     case 50: return [NSString stringWithFormat:@"%.0f ms", value];
     case 51: return [NSString stringWithFormat:@"%.0f%%", value];
     case 52: return [NSString stringWithFormat:@"%.0f%%", value];

@@ -262,8 +262,9 @@
 					lv2:scalePoint [ rdfs:value -24.0 ; rdfs:label "Off" ]
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 49 ;
-					lv2:symbol "cab2_delay" ; lv2:name "Cab B Align" ;
-					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 10.0 ; units:unit units:ms
+					lv2:symbol "cab2_delay" ; lv2:name "Cab Alignment" ;
+					lv2:default 0.0 ; lv2:minimum -10.0 ; lv2:maximum 10.0 ; units:unit units:ms ;
+					rdfs:comment "Negative delays Cab A; positive delays Cab B. Zero adds no user delay; pipeline latency compensation is unchanged."
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 50 ;
 					lv2:symbol "delay_time" ; lv2:name "Delay Time" ;
@@ -300,4 +301,11 @@
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 58 ;
 					lv2:symbol "reverb_predelay" ; lv2:name "Reverb Pre-Delay" ;
 					lv2:default 10.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:ms
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 59 ;
+					lv2:symbol "cab2_polarity" ; lv2:name "Cab B Polarity" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Normal" ],
+						[ rdfs:value 1.0 ; rdfs:label "Inverted" ]
 				] .

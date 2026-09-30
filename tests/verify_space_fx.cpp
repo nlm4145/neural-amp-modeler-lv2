@@ -1,5 +1,5 @@
 // Verifies the post-cabinet space effects in src/space_fx.h:
-//   AlignDelay  - Cab B phase alignment (0..10 ms)
+//   AlignDelay  - nonnegative A/B delays implementing signed cabinet alignment
 //   StereoDelay - damped, soft-limited feedback delay
 //   PlateReverb - Dattorro tank plus a diffused early-reflection cluster
 //
@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -121,6 +122,92 @@ int main() {
       if (std::fabs(left[i]) > std::fabs(left[peak])) peak = i;
     check(allFinite(left) && peak <= static_cast<size_t>(rate * 0.010) + 2,
           "AlignDelay clamps an over-range request to its maximum");
+  }
+  for (double sessionRate : {48000.0, 96000.0}) {
+    NAMRig::AlignDelay align;
+    align.initialize(sessionRate, 12.0);
+    auto dirtyL = tone(2048, sessionRate, 317.0), dirtyR = dirtyL;
+    align.process(dirtyL.data(), dirtyR.data(), dirtyL.size(), 8.0f);
+    for (bool reinitialize : {false, true}) {
+      if (reinitialize) align.initialize(sessionRate == 48000.0 ? 96000.0 : 48000.0, 12.0);
+      else align.reset();
+      const double currentRate = reinitialize
+          ? (sessionRate == 48000.0 ? 96000.0 : 48000.0) : sessionRate;
+      auto left = impulse(4096), right = impulse(4096);
+      for (float& v : right) v *= -0.5f;
+      align.process(left.data(), right.data(), left.size(), 3.0f);
+      const size_t expected = static_cast<size_t>(currentRate * 0.003);
+      double error = 0.0;
+      for (size_t i = 0; i < left.size(); ++i) {
+        error += std::fabs(left[i] - (i == expected ? 1.0f : 0.0f));
+        error += std::fabs(right[i] - (i == expected ? -0.5f : 0.0f));
+      }
+      check(error < 1.0e-5, reinitialize
+          ? "AlignDelay initialize after priming clears history and primes at the new rate"
+          : "AlignDelay reset clears history and primes both channels at the new target");
+    }
+
+    for (int compensation : {0, 23, 35, 41}) {
+      for (float signedMs : {-10.0f, -3.5f, 0.0f, 3.5f, 10.0f}) {
+        NAMRig::AlignDelay a, b;
+        a.initialize(sessionRate, 12.0);
+        b.initialize(sessionRate, 12.0);
+        auto aL = std::vector<float>(4096, 0.0f), aR = aL;
+        auto bL = impulse(4096), bR = bL;
+        // A's converter has already contributed C samples; B must retain C
+        // even when a negative user offset moves only A later.
+        aL[compensation] = 1.0f;
+        aR[compensation] = -0.5f;
+        bR[0] = -0.5f;
+        a.process(aL.data(), aR.data(), aL.size(), std::max(-signedMs, 0.0f));
+        b.process(bL.data(), bR.data(), bL.size(),
+                  static_cast<float>(1000.0 * compensation / sessionRate) +
+                  std::max(signedMs, 0.0f));
+        const size_t expectedA = compensation +
+            static_cast<size_t>(std::llround(sessionRate * std::max(-signedMs, 0.0f) * 0.001));
+        const size_t expectedB = compensation +
+            static_cast<size_t>(std::llround(sessionRate * std::max(signedMs, 0.0f) * 0.001));
+        double error = 0.0;
+        for (size_t i = 0; i < aL.size(); ++i) {
+          error += std::fabs(aL[i] - (i == expectedA ? 1.0f : 0.0f));
+          error += std::fabs(aR[i] - (i == expectedA ? -0.5f : 0.0f));
+          error += std::fabs(bL[i] - (i == expectedB ? 1.0f : 0.0f));
+          error += std::fabs(bR[i] - (i == expectedB ? -0.5f : 0.0f));
+        }
+        char label[160];
+        std::snprintf(label, sizeof(label),
+                      "signed alignment %.1f ms at %.0f Hz keeps C=%d: A=%zu, B=%zu samples, both channels",
+                      signedMs, sessionRate, compensation, expectedA, expectedB);
+        check(allFinite(aL) && allFinite(aR) && allFinite(bL) && allFinite(bR) &&
+                  error < 5.0e-4, label);
+      }
+    }
+  }
+  {
+    NAMRig::AlignDelay wholeA, wholeB, splitA, splitB;
+    for (auto* align : {&wholeA, &wholeB, &splitA, &splitB}) align->initialize(rate, 12.0);
+    bool identical = true;
+    for (float signedMs : {-10.0f, 10.0f, 0.0f, -3.5f}) {
+      auto aL = tone(32768, rate, 317.0), aR = tone(32768, rate, 997.0);
+      auto bL = aL, bR = aR;
+      auto splitAL = aL, splitAR = aR, splitBL = bL, splitBR = bR;
+      const float delayA = std::max(-signedMs, 0.0f);
+      const float delayB = static_cast<float>(1000.0 * 41 / rate) + std::max(signedMs, 0.0f);
+      wholeA.process(aL.data(), aR.data(), aL.size(), delayA);
+      wholeB.process(bL.data(), bR.data(), bL.size(), delayB);
+      const size_t blocks[] = {1, 17, 64, 127, 128, 256, 513};
+      for (size_t offset = 0, block = 0; offset < aL.size(); ++block) {
+        const size_t count = std::min(blocks[block % 7], aL.size() - offset);
+        splitA.process(splitAL.data() + offset, splitAR.data() + offset, count, delayA);
+        splitB.process(splitBL.data() + offset, splitBR.data() + offset, count, delayB);
+        offset += count;
+      }
+      for (auto buffers : {std::pair{&aL, &splitAL}, {&aR, &splitAR},
+                           {&bL, &splitBL}, {&bR, &splitBR}})
+        identical &= allFinite(*buffers.first) &&
+                     std::memcmp(buffers.first->data(), buffers.second->data(), aL.size() * sizeof(float)) == 0;
+    }
+    check(identical, "both signed alignment lines glide identically across irregular host block boundaries");
   }
 
   // ---- StereoDelay ------------------------------------------------------

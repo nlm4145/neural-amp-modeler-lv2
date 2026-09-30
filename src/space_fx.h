@@ -46,7 +46,7 @@ class DelayLine {
   size_t write_ = 0;
 };
 
-// Short stereo alignment delay for the second cabinet (0 .. maxMs).
+// Short stereo alignment delay for either cabinet (0 .. maxMs).
 class AlignDelay {
  public:
   void initialize(double rate, double maxMs) {
@@ -55,6 +55,7 @@ class AlignDelay {
     left_.allocate(static_cast<size_t>(std::ceil(maxSamples_)) + 4);
     right_.allocate(static_cast<size_t>(std::ceil(maxSamples_)) + 4);
     smoothed_ = 0.0;
+    primed_ = false;
   }
   void reset() {
     left_.clear();

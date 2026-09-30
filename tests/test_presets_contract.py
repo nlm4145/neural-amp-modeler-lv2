@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Guard the Axe FX / NAM Rig preset serialization and management contracts."""
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -34,8 +35,37 @@ for p in expected_ports:
     assert f"@{p}:" in presets_mm, f"Port {p} must be mapped in portToSymbolMap()"
 
 # 3. Verify stage powers, modes, and profiles are mapped
-for p in [7, 8, 9, 20, 21, 24, 30, 42, 47]:
+for p in [7, 8, 9, 20, 21, 24, 30, 42, 47, 59]:
     assert f"@{p}:" in presets_mm, f"Mode/power/profile port {p} must be mapped in portToSymbolMap()"
+
+# Signed alignment remains the existing knob; polarity is an appended toggle.
+assert '@49: @"cab2_delay"' in presets_mm
+assert '@59: @"cab2_polarity"' in presets_mm
+defaults = presets_mm.split("+ (RigPreset*)defaultPreset", 1)[1].split("+ (nullable RigPreset*)loadFromFile:", 1)[0]
+loading = presets_mm.split("+ (nullable RigPreset*)loadFromFile:", 1)[1].split("- (BOOL)saveToFile:", 1)[0]
+saving = presets_mm.split("- (BOOL)saveToFile:", 1)[1].split("+ (RigPreset*)captureFromState:", 1)[0]
+capture = presets_mm.split("+ (RigPreset*)captureFromState:", 1)[1].split("- (void)applyToState:", 1)[0]
+apply = presets_mm.split("- (void)applyToState:", 1)[1].split("@end", 1)[0]
+assert "p->_controls[59] = 0.0f;" in defaults
+assert "preset->_controls[59] = 0.0f;" in loading
+assert loading.index("preset->_controls[59] = 0.0f;") < loading.index('root[@"ports"]'), (
+    "legacy normal polarity must be initialized before numeric/named saved values override it"
+)
+assert "preset->_controls[port] = val;" in loading
+assert "preset->_controls[[portNum unsignedIntValue]] = [paramsDict[sym] floatValue];" in loading
+assert loading.index('root[@"ports"]') < loading.index('root[@"params"]'), (
+    "named signed alignment/polarity must retain precedence over numeric port values"
+)
+assert "portsDict[portKey] = @(pair.second);" in saving
+assert "paramsDict[sym] = @(pair.second);" in saving
+assert "p->_controls[59] = state->cab2PolarityInverted ? 1.0f : 0.0f;" in capture
+assert "state->sendControl(59, polarity);" in apply
+assert "state->updateControl(59, polarity);" in apply
+assert "[self controlForPort:59] >= 0.5f ? 1.0f : 0.0f" in apply
+assert "state->sendControl(port, val);" in apply and "state->updateControl(port, val);" in apply
+knob_defaults = re.search(r"kRigKnobDefaults\s*\{([^}]+)\}", knobs_cpp).group(1)
+knob_defaults = [float(value.strip().removesuffix("f")) for value in knob_defaults.split(",")]
+assert knob_defaults[expected_ports.index(49)] == 0.0, "legacy/default signed alignment must be neutral"
 
 # 4. Verify UI state bindings
 assert "presetPopup" in ui_state_h
@@ -216,9 +246,13 @@ sample_preset = {
         "mid": -0.5,
         "treble": 2.0,
         "reverb_mix": 15.0,
-        "delay_mix": 20.0
+        "delay_mix": 20.0,
+        "cab2_delay": -7.25,
+        "cab2_polarity": 1.0
     }
 }
+sample_preset["ports"]["49"] = -7.25
+sample_preset["ports"]["59"] = 1.0
 
 with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as f:
     json.dump(sample_preset, f, indent=2)
@@ -233,6 +267,8 @@ assert loaded["stages"][0]["models"] == ["/path/to/overdrive.nam", "/path/to/ove
 assert loaded["stages"][1]["models"] == ["/path/to/mesa_clean.nam", "/path/to/mesa_lead.nam"]
 assert loaded["stages"][2]["models"] == ["/path/to/v30_cab.wav", "/path/to/v30_room.wav"]
 assert loaded["params"]["reverb_mix"] == 15.0
-assert len(loaded["ports"]) == len(expected_ports)
+assert len(loaded["ports"]) == len(expected_ports) + 1
+assert loaded["ports"]["49"] == loaded["params"]["cab2_delay"] == -7.25
+assert loaded["ports"]["59"] == loaded["params"]["cab2_polarity"] == 1.0
 
 print("  PASS  Axe FX / NAM Rig preset contract and JSON serialization fully verified")

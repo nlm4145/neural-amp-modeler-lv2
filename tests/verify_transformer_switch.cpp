@@ -26,7 +26,7 @@
 namespace {
 
 constexpr unsigned kMaxFileName = 1024;
-constexpr uint32_t kPortCount = 59;   // mirrors Plugin::kPortCount
+constexpr uint32_t kPortCount = 60;   // mirrors Plugin::kPortCount
 enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3 };
 enum WorkType : uint32_t { WorkLoad, WorkSwitch, WorkFree };
 

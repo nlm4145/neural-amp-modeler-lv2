@@ -23,6 +23,7 @@ static LV2_Handle instantiate(const LV2_Descriptor*,
 }
 
 static void connectPort(LV2_Handle instance, uint32_t port, void* data) {
+  if (!instance || port >= NAMRig::Plugin::kPortCount) return;
   auto* rig = static_cast<NAMRig::Plugin*>(instance);
   *(reinterpret_cast<void**>(&rig->ports) + port) = data;
 }

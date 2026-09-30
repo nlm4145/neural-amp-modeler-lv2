@@ -113,6 +113,8 @@ struct RigUIState {
   __strong NAMSculptVisualizer* sculptVisualizer = nil;
   __strong NAMSpeakerDynamicsVisualizer* speakerVisualizer = nil;
   __strong NAMCabConsoleVisualizer* cabConsoleVisualizer = nil;
+  __strong RigButton* cab2PolarityButton = nil;
+  bool cab2PolarityInverted = false;
 
   void selectDeckTab(NSInteger index) {
     const NSInteger prevTab = activeDeckTab;
@@ -1458,6 +1460,20 @@ struct RigUIState {
 
   void updateControl(uint32_t port, float value) {
     auto alive = this->isAlive;
+    if (port == 59) {
+      const bool inverted = value >= 0.5f;
+      auto updatePolarity = ^{
+        if (!alive || !*alive) return;
+        cab2PolarityInverted = inverted;
+        if (!cab2PolarityButton) return;
+        cab2PolarityButton.state = inverted ? NSControlStateValueOn : NSControlStateValueOff;
+        cab2PolarityButton.needsDisplay = YES;
+      };
+      // UI actions must update state before markModified captures an A/B snapshot.
+      if ([NSThread isMainThread]) updatePolarity();
+      else dispatch_async(dispatch_get_main_queue(), updatePolarity);
+      return;
+    }
     if ((port >= 7 && port <= 9) || port == 47) {
       const size_t slot = port == 47 ? 3 : port - 7;
       dispatch_async(dispatch_get_main_queue(), ^{

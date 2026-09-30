@@ -528,7 +528,7 @@ class StandaloneHost {
     stereoControls_ = {0.0f, 0.0f};
     advancedControls_.fill(0.0f);
     speakerControls_ = {0.0f, 25.0f, 25.0f, 50.0f, 50.0f};
-    fxControls_ = {0.0f, 0.0f, 0.0f, 400.0f, 35.0f, 40.0f, 0.0f, 0.0f, 50.0f, 50.0f, 50.0f, 10.0f};
+    fxControls_ = {0.0f, 0.0f, 0.0f, 400.0f, 35.0f, 40.0f, 0.0f, 0.0f, 50.0f, 50.0f, 50.0f, 10.0f, 0.0f};
   }
 
   ~StandaloneHost() { stop(); }
@@ -585,7 +585,8 @@ class StandaloneHost {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &speakerControls_[port - 42];
     }
-    for (uint32_t port = 47; port <= 58; ++port) {
+    static_assert(offsetof(NAMRig::Plugin::Ports, cab2_polarity) == 59 * sizeof(void*));
+    for (uint32_t port = 47; port <= 59; ++port) {
       *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
                                  port * sizeof(void*)) = &fxControls_[port - 47];
     }
@@ -928,7 +929,7 @@ class StandaloneHost {
       host->speakerControls_[port - 42] = *static_cast<const float*>(buffer);
       return;
     }
-    if (format == 0 && port >= 47 && port <= 58 && size == sizeof(float)) {
+    if (format == 0 && port >= 47 && port <= 59 && size == sizeof(float)) {
       host->fxControls_[port - 47] = *static_cast<const float*>(buffer);
       return;
     }
@@ -1718,7 +1719,7 @@ class StandaloneHost {
   std::array<float, 2> stereoControls_{};
   std::array<float, 8> advancedControls_{};
   std::array<float, 5> speakerControls_{};
-  std::array<float, 12> fxControls_{};
+  std::array<float, 13> fxControls_{};
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

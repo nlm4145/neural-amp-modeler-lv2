@@ -60,7 +60,8 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
       @55: @"reverb_decay",
       @56: @"reverb_size",
       @57: @"reverb_damping",
-      @58: @"reverb_predelay"
+      @58: @"reverb_predelay",
+      @59: @"cab2_polarity"
     };
   });
   return map;
@@ -199,6 +200,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[8] = 1.0f;   // amp_enabled
   p->_controls[9] = 1.0f;   // cab_enabled
   p->_controls[47] = 0.0f;  // cab2_enabled
+  p->_controls[59] = 0.0f;  // cab2_polarity: normal
   p->_controls[20] = static_cast<float>(NAMRig::kOversampleTrue8);
   p->_controls[21] = static_cast<float>(NAMRig::kOversampleTrue8);
   p->_controls[24] = 2.0f;  // Loudness
@@ -267,6 +269,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   // Load controls: first from numeric "ports" if present
+  preset->_controls[59] = 0.0f;  // Legacy presets default to normal polarity.
   NSDictionary* portsDict = root[@"ports"];
   if ([portsDict isKindOfClass:[NSDictionary class]]) {
     for (NSString* key in portsDict) {
@@ -438,6 +441,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[8] = p->_stages[1].enabled ? 1.0f : 0.0f;
   p->_controls[9] = p->_stages[2].enabled ? 1.0f : 0.0f;
   p->_controls[47] = p->_stages[3].enabled ? 1.0f : 0.0f;
+  p->_controls[59] = state->cab2PolarityInverted ? 1.0f : 0.0f;
   p->_controls[20] = p->_stages[0].oversample;
   p->_controls[21] = p->_stages[1].oversample;
   p->_controls[24] = p->_stages[2].irNormalization;
@@ -471,6 +475,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   state->updateControl(30, _stages[1].transformer);
   state->sendControl(42, self.speakerProfile);
   state->updateControl(42, self.speakerProfile);
+  const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
+  state->sendControl(59, polarity);
+  state->updateControl(59, polarity);
 
   // 3. Knobs
   for (size_t k = 0; k < kRigKnobCount; ++k) {

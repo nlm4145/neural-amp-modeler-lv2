@@ -53,7 +53,7 @@ void check(bool condition, const char* message) {
 
 struct TempWavs {
   std::filesystem::path directory;
-  std::string mono, stereo;
+  std::string mono, stereo, identity;
 
   TempWavs() {
     const std::string pattern =
@@ -65,6 +65,7 @@ struct TempWavs {
     directory = created;
     mono = (directory / "mono.wav").string();
     stereo = (directory / "stereo.wav").string();
+    identity = (directory / "identity.nam").string();
   }
   ~TempWavs() {
     std::error_code error;
@@ -99,6 +100,14 @@ struct TempWavs {
     if (!file) throw std::runtime_error("cannot write temporary PCM16 WAV: " + path);
     check(NAMRig::WavIR::channelCount(path.c_str()) == channels,
           "PCM16 fixture reports expected channel count");
+  }
+  void writeIdentity() const {
+    std::ofstream file(identity);
+    // A one-tap WaveNet is identity in Hardtanh's linear range. Use the
+    // production WaveNet loader; Linear isn't linked by every NeuralAudio build.
+    file << R"({"version":"0.5.4","architecture":"WaveNet","config":{"layers":[{"input_size":1,"condition_size":1,"head_size":1,"channels":1,"kernel_size":1,"dilations":[1],"activation":"Hardtanh","gated":false,"head_bias":false}],"head":null,"head_scale":1.0},"weights":[1,1,0,0,0,0,1,1],"sample_rate":48000})";
+    file.close();
+    if (!file) throw std::runtime_error("cannot write identity NAM fixture");
   }
 };
 
@@ -327,7 +336,7 @@ struct Host {
     return LV2_WORKER_SUCCESS;
   }
 
-  explicit Host(double rate, bool observed = true) : observe(observed) {
+  explicit Host(double rate, bool observed = true, bool connectPolarity = true) : observe(observed) {
     controls[6] = 1.0f;
     controls[7] = controls[8] = controls[9] = controls[47] = 1.0f;
     controls[15] = -80.0f;
@@ -342,7 +351,7 @@ struct Host {
     controls[52] = 40.0f;
     controls[55] = controls[56] = controls[57] = 50.0f;
     controls[58] = 10.0f;
-    // Connect all 59 fields explicitly; no private-mode access or layout casts.
+    // Connect all 60 fields explicitly; no private-mode access or layout casts.
     plugin.ports = {
         sequence(control), sequence(notify), input.data(), left.data(),
         &controls[4], &controls[5], &controls[6], &controls[7], &controls[8],
@@ -355,8 +364,10 @@ struct Host {
         &controls[39], &controls[40], &controls[41], &controls[42], &controls[43],
         &controls[44], &controls[45], &controls[46], &controls[47], &controls[48],
         &controls[49], &controls[50], &controls[51], &controls[52], &controls[53],
-        &controls[54], &controls[55], &controls[56], &controls[57], &controls[58]};
-    static_assert(Plugin::kPortCount == 59, "update connections if ports change");
+        &controls[54], &controls[55], &controls[56], &controls[57], &controls[58],
+        &controls[59]};
+    static_assert(Plugin::kPortCount == 60, "update connections if ports change");
+    if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),
          sizeof(maxBlock), mapUri(this, LV2_ATOM__Int), &maxBlock}, {}};
@@ -463,7 +474,8 @@ struct Pair {
   uint32_t noise = 0x715acafeu;
   uint64_t blocks = 0;
 
-  explicit Pair(double rate, bool observe = true) : serial(rate, observe), parallel(rate, observe) {
+  explicit Pair(double rate, bool observe = true, bool connectPolarity = true)
+      : serial(rate, observe, connectPolarity), parallel(rate, observe, connectPolarity) {
     check(worker.start(nullptr, kBlockLength / rate), "start null-group offline worker");
     parallel.plugin.setCabinetWorker(&worker);
   }
@@ -510,6 +522,11 @@ struct Pair {
       serial.input[i] = parallel.input[i] = sample;
       time += 1.0 / serial.plugin.sampleRate;
     }
+    return runControl(count, drainWork, cabinetDeadlineTicks);
+  }
+  double runControl(uint32_t count, bool drainWork = true,
+                    uint64_t cabinetDeadlineTicks = 0) {
+    check(count > 0 && count <= kMaximum, "block count in harness range");
     std::fenv_t entry{};
     check(std::fegetenv(&entry) == 0, "capture common block-entry fenv");
     // Alternate order to avoid consistently favoring one path in optional timing.
@@ -655,7 +672,7 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
     pair.set(21, static_cast<float>(mode));
     pair.set(9, 1); pair.set(47, 1);
     pair.set(25, 0); pair.set(48, 0); pair.set(32, 0); pair.set(49, 0);
-    pair.set(53, 0); pair.set(54, 0); pair.set(33, 0);
+    pair.set(53, 0); pair.set(54, 0); pair.set(33, 0); pair.set(59, 0);
     pair.steady(true, true, true, factor);
     check(pair.serial.loads[3] == cabBLoads, "amp True changes never reload Cab B");
     const int latency = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41 : 0;
@@ -685,6 +702,14 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
     check(std::memcmp(pair.serial.left.data(), pair.serial.right.data(),
                       kCounts.back() * sizeof(float)) != 0,
           "width/alignment exercise distinct stereo output");
+    for (float alignment : {-10.0f, -7.25f, 0.0f, 10.0f}) {
+      for (float polarity : {1.0f, 0.0f}) {
+        pair.set(49, alignment); pair.set(59, polarity);
+        pair.steady(true, true, true, factor);
+        check(pair.serial.controls[29] == 2.0f * latency,
+              "signed user alignment/polarity do not change reported pipeline latency");
+      }
+    }
     for (auto trims : {std::array<float, 2>{-24, -3}, {-6, -24}, {-24, -24}}) {
       pair.set(25, trims[0]); pair.set(48, trims[1]);
       pair.steady(true, true, true, factor);
@@ -832,6 +857,12 @@ void verifyWavFallback(double rate, const std::string& wave, const std::string& 
       }
       pair.set(irAtA ? 47 : 9, 1);
       pair.steady(true, true, false, pipelineFactor(6, rate));
+      for (float alignment : {-10.0f, -3.5f, 0.0f, 7.25f, 10.0f}) {
+        for (float polarity : {1.0f, 0.0f}) {
+          pair.set(49, alignment); pair.set(59, polarity);
+          pair.steady(true, true, false, pipelineFactor(6, rate));
+        }
+      }
 
       const size_t index = static_cast<size_t>(irStage);
       const uint64_t loads = pair.serial.loads[index];
@@ -858,6 +889,198 @@ void verifyWavFallback(double rate, const std::string& wave, const std::string& 
                   channels == 1 ? "mono" : "stereo");
     }
   }
+}
+
+void verifyAlignment(double rate, const TempWavs& fixtures) {
+  testSection = "matching WAV cancellation, amplification and optional polarity at " +
+                std::to_string(static_cast<int>(rate)) + " Hz";
+  for (unsigned channels : {1u, 2u}) {
+    const auto& path = channels == 1 ? fixtures.mono : fixtures.stereo;
+    Pair reference(rate), normal(rate), inverted(rate), optional(rate, true, false);
+    for (Pair* pair : {&reference, &normal, &inverted, &optional}) {
+      pair->set(7, 0); pair->set(8, 0); pair->set(32, 0);
+      pair->paths({{Stage::Cab, path}, {Stage::Cab2, path}});
+      pair->run(128, true);
+      pair->sweep(3, true);
+      pair->installed(Stage::Cab, path, channels);
+      pair->installed(Stage::Cab2, path, channels);
+    }
+    reference.set(47, 0);
+    inverted.set(59, 1);
+    const unsigned settle = static_cast<unsigned>(std::ceil(rate * 0.25 / 128));
+    for (unsigned block = 0; block < settle; ++block)
+      for (Pair* pair : {&reference, &normal, &inverted, &optional}) pair->run(128, true);
+    double referenceEnergy = 0.0, normalEnergy = 0.0, cancelledEnergy = 0.0;
+    double amplificationError = 0.0;
+    for (uint32_t count : kCounts) {
+      referenceEnergy += reference.run(count);
+      normalEnergy += normal.run(count);
+      cancelledEnergy += inverted.run(count);
+      optional.run(count);
+      check(std::memcmp(normal.serial.left.data(), optional.serial.left.data(), count * sizeof(float)) == 0 &&
+                std::memcmp(normal.serial.right.data(), optional.serial.right.data(), count * sizeof(float)) == 0,
+            "unconnected optional polarity is bit-identical to default normal polarity");
+      for (uint32_t i = 0; i < count; ++i) {
+        for (bool right : {false, true}) {
+          const float a = right ? reference.serial.right[i] : reference.serial.left[i];
+          const float b = right ? normal.serial.right[i] : normal.serial.left[i];
+          const double error = b - std::sqrt(2.0) * a;
+          amplificationError += error * error;
+        }
+      }
+    }
+    check(referenceEnergy > 1.0e-4 && normalEnergy > referenceEnergy * 1.9,
+          "matching normal WAVs produce audible equal-power amplified output, not empty buffers");
+    check(amplificationError < referenceEnergy * 1.0e-10,
+          "normal width-zero dual cabs equal sqrt(2) times the isolated Cab A reference");
+    check(cancelledEnergy < referenceEnergy * 1.0e-10,
+          "matching WAVs at width zero cancel after Cab B polarity settles");
+  }
+
+  testSection = "stereo Cab B polarity and click-free switching";
+  Pair normal(rate), inverted(rate);
+  for (Pair* pair : {&normal, &inverted}) {
+    pair->set(7, 0); pair->set(8, 0); pair->set(9, 0); pair->set(32, 100);
+    pair->paths({{Stage::Cab2, fixtures.stereo}});
+    pair->run(128, true);
+    pair->sweep(3, true);
+    pair->installed(Stage::Cab2, fixtures.stereo, 2);
+  }
+  for (uint64_t frames = 0; frames < static_cast<uint64_t>(rate * 0.25); frames += 128) {
+    for (Pair* pair : {&normal, &inverted}) {
+      pair->serial.input.fill(0.2f); pair->parallel.input.fill(0.2f);
+      pair->runControl(128);
+    }
+  }
+  const std::array<float, 2> baseline{normal.serial.left[127], normal.serial.right[127]};
+  check(std::fabs(baseline[0]) > 0.01f && std::fabs(baseline[1]) > 0.01f &&
+            std::fabs(baseline[0] - baseline[1]) > 0.01f,
+        "stereo polarity probe has audible, distinct left and right channels");
+  inverted.set(59, 1);
+  std::array<float, 2> previous = baseline;
+  double largestStep = 0.0;
+  for (uint64_t frames = 0; frames < static_cast<uint64_t>(rate * 0.25); frames += 128) {
+    normal.runControl(128); inverted.runControl(128);
+    if (frames == 0)
+      check(inverted.serial.left[0] / baseline[0] > 0.9f &&
+                inverted.serial.right[0] / baseline[1] > 0.9f,
+            "polarity toggle begins near +1 rather than hard-switching to -1");
+    for (uint32_t i = 0; i < 128; ++i) {
+      const std::array<float, 2> current{inverted.serial.left[i], inverted.serial.right[i]};
+      for (size_t channel = 0; channel < 2; ++channel) {
+        largestStep = std::max(largestStep,
+            static_cast<double>(std::fabs((current[channel] - previous[channel]) / baseline[channel])));
+        previous[channel] = current[channel];
+      }
+    }
+  }
+  check(largestStep < 0.01, "polarity gain moves by less than 1% per sample on both channels");
+  check(std::fabs(previous[0] + baseline[0]) < std::fabs(baseline[0]) * 1.0e-5f &&
+            std::fabs(previous[1] + baseline[1]) < std::fabs(baseline[1]) * 1.0e-5f,
+        "settled polarity negates both stereo Cab B channels");
+  // Return through zero as well; a second switch must not reset to a hard +1.
+  inverted.set(59, 0);
+  inverted.runControl(1);
+  check(inverted.serial.left[0] / baseline[0] < -0.9f &&
+            inverted.serial.right[0] / baseline[1] < -0.9f,
+        "return to normal polarity also starts from the previous smoothed gain");
+  for (uint64_t frames = 0; frames < static_cast<uint64_t>(rate * 0.25); frames += 128)
+    inverted.runControl(128);
+  check(std::memcmp(normal.serial.left.data(), inverted.serial.left.data(), 128 * sizeof(float)) == 0 &&
+            std::memcmp(normal.serial.right.data(), inverted.serial.right.data(), 128 * sizeof(float)) == 0,
+        "return to normal polarity settles to the exact unchanged stereo reference");
+
+  auto impulsePeaks = [&](Pair& pair) {
+    for (uint64_t frames = 0; frames < static_cast<uint64_t>(rate * 0.3); frames += 128)
+      pair.run(128, true);
+    std::array<size_t, 2> peaks{};
+    std::array<float, 2> amplitudes{};
+    constexpr uint32_t impulseFrames = 4096;
+    for (uint32_t offset = 0; offset < impulseFrames; offset += 128) {
+      pair.serial.input.fill(0.0f); pair.parallel.input.fill(0.0f);
+      if (offset == 0) pair.serial.input[0] = pair.parallel.input[0] = 0.2f;
+      pair.runControl(128);
+      for (uint32_t i = 0; i < 128; ++i) {
+        const std::array<float, 2> samples{pair.serial.left[i], pair.serial.right[i]};
+        for (size_t channel = 0; channel < 2; ++channel) {
+          if (std::fabs(samples[channel]) > std::fabs(amplitudes[channel])) {
+            amplitudes[channel] = samples[channel];
+            peaks[channel] = offset + i;
+          }
+        }
+      }
+    }
+    check(std::fabs(amplitudes[0]) > 0.01f && std::fabs(amplitudes[1]) > 0.01f,
+          "timing probe measures real audible impulses on both channels");
+    return peaks;
+  };
+  for (bool trueCab : {false, true}) {
+    Pair pair(rate);
+    pair.set(7, 0); pair.set(8, 0); pair.set(32, 100);
+    if (trueCab)
+      for (Host* host : {&pair.serial, &pair.parallel})
+        check(host->plugin.loaders[2].SetWaveNetLoadMode(NeuralAudio::EModelLoadMode::NAMCore),
+              "identity fixture uses the real NAMCore loader");
+    const auto& cabA = trueCab ? fixtures.identity : fixtures.mono;
+    pair.paths({{Stage::Cab, cabA}, {Stage::Cab2, fixtures.mono}});
+    pair.run(128, true);
+    pair.sweep(3, true);
+    pair.installed(Stage::Cab, cabA, trueCab ? 0 : 1);
+    pair.installed(Stage::Cab2, fixtures.mono, 1);
+    for (int mode : kModes) {
+      if (!trueCab && mode != 0) continue;
+      pair.set(21, static_cast<float>(mode));
+      const int factor = trueCab ? pipelineFactor(mode, rate) : 1;
+      const size_t compensation = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41 : 0;
+      for (float alignment : {-10.0f, -3.5f, 0.0f, 3.5f, 10.0f}) {
+        testSection = "real impulse alignment " + std::to_string(alignment) +
+                      " ms, C=" + std::to_string(compensation) + " at " + std::to_string(rate);
+        pair.set(49, alignment);
+        const auto peaks = impulsePeaks(pair);
+        const size_t extra = static_cast<size_t>(std::llround(rate * std::fabs(alignment) * 0.001));
+        check(peaks[0] == compensation + (alignment < 0 ? extra : 0),
+              "negative alignment delays Cab A by -d in addition to its actual converter latency");
+        check(peaks[1] == compensation + (alignment > 0 ? extra : 0),
+              "Cab B always retains C compensation, adding only positive user alignment");
+        check(pair.serial.controls[29] == compensation,
+              "host latency continues reporting the converter C, not signed user alignment");
+      }
+    }
+  }
+
+  testSection = "single cabinet and dry signed alignment";
+  for (int active : {0, 1, 2}) {
+    Pair pair(rate);
+    pair.set(7, 0); pair.set(8, 0); pair.set(32, 100);
+    pair.set(9, active == 1 ? 1 : 0); pair.set(47, active == 2 ? 1 : 0);
+    pair.paths({{Stage::Cab, fixtures.mono}, {Stage::Cab2, fixtures.mono}});
+    pair.run(128, true);
+    for (float alignment : {-10.0f, 0.0f, 10.0f}) {
+      pair.set(49, alignment);
+      const auto peaks = impulsePeaks(pair);
+      const size_t expected = active == 2 && alignment > 0
+          ? static_cast<size_t>(std::llround(rate * alignment * 0.001)) : 0;
+      check(peaks[0] == expected && peaks[1] == expected,
+            "A-only/dry never acquire A alignment; B-only keeps its existing positive delay");
+    }
+  }
+  {
+    Pair pair(rate);
+    pair.set(7, 0); pair.set(8, 0); pair.set(32, 100); pair.set(49, -10);
+    pair.paths({{Stage::Cab, fixtures.mono}, {Stage::Cab2, fixtures.mono}});
+    pair.run(128, true);
+    const auto dual = impulsePeaks(pair);
+    check(dual[0] == static_cast<size_t>(std::llround(rate * 0.010)) && dual[1] == 0,
+          "dual-cab probe primes a nonzero extra Cab A delay before bypass");
+    pair.set(47, 0);
+    const auto aOnly = impulsePeaks(pair);
+    check(aOnly[0] == 0 && aOnly[1] == 0,
+          "disabling Cab B clears the previously active extra Cab A delay");
+    pair.set(47, 1);
+    const auto back = impulsePeaks(pair);
+    check(back == dual, "re-enabling both cabinets restores signed alignment without stale history");
+  }
+  std::printf("PASS: %.0f Hz WAV cancellation/amplification, optional polarity, stereo smooth switching, signed impulse timing including real True C=23/35/41, A/B-only and dry behavior\n", rate);
 }
 
 void benchmark(const std::string& wave, const std::string& lstm) {
@@ -928,8 +1151,10 @@ int main(int argc, char** argv) {
     TempWavs fixtures;
     fixtures.write(1);
     fixtures.write(2);
+    fixtures.writeIdentity();
     verifyEnvironment();
     for (double rate : {48000.0, 96000.0}) {
+      verifyAlignment(rate, fixtures);
       verifyPlugins(rate, wave, lstm);
       verifyWavFallback(rate, wave, lstm, fixtures);
     }

@@ -71,7 +71,7 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, assign) RigUIState* state;
 - (void)chooseModel:(NSButton*)sender;
 - (void)clearModel:(NSButton*)sender;
-- (void)controlChanged:(NSSlider*)sender;
+- (void)controlChanged:(NSControl*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
@@ -183,10 +183,13 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
-- (void)controlChanged:(NSSlider*)sender {
+- (void)controlChanged:(NSControl*)sender {
   if (!_state) return;
-  _state->sendControl((uint32_t)sender.tag, sender.floatValue);
-  _state->updateControl((uint32_t)sender.tag, sender.floatValue);
+  const float value = [sender isKindOfClass:NSButton.class]
+      ? (((NSButton*)sender).state == NSControlStateValueOn ? 1.0f : 0.0f)
+      : sender.floatValue;
+  _state->sendControl((uint32_t)sender.tag, value);
+  _state->updateControl((uint32_t)sender.tag, value);
   [self markPresetModified];
 }
 
@@ -365,6 +368,8 @@ static NSString* stageName(NSInteger stage) {
     _state->sendControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
     _state->updateControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
   }
+  _state->sendControl(59, 0.0f);
+  _state->updateControl(59, 0.0f);
   [self markPresetModified];
 }
 
@@ -2018,7 +2023,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Cab A & B volume balance, microsecond delay phase-alignment & dual cut filters.",
+    NSTextField* desc = addLabel(card, @"Cab A & B balance, signed alignment, B polarity & dual cut filters.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2040,8 +2045,17 @@ static void addLowerStudioDeck(RigUIState* state,
     NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
     for (NSInteger p = 0; p < (NSInteger)cabPresetTitles.count; ++p) {
       RigButton* b = rigChip(chips, cabPresetTitles[(NSUInteger)p], state->uiController, @selector(applyCabConsolePreset:), p);
+      b.toolTip = @"Sets cabinet levels, alignment and cuts; preserves your Cab B polarity selection.";
       [chips addArrangedSubview:b];
     }
+    RigButton* invertB = rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59);
+    invertB.buttonType = NSButtonTypeToggle;
+    invertB.check = YES;
+    invertB.state = NSControlStateValueOff;
+    invertB.toolTip = @"Invert Cab B polarity before blending with Cab A. Off = normal; on = inverted. Cabinet quick presets preserve this selection.";
+    state->cab2PolarityButton = invertB;
+    [chips addArrangedSubview:invertB];
+    [[invertB.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NAMCabConsoleVisualizer* cabVis = [[NAMCabConsoleVisualizer alloc] initWithFrame:NSZeroRect];
     cabVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2773,7 +2787,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Speaker thump. Simulates nonlinear low-frequency speaker excursion. Adds visceral low-end inertia, chest-thumping bass impact, and dynamic cabinet resonance on palm mutes and deep bass notes.",
       @"Speaker resonance. Strength of the selected speaker impedance curve: the low resonance and the rising voice-coil inductance. Boosting creates a lively, resonant 'in-the-room' cabinet feel; lowering it flattens the response. Negative Feedback flattens both.",
       @"Cab B level trim. Adjusts the volume of the second cabinet (Cab B) before it mixes with Cab A. Use it to balance dual-cabinet blends (e.g. blending a dark ribbon mic with a bright dynamic mic); -24 dB mutes Cab B (OFF).",
-      @"Cab B phase alignment. Delays Cab B by up to 10 ms so two impulse responses can be phase aligned by ear, eliminating hollow comb filtering and locking in full punchy low end.",
+      @"Cab alignment (-10 to +10 ms). Negative values delay Cab A; positive values delay Cab B, by up to 10 ms. Zero adds no user delay; pipeline latency compensation is unchanged. Align two cabinets by ear to reduce comb filtering.",
       @"Stereo delay time. Sets the time between delay repeats from 20 ms to 2000 ms. Short settings create tight slapback or double-tracking; medium settings create rhythmic groove; long settings create spacious ambient leads.",
       @"Delay feedback. Controls the number of delay repeats. Higher settings produce cascading echoes that slowly decay into a soft, tape-like wash through the damping filter and limiter.",
       @"Delay damping. High-frequency loss of each delay repeat, from bright digital to dark tape-like. Low damping keeps repeats crisp and clear; high damping rolls off top end so repeats sit warmly behind your playing.",
@@ -2788,7 +2802,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        -24.0, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
@@ -3240,7 +3254,7 @@ void portEvent(LV2UI_Handle handle,
                const void* buffer) {
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
-  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 58) {
+  if (format == 0 && buffer && size == sizeof(float) && port >= 4 && port <= 59) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

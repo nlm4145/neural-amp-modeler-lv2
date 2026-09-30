@@ -80,6 +80,21 @@ test's docstring.
 See `ARCHITECTURE.md` for the DSP↔UI port contract, worker model-swap chain,
 and the Tone3000 API/OAuth rules.
 
+### Cabinet alignment and polarity
+
+The rig's Dual-Cabinet Blend Console provides signed alignment and a
+`B POL INV` toggle:
+
+| Port | Symbol | Range / Default | Meaning |
+|---|---|---|---|
+| 49 | `cab2_delay` | -10 to +10 ms / 0 | Negative delays Cab A; positive delays Cab B; zero adds no user delay. |
+| 59 | `cab2_polarity` | 0 or 1 / 0 | Cab B polarity: 0 = normal, 1 = inverted. |
+
+Pipeline latency compensation is unchanged. Presets and A/B snapshots save
+polarity; legacy presets without it restore normal polarity. Reset to Default
+also restores normal polarity. Cabinet quick presets preserve your selected
+polarity.
+
 ## Building
 
 First clone the repository:

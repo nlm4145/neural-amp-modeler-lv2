@@ -169,7 +169,7 @@ public:
     float* speaker_resonance;  // in: port 46, impedance-curve strength (0..100%)
     float* cab2_enabled;       // in: port 47, second cabinet slot toggle
     float* cab2_level;         // in: port 48, second cabinet trim (dB)
-    float* cab2_delay;         // in: port 49, second cabinet alignment (ms)
+    float* cab2_delay;         // in: port 49, alignment (ms); negative delays A
     float* delay_time;         // in: port 50, ms
     float* delay_feedback;     // in: port 51, %
     float* delay_damping;      // in: port 52, %
@@ -179,6 +179,7 @@ public:
     float* reverb_size;        // in: port 56, %
     float* reverb_damping;     // in: port 57, %
     float* reverb_predelay;    // in: port 58, ms
+    float* cab2_polarity;      // in: port 59, invert both Cab B channels (0/1)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -192,7 +193,8 @@ public:
   static_assert(offsetof(Ports, speaker_resonance) == 46 * sizeof(void*));
   static_assert(offsetof(Ports, cab2_enabled) == 47 * sizeof(void*));
   static_assert(offsetof(Ports, reverb_predelay) == 58 * sizeof(void*));
-  static constexpr uint32_t kPortCount = 59;
+  static_assert(offsetof(Ports, cab2_polarity) == 59 * sizeof(void*));
+  static constexpr uint32_t kPortCount = 60;
 
   Ports ports = {};
   double sampleRate = 0.0;
@@ -283,9 +285,10 @@ private:
   float smoothedLowCut = 0.0f, smoothedHighCut = 20000.0f;
   float appliedLowCut = -1.0f, appliedHighCut = -1.0f;
   float smoothedCab2Level = 1.0f;
+  float smoothedCab2Polarity = 1.0f;
   float smoothedWidth = 0.0f;
   std::vector<float> postL, postR, preCab, cabBL, cabBR;
-  AlignDelay cab2Align;
+  AlignDelay cabAlign, cab2Align;
   StereoDelay delayFx;
   PlateReverb reverbFx;
   float gateDetector = 0.0f;
@@ -473,6 +476,7 @@ private:
   uint32_t processTrueCab(size_t stage, float* samples, uint32_t count,
                           int factor) noexcept;
   bool cab2AlignActive = false;
+  bool cabAlignActive = false;
   static constexpr size_t stageIndex(Stage stage) {
     return static_cast<size_t>(stage);
   }
