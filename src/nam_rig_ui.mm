@@ -107,6 +107,10 @@ static NSString* stageName(NSInteger stage) {
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
 - (void)applyTransformerPreset:(NSButton*)sender;
+- (void)slotPresetPopupChanged:(NSPopUpButton*)sender;
+- (void)saveSlotPreset:(NSMenuItem*)sender;
+- (void)saveSlotPresetAs:(NSMenuItem*)sender;
+- (void)deleteSlotPreset:(NSMenuItem*)sender;
 - (void)markPresetModified;
 @end
 @implementation NAMRigUIController
@@ -506,6 +510,164 @@ static NSString* stageName(NSInteger stage) {
     _state->sendControl(30, (float)transIdx);
     _state->updateControl(30, (float)transIdx);
     [self markPresetModified];
+  }
+}
+
+- (void)slotPresetPopupChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  _state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = sender.tag;
+  if (slotIdx < 0 || slotIdx >= (NSInteger)_state->deckSlotSpecs.count) return;
+  NSMutableDictionary* spec = _state->deckSlotSpecs[(NSUInteger)slotIdx];
+  NSMenuItem* item = sender.selectedItem;
+  if (![item.representedObject isKindOfClass:[NSDictionary class]]) {
+    _state->resyncSlotPresetPopup(slotIdx);
+    return;
+  }
+  NSDictionary* rep = (NSDictionary*)item.representedObject;
+  NSString* type = rep[@"type"];
+  NSString* title = rep[@"title"] ?: item.title;
+
+  if ([type isEqualToString:@"factory"]) {
+    spec[@"selectedTitle"] = title;
+    spec[@"selectedIsUser"] = @NO;
+    _state->rebuildSlotPresetMenu(slotIdx);
+    NSInteger presetIdx = [rep[@"index"] integerValue];
+    NSString* selName = spec[@"legacyAction"];
+    if (selName.length) {
+      SEL sel = NSSelectorFromString(selName);
+      if ([self respondsToSelector:sel]) {
+        NSButton* dummy = [[NSButton alloc] initWithFrame:NSZeroRect];
+        dummy.tag = presetIdx;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [self performSelector:sel withObject:dummy];
+#pragma clang diagnostic pop
+      }
+    }
+  } else if ([type isEqualToString:@"user"]) {
+    spec[@"selectedTitle"] = title;
+    spec[@"selectedIsUser"] = @YES;
+    _state->rebuildSlotPresetMenu(slotIdx);
+    NSDictionary* values = rep[@"values"];
+    if ([values isKindOfClass:[NSDictionary class]]) {
+      for (id portKey in values) {
+        if (![portKey isKindOfClass:[NSString class]]) continue;
+        id valObj = values[portKey];
+        if (![valObj respondsToSelector:@selector(floatValue)]) continue;
+        const uint32_t port = (uint32_t)[(NSString*)portKey integerValue];
+        const float val = [valObj floatValue];
+        _state->sendControl(port, val);
+        _state->updateControl(port, val);
+      }
+      [self markPresetModified];
+    }
+  } else {
+    _state->resyncSlotPresetPopup(slotIdx);
+  }
+}
+
+- (void)saveSlotPreset:(NSMenuItem*)sender {
+  if (!_state) return;
+  _state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = sender.tag;
+  if (slotIdx < 0 || slotIdx >= (NSInteger)_state->deckSlotSpecs.count) return;
+  NSMutableDictionary* spec = _state->deckSlotSpecs[(NSUInteger)slotIdx];
+  BOOL isUser = [spec[@"selectedIsUser"] boolValue];
+  NSString* curTitle = spec[@"selectedTitle"];
+  if (!isUser || !curTitle.length) {
+    [self saveSlotPresetAs:sender];
+    return;
+  }
+  NSString* slotKey = spec[@"key"] ?: @"";
+  if (!slotKey.length) return;
+  NSMutableDictionary* userMap = _state->userSlotPresets[slotKey];
+  if (!userMap) {
+    userMap = [NSMutableDictionary dictionary];
+    _state->userSlotPresets[slotKey] = userMap;
+  }
+  userMap[curTitle] = _state->captureSlotPortValues(slotIdx);
+  _state->saveUserSlotPresetsToDisk();
+  _state->rebuildSlotPresetMenu(slotIdx);
+}
+
+- (void)saveSlotPresetAs:(NSMenuItem*)sender {
+  if (!_state) return;
+  _state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = sender.tag;
+  if (slotIdx < 0 || slotIdx >= (NSInteger)_state->deckSlotSpecs.count) return;
+  NSMutableDictionary* spec = _state->deckSlotSpecs[(NSUInteger)slotIdx];
+  NSString* slotKey = spec[@"key"] ?: @"";
+  NSString* slotTitle = spec[@"title"] ?: @"Slot";
+  NSString* curTitle = spec[@"selectedTitle"] ?: @"Custom";
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = [NSString stringWithFormat:@"Save %@ Preset", slotTitle];
+  alert.informativeText = @"Enter a name for this preset:";
+  [alert addButtonWithTitle:@"Save"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  BOOL isUser = [spec[@"selectedIsUser"] boolValue];
+  input.stringValue = isUser
+      ? curTitle
+      : [NSString stringWithFormat:@"My %@", curTitle];
+  alert.accessoryView = input;
+  [alert.window setInitialFirstResponder:input];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSString* name = [input.stringValue stringByTrimmingCharactersInSet:
+                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!name.length) {
+      _state->resyncSlotPresetPopup(slotIdx);
+      return;
+    }
+    NSMutableDictionary* userMap = _state->userSlotPresets[slotKey];
+    if (!userMap) {
+      userMap = [NSMutableDictionary dictionary];
+      _state->userSlotPresets[slotKey] = userMap;
+    }
+    userMap[name] = _state->captureSlotPortValues(slotIdx);
+    spec[@"selectedTitle"] = name;
+    spec[@"selectedIsUser"] = @YES;
+    _state->saveUserSlotPresetsToDisk();
+    _state->rebuildSlotPresetMenu(slotIdx);
+  } else {
+    _state->resyncSlotPresetPopup(slotIdx);
+  }
+}
+
+- (void)deleteSlotPreset:(NSMenuItem*)sender {
+  if (!_state) return;
+  _state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = sender.tag;
+  if (slotIdx < 0 || slotIdx >= (NSInteger)_state->deckSlotSpecs.count) return;
+  NSMutableDictionary* spec = _state->deckSlotSpecs[(NSUInteger)slotIdx];
+  BOOL isUser = [spec[@"selectedIsUser"] boolValue];
+  NSString* curTitle = spec[@"selectedTitle"];
+  NSString* slotKey = spec[@"key"] ?: @"";
+  if (!isUser || !curTitle.length || !slotKey.length) {
+    _state->resyncSlotPresetPopup(slotIdx);
+    return;
+  }
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Delete Slot Preset";
+  alert.informativeText = [NSString stringWithFormat:@"Are you sure you want to delete '%@'?", curTitle];
+  alert.alertStyle = NSAlertStyleCritical;
+  [alert addButtonWithTitle:@"Delete"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSMutableDictionary* userMap = _state->userSlotPresets[slotKey];
+    [userMap removeObjectForKey:curTitle];
+    NSArray<NSString*>* factoryTitles = spec[@"factoryTitles"] ?: @[];
+    spec[@"selectedTitle"] = factoryTitles.firstObject ?: @"";
+    spec[@"selectedIsUser"] = @NO;
+    _state->saveUserSlotPresetsToDisk();
+    _state->rebuildSlotPresetMenu(slotIdx);
+  } else {
+    _state->resyncSlotPresetPopup(slotIdx);
   }
 }
 
@@ -1305,6 +1467,59 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
   return rack;
 }
 
+// Registers a Studio Pro Deck slot preset dropdown and mounts it into `container`.
+// RULE: Every slot created in any Studio Pro Deck pane must use this helper so
+// factory presets and user-saved presets are presented in a unified dropdown menu
+// with Save Preset, Save Preset As…, and Delete Preset actions.
+static NSPopUpButton* addSlotPresetDropdown(
+    NSView* container,
+    RigUIState* state,
+    NSString* slotKey,
+    NSString* slotTitle,
+    NSArray<NSNumber*>* ports,
+    NSArray<NSString*>* factoryTitles,
+    SEL legacyAction) {
+  state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = (NSInteger)state->deckSlotSpecs.count;
+
+  NSPopUpButton* popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  popup.controlSize = NSControlSizeSmall;
+  popup.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium];
+  popup.tag = slotIdx;
+  popup.target = state->uiController;
+  popup.action = @selector(slotPresetPopupChanged:);
+  popup.translatesAutoresizingMaskIntoConstraints = NO;
+  popup.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+  [popup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                  forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [popup setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+  popup.toolTip = [NSString stringWithFormat:
+      @"Select a %@ preset, or choose Save Preset As… from the menu to save your own.",
+      slotTitle];
+
+  NSMutableDictionary* spec = [@{
+    @"key": slotKey ?: @"",
+    @"title": slotTitle ?: @"",
+    @"ports": ports ?: @[],
+    @"factoryTitles": factoryTitles ?: @[],
+    @"legacyAction": legacyAction ? NSStringFromSelector(legacyAction) : @"",
+    @"popup": popup,
+    @"selectedTitle": factoryTitles.firstObject ?: @"",
+    @"selectedIsUser": @NO
+  } mutableCopy];
+  [state->deckSlotSpecs addObject:spec];
+  state->rebuildSlotPresetMenu(slotIdx);
+
+  if ([container isKindOfClass:[NSStackView class]]) {
+    [(NSStackView*)container addArrangedSubview:popup];
+  } else {
+    [container addSubview:popup];
+  }
+  [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
+  return popup;
+}
+
 static void addLowerStudioDeck(RigUIState* state,
                                RigPanel* expansionSlot,
                                const std::array<double, kRigKnobCount>& mins,
@@ -1477,10 +1692,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* delayPresetTitles = @[@"SLAP 80ms", @"1/8 DOT", @"1/4 NOTE", @"1/2 NOTE", @"AMBIENT"];
-    for (NSInteger p = 0; p < (NSInteger)delayPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, delayPresetTitles[(NSUInteger)p], state->uiController, @selector(applyDelayPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"delay", @"Stereo Tape Delay",
+                          @[@50, @51, @52, @53], delayPresetTitles, @selector(applyDelayPreset:));
 
     NAMDelayTapVisualizer* delayVis = [[NAMDelayTapVisualizer alloc] initWithFrame:NSZeroRect];
     delayVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1549,10 +1762,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* rvbPresetTitles = @[@"EMT 140", @"WARM PLATE", @"DARK TANK", @"SHIMMER", @"TIGHT ROOM"];
-    for (NSInteger p = 0; p < (NSInteger)rvbPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, rvbPresetTitles[(NSUInteger)p], state->uiController, @selector(applyReverbPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"reverb", @"Studio Plate Reverb",
+                          @[@54, @55, @56, @57, @58], rvbPresetTitles, @selector(applyReverbPreset:));
 
     NAMReverbDecayVisualizer* rvbVis = [[NAMReverbDecayVisualizer alloc] initWithFrame:NSZeroRect];
     rvbVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1622,10 +1833,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* spatialPresetTitles = @[@"MONO CENTER", @"STUDIO SPREAD", @"WIDE 3D", @"DEEP ROOM"];
-    for (NSInteger p = 0; p < (NSInteger)spatialPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, spatialPresetTitles[(NSUInteger)p], state->uiController, @selector(applySpatialPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"spatial", @"Spatial Acoustics",
+                          @[@32, @33], spatialPresetTitles, @selector(applySpatialPreset:));
 
     NAMSpatialAcousticVisualizer* spkVis = [[NAMSpatialAcousticVisualizer alloc] initWithFrame:NSZeroRect];
     spkVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1707,10 +1916,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* pwrPresetTitles = @[@"VINTAGE SAG", @"HOT BIAS", @"TIGHT NFB", @"PURE CLEAN"];
-    for (NSInteger p = 0; p < (NSInteger)pwrPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, pwrPresetTitles[(NSUInteger)p], state->uiController, @selector(applyPowerPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"power", @"Dynamic Power Stage",
+                          @[@41, @36, @37, @38], pwrPresetTitles, @selector(applyPowerPreset:));
 
     NAMPowerStageVisualizer* pwrVis = [[NAMPowerStageVisualizer alloc] initWithFrame:NSZeroRect];
     pwrVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1779,10 +1986,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"FLAT"];
-    for (NSInteger p = 0; p < (NSInteger)sculptPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, sculptPresetTitles[(NSUInteger)p], state->uiController, @selector(applySculptPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp Tonal Sculpt",
+                          @[@39, @40], sculptPresetTitles, @selector(applySculptPreset:));
 
     NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
     scVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1873,10 +2078,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* transPresetTitles = @[@"CAPTURED/OFF", @"UK VINTAGE", @"TIGHT METAL", @"CLASS-A"];
-    for (NSInteger p = 0; p < (NSInteger)transPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, transPresetTitles[(NSUInteger)p], state->uiController, @selector(applyTransformerPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"transformer", @"Output Transformer Iron",
+                          @[@30], transPresetTitles, @selector(applyTransformerPreset:));
 
     NSStackView* specs = [[NSStackView alloc] initWithFrame:NSZeroRect];
     specs.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -1992,10 +2195,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* spkrPresetTitles = @[@"PUNCHY 4x12", @"VINTAGE OPEN", @"HEAVY THUMP", @"FLAT BYPASS"];
-    for (NSInteger p = 0; p < (NSInteger)spkrPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, spkrPresetTitles[(NSUInteger)p], state->uiController, @selector(applySpeakerPreset:), p);
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"speaker", @"Physical Speaker Emulation",
+                          @[@42, @43, @44, @45, @46], spkrPresetTitles, @selector(applySpeakerPreset:));
 
     NAMSpeakerDynamicsVisualizer* spkVis = [[NAMSpeakerDynamicsVisualizer alloc] initWithFrame:NSZeroRect];
     spkVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2054,7 +2255,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
     chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.distribution = NSStackViewDistributionFill;
     chips.spacing = 6.0;
     chips.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:chips];
@@ -2064,11 +2265,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
-    for (NSInteger p = 0; p < (NSInteger)cabPresetTitles.count; ++p) {
-      RigButton* b = rigChip(chips, cabPresetTitles[(NSUInteger)p], state->uiController, @selector(applyCabConsolePreset:), p);
-      b.toolTip = @"Sets cabinet levels, alignment and cuts; preserves your Cab B polarity selection.";
-      [chips addArrangedSubview:b];
-    }
+    addSlotPresetDropdown(chips, state, @"cab_console", @"Dual-Cabinet Blend Console",
+                          @[@25, @48, @49, @26, @27], cabPresetTitles, @selector(applyCabConsolePreset:));
     RigButton* invertB = rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59);
     invertB.buttonType = NSButtonTypeToggle;
     invertB.check = YES;
@@ -2076,6 +2274,7 @@ static void addLowerStudioDeck(RigUIState* state,
     invertB.toolTip = @"Invert Cab B polarity before blending with Cab A. Off = normal; on = inverted. Cabinet quick presets preserve this selection.";
     state->cab2PolarityButton = invertB;
     [chips addArrangedSubview:invertB];
+    [[invertB.widthAnchor constraintEqualToConstant:78] setActive:YES];
     [[invertB.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NAMCabConsoleVisualizer* cabVis = [[NAMCabConsoleVisualizer alloc] initWithFrame:NSZeroRect];

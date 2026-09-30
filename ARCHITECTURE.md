@@ -233,6 +233,11 @@ NeuralAudio's oversampling multiplies WaveNet dilations by
 - Search results keep their OWN array in server order; favorites/local items
   append AFTER — never interleaved.
 
+## Studio Pro Deck — Slot Preset Dropdown Rule
+
+- Every rack slot across all Studio Pro Deck panes (Post-FX Studio, Power Stage & Iron, Cab Lab & Speaker, and any future pane or slot created) MUST use `addSlotPresetDropdown(...)` (`src/nam_rig_ui.mm`) instead of a row of inline preset chip buttons.
+- Each slot's dropdown menu lists the built-in factory presets for that module followed by any user-saved presets (persisted to `~/Library/Application Support/Axe FX/slot-presets.json`), plus `Save Preset`, `Save Preset As…`, and `Delete Preset` commands.
+
 ## Build & install
 
 `./build.sh` = cmake configure → build both LV2 plugins and Axe FX standalone simultaneously →

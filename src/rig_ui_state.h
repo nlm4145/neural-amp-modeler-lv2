@@ -805,6 +805,194 @@ struct RigUIState {
     }
   }
 
+  // Studio Pro Deck per-slot preset dropdowns & user-saved slot presets.
+  // Every rack slot in the Studio Pro Deck (and any future pane/slot) registers
+  // a descriptor in deckSlotSpecs and renders a preset NSPopUpButton via
+  // addSlotPresetDropdown() so users can pick factory presets or create, save,
+  // overwrite, and delete their own presets for that specific module.
+  __strong NSMutableArray<NSMutableDictionary*>* deckSlotSpecs = nil;
+  __strong NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSDictionary<NSString*, NSNumber*>*>*>* userSlotPresets = nil;
+
+  static NSString* slotPresetsFilePath() {
+    const char* home = std::getenv("HOME");
+    NSString* dir = home
+        ? [[NSString stringWithUTF8String:home] stringByAppendingPathComponent:@"Library/Application Support/Axe FX"]
+        : @"./Axe FX";
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    return [dir stringByAppendingPathComponent:@"slot-presets.json"];
+  }
+
+  void ensureSlotPresetStorage() {
+    if (!deckSlotSpecs) deckSlotSpecs = [NSMutableArray array];
+    if (userSlotPresets) return;
+    userSlotPresets = [NSMutableDictionary dictionary];
+    NSData* data = [NSData dataWithContentsOfFile:slotPresetsFilePath()];
+    if (!data) return;
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![root isKindOfClass:[NSDictionary class]]) return;
+    NSDictionary* rootDict = (NSDictionary*)root;
+    for (id slotKey in rootDict) {
+      if (![slotKey isKindOfClass:[NSString class]]) continue;
+      id slotVal = rootDict[slotKey];
+      if (![slotVal isKindOfClass:[NSDictionary class]]) continue;
+      NSMutableDictionary* map = [NSMutableDictionary dictionary];
+      for (id presetName in (NSDictionary*)slotVal) {
+        if (![presetName isKindOfClass:[NSString class]]) continue;
+        id presetVal = ((NSDictionary*)slotVal)[presetName];
+        if ([presetVal isKindOfClass:[NSDictionary class]]) {
+          map[presetName] = [presetVal copy];
+        }
+      }
+      userSlotPresets[slotKey] = map;
+    }
+  }
+
+  void saveUserSlotPresetsToDisk() {
+    ensureSlotPresetStorage();
+    NSData* data = [NSJSONSerialization dataWithJSONObject:userSlotPresets
+                                                   options:NSJSONWritingPrettyPrinted
+                                                     error:nil];
+    if (data) {
+      [data writeToFile:slotPresetsFilePath() atomically:YES];
+    }
+  }
+
+  float currentPortValueForSlot(uint32_t port) const {
+    if (port == 30) {
+      NSPopUpButton* p = deckTransformerPopup ?: transformerPopup;
+      return p ? (float)p.indexOfSelectedItem : 0.0f;
+    }
+    if (port == 42) {
+      NSPopUpButton* p = deckSpeakerProfilePopup ?: speakerProfilePopup;
+      return p ? (float)p.indexOfSelectedItem : 0.0f;
+    }
+    if (port == 59) {
+      return cab2PolarityInverted ? 1.0f : 0.0f;
+    }
+    for (size_t k = 0; k < kRigKnobCount; ++k) {
+      if (kRigKnobPorts[k] == port) {
+        NSSlider* knob = knobs[k] ?: deckKnobs[k];
+        return knob ? knob.floatValue : kRigKnobDefaults[k];
+      }
+    }
+    return 0.0f;
+  }
+
+  NSDictionary<NSString*, NSNumber*>* captureSlotPortValues(NSInteger slotIdx) {
+    ensureSlotPresetStorage();
+    if (slotIdx < 0 || slotIdx >= (NSInteger)deckSlotSpecs.count) return @{};
+    NSDictionary* spec = deckSlotSpecs[(NSUInteger)slotIdx];
+    NSArray<NSNumber*>* ports = spec[@"ports"];
+    NSMutableDictionary<NSString*, NSNumber*>* out = [NSMutableDictionary dictionaryWithCapacity:ports.count];
+    for (NSNumber* pNum in ports) {
+      const uint32_t port = pNum.unsignedIntValue;
+      out[[pNum stringValue]] = @(currentPortValueForSlot(port));
+    }
+    return out;
+  }
+
+  void rebuildSlotPresetMenu(NSInteger slotIdx) {
+    ensureSlotPresetStorage();
+    if (slotIdx < 0 || slotIdx >= (NSInteger)deckSlotSpecs.count) return;
+    NSMutableDictionary* spec = deckSlotSpecs[(NSUInteger)slotIdx];
+    NSPopUpButton* popup = spec[@"popup"];
+    if (!popup) return;
+
+    NSString* slotKey = spec[@"key"] ?: @"";
+    NSArray<NSString*>* factoryTitles = spec[@"factoryTitles"] ?: @[];
+    NSString* selectedTitle = spec[@"selectedTitle"] ?: (factoryTitles.firstObject ?: @"");
+    BOOL selectedIsUser = [spec[@"selectedIsUser"] boolValue];
+
+    [popup removeAllItems];
+    NSInteger matchIndex = -1;
+    NSInteger itemIdx = 0;
+
+    for (NSUInteger f = 0; f < factoryTitles.count; ++f) {
+      NSString* fTitle = factoryTitles[f];
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:fTitle action:NULL keyEquivalent:@""];
+      item.representedObject = @{
+        @"type": @"factory",
+        @"slot": @(slotIdx),
+        @"index": @((NSInteger)f),
+        @"title": fTitle
+      };
+      [[popup menu] addItem:item];
+      if (!selectedIsUser && [fTitle isEqualToString:selectedTitle]) {
+        matchIndex = itemIdx;
+      }
+      ++itemIdx;
+    }
+
+    NSDictionary<NSString*, NSDictionary<NSString*, NSNumber*>*>* userMap = userSlotPresets[slotKey];
+    if (userMap.count > 0) {
+      [[popup menu] addItem:[NSMenuItem separatorItem]];
+      ++itemIdx;
+      NSArray<NSString*>* sortedNames = [[userMap allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+      for (NSString* uName in sortedNames) {
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:uName action:NULL keyEquivalent:@""];
+        item.representedObject = @{
+          @"type": @"user",
+          @"slot": @(slotIdx),
+          @"title": uName,
+          @"values": userMap[uName] ?: @{}
+        };
+        [[popup menu] addItem:item];
+        if (selectedIsUser && [uName isEqualToString:selectedTitle]) {
+          matchIndex = itemIdx;
+        }
+        ++itemIdx;
+      }
+    }
+
+    [[popup menu] addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* saveItem = [[NSMenuItem alloc] initWithTitle:@"Save Preset"
+                                                      action:@selector(saveSlotPreset:)
+                                               keyEquivalent:@""];
+    saveItem.target = (id)uiController;
+    saveItem.tag = slotIdx;
+    [[popup menu] addItem:saveItem];
+
+    NSMenuItem* saveAsItem = [[NSMenuItem alloc] initWithTitle:@"Save Preset As…"
+                                                        action:@selector(saveSlotPresetAs:)
+                                                 keyEquivalent:@""];
+    saveAsItem.target = (id)uiController;
+    saveAsItem.tag = slotIdx;
+    [[popup menu] addItem:saveAsItem];
+
+    NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete Preset"
+                                                        action:@selector(deleteSlotPreset:)
+                                                 keyEquivalent:@""];
+    deleteItem.target = (id)uiController;
+    deleteItem.tag = slotIdx;
+    deleteItem.enabled = selectedIsUser;
+    [[popup menu] addItem:deleteItem];
+
+    if (matchIndex >= 0) {
+      [popup selectItemAtIndex:matchIndex];
+    } else if (popup.numberOfItems > 0) {
+      [popup selectItemAtIndex:0];
+      spec[@"selectedTitle"] = factoryTitles.firstObject ?: @"";
+      spec[@"selectedIsUser"] = @NO;
+    }
+  }
+
+  void resyncSlotPresetPopup(NSInteger slotIdx) {
+    auto alive = this->isAlive;
+    auto resync = ^{
+      if (!alive || !*alive) return;
+      rebuildSlotPresetMenu(slotIdx);
+    };
+    if ([NSThread isMainThread]) {
+      resync();
+    } else {
+      dispatch_async(dispatch_get_main_queue(), resync);
+    }
+  }
+
   // UI-side persistence: the UI is the single source of truth for the selected
   // model paths (every selection is sent via sendPath). We write them to disk on
   // change and re-send them on every instantiate, so selections survive a
