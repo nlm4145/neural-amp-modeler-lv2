@@ -150,6 +150,18 @@ assert "const size_t groupCounts[3] = {4, 6, 1};" in ui_mm, \
 plugin_cpp = (ROOT / "src" / "nam_rig_plugin.cpp").read_text()
 assert "if (haveA) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
     "cab_level (CAB A LVL) must scale Cab A independently before blending with Cab B"
+theme_mm = (ROOT / "src" / "rig_theme.mm").read_text()
+assert 'case 22: return [NSString stringWithFormat:@"%+.1f dB", value];' in theme_mm, \
+    "Port 22 (Amp Drive) must display dB at -24 dB, not OFF"
+assert 'case 25: return value <= -23.95f ? @"OFF"' in theme_mm, \
+    "Port 25 (Cab A Level) must display OFF at -24 dB"
+assert 'case 48: return value <= -23.95f ? @"OFF"' in theme_mm, \
+    "Port 48 (Cab B Level) must display OFF at -24 dB"
+rig_ttl = (ROOT / "resources" / "neural_amp_modeler_rig.ttl.in").read_text()
+assert rig_ttl.count('lv2:scalePoint [ rdfs:value -24.0 ; rdfs:label "Off" ]') == 2, \
+    "Both cab_level (25) and cab2_level (48) must declare Off scalePoint at -24.0 dB in TTL"
+assert "if (version < 2)" in presets_mm and 'root[@"version"] = @2;' in presets_mm, \
+    "Presets must migrate v1 cab2_level on load and save as version 2"
 
 # 7. Test preset JSON serialization / deserialization round-trip
 sample_preset = {

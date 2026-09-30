@@ -22,7 +22,7 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 13: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 14: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 15: return value < -79.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f dB", value];
-    case 22: return value <= -23.95f ? @"OFF" : [NSString stringWithFormat:@"%+.1f dB", value];
+    case 22: return [NSString stringWithFormat:@"%+.1f dB", value];
     case 23: return [NSString stringWithFormat:@"%.0f ms", value];
     case 25: return value <= -23.95f ? @"OFF" : [NSString stringWithFormat:@"%+.1f dB", value];
     case 26: return value < 1.0f ? @"OFF" : [NSString stringWithFormat:@"%.0f Hz", value];
@@ -42,7 +42,7 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 44: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 45: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 46: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
-    case 48: return [NSString stringWithFormat:@"%+.1f dB", value];
+    case 48: return value <= -23.95f ? @"OFF" : [NSString stringWithFormat:@"%+.1f dB", value];
     case 49: return value < 0.005f ? @"OFF" : [NSString stringWithFormat:@"%.2f ms", value];
     case 50: return [NSString stringWithFormat:@"%.0f ms", value];
     case 51: return [NSString stringWithFormat:@"%.0f%%", value];

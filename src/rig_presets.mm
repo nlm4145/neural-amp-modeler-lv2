@@ -288,13 +288,33 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     }
   }
 
+  // Migrate v1 presets where cab_level (port 25) scaled the combined Cab A + Cab B
+  // sum rather than Cab A alone. Adding cab_level to cab2_level (port 48) when Cab B
+  // is active preserves the exact effective level of Cab B from v1 sessions.
+  const NSInteger version = root[@"version"] ? [root[@"version"] integerValue] : 1;
+  if (version < 2) {
+    auto itA = preset->_controls.find(25);
+    const float cabADb = (itA != preset->_controls.end()) ? itA->second : 0.0f;
+    const float oldCabBDb = preset->_controls.count(48) ? preset->_controls[48] : 0.0f;
+    const bool cabBActive = preset->_stages[3].enabled ||
+                            (preset->_controls.count(47) && preset->_controls[47] >= 0.5f) ||
+                            std::fabs(oldCabBDb) > 1e-4f;
+    if (cabBActive && std::fabs(cabADb) > 1e-4f) {
+      if (cabADb <= -23.95f || oldCabBDb <= -23.95f) {
+        preset->_controls[48] = -24.0f;
+      } else {
+        preset->_controls[48] = std::max(-24.0f, std::min(24.0f, oldCabBDb + cabADb));
+      }
+    }
+  }
+
   return preset;
 }
 
 - (BOOL)saveToFile:(NSString*)filePath error:(NSError**)error {
   NSMutableDictionary* root = [NSMutableDictionary dictionary];
   root[@"name"] = self.name ?: @"Untitled";
-  root[@"version"] = @1;
+  root[@"version"] = @2;
 
   NSDateFormatter* df = [[NSDateFormatter alloc] init];
   df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
