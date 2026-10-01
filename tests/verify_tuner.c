@@ -21,7 +21,7 @@
 #include <lv2/urid/urid.h>
 #include <lv2/worker/worker.h>
 
-enum { kPorts = 79, kMax = 4096, kAtom = 16384,
+enum { kPorts = 82, kRackEnd = 80, kMax = 4096, kAtom = 16384,
        kEnable = 16, kNote = 17, kCents = 18 };
 static const double pi = 3.14159265358979323846;
 static char* uris[256];
@@ -101,7 +101,7 @@ static int openHost(Host* h, const LV2_Descriptor* d, double rate,
     return 0;
   }
 
-  /* Same 79-port defaults as verify_host_smoke.c, with the tuner enabled. */
+  /* Same 82-port defaults as verify_host_smoke.c, with the tuner enabled. */
   h->ctl[7] = h->ctl[8] = h->ctl[9] = h->ctl[10] = 1.0f;
   h->ctl[20] = h->ctl[21] = 1.0f;
   h->ctl[15] = -80.0f;
@@ -114,7 +114,8 @@ static int openHost(Host* h, const LV2_Descriptor* d, double rate,
   h->ctl[58] = 10.0f;
   const float trims[11] = {1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1};
   memcpy(h->ctl + 60, trims, sizeof(trims));
-  for (uint32_t p = 71; p < kPorts; ++p) h->ctl[p] = 1.0f;
+  for (uint32_t p = 71; p < kRackEnd; ++p) h->ctl[p] = 1.0f;
+  h->ctl[80] = 0.0f; h->ctl[81] = 50.0f; /* Captured profile */
   h->ctl[kEnable] = 1.0f;
   h->ctl[kNote] = -1.0f;
   for (uint32_t p = 0; p < kPorts; ++p) {

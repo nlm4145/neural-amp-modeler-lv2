@@ -26,7 +26,7 @@
 namespace {
 
 constexpr unsigned kMaxFileName = 1024;
-constexpr uint32_t kPortCount = 60;   // mirrors Plugin::kPortCount
+constexpr uint32_t kPortCount = 82;   // mirrors Plugin::kPortCount
 enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3 };
 enum WorkType : uint32_t { WorkLoad, WorkSwitch, WorkFree };
 
@@ -138,6 +138,10 @@ int main(int argc, char** argv) {
   ports[52] = 40.0f;
   ports[55] = ports[56] = ports[57] = 50.0f;   // reverb Mix (54) stays 0
   ports[58] = 10.0f;
+  const float trims[11] = {1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1};
+  std::copy(std::begin(trims), std::end(trims), ports + 60);
+  for (uint32_t port = 71; port < 80; ++port) ports[port] = 1.0f;
+  ports[80] = 0.0f; ports[81] = 50.0f; // Captured profile, neutral character default.
 
   descriptor->connect_port(instance, 0, control);
   descriptor->connect_port(instance, 1, notify);

@@ -405,4 +405,24 @@
 					lv2:symbol "cab_console_enabled" ; lv2:name "Cab Console On" ;
 					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
 					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 79 ;
+					lv2:symbol "power_tube_enabled" ; lv2:name "Power Tube On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 80 ;
+					lv2:symbol "power_tube_type" ; lv2:name "Power Tube Type" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 2.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Captured/No Added Character" ],
+						[ rdfs:value 1.0 ; rdfs:label "6L6-inspired" ],
+						[ rdfs:value 2.0 ; rdfs:label "EL34-inspired" ] ;
+					rdfs:comment "Design voicings, not measured tube models. Captured leaves the existing power stage unchanged. Supply dynamics remain controlled by Power."
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 81 ;
+					lv2:symbol "power_tube_character" ; lv2:name "Power Tube Character" ;
+					lv2:default 50.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Interpolates the selected tube voicing into the shared power-stage saturator. Zero adds no character."
 				] .

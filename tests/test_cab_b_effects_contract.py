@@ -36,8 +36,9 @@ for index, symbol in enumerate(expected, 47):
 assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
-assert "kPortCount = 79" in header
-assert sorted(ports) == list(range(79)), "ports 0..70 must stay contiguous before rack switches append at 71..78"
+assert "kPortCount = kRigControlPortCount" in header
+assert "kRigControlPortCount = 82;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(82)), "ports 0..78 stay contiguous; Power/Tube appends at 79..81"
 
 
 def port_default(index: int) -> float:
@@ -133,16 +134,16 @@ assert fade < dsp.index("if (!rackTransitionActive) processEffects();"), (
 for port in range(48, 59):
     assert re.search(rf"\b{port}\b", knobs), f"port {port} missing from the UI knob map"
     assert re.search(rf"case {port}:", theme), f"port {port} has no value formatter"
-assert "kRigKnobCount = 37" in (ROOT / "src/rig_knobs.h").read_text()
+assert "kRigKnobCount = 38" in (ROOT / "src/rig_knobs.h").read_text()
 assert "WIDTH / DELAY / REVERB" in ui, "the cab tile needs the effects popover button"
 assert "effectsPopover" in ui and "effectsPopover" in state
 assert "B ON" in ui and "onB.tag = 47;" in ui, "Cab B needs its own enable toggle"
 assert "modelPickers[3]" in ui, "Cab B needs its own model picker"
 assert "std::array<LV2_URID, 4> pathURIDs{}" in state
 assert re.search(
-    r"port >= 4 &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount",
+    r"port >= 4 &&\s*port < NAMRig::kRigControlPortCount",
     ui,
-), "the UI must accept every original control echo, transformer trims and rack switches"
+), "the UI must accept original controls, transformer trims, nine rack switches and Power/Tube controls"
 assert "for (uint32_t port = 47; port <= 59; ++port)" in standalone, (
     "the standalone host must connect the new ports"
 )

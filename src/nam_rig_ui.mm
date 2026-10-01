@@ -249,6 +249,8 @@ static NSString* stageName(NSInteger stage) {
   if (index < 0) return;
   NSSlider* knob = _state->knobs[index] ?: _state->deckKnobs[index];
   if (!knob) return;
+  // Enter can invoke the delegate and action; do not reparse rounded display text.
+  if ([sender.stringValue isEqualToString:rigKnobValueText((uint32_t)port, knob.floatValue)]) return;
 
   NSString* s = [[sender.stringValue stringByTrimmingCharactersInSet:
                   [NSCharacterSet whitespaceCharacterSet]]
@@ -262,6 +264,10 @@ static NSString* stageName(NSInteger stage) {
   }
 
   const double v = s.doubleValue;
+  if (!std::isfinite(v)) {
+    _state->updateControl((uint32_t)port, knob.floatValue);
+    return;
+  }
   double clamped = v;
   if (clamped < knob.minValue) clamped = knob.minValue;
   if (clamped > knob.maxValue) clamped = knob.maxValue;
@@ -350,6 +356,23 @@ static NSString* stageName(NSInteger stage) {
   _state->sendControl(30, val);
   _state->updateControl(30, val);
   [self resetTransformerControls:sender];
+}
+
+- (void)powerTubeChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  const float profile = (float)sender.indexOfSelectedItem;
+  _state->sendControl(NAMRig::kPowerTubeTypePort, profile);
+  _state->updateControl(NAMRig::kPowerTubeTypePort, profile);
+  [self markPresetModified];
+}
+
+- (void)applyPowerTubePreset:(NSButton*)sender {
+  if (!_state || sender.tag < 0 || sender.tag >= NAMRig::PowerTube::kProfileCount) return;
+  _state->sendControl(NAMRig::kPowerTubeTypePort, (float)sender.tag);
+  _state->updateControl(NAMRig::kPowerTubeTypePort, (float)sender.tag);
+  _state->sendControl(NAMRig::kPowerTubeCharacterPort, NAMRig::kPowerTubeCharacterDefault);
+  _state->updateControl(NAMRig::kPowerTubeCharacterPort, NAMRig::kPowerTubeCharacterDefault);
+  [self markPresetModified];
 }
 
 - (void)resetTransformerControls:(id)sender {
@@ -537,6 +560,8 @@ static NSString* stageName(NSInteger stage) {
   }
   _state->sendControl(59, 0.0f);
   _state->updateControl(59, 0.0f);
+  _state->sendControl(NAMRig::kPowerTubeTypePort, 0.0f);
+  _state->updateControl(NAMRig::kPowerTubeTypePort, 0.0f);
   for (size_t i = 0; i < NAMRig::kRackCount; ++i) {
     const uint32_t port = NAMRig::kRackControlFirstPort + i;
     _state->sendControl(port, NAMRig::kRackControlDefaults[i]);
@@ -2075,6 +2100,7 @@ static void addLowerStudioDeck(RigUIState* state,
   RigPanel* pwrRackRef = nil;
   RigPanel* sculptRackRef = nil;
   RigPanel* transRackRef = nil;
+  RigPanel* tubeRackRef = nil;
 
   // 1. Dynamic Power Stage (4 knobs: 21, 16, 17, 18)
   {
@@ -2110,7 +2136,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Power-supply sag droop, asymmetric tube harmonics, and output damping feedback.",
+    NSTextField* desc = addLabel(card, @"Supply sag, bias and feedback. Master drives the shared stage.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2181,7 +2207,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"High-shelf bright boost and input high-pass tightener before the NAM capture.",
+    NSTextField* desc = addLabel(card, @"Bright boost and bass tightening before the capture.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2216,7 +2242,90 @@ static void addLowerStudioDeck(RigUIState* state,
     [[scVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
   }
 
-  // 3. Output Transformer (model and editable-trim presets)
+  // 3. Power Tube Character shares the power-stage engine, not a second saturator.
+  {
+    RigPanel* rack = addStudioRackSection(row1, @"POWER TUBE CHARACTER", @"TUBE-INSPIRED POST-CAPTURE SHAPING", goldColor, state, NAMRig::Rack::PowerTube);
+    [row1 addArrangedSubview:rack];
+    tubeRackRef = rack;
+
+    NSView* topZone = [[NSView alloc] initWithFrame:NSZeroRect];
+    topZone.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:topZone];
+    [[topZone.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[topZone.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[topZone.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[topZone.heightAnchor constraintEqualToConstant:108] setActive:YES];
+    NSTextField* typeLabel = addLabel(topZone, @"TUBE TYPE", NSZeroRect,
+        [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold], rigDimText(), NSTextAlignmentLeft);
+    typeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [[typeLabel.topAnchor constraintEqualToAnchor:topZone.topAnchor constant:4] setActive:YES];
+    [[typeLabel.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor] setActive:YES];
+    [[typeLabel.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor constant:-90] setActive:YES];
+    NSPopUpButton* type = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [type addItemsWithTitles:@[@"Captured / No Added Character", @"6L6-inspired", @"EL34-inspired"]];
+    NSArray<NSString*>* tips = @[
+        @"Preserve the captured tube character. Dynamic Power Stage remains independent.",
+        @"6L6-inspired voicing with more headroom and restrained compression. Adds to the capture; does not replace its tubes.",
+        @"EL34-inspired voicing with earlier compression and a different clipping knee. Adds to the capture; does not replace its tubes."];
+    for (NSUInteger i = 0; i < tips.count; ++i) [type itemAtIndex:i].toolTip = tips[i];
+    type.controlSize = NSControlSizeSmall;
+    type.font = [NSFont systemFontOfSize:10 weight:NSFontWeightMedium];
+    type.tag = NAMRig::kPowerTubeTypePort;
+    type.target = state->uiController;
+    type.action = @selector(powerTubeChanged:);
+    type.translatesAutoresizingMaskIntoConstraints = NO;
+    type.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    [type setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [topZone addSubview:type];
+    [[type.topAnchor constraintEqualToAnchor:typeLabel.bottomAnchor constant:6] setActive:YES];
+    [[type.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor] setActive:YES];
+    [[type.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor constant:-90] setActive:YES];
+    [[type.heightAnchor constraintEqualToConstant:24] setActive:YES];
+    state->powerTubePopup = type;
+
+    NSView* character = addDeckKnobCell(topZone, state, 37, mins, maxes, knobNames, knobDescriptions);
+    [[character.topAnchor constraintEqualToAnchor:topZone.topAnchor] setActive:YES];
+    [[character.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor] setActive:YES];
+    [[character.widthAnchor constraintEqualToConstant:80] setActive:YES];
+    [[character.heightAnchor constraintEqualToAnchor:topZone.heightAnchor] setActive:YES];
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES;
+    card.layer.cornerRadius = 6;
+    card.layer.backgroundColor = rigRaised().CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:topZone.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+    NSTextField* desc = addLabel(card, @"Adds tube-inspired character, not a literal tube swap.\nWorks with Power Stage ON or OFF. Character 0% is neutral.", NSZeroRect,
+        [NSFont systemFontOfSize:9 weight:NSFontWeightRegular], rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    desc.maximumNumberOfLines = 2;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    NSPopUpButton* presets = addSlotPresetDropdown(card, state, @"power_tube", @"Power Tube Character",
+        @[@(NAMRig::kPowerTubeTypePort), @(NAMRig::kPowerTubeCharacterPort)],
+        @[@"Captured", @"6L6-inspired", @"EL34-inspired"], @selector(applyPowerTubePreset:));
+    [[presets.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[presets.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[presets.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    NAMPowerTubeVisualizer* visualizer = [[NAMPowerTubeVisualizer alloc] initWithFrame:NSZeroRect];
+    visualizer.translatesAutoresizingMaskIntoConstraints = NO;
+    visualizer.character = state->powerTubeCharacter;
+    visualizer.enabled = YES;
+    [card addSubview:visualizer];
+    [[visualizer.topAnchor constraintEqualToAnchor:presets.bottomAnchor constant:8] setActive:YES];
+    [[visualizer.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[visualizer.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[visualizer.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+    state->powerTubeVisualizer = visualizer;
+    state->updateControl(NAMRig::kPowerTubeTypePort, (float)state->powerTubeProfile);
+  }
+
+  // 4. Output Transformer (model and editable-trim presets)
   {
     RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER", @"CORE SATURATION & VOICING", goldColor, state, NAMRig::Rack::Transformer);
     [row1 addArrangedSubview:rack];
@@ -2398,9 +2507,10 @@ static void addLowerStudioDeck(RigUIState* state,
     state->updateTransformerTelemetry(0);
   }
 
-  if (pwrRackRef && sculptRackRef && transRackRef) {
-    [[sculptRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.74] setActive:YES];
-    [[transRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.86] setActive:YES];
+  if (pwrRackRef && sculptRackRef && transRackRef && tubeRackRef) {
+    [[sculptRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.70] setActive:YES];
+    [[tubeRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.88] setActive:YES];
+    [[transRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.88] setActive:YES];
   }
 
   // ==========================================
@@ -3263,14 +3373,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"THUMP", @"RESONANCE",
                                       @"CAB B LVL", @"ALIGN", @"DLY TIME", @"DLY FDBK",
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
-                                      @"SIZE", @"RVB DAMP", @"PRE-DLY"];
+                                      @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"OFF", @"+0%",
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
-                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms"];
+                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -3308,17 +3418,18 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Reverb decay time. Controls how long the reverb tail lingers. Short settings add subtle studio room ambience; long settings produce cavernous, dreamy reverberation that floats behind sustained notes.",
       @"Reverb space size. Scales the reverb plate tank dimensions and the room's early reflections. Smaller sizes sound tight and intimate; larger sizes expand into a vast acoustic hall.",
       @"Reverb high damping. Controls high-frequency absorption in the plate and room reflections. Lower damping preserves bright, airy shimmer; higher damping darkens the tail for a warm, natural decay that never clutters the mix.",
-      @"Reverb pre-delay. Sets the time gap (0-100 ms) before the reverb tail begins. Keeps your initial pick attack and note definition clear and upfront before the ambient reverb blooms."
+      @"Reverb pre-delay. Sets the time gap (0-100 ms) before the reverb tail begins. Keeps your initial pick attack and note definition clear and upfront before the ambient reverb blooms.",
+      @"Amount of added tube-inspired character. Changes clipping knee, headroom and asymmetry in the shared power-stage engine. 0% preserves the existing power-stage response. The captured amp's original tubes are not removed."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -3731,7 +3842,7 @@ void portEvent(LV2UI_Handle handle,
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
   if (format == 0 && buffer && size == sizeof(float) && port >= 4 &&
-      port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
+      port < NAMRig::kRigControlPortCount) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

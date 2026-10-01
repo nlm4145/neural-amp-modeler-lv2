@@ -356,7 +356,8 @@ struct Host {
               controls.begin() + NAMRig::kTransformerControlFirstPort);
     std::copy(NAMRig::kRackControlDefaults.begin(), NAMRig::kRackControlDefaults.end(),
               controls.begin() + NAMRig::kRackControlFirstPort);
-    // Connect the original fields explicitly; append the two control arrays below.
+    controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
+    // Connect the original fields explicitly; append arrays and tube controls below.
     plugin.ports = {
         sequence(control), sequence(notify), input.data(), left.data(),
         &controls[4], &controls[5], &controls[6], &controls[7], &controls[8],
@@ -375,7 +376,9 @@ struct Host {
       plugin.ports.transformer_adjustments[i] = &controls[NAMRig::kTransformerControlFirstPort + i];
     for (size_t i = 0; i < NAMRig::kRackCount; ++i)
       plugin.ports.rack_enabled[i] = &controls[NAMRig::kRackControlFirstPort + i];
-    static_assert(Plugin::kPortCount == 79, "update connections if ports change");
+    plugin.ports.power_tube_type = &controls[NAMRig::kPowerTubeTypePort];
+    plugin.ports.power_tube_character = &controls[NAMRig::kPowerTubeCharacterPort];
+    static_assert(Plugin::kPortCount == 82, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

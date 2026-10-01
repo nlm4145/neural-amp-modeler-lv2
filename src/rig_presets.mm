@@ -7,6 +7,7 @@
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
+#include "power_tube_controls.h"
 #include "rack_controls.h"
 #include "speaker_dynamics.h"
 #include "rig_ui_state.h"
@@ -70,6 +71,8 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
     for (size_t i = 0; i < NAMRig::kRackCount; ++i)
       symbols[@(NAMRig::kRackControlFirstPort + i)] =
           [NSString stringWithUTF8String:NAMRig::kRackControlSymbols[i]];
+    symbols[@(NAMRig::kPowerTubeTypePort)] = @"power_tube_type";
+    symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";
     map = [symbols copy];
   });
   return map;
@@ -217,6 +220,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     p->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
   for (size_t i = 0; i < NAMRig::kRackCount; ++i)
     p->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
+  p->_controls[NAMRig::kPowerTubeTypePort] = 0.0f;
+  p->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
   p->_controls[42] = 0.0f;  // Captured / Off
 
   return p;
@@ -286,6 +291,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     preset->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
   for (size_t i = 0; i < NAMRig::kRackCount; ++i)
     preset->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
+  preset->_controls[NAMRig::kPowerTubeTypePort] = 0.0f;
+  preset->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
   NSDictionary* portsDict = root[@"ports"];
   if ([portsDict isKindOfClass:[NSDictionary class]]) {
     for (NSString* key in portsDict) {
@@ -430,6 +437,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     p->_controls[NAMRig::kTransformerControlFirstPort + i] = state->transformerAdjustments[i];
   for (size_t i = 0; i < NAMRig::kRackCount; ++i)
     p->_controls[NAMRig::kRackControlFirstPort + i] = state->rackControls[i];
+  p->_controls[NAMRig::kPowerTubeTypePort] = static_cast<float>(state->powerTubeProfile);
+  p->_controls[NAMRig::kPowerTubeCharacterPort] = state->powerTubeCharacter;
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -448,6 +457,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   // Knobs
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     const uint32_t port = kRigKnobPorts[k];
+    if (port == NAMRig::kPowerTubeCharacterPort) continue;
     const float val = state->knobs[k] ? state->knobs[k].floatValue : kRigKnobDefaults[k];
     p->_controls[port] = val;
   }
@@ -507,6 +517,16 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
   state->sendControl(42, self.speakerProfile);
   state->updateControl(42, self.speakerProfile);
+  // Sparse presets must clear previously selected tube character.
+  auto tubeTypeIt = _controls.find(NAMRig::kPowerTubeTypePort);
+  const float tubeType = tubeTypeIt != _controls.end() ? tubeTypeIt->second : 0.0f;
+  state->sendControl(NAMRig::kPowerTubeTypePort, tubeType);
+  state->updateControl(NAMRig::kPowerTubeTypePort, tubeType);
+  auto tubeCharacterIt = _controls.find(NAMRig::kPowerTubeCharacterPort);
+  const float tubeCharacter = tubeCharacterIt != _controls.end()
+      ? tubeCharacterIt->second : NAMRig::kPowerTubeCharacterDefault;
+  state->sendControl(NAMRig::kPowerTubeCharacterPort, tubeCharacter);
+  state->updateControl(NAMRig::kPowerTubeCharacterPort, tubeCharacter);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);
@@ -514,6 +534,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   // 3. Knobs
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     const uint32_t port = kRigKnobPorts[k];
+    if (port == NAMRig::kPowerTubeCharacterPort) continue;
     auto it = _controls.find(port);
     const float val = (it != _controls.end()) ? it->second : kRigKnobDefaults[k];
     state->sendControl(port, val);

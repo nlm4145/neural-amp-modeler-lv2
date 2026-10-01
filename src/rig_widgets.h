@@ -71,6 +71,12 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @property(nonatomic) float inputEq;
 @end
 
+@interface NAMPowerTubeVisualizer : NSView
+@property(nonatomic) int profile;
+@property(nonatomic) float character;
+@property(nonatomic) BOOL enabled;
+@end
+
 @interface NAMTransformerVisualizer : NSView
 @property(nonatomic) int profile;
 @property(nonatomic) NAMRig::OutputTransformer::Parameters parameters;

@@ -595,6 +595,8 @@ class StandaloneHost {
       plugin_->ports.transformer_adjustments[i] = &transformerControls_[i];
     for (size_t i = 0; i < rackControls_.size(); ++i)
       plugin_->ports.rack_enabled[i] = &rackControls_[i];
+    plugin_->ports.power_tube_type = &tubeControls_[0];
+    plugin_->ports.power_tube_character = &tubeControls_[1];
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -948,6 +950,12 @@ class StandaloneHost {
     if (format == 0 && port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount && size == sizeof(float)) {
       host->rackControls_[port - NAMRig::kRackControlFirstPort] =
+          *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kPowerTubeTypePort &&
+        port <= NAMRig::kPowerTubeCharacterPort && size == sizeof(float)) {
+      host->tubeControls_[port - NAMRig::kPowerTubeTypePort] =
           *static_cast<const float*>(buffer);
       return;
     }
@@ -1740,6 +1748,7 @@ class StandaloneHost {
   std::array<float, 13> fxControls_{};
   NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;
   std::array<float, NAMRig::kRackCount> rackControls_ = NAMRig::kRackControlDefaults;
+  std::array<float, 2> tubeControls_ = {0.0f, NAMRig::kPowerTubeCharacterDefault};
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

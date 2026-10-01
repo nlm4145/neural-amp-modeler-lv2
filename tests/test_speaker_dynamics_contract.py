@@ -15,8 +15,14 @@ ports = {
         r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
     )
 }
-assert sorted(ports) == list(range(79)), "ports 0..70 must stay contiguous before rack switches append at 71..78"
-assert "kPortCount = 79" in header
+assert sorted(ports) == list(range(82)), "ports 0..78 stay contiguous; Power/Tube appends at 79..81"
+assert [ports[i] for i in range(71, 82)] == [
+    "delay_enabled", "reverb_enabled", "spatial_enabled", "power_enabled",
+    "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled",
+    "power_tube_enabled", "power_tube_type", "power_tube_character",
+]
+assert "kPortCount = kRigControlPortCount" in header
+assert "kRigControlPortCount = 82;" in (ROOT / "src/power_tube_controls.h").read_text()
 expected = ["speaker_profile", "speaker_drive", "speaker_compression",
             "speaker_thump", "speaker_resonance"]
 for index, symbol in enumerate(expected, 42):

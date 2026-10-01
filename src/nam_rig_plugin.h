@@ -182,7 +182,9 @@ public:
     float* reverb_predelay;    // in: port 58, ms
     float* cab2_polarity;      // in: port 59, invert both Cab B channels (0/1)
     std::array<float*, kTransformerControlCount> transformer_adjustments; // in: ports 60..70
-    std::array<float*, kRackCount> rack_enabled; // in: ports 71..78
+    std::array<float*, kRackCount> rack_enabled; // in: ports 71..79
+    float* power_tube_type;      // in: port 80, Captured/6L6-inspired/EL34-inspired
+    float* power_tube_character; // in: port 81, added character (0..100%)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -199,9 +201,14 @@ public:
   static_assert(offsetof(Ports, cab2_polarity) == 59 * sizeof(void*));
   static_assert(offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*));
   static_assert(offsetof(Ports, rack_enabled) == kRackControlFirstPort * sizeof(void*));
-  static constexpr uint32_t kPortCount = 79;
+  static_assert(offsetof(Ports, power_tube_type) == kPowerTubeTypePort * sizeof(void*));
+  static_assert(offsetof(Ports, power_tube_character) == kPowerTubeCharacterPort * sizeof(void*));
+  static constexpr uint32_t kPortCount = kRigControlPortCount;
   static_assert(kRackControlFirstPort == kTransformerControlFirstPort + kTransformerControlCount);
-  static_assert(kPortCount == kRackControlFirstPort + kRackCount);
+  static_assert(kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79);
+  static_assert(kPowerTubeTypePort == kRackControlFirstPort + kRackCount);
+  static_assert(kPowerTubeCharacterPort == kPowerTubeTypePort + 1);
+  static_assert(kPortCount == kPowerTubeCharacterPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -314,6 +321,9 @@ private:
   int speakerRequested = SpeakerDynamics::kCaptured;
   int speakerApplied = SpeakerDynamics::kCaptured;
   bool speakerLatched = false;
+  int tubeRequested = PowerTube::kCaptured;
+  int tubeApplied = PowerTube::kCaptured;
+  bool tubeLatched = false;
   int32_t maxBufferSize = 512;
 
   // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).

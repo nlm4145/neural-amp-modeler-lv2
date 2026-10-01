@@ -85,6 +85,7 @@ struct Host {
               controls.begin() + NAMRig::kTransformerControlFirstPort);
     std::copy(NAMRig::kRackControlDefaults.begin(), NAMRig::kRackControlDefaults.end(),
               controls.begin() + NAMRig::kRackControlFirstPort);
+    controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
     descriptor->connect_port(instance, 0, control.data());
     descriptor->connect_port(instance, 1, notify.data());
     descriptor->connect_port(instance, 2, input.data());

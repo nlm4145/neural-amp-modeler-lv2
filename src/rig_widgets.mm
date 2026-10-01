@@ -2,6 +2,7 @@
 #import "rig_theme.h"
 #import <ImageIO/ImageIO.h>
 
+#include "power_tube_controls.h"
 #include <cmath>
 #include <algorithm>
 
@@ -105,6 +106,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
     case 38: // Neg Fdbk
     case 44: // Speaker Comp
     case 46: // Speaker Resonance
+    case 81: // Power Tube Character
       return RigKnobColorStyleDynamics;
     case 32: // Width
     case 33: // Room
@@ -890,20 +892,22 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
-  [@"POWER TUBE TRANSFER & SAG COMPRESSION" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [@"POWER-STAGE RESPONSE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
   NSString* stat = [NSString stringWithFormat:@"SAG: %.0f%%  •  BIAS: %+.0f%%  •  NFB: %.0f%%", _sag, _bias, _feedback];
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
   };
-  NSSize ssz = [stat sizeWithAttributes:statAttrs];
-  [stat drawAtPoint:NSMakePoint(r.size.width - 14 - ssz.width, r.size.height - 18) withAttributes:statAttrs];
+  [stat drawAtPoint:NSMakePoint(14, r.size.height - 34) withAttributes:statAttrs];
 
+  const CGFloat topMargin = 44.0;
+  const CGFloat bottomMargin = 12.0;
   const CGFloat cx = r.size.width * 0.46;
-  const CGFloat cy = (r.size.height - 24) * 0.5 + 8;
   const CGFloat plotW = r.size.width * 0.72;
-  const CGFloat plotH = r.size.height - 36;
+  const CGFloat plotH = r.size.height - topMargin - bottomMargin;
+  if (plotH < 8.0) return;
+  const CGFloat cy = bottomMargin + plotH * 0.5;
 
   NSBezierPath* grid = [NSBezierPath bezierPath];
   [grid moveToPoint:NSMakePoint(cx - plotW * 0.5, cy)];
@@ -976,9 +980,9 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
   };
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
-  [stat drawAtPoint:NSMakePoint(r.size.width - 14 - ssz.width, r.size.height - 18) withAttributes:statAttrs];
+  [stat drawAtPoint:NSMakePoint(std::max(14.0, r.size.width - 14 - ssz.width), r.size.height - 32) withAttributes:statAttrs];
 
-  const CGFloat leftM = 30.0, rightM = 16.0, topM = 24.0, botM = 16.0;
+  const CGFloat leftM = 30.0, rightM = 16.0, topM = 38.0, botM = 16.0;
   const CGFloat pw = r.size.width - leftM - rightM;
   const CGFloat ph = r.size.height - topM - botM;
   const CGFloat midY = botM + ph * 0.5;
@@ -1010,6 +1014,130 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
   }
   curve.lineWidth = 2.5;
   [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95] setStroke];
+  [curve stroke];
+}
+@end
+
+@implementation NAMPowerTubeVisualizer
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    _profile = NAMRig::PowerTube::kCaptured;
+    _character = NAMRig::kPowerTubeCharacterDefault;
+    _enabled = YES;
+    self.toolTip = @"Illustrative static transfer of design voicings, not a measured tube response or a physical tube swap. Excludes the live power-stage feedback, bias and supply dynamics.";
+  }
+  return self;
+}
+- (BOOL)isFlipped { return NO; }
+- (void)setProfile:(int)p {
+  _profile = NAMRig::PowerTube::clampProfile(p);
+  self.needsDisplay = YES;
+}
+- (void)setCharacter:(float)v {
+  _character = NAMRig::PowerTube::clampCharacter(v);
+  self.needsDisplay = YES;
+}
+- (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
+
+- (void)drawRect:(NSRect)dirty {
+  const NSRect r = self.bounds;
+  if (NSWidth(r) < 10.0 || NSHeight(r) < 10.0) return;
+
+  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r, 0.5, 0.5)
+                                                   xRadius:6.0 yRadius:6.0];
+  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [bg fill];
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  bg.lineWidth = 1.0;
+  [bg stroke];
+
+  const auto& legacy = NAMRig::PowerTube::kProfiles[NAMRig::PowerTube::kCaptured];
+  const auto& profile = NAMRig::PowerTube::kProfiles[_profile];
+  const double amount = _enabled && _profile != NAMRig::PowerTube::kCaptured
+      ? _character * 0.01 : 0.0;
+  NSColor* curveColor = [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25
+                                         alpha:(amount > 0.0 ? 0.95 : 0.45)];
+  NSMutableParagraphStyle* textStyle = [NSMutableParagraphStyle new];
+  textStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+  NSDictionary* headerAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: curveColor,
+    NSParagraphStyleAttributeName: textStyle
+  };
+  NSDictionary* statAttrs = @{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSForegroundColorAttributeName: rigDimText(),
+    NSParagraphStyleAttributeName: textStyle
+  };
+  const CGFloat textX = NSMinX(r) + 14.0;
+  const CGFloat textW = std::max(0.0, NSWidth(r) - 28.0);
+  [@"POWER TUBE CHARACTER" drawInRect:NSMakeRect(textX, NSMaxY(r) - 20.0, textW, 14.0)
+                      withAttributes:headerAttrs];
+  [[NSString stringWithUTF8String:profile.name]
+      drawInRect:NSMakeRect(textX, NSMaxY(r) - 36.0, textW, 14.0) withAttributes:statAttrs];
+  NSString* status = !_enabled ? @"OFF / BYPASSED - FLAT"
+      : (_profile == NAMRig::PowerTube::kCaptured ? @"FLAT / NO ADDED CHARACTER"
+         : [NSString stringWithFormat:@"CHARACTER: %.0f%%%s", _character,
+                                      amount == 0.0 ? " / FLAT" : ""]);
+  [status drawInRect:NSMakeRect(textX, NSMaxY(r) - 52.0, textW, 14.0) withAttributes:statAttrs];
+  [@"ILLUSTRATIVE / NOT A TUBE SWAP"
+      drawInRect:NSMakeRect(textX, NSMinY(r) + 5.0, textW, 14.0) withAttributes:statAttrs];
+
+  const NSRect plot = NSMakeRect(NSMinX(r) + 28.0, NSMinY(r) + 36.0,
+                                 NSWidth(r) - 44.0, NSHeight(r) - 98.0);
+  if (NSWidth(plot) < 8.0 || NSHeight(plot) < 8.0) return;
+
+  NSDictionary* axisAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
+  };
+  [@"OUTPUT" drawAtPoint:NSMakePoint(NSMinX(plot), NSMaxY(plot) + 1.0) withAttributes:axisAttrs];
+  [@"INPUT" drawAtPoint:NSMakePoint(NSMaxX(plot) - 24.0, NSMinY(plot) - 14.0) withAttributes:axisAttrs];
+  NSBezierPath* grid = [NSBezierPath bezierPathWithRect:plot];
+  [grid moveToPoint:NSMakePoint(NSMinX(plot), NSMidY(plot))];
+  [grid lineToPoint:NSMakePoint(NSMaxX(plot), NSMidY(plot))];
+  [grid moveToPoint:NSMakePoint(NSMidX(plot), NSMinY(plot))];
+  [grid lineToPoint:NSMakePoint(NSMidX(plot), NSMaxY(plot))];
+  grid.lineWidth = 0.75;
+  [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.6] setStroke];
+  [grid stroke];
+
+  const NSRect data = NSInsetRect(plot, 3.0, 3.0);
+  NSBezierPath* reference = [NSBezierPath bezierPath];
+  [reference moveToPoint:NSMakePoint(NSMinX(data), NSMinY(data))];
+  [reference lineToPoint:NSMakePoint(NSMaxX(data), NSMaxY(data))];
+  const CGFloat dash[2] = {2.0, 3.0};
+  [reference setLineDash:dash count:2 phase:0.0];
+  reference.lineWidth = 0.75;
+  [[NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.35] setStroke];
+  [reference stroke];
+
+  // Static sketch only: interpolate legacy parameters, without the DSP's live loop.
+  const double knee = legacy.knee + amount * (profile.knee - legacy.knee);
+  const double headroom = legacy.headroom + amount * (profile.headroom - legacy.headroom);
+  const double asymmetry = legacy.asymmetry + amount * (profile.asymmetry - legacy.asymmetry);
+  const auto saturate = [knee](double x) {
+    const double a = std::fabs(x);
+    if (a <= knee) return x;
+    const double d = 1.0 - knee;
+    const double v = a - knee;
+    return std::copysign(knee + d * v / (d + v), x);
+  };
+  const double biasOut = saturate(asymmetry);
+  NSBezierPath* curve = [NSBezierPath bezierPath];
+  const int nPts = 80;
+  for (int i = 0; i <= nPts; ++i) {
+    const double x = 2.0 * i / nPts - 1.0;
+    const double shaped = headroom * (saturate(x / headroom + asymmetry) - biasOut);
+    const double y = std::clamp(x + amount * (shaped - x), -1.0, 1.0);
+    const NSPoint point = NSMakePoint(NSMidX(data) + x * NSWidth(data) * 0.5,
+                                      NSMidY(data) + y * NSHeight(data) * 0.5);
+    if (i == 0) [curve moveToPoint:point];
+    else [curve lineToPoint:point];
+  }
+  curve.lineWidth = 2.2;
+  curve.lineCapStyle = NSLineCapStyleRound;
+  [curveColor setStroke];
   [curve stroke];
 }
 @end
@@ -1061,9 +1189,9 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
   };
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
-  [stat drawAtPoint:NSMakePoint(r.size.width - 14 - ssz.width, r.size.height - 18) withAttributes:statAttrs];
+  [stat drawAtPoint:NSMakePoint(std::max(14.0, r.size.width - 14 - ssz.width), r.size.height - 32) withAttributes:statAttrs];
 
-  const CGFloat topM = 22.0;
+  const CGFloat topM = 38.0;
   const CGFloat botM = 10.0;
   const CGFloat plotH = r.size.height - topM - botM;
   if (plotH < 8.0) return;

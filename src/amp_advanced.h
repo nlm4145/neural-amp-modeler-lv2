@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "power_tube_controls.h"
+
 namespace NAMRig {
 
 // Optional post-capture amp shaping. Every control has a neutral value and
@@ -34,7 +36,13 @@ class AmpAdvanced {
     appliedBright_ = appliedInputEq_ = -1.0f;
   }
 
-  void resetPostAmp() noexcept { resetLoop(); }
+  void resetPostAmp(bool preserveTubeCharacter = false) noexcept {
+    const float character = smoothTubeCharacter_;
+    resetLoop();
+    if (preserveTubeCharacter) smoothTubeCharacter_ = character;
+  }
+  void resetTubeCharacter() noexcept { smoothTubeCharacter_ = 0.0f; }
+  bool hasTubeCharacter() const noexcept { return smoothTubeCharacter_ > 0.0f; }
 
   void processPreAmp(float* samples, size_t count, double rate,
                      float brightAmount, float inputEqAmount) noexcept {
@@ -81,19 +89,44 @@ class AmpAdvanced {
   void processPostAmp(float* samples, size_t count, double rate,
                       float presenceDb, float depthDb, float sagAmount,
                       float biasAmount, float feedbackAmount,
-                      float masterAmount) noexcept {
+                      float masterAmount, int tubeProfile = PowerTube::kCaptured,
+                      float tubeCharacter = kPowerTubeCharacterDefault) noexcept {
+    tubeProfile = PowerTube::clampProfile(tubeProfile);
+    const float characterTarget = tubeProfile == PowerTube::kCaptured ? 0.0f
+        : PowerTube::clampCharacter(tubeCharacter) * 0.01f;
+    if (tubeProfile == PowerTube::kCaptured) resetTubeCharacter();
+    // Specialize neutral character so the compiler retains the legacy arithmetic.
+    if (characterTarget == 0.0f && smoothTubeCharacter_ == 0.0f)
+      processPostAmpImpl<true>(samples, count, rate, presenceDb, depthDb, sagAmount,
+                               biasAmount, feedbackAmount, masterAmount,
+                               tubeProfile, characterTarget);
+    else
+      processPostAmpImpl<false>(samples, count, rate, presenceDb, depthDb, sagAmount,
+                                biasAmount, feedbackAmount, masterAmount,
+                                tubeProfile, characterTarget);
+  }
+
+ private:
+  template <bool Legacy>
+  void processPostAmpImpl(float* samples, size_t count, double rate,
+                         float presenceDb, float depthDb, float sagAmount,
+                         float biasAmount, float feedbackAmount, float masterAmount,
+                         int tubeProfile, float characterTarget) noexcept {
     const float presenceTarget = std::max(-12.0f, std::min(12.0f, presenceDb));
     const float depthTarget = std::max(-12.0f, std::min(12.0f, depthDb));
     const float sagTarget = clamp01(sagAmount * 0.01f);
     const float biasTarget = std::max(-1.0f, std::min(1.0f, biasAmount * 0.01f));
     const float feedbackTarget = clamp01(feedbackAmount * 0.01f);
     const float masterTarget = clamp01(masterAmount * 0.01f);
+    const auto& profile = PowerTube::kProfiles[static_cast<size_t>(tubeProfile)];
     const bool targetsNeutral = presenceTarget == 0.0f && depthTarget == 0.0f &&
                                 sagTarget == 0.0f && biasTarget == 0.0f &&
-                                feedbackTarget == 0.0f && masterTarget == 0.0f;
+                                feedbackTarget == 0.0f && masterTarget == 0.0f &&
+                                characterTarget == 0.0f;
     const bool stateNeutral = smoothPresence_ == 0.0f && smoothDepth_ == 0.0f &&
                               smoothSag_ == 0.0f && smoothBias_ == 0.0f &&
-                              smoothFeedback_ == 0.0f && smoothMaster_ == 0.0f;
+                              smoothFeedback_ == 0.0f && smoothMaster_ == 0.0f &&
+                              smoothTubeCharacter_ == 0.0f;
     if (targetsNeutral && stateNeutral) {
       resetLoop();
       return;
@@ -108,16 +141,24 @@ class AmpAdvanced {
       glide(smoothBias_, biasTarget, smooth);
       glide(smoothFeedback_, feedbackTarget, smooth);
       glide(smoothMaster_, masterTarget, smooth);
+      if constexpr (!Legacy) glide(smoothTubeCharacter_, characterTarget, smooth);
+
+      const double character = Legacy ? 0.0 : smoothTubeCharacter_;
+      const double knee = kKnee + character * (profile.knee - kKnee);
+      const double tubeHeadroom = 1.0 + character * (profile.headroom - 1.0);
+      const double biasSensitivity = 1.0 + character * (profile.biasSensitivity - 1.0);
+      const double asymmetry = character * profile.asymmetry;
 
       const double beta = 0.15 + 0.75 * smoothFeedback_;
       const double loopGain = kOpenLoopGain * beta;
       if (smoothPresence_ != appliedPresence_ || smoothFeedback_ != appliedFeedback_ ||
-          smoothDepth_ != appliedDepth_) {
+          smoothDepth_ != appliedDepth_ || rate != appliedPostRate_) {
         setShelf(presence_, feedbackShelfDb(smoothPresence_, loopGain), 3200.0f, rate, true);
         setShelf(depth_, feedbackShelfDb(smoothDepth_, loopGain), 110.0f, rate, false);
         appliedPresence_ = smoothPresence_;
         appliedDepth_ = smoothDepth_;
         appliedFeedback_ = smoothFeedback_;
+        appliedPostRate_ = rate;
       }
       const double drive = std::pow(10.0, 1.8 * smoothMaster_);
       const double inputScale = drive * (1.0 + loopGain) / kOpenLoopGain;
@@ -129,11 +170,13 @@ class AmpAdvanced {
       // The power-stage saturation is introduced continuously by the dynamic
       // controls, so moving any control away from exact neutral cannot switch
       // a fully driven nonlinear stage into the signal path at once.
-      const double nonlinearAmount = std::max(
+      const double legacyNonlinearAmount = std::max(
           std::max(static_cast<double>(smoothSag_),
                    std::fabs(static_cast<double>(smoothBias_))),
           std::max(static_cast<double>(smoothFeedback_),
                    static_cast<double>(smoothMaster_)));
+      const double nonlinearAmount = Legacy ? legacyNonlinearAmount
+                                            : std::max(legacyNonlinearAmount, character);
       const double attack = 1.0 - std::exp(-1.0 / (rate * 0.015));
       const double release = 1.0 - std::exp(-1.0 / (rate * 0.220));
 
@@ -143,14 +186,27 @@ class AmpAdvanced {
         const double partial = presence_.b0 * depth_.z1 + presence_.z1;
         const double c = s[i] * inputScale - beta * partial;
         const double k = beta * f0;
-        const double headroom = 1.0 - sagDepth * supplyEnvelope_;
-        const double bias = biasStatic - excursionDepth * supplyEnvelope_;
-        const double biasOut = sat(bias);
-        const double solved = solve(kOpenLoopGain / headroom, k * headroom,
-                                    c + k * headroom * biasOut +
-                                        bias * headroom / kOpenLoopGain);
-        const double normalized = solved - biasOut;
-        const double nonlinearY = headroom * normalized;
+        double normalized, nonlinearY;
+        if (Legacy || character == 0.0) {
+          const double headroom = 1.0 - sagDepth * supplyEnvelope_;
+          const double bias = biasStatic - excursionDepth * supplyEnvelope_;
+          const double biasOut = sat<true>(bias, kKnee);
+          const double solved = solve<true>(kOpenLoopGain / headroom, k * headroom,
+                                           c + k * headroom * biasOut +
+                                               bias * headroom / kOpenLoopGain, kKnee);
+          normalized = solved - biasOut;
+          nonlinearY = headroom * normalized;
+        } else {
+          const double headroom = tubeHeadroom * (1.0 - sagDepth * supplyEnvelope_);
+          const double bias = biasSensitivity * (biasStatic - excursionDepth * supplyEnvelope_) +
+                              asymmetry;
+          const double biasOut = sat<false>(bias, knee);
+          const double solved = solve<false>(kOpenLoopGain / headroom, k * headroom,
+                                            c + k * headroom * biasOut +
+                                                bias * headroom / kOpenLoopGain, knee);
+          normalized = solved - biasOut;
+          nonlinearY = headroom * normalized;
+        }
         const double linearY = kOpenLoopGain * c / (1.0 + kOpenLoopGain * k);
         const double y = linearY + nonlinearAmount * (nonlinearY - linearY);
         const double level = std::fabs(normalized);
@@ -162,7 +218,6 @@ class AmpAdvanced {
     }
   }
 
- private:
   static constexpr size_t kChunk = 32;
   static constexpr double kOpenLoopGain = 10.0;
   static constexpr double kKnee = 0.7;
@@ -190,7 +245,9 @@ class AmpAdvanced {
     depth_.identity();
     smoothPresence_ = smoothDepth_ = smoothSag_ = smoothBias_ = 0.0f;
     smoothFeedback_ = smoothMaster_ = 0.0f;
+    smoothTubeCharacter_ = 0.0f;
     appliedPresence_ = appliedDepth_ = appliedFeedback_ = 1.0e9f;
+    appliedPostRate_ = 0.0;
     supplyEnvelope_ = 0.0;
   }
 
@@ -212,22 +269,27 @@ class AmpAdvanced {
     return 20.0 * std::log10(g);
   }
 
-  static double sat(double u) noexcept {
+  // Compile-time legacy knee retains the original constant-folding arithmetic.
+  template <bool Legacy>
+  static double sat(double u, double profileKnee) noexcept {
+    const double knee = Legacy ? kKnee : profileKnee;
     const double a = std::fabs(u);
-    if (a <= kKnee) return u;
-    const double d = 1.0 - kKnee;
-    const double v = a - kKnee;
+    if (a <= knee) return u;
+    const double d = 1.0 - knee;
+    const double v = a - knee;
     const double w = d * v / (d + v);
-    return u < 0.0 ? -(kKnee + w) : kKnee + w;
+    return u < 0.0 ? -(knee + w) : knee + w;
   }
 
   // Solves y = sat(A * (c - k * y)) for y.
-  static double solve(double A, double k, double c) noexcept {
+  template <bool Legacy>
+  static double solve(double A, double k, double c, double profileKnee) noexcept {
+    const double knee = Legacy ? kKnee : profileKnee;
     const double lin = A * c / (1.0 + A * k);
-    if (std::fabs(lin) <= kKnee) return lin;
+    if (std::fabs(lin) <= knee) return lin;
     const double sign = c < 0.0 ? -1.0 : 1.0;
     c = std::fabs(c);
-    const double t = kKnee, d = 1.0 - kKnee;
+    const double t = knee, d = 1.0 - knee;
     const double a2 = A * k;
     const double b2 = -(A * (c - k * t + k * d) + d - t);
     const double c2 = d * (A * (c - k * t) - t);
@@ -282,8 +344,10 @@ class AmpAdvanced {
   float appliedBright_ = -1.0f, appliedInputEq_ = -1.0f;
   float smoothPresence_ = 0.0f, smoothDepth_ = 0.0f, smoothSag_ = 0.0f;
   float smoothBias_ = 0.0f, smoothFeedback_ = 0.0f, smoothMaster_ = 0.0f;
+  float smoothTubeCharacter_ = 0.0f;
   float appliedPresence_ = 1.0e9f, appliedDepth_ = 1.0e9f, appliedFeedback_ = 1.0e9f;
   double supplyEnvelope_ = 0.0;
+  double appliedPostRate_ = 0.0;
 };
 
 }  // namespace NAMRig

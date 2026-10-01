@@ -10,20 +10,23 @@ ttl = (ROOT / "resources/neural_amp_modeler_rig.ttl.in").read_text()
 ui_ttl = (ROOT / "resources/neural_amp_modeler_rig_ui.ttl.in").read_text()
 standalone = (ROOT / "src/standalone_main.mm").read_text()
 
-names = ["Delay", "Reverb", "Spatial", "Power", "Sculpt", "Transformer", "Speaker", "CabConsole", "Count"]
+names = ["Delay", "Reverb", "Spatial", "Power", "Sculpt", "Transformer", "Speaker", "CabConsole", "PowerTube", "Count"]
 symbols = ["delay_enabled", "reverb_enabled", "spatial_enabled", "power_enabled",
-           "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled"]
+           "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled",
+           "power_tube_enabled"]
 enum = re.search(r"enum class Rack\s*:\s*size_t\s*\{([^}]+)\}", controls)
 assert enum and [name.strip() for name in enum.group(1).split(",")] == names
 assert "kRackControlFirstPort = 71;" in controls
 defaults = re.search(r"kRackControlDefaults\s*=\s*\{([^}]+)\}", controls)
-assert defaults and [float(value.strip().removesuffix("f")) for value in defaults.group(1).split(",")] == [1] * 8
+assert defaults and [float(value.strip().removesuffix("f")) for value in defaults.group(1).split(",")] == [1] * 9
 shared_symbols = re.search(r"kRackControlSymbols\s*=\s*\{([^}]+)\}", controls)
 assert shared_symbols and re.findall(r'"([^"]+)"', shared_symbols.group(1)) == symbols
 assert "std::array<float*, kRackCount> rack_enabled;" in header
 assert "offsetof(Ports, rack_enabled) == kRackControlFirstPort * sizeof(void*)" in header
-assert "kPortCount = 79;" in header
-assert "kPortCount == kRackControlFirstPort + kRackCount" in header
+assert "kPortCount = kRigControlPortCount;" in header
+assert "kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79" in header
+assert "kPowerTubeTypePort == kRackControlFirstPort + kRackCount" in header
+assert "kPortCount == kPowerTubeCharacterPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 for index, symbol in enumerate(symbols, 71):
@@ -41,4 +44,4 @@ for index, symbol in enumerate(symbols, 71):
 assert "rackControls_ = NAMRig::kRackControlDefaults;" in standalone
 assert "plugin_->ports.rack_enabled[i] = &rackControls_[i];" in standalone
 assert re.search(r"port >= NAMRig::kRackControlFirstPort &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount", standalone)
-print("  PASS  rack switches append at 71..78, default ON and remain optional for legacy hosts")
+print("  PASS  old rack indices 71..78 preserved; Power/Tube appends at 79, default ON and optional")

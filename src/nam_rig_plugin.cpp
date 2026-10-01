@@ -976,6 +976,34 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   }
   const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
 
+  const float tubeSelection = portValue(ports.power_tube_type, 0.0f);
+  const int desiredTube = std::isfinite(tubeSelection)
+      ? PowerTube::clampProfile(static_cast<int>(std::clamp(tubeSelection, 0.0f,
+            static_cast<float>(PowerTube::kProfileCount - 1)) + 0.5f))
+      : PowerTube::kCaptured;
+  const float tubeCharacter = PowerTube::clampCharacter(
+      portValue(ports.power_tube_character, kPowerTubeCharacterDefault));
+  if (!tubeLatched) {
+    tubeRequested = tubeApplied = desiredTube;
+    tubeLatched = true;
+  } else if (desiredTube != tubeRequested) {
+    tubeRequested = desiredTube;
+    const bool audibleTube = rackOn(Rack::PowerTube) &&
+        models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)] &&
+        (ampAdvanced.hasTubeCharacter() || (tubeCharacter > 0.0f &&
+            (tubeApplied != PowerTube::kCaptured || tubeRequested != PowerTube::kCaptured)));
+    if (audibleTube) {
+      startTransitionFadeOut();
+    } else {
+      // Offline/neutral edits must not disturb the shared legacy Power envelope.
+      tubeApplied = tubeRequested;
+    }
+  }
+  // Both OFF skips post-amp processing, so clear only the inactive tube's
+  // character here. The shared Power filters, smoothers and envelope stay intact.
+  if (!rackOn(Rack::PowerTube) || tubeApplied == PowerTube::kCaptured)
+    ampAdvanced.resetTubeCharacter();
+
   // Output-transformer profiles are part of the amp block.  Changes use the
   // same click-safe zero crossing as model and bypass changes; the existing
   // capture remains bit-identical by default (profile 0).
@@ -1094,11 +1122,19 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     }
     runModel(stage, model, samples, count, domainRate);
     if (stage == stageIndex(Stage::Amp)) {
-      if (rackOn(Rack::Power))
+      const bool powerOn = rackOn(Rack::Power);
+      const int tubeProfile = rackOn(Rack::PowerTube) ? tubeApplied : PowerTube::kCaptured;
+      const bool activeTube = tubeProfile != PowerTube::kCaptured &&
+          (tubeCharacter > 0.0f || ampAdvanced.hasTubeCharacter());
+      if (powerOn || activeTube)
         ampAdvanced.processPostAmp(samples, count, domainRate,
-                                 *ports.presence, *ports.depth, *ports.sag,
-                                 *ports.bias, *ports.negative_feedback,
-                                 *ports.master);
+                                  powerOn ? *ports.presence : 0.0f,
+                                  powerOn ? *ports.depth : 0.0f,
+                                  powerOn ? *ports.sag : 0.0f,
+                                  powerOn ? *ports.bias : 0.0f,
+                                  powerOn ? *ports.negative_feedback : 0.0f,
+                                  powerOn ? *ports.master : 0.0f,
+                                  tubeProfile, tubeCharacter);
       if (rackOn(Rack::Transformer))
         outputTransformer.process(samples, count, domainRate, transformerApplied,
                                 transformerAdjustments);
@@ -1637,7 +1673,8 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       };
       if (changed(Rack::Sculpt)) ampAdvanced.resetPreAmp();
       if (changed(Rack::Power)) {
-        ampAdvanced.resetPostAmp();
+        // Power owns the loop reset, not the unchanged Tube amount smoother.
+        ampAdvanced.resetPostAmp(true);
         if (!requestedRacks[static_cast<size_t>(Rack::Power)]) speakerDynamics.bypassDamping();
       }
       if (changed(Rack::Transformer)) outputTransformer.reset();
@@ -1670,6 +1707,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       speakerApplied = speakerRequested;
       speakerDynamics.reset();
     }
+    // Tube type/bypass changes the curve at silence, not the shared Power state.
+    // Its normalized supply envelope remains meaningful across tube curves.
+    tubeApplied = tubeRequested;
     transitionPhase = TransitionPhase::FadeIn;
     transitionPosition = 0;
     transitionGain = 0.0f;

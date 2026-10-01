@@ -28,6 +28,7 @@
 
 #include "rig_knobs.h"
 #include "rack_controls.h"
+#include "power_tube_controls.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
 #include "speaker_dynamics.h"
@@ -102,7 +103,7 @@ struct RigUIState {
   __strong NSArray<NSView*>* deckTabPanes = nil;
   NSInteger activeDeckTab = 0;
 
-  // Deck knobs mirror the 37 DSP parameters:
+  // Deck knobs mirror the continuous DSP parameters:
   std::array<__strong NSSlider*, kRigKnobCount> deckKnobs{};
   std::array<__strong NSTextField*, kRigKnobCount> deckValueLabels{};
   std::array<bool, kRigKnobCount> deckKnobFieldEditing{};
@@ -115,6 +116,10 @@ struct RigUIState {
   __strong NAMReverbDecayVisualizer* reverbVisualizer = nil;
   __strong NAMSpatialAcousticVisualizer* spatialVisualizer = nil;
   __strong NAMPowerStageVisualizer* powerVisualizer = nil;
+  int powerTubeProfile = NAMRig::PowerTube::kCaptured;
+  float powerTubeCharacter = NAMRig::kPowerTubeCharacterDefault;
+  __strong NSPopUpButton* powerTubePopup = nil;
+  __strong NAMPowerTubeVisualizer* powerTubeVisualizer = nil;
   __strong NAMSculptVisualizer* sculptVisualizer = nil;
   __strong NAMTransformerVisualizer* transformerVisualizer = nil;
   std::array<__strong NSTextField*, 4> transformerSpecLabels{};
@@ -879,6 +884,8 @@ struct RigUIState {
   }
 
   float currentPortValueForSlot(uint32_t port) const {
+    if (port == NAMRig::kPowerTubeTypePort) return (float)powerTubeProfile;
+    if (port == NAMRig::kPowerTubeCharacterPort) return powerTubeCharacter;
     if (port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
       return rackControls[port - NAMRig::kRackControlFirstPort];
@@ -1752,6 +1759,8 @@ struct RigUIState {
           ? (value >= 0.5f ? 1.0f : 0.0f) : NAMRig::kRackControlDefaults[index];
       auto updateRack = ^{
         if (!alive || !*alive) return;
+        if (index == (size_t)NAMRig::Rack::PowerTube && powerTubeVisualizer)
+          powerTubeVisualizer.enabled = rackControls[index] >= 0.5f;
         RigButton* button = rackButtons[index];
         if (!button) return;
         const bool enabled = rackControls[index] >= 0.5f;
@@ -1764,6 +1773,24 @@ struct RigUIState {
       else dispatch_async(dispatch_get_main_queue(), updateRack);
       return;
     }
+    if (port == NAMRig::kPowerTubeTypePort) {
+      const int profile = std::isfinite(value) ? NAMRig::PowerTube::clampProfile(
+          (int)(std::clamp(value, 0.0f, (float)NAMRig::PowerTube::kProfileCount - 1) + 0.5f))
+          : NAMRig::PowerTube::kCaptured;
+      auto updateTube = ^{
+        if (!alive || !*alive) return;
+        powerTubeProfile = profile;
+        if (powerTubePopup) {
+          [powerTubePopup selectItemAtIndex:profile];
+          powerTubePopup.toolTip = powerTubePopup.selectedItem.toolTip;
+        }
+        if (powerTubeVisualizer) powerTubeVisualizer.profile = profile;
+      };
+      if ([NSThread isMainThread]) updateTube();
+      else dispatch_async(dispatch_get_main_queue(), updateTube);
+      return;
+    }
+    if (port == NAMRig::kPowerTubeCharacterPort) value = NAMRig::PowerTube::clampCharacter(value);
     if (port >= NAMRig::kTransformerControlFirstPort &&
         port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
       const size_t index = port - NAMRig::kTransformerControlFirstPort;
@@ -1877,6 +1904,10 @@ struct RigUIState {
     if (index < 0) return;
     auto updateKnob = ^{
       if (!alive || !*alive) return;
+      if (port == NAMRig::kPowerTubeCharacterPort) {
+        powerTubeCharacter = value;
+        if (powerTubeVisualizer) powerTubeVisualizer.character = value;
+      }
       if (knobs[index]) knobs[index].floatValue = value;
       if (!knobFieldEditing[index] && valueLabels[index])
         valueLabels[index].stringValue = rigKnobValueText(port, value);

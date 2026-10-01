@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ttl = (ROOT / "resources/neural_amp_modeler_rig.ttl.in").read_text()
 ui_ttl = (ROOT / "resources/neural_amp_modeler_rig_ui.ttl.in").read_text()
 controls = (ROOT / "src/transformer_controls.h").read_text()
+tube_controls = (ROOT / "src/power_tube_controls.h").read_text()
 header = (ROOT / "src/nam_rig_plugin.h").read_text()
 dsp = (ROOT / "src/nam_rig_plugin.cpp").read_text()
 transformer = (ROOT / "src/output_transformer.h").read_text()
@@ -47,19 +48,22 @@ symbols = [
 ]
 rack_symbols = ["delay_enabled", "reverb_enabled", "spatial_enabled", "power_enabled",
                 "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled"]
+appended_symbols = ["power_tube_enabled", "power_tube_type", "power_tube_character"]
 port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
 )]
-assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols)), (
-    "ports 0..70 must stay unchanged; rack switches append at 71..78"
+assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + appended_symbols)), (
+    "ports 0..78 must stay unchanged; Power/Tube appends at 79..81"
 )
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
-assert "kPortCount = 79;" in header
+assert "kPortCount = kRigControlPortCount;" in header
+assert "kRigControlPortCount = 82;" in tube_controls
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
-assert "kPortCount == kRackControlFirstPort + kRackCount" in header
+assert "kPowerTubeTypePort == kRackControlFirstPort + kRackCount" in header
+assert "kPortCount == kPowerTubeCharacterPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 # The metadata table is the shared host/preset order, not absolute profile values.
@@ -119,8 +123,8 @@ write = body(standalone, "static void uiWrite(", "  ")
 assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstPort &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount &&\s*size == sizeof\(float\)\) \{\s*host->transformerControls_\[port - NAMRig::kTransformerControlFirstPort\] =\s*\*static_cast<const float\*>\(buffer\);\s*return;", write)
 assert "write(controller, port, sizeof(value), 0, &value);" in body(state, "void sendControl(", "  ")
 event = body(ui, "void portEvent(")
-assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
-    "host float echoes must include 4..78, exclude 79+, and validate format/buffer/size"
+assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kRigControlPortCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
+    "host float echoes must include 4..81, exclude 82+, and validate format/buffer/size"
 )
 
 assert "int transformerProfile = NAMRig::OutputTransformer::kCaptured;" in state

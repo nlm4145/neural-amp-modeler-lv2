@@ -1,5 +1,5 @@
 /* Minimal LV2 host smoke test for the BUILT rig plugin (.so path = argv[1]):
- *   - instantiate with urid:map + worker:schedule, connect all 79 ports,
+ *   - instantiate with urid:map + worker:schedule, connect all 82 ports,
  *     run blocks both smaller and LARGER than the un-negotiated 512 default
  *     maxBlockLength (the chain must slice, not overrun).
  *   - latency port must read 0 with no models loaded.
@@ -60,10 +60,10 @@ int main(int argc, char** argv) {
   CHECK(h != NULL, "instantiate at 48 kHz");
   if (!h) return 1;
 
-  enum { kMax = 4096, kAtom = 16384 };
+  enum { kPorts = 82, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
-  float ctl[79] = {0};               /* mirrors Plugin::kPortCount */
+  float ctl[kPorts] = {0};           /* mirrors Plugin::kPortCount */
   ctl[7] = 1.0f; ctl[8] = 1.0f; ctl[9] = 1.0f; ctl[10] = 1.0f; /* enables */
   ctl[20] = 1.0f; ctl[21] = 1.0f;   /* per-stage oversample: Legacy */
   ctl[15] = -80.0f;                  /* gate off */
@@ -76,7 +76,8 @@ int main(int argc, char** argv) {
   ctl[55] = 50.0f; ctl[56] = 50.0f; ctl[57] = 50.0f; ctl[58] = 10.0f;
   const float trims[11] = {1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1};
   memcpy(ctl + 60, trims, sizeof(trims));
-  for (uint32_t p = 71; p < 79; ++p) ctl[p] = 1.0f;
+  for (uint32_t p = 71; p < kRackEnd; ++p) ctl[p] = 1.0f;
+  ctl[80] = 0.0f; ctl[81] = 50.0f; /* Captured, not a tenth rack switch */
 
   d->connect_port(h, 0, controlBuf);
   d->connect_port(h, 1, notifyBuf);
@@ -86,7 +87,7 @@ int main(int argc, char** argv) {
   d->connect_port(h, 31, outRightBuf);
   d->connect_port(h, 32, &ctl[32]);
   d->connect_port(h, 33, &ctl[33]);
-  for (uint32_t p = 34; p < 79; ++p) d->connect_port(h, p, &ctl[p]);
+  for (uint32_t p = 34; p < kPorts; ++p) d->connect_port(h, p, &ctl[p]);
 
   double phase = 0.0;
   const double w = 2.0 * M_PI * 220.0 / 48000.0;
