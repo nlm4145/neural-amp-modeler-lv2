@@ -343,7 +343,10 @@ private:
     int missCount = 0;              // consecutive analyses with no pitch
     float onsetEnergy = 0.0f, previousRms = 0.0f;
     int onsetSamples = 0;           // non-overlapping 10 ms envelope windows
-    int attackSamplesRemaining = 0; // decimated samples to let a pluck settle
+    int pluckSamples = -1;          // decimated samples since the latest onset
+    int tailSamples = 0;            // debounce short envelope dips
+    float pluckPeakRms = 0.0f;
+    bool measurementClosed = true, hasMeasurement = false;
     float nsdf[kMaxTau + 2] = {};
     float scratch[kWindow + kMaxTau] = {};   // unwrapped NSDF window
     float acf[kMaxTau + 1] = {};             // vDSP_conv output (all lags)
@@ -358,7 +361,12 @@ private:
       lastCents = 0.0f;
       histIdx = histLen = missCount = 0;
       onsetEnergy = previousRms = 0.0f;
-      onsetSamples = attackSamplesRemaining = 0;
+      onsetSamples = 0;
+      pluckSamples = -1;
+      tailSamples = 0;
+      pluckPeakRms = 0.0f;
+      measurementClosed = true;
+      hasMeasurement = false;
       lp1.reset();
       lp2.reset();
     }

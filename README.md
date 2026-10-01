@@ -55,9 +55,9 @@ touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
   including low E (the 96 kHz case that broke v1) and palm mute.
 - `tests/verify_tuner.c` loads the built rig via `RIG_SO` (defaults to the
   installed plugin), without models. At 48/96 kHz and 64/512/2048-sample
-  blocks it checks accuracy, jitter smoothing, pluck hold/acquisition,
-  continuous tuning, repeated picking, string changes, noise rejection,
-  decay/silence clearing, notifications, and disable/re-enable reset.
+  blocks it checks early-sustain acquisition, attack/tail exclusion, jitter
+  smoothing, re-pluck tuning, string changes, noise rejection, decay/silence
+  clearing, notifications, and disable/re-enable reset.
   Missing plugins or harness build failures fail the suite. Live rate-change resets cannot be
   tested through the exposed LV2 interface. Run it independently with:
 
@@ -91,6 +91,24 @@ test's docstring.
 
 See `ARCHITECTURE.md` for the DSP↔UI port contract, worker model-swap chain,
 and the Tone3000 API/OAuth rules.
+
+### Tuner reference
+
+The tuner measures early sustain rather than the sharp initial attack or late
+decay. After detecting a pluck, it excludes the first 300 ms from the analysis
+window and requires three confident pitch estimates agreeing within 3 cents
+before displaying a new result (typically around 500 ms). Updates stop one
+second after the pluck or when the level stays below 25% of its attack peak
+for 40 ms, whichever comes first. Low-level windows are not used during that
+40 ms grace period either.
+The last accepted reading is held through the tail and the next attack;
+silence clears it. These are practical heuristics, not a guarantee of a
+universally ideal measurement instant for every instrument.
+
+Pluck once, let the reading settle, adjust, then pluck again to refresh it.
+Very short or rapidly repeated notes may never provide an eligible sustain
+window. Turning the tuner on during a quiet late tail may similarly require
+a fresh pluck before it can report a pitch.
 
 ### Cabinet alignment and polarity
 

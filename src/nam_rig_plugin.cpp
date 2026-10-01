@@ -626,6 +626,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     tuner.wasEnabled = tunerOn;
     if (tunerOn) {
       const int onsetWindow = std::max(1, (int)std::lround(tuner.decimRate * 0.010f));
+      const int attackEnd = (int)std::lround(tuner.decimRate * 0.300f);
+      const int sustainStart = attackEnd + Tuner::kWindow + Tuner::kMaxTau;
+      const int sustainEnd = (int)std::lround(tuner.decimRate * 1.000f);
+      const int tailHold = (int)std::lround(tuner.decimRate * 0.040f);
       for (uint32_t i = 0; i < sampleCount; ++i) {
         const float x = tuner.lp2.process(tuner.lp1.process(ports.audio_in[i]));
         if (++tuner.decimPhase >= tuner.decimFactor) {
@@ -633,16 +637,31 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
           tuner.ring[(size_t)tuner.ringPos] = x;
           tuner.ringPos = (tuner.ringPos + 1) % Tuner::kBuf;
           if (tuner.filled < Tuner::kBuf) ++tuner.filled;
-          if (tuner.attackSamplesRemaining > 0) --tuner.attackSamplesRemaining;
+          if (tuner.pluckSamples >= 0 && tuner.pluckSamples < sustainEnd) ++tuner.pluckSamples;
           tuner.onsetEnergy += x * x;
           if (++tuner.onsetSamples >= onsetWindow) {
             const float onsetRms = std::sqrt(tuner.onsetEnergy / tuner.onsetSamples);
-            // Hard plucks briefly sharpen a real string. Keep the previous
-            // reading until the attack settles. Preserve pre-attack estimates
-            // so repeated plucks cannot continually restart acquisition.
-            if (onsetRms > 0.006f && onsetRms > 2.0f * tuner.previousRms) {
-              tuner.attackSamplesRemaining = (int)std::lround(tuner.decimRate * 0.180f);
+            // Measure each pluck's early sustain, not its sharp attack or
+            // fading tail. Keep the previous accepted result between plucks.
+            if ((onsetRms > 0.006f && onsetRms > 2.0f * tuner.previousRms) ||
+                (tuner.pluckSamples < 0 && onsetRms >= 0.003f)) {
+              tuner.pluckSamples = 0;
+              tuner.pluckPeakRms = onsetRms;
+              tuner.measurementClosed = false;
+              tuner.hasMeasurement = false;
+              tuner.tailSamples = 0;
+              tuner.histLen = tuner.histIdx = 0;
               tuner.missCount = 0;
+            }
+            if (tuner.pluckSamples >= 0) {
+              if (tuner.pluckSamples < attackEnd / 3)
+                tuner.pluckPeakRms = std::max(tuner.pluckPeakRms, onsetRms);
+              else {
+                tuner.tailSamples = onsetRms < 0.25f * tuner.pluckPeakRms
+                    ? std::min(tuner.tailSamples + onsetWindow, tailHold) : 0;
+                if (tuner.pluckSamples >= sustainEnd || tuner.tailSamples >= tailHold)
+                  tuner.measurementClosed = true;
+              }
             }
             tuner.previousRms = onsetRms;
             tuner.onsetEnergy = 0.0f;
@@ -655,7 +674,12 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       const int span = Tuner::kWindow + Tuner::kMaxTau;
       const int hop = (int)(sampleRate * 0.030);
       tuner.samplesSinceAnalysis += (int)sampleCount;
-      if (tuner.attackSamplesRemaining > 0) tuner.samplesSinceAnalysis = 0;
+      // Suppress a pending rise even before its 10 ms envelope window ends.
+      const bool onsetPending = tuner.onsetSamples > 0 &&
+          tuner.onsetEnergy > tuner.onsetSamples *
+              std::max(0.006f * 0.006f, 4.0f * tuner.previousRms * tuner.previousRms);
+      if (onsetPending || (tuner.pluckSamples >= 0 && tuner.pluckSamples < sustainStart))
+        tuner.samplesSinceAnalysis = 0;
       if (tuner.samplesSinceAnalysis >= hop && tuner.filled >= span) {
         const float elapsed = (float)(tuner.samplesSinceAnalysis / sampleRate);
         tuner.samplesSinceAnalysis = 0;
@@ -676,6 +700,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
             tuner.lastNote = -1.0f;
             tuner.histLen = 0;
             tuner.histIdx = 0;
+            tuner.hasMeasurement = false;
+            tuner.pluckSamples = -1;
+            tuner.measurementClosed = true;
           }
         } else {
           // NSDF (McLeod): nsdf[tau] = 2*acf[tau] / m[tau], in [-1, 1].
@@ -749,28 +776,40 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
               tuner.lastNote = -1.0f;
               tuner.histLen = 0;
               tuner.histIdx = 0;
+              tuner.hasMeasurement = false;
             }
           } else {
             tuner.missCount = 0;
-            // Median rejects isolated errors; a 250 ms low-pass calms small
-            // movements without averaging across genuinely different notes.
-            tuner.noteHist[tuner.histIdx] = midi;
-            tuner.histIdx = (tuner.histIdx + 1) % 3;
-            tuner.histLen = std::min(tuner.histLen + 1, 3);
-            if (tuner.histLen >= 3) {
-              const float a = tuner.noteHist[0], b = tuner.noteHist[1], c = tuner.noteHist[2];
-              const float median = std::max(std::min(a, b), std::min(std::max(a, b), c));
-              const float difference = median - tuner.lastNote;
-              if (tuner.lastNote < 0.0f ||
-                  (std::fabs(difference) >= 0.5f &&
-                   std::max({a, b, c}) - std::min({a, b, c}) < 0.1f)) {
-                // Relatch a coherent new string immediately, but smooth
-                // mixed-note windows instead of locking onto their pitch.
-                tuner.lastNote = median;
-              } else if (std::fabs(difference) > 0.005f) { // half-cent deadband, not an in-tune snap
-                // Faster catch-up for coarse tuning, steady near the target.
-                const float seconds = std::fabs(difference) > 0.25f ? 0.100f : 0.250f;
-                tuner.lastNote += (1.0f - std::exp(-elapsed / seconds)) * difference;
+            if (!tuner.measurementClosed && tuner.pluckSamples >= sustainStart &&
+                tuner.pluckSamples < sustainEnd &&
+                tuner.previousRms >= 0.25f * tuner.pluckPeakRms) {
+              // Median rejects isolated errors; a 250 ms low-pass calms small
+              // movements without averaging across genuinely different notes.
+              tuner.noteHist[tuner.histIdx] = midi;
+              tuner.histIdx = (tuner.histIdx + 1) % 3;
+              tuner.histLen = std::min(tuner.histLen + 1, 3);
+              if (tuner.histLen >= 3) {
+                const float a = tuner.noteHist[0], b = tuner.noteHist[1], c = tuner.noteHist[2];
+                const float median = std::max(std::min(a, b), std::min(std::max(a, b), c));
+                const float difference = median - tuner.lastNote;
+                const float spread = std::max({a, b, c}) - std::min({a, b, c});
+                if (!tuner.hasMeasurement) {
+                  // Require three agreeing estimates, then snap to this pluck's
+                  // reference rather than blending it with the previous pluck.
+                  if (spread <= 0.03f) {
+                    tuner.lastNote = median;
+                    tuner.hasMeasurement = true;
+                  }
+                } else if (tuner.lastNote < 0.0f ||
+                    (std::fabs(difference) >= 0.5f && spread < 0.1f)) {
+                  // Relatch a coherent new string immediately, but smooth
+                  // mixed-note windows instead of locking onto their pitch.
+                  tuner.lastNote = median;
+                } else if (std::fabs(difference) > 0.005f) { // half-cent deadband, not an in-tune snap
+                  // Faster catch-up for coarse tuning, steady near the target.
+                  const float seconds = std::fabs(difference) > 0.25f ? 0.100f : 0.250f;
+                  tuner.lastNote += (1.0f - std::exp(-elapsed / seconds)) * difference;
+                }
               }
             }
           }
