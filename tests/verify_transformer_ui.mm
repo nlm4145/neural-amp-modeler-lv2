@@ -31,6 +31,7 @@ static NSEvent* (^installedKeyHandler)(NSEvent*);
 static IMP originalAddMonitor;
 static NSWindow* __weak syntheticKeyWindow;
 static bool syntheticShortcutFocus = false;
+static int slotSaveDialogs = 0, slotDeleteDialogs = 0;
 
 static bool check(bool condition, const char* expression, int line) {
   ++checks;
@@ -43,6 +44,19 @@ static bool check(bool condition, const char* expression, int line) {
 }
 #define CHECK(...) check((__VA_ARGS__), #__VA_ARGS__, __LINE__)
 #define REQUIRE(...) do { if (!CHECK(__VA_ARGS__)) throw std::runtime_error(#__VA_ARGS__); } while (0)
+
+static NSModalResponse slotPresetDialog(id alertObject, SEL) {
+  NSAlert* alert = (NSAlert*)alertObject;
+  if ([alert.messageText isEqualToString:@"Save Output Transformer Preset"]) {
+    ++slotSaveDialogs;
+    REQUIRE([alert.accessoryView isKindOfClass:NSTextField.class]);
+    ((NSTextField*)alert.accessoryView).stringValue = @"Menu Saved Transformer";
+  } else {
+    REQUIRE([alert.messageText isEqualToString:@"Delete Slot Preset"]);
+    ++slotDeleteDialogs;
+  }
+  return NSAlertFirstButtonReturn;
+}
 
 static bool near(double a, double b) {
   return std::isfinite(a) && std::isfinite(b) &&
@@ -538,6 +552,22 @@ static void verify(const char* modulePath) {
   CHECK([state->userSlotPresets[@"transformer"][@"Runtime Slot"] isEqualToDictionary:slotValues]);
   NSPopUpButton* slotPopup = spec[@"popup"];
   REQUIRE(slotPopup);
+  CHECK([spec[@"title"] isEqualToString:@"Output Transformer"]);
+  CHECK(!slotPopup.isHiddenOrHasHiddenAncestor);
+  CHECK(slotPopup.superview == state->transformerSpecLabels[0].superview.superview.superview.superview);
+  CHECK(slotPopup.frame.size.width > 100 && slotPopup.frame.size.height > 0);
+  CHECK(slotPopup.superview != state->deckTransformerPopup.superview);
+  bool presetLabel = false, baseModelLabel = false, rackTitle = false;
+  for (NSView* view in slotPopup.superview.subviews)
+    if ([view isKindOfClass:NSTextField.class])
+      presetLabel |= [((NSTextField*)view).stringValue isEqualToString:@"PRESET"];
+  for (NSView* view in state->deckTransformerPopup.superview.subviews)
+    if ([view isKindOfClass:NSTextField.class])
+      baseModelLabel |= [((NSTextField*)view).stringValue isEqualToString:@"BASE MODEL"];
+  for (NSView* view in views)
+    if ([view isKindOfClass:NSTextField.class])
+      rackTitle |= [((NSTextField*)view).stringValue isEqualToString:@"OUTPUT TRANSFORMER"];
+  CHECK(presetLabel && baseModelLabel && rackTitle);
   state->rebuildSlotPresetMenu(slot);
   for (NSString* name in @[@"Runtime Slot", @"Legacy Slot"]) {
     [slotPopup selectItemWithTitle:name];
@@ -550,6 +580,47 @@ static void verify(const char* modulePath) {
     CHECK(state->transformerProfile == ([name isEqualToString:@"Runtime Slot"]
         ? Transformer::kUSVintage : Transformer::kSmallIron));
     telemetry(state, expected);
+  }
+
+  stage = "visible slot menu save / save as / delete actions";
+  [slotPopup selectItemAtIndex:Transformer::kModern];
+  action(slotPopup);
+  [slotPopup.menu update];
+  CHECK(![slotPopup itemWithTitle:@"Delete Preset"].isEnabled);
+  for (NSString* title in @[@"Save Preset", @"Save Preset As…", @"Delete Preset"]) {
+    NSMenuItem* item = [slotPopup itemWithTitle:title];
+    REQUIRE(item);
+    CHECK(item.target == (id)state->uiController && item.tag == slot);
+  }
+  Method modal = class_getInstanceMethod(NSAlert.class, @selector(runModal));
+  IMP originalModal = method_setImplementation(modal, (IMP)slotPresetDialog);
+  @try {
+    // Factory Save delegates to Save As; explicit Save As uses the same dialog.
+    for (NSString* command in @[@"Save Preset", @"Save Preset As…"]) {
+      [slotPopup.menu performActionForItemAtIndex:[slotPopup indexOfItemWithTitle:command]];
+      CHECK([slotPopup.titleOfSelectedItem isEqualToString:@"Menu Saved Transformer"]);
+      CHECK([spec[@"selectedIsUser"] boolValue]);
+      CHECK([state->userSlotPresets[@"transformer"][@"Menu Saved Transformer"]
+          isEqualToDictionary:state->captureSlotPortValues(slot)]);
+    }
+    CHECK(slotSaveDialogs == 2);
+    echo(60, 1.5f);
+    [slotPopup.menu performActionForItemAtIndex:[slotPopup indexOfItemWithTitle:@"Save Preset"]];
+    CHECK(slotSaveDialogs == 2); // Overwrite without prompting for a new name.
+    CHECK(near([state->userSlotPresets[@"transformer"][@"Menu Saved Transformer"][@"60"] floatValue], 1.5f));
+    [slotPopup.menu update];
+    CHECK([slotPopup itemWithTitle:@"Delete Preset"].isEnabled);
+    [slotPopup.menu performActionForItemAtIndex:[slotPopup indexOfItemWithTitle:@"Delete Preset"]];
+    CHECK(slotDeleteDialogs == 1);
+    CHECK(!state->userSlotPresets[@"transformer"][@"Menu Saved Transformer"]);
+    CHECK(![slotPopup itemWithTitle:@"Menu Saved Transformer"]);
+    CHECK(![slotPopup itemWithTitle:@"Delete Preset"].isEnabled);
+    NSDictionary* persistedSlots = [NSJSONSerialization JSONObjectWithData:
+        [NSData dataWithContentsOfFile:slotFile] options:0 error:nil];
+    CHECK(!persistedSlots[@"transformer"][@"Menu Saved Transformer"]);
+    CHECK(persistedSlots[@"transformer"][@"Runtime Slot"]);
+  } @finally {
+    method_setImplementation(modal, originalModal);
   }
 
   stage = "factory selection / model selector / reset neutral";

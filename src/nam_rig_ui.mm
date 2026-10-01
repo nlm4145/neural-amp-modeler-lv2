@@ -2173,9 +2173,9 @@ static void addLowerStudioDeck(RigUIState* state,
     [[scVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
   }
 
-  // 3. Output Transformer Iron (Profile selector, port 30)
+  // 3. Output Transformer (model and editable-trim presets)
   {
-    RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER IRON", @"MAGNETIC CORE SATURATION", goldColor);
+    RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER", @"CORE SATURATION & VOICING", goldColor);
     [row1 addArrangedSubview:rack];
     transRackRef = rack;
 
@@ -2188,14 +2188,26 @@ static void addLowerStudioDeck(RigUIState* state,
     [[topZone.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[topZone.heightAnchor constraintEqualToConstant:108] setActive:YES];
 
-    NSTextField* coreLbl = addLabel(topZone, @"IRON CORE MODEL", NSZeroRect,
+    NSTextField* presetLbl = addLabel(topZone, @"PRESET", NSZeroRect,
                                     [NSFont systemFontOfSize:9.5 weight:NSFontWeightSemibold],
                                     rigDimText(), NSTextAlignmentLeft);
-    rigApplyTracking(coreLbl, 1.0);
-    coreLbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [[coreLbl.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor constant:2] setActive:YES];
-    [[coreLbl.topAnchor constraintEqualToAnchor:topZone.topAnchor constant:6] setActive:YES];
-    [coreLbl setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    rigApplyTracking(presetLbl, 1.0);
+    presetLbl.translatesAutoresizingMaskIntoConstraints = NO;
+    [[presetLbl.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor constant:2] setActive:YES];
+    [[presetLbl.topAnchor constraintEqualToAnchor:topZone.topAnchor constant:6] setActive:YES];
+    [presetLbl setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+
+    NSMutableArray<NSNumber*>* transformerPorts = [NSMutableArray arrayWithObject:@30];
+    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+      [transformerPorts addObject:@(NAMRig::kTransformerControlFirstPort + i)];
+    NSPopUpButton* presets = addSlotPresetDropdown(topZone, state, @"transformer", @"Output Transformer",
+        transformerPorts, @[@"Captured / Off", @"Modern Iron", @"US Vintage", @"UK Vintage", @"Small Iron",
+                            @"Tight Metal", @"Extended Range", @"Thrash Bite", @"Doom Iron", @"Studio Linear",
+                            @"Tweed Bloom", @"Class-A Chime", @"Bass Iron"], @selector(applyTransformerPreset:));
+    [[presets.leadingAnchor constraintEqualToAnchor:presetLbl.trailingAnchor constant:10] setActive:YES];
+    [[presets.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor] setActive:YES];
+    [[presets.centerYAnchor constraintEqualToAnchor:presetLbl.centerYAnchor] setActive:YES];
+    presets.toolTip = @"Recall a transformer model and all its tweaks. Save Preset, Save Preset As… and Delete Preset are at the bottom of this menu. Only user presets can be deleted.";
 
     NSPopUpButton* deckTrans = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [deckTrans addItemsWithTitles:@[@"Captured / Off", @"Modern Iron",
@@ -2228,10 +2240,6 @@ static void addLowerStudioDeck(RigUIState* state,
     deckTrans.target = state->uiController;
     deckTrans.action = @selector(transformerChanged:);
     deckTrans.translatesAutoresizingMaskIntoConstraints = NO;
-    [topZone addSubview:deckTrans];
-    [[deckTrans.leadingAnchor constraintEqualToAnchor:coreLbl.trailingAnchor constant:10] setActive:YES];
-    [[deckTrans.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor] setActive:YES];
-    [[deckTrans.centerYAnchor constraintEqualToAnchor:coreLbl.centerYAnchor] setActive:YES];
     [[deckTrans.heightAnchor constraintEqualToConstant:24] setActive:YES];
     [deckTrans selectItemAtIndex:0];
     deckTrans.toolTip = deckTrans.selectedItem.toolTip;
@@ -2245,7 +2253,7 @@ static void addLowerStudioDeck(RigUIState* state,
     specGrid.spacing = 6.0;
     specGrid.translatesAutoresizingMaskIntoConstraints = NO;
     [topZone addSubview:specGrid];
-    [[specGrid.topAnchor constraintEqualToAnchor:deckTrans.bottomAnchor constant:8] setActive:YES];
+    [[specGrid.topAnchor constraintEqualToAnchor:presets.bottomAnchor constant:8] setActive:YES];
     [[specGrid.leadingAnchor constraintEqualToAnchor:topZone.leadingAnchor] setActive:YES];
     [[specGrid.trailingAnchor constraintEqualToAnchor:topZone.trailingAnchor] setActive:YES];
     [[specGrid.bottomAnchor constraintEqualToAnchor:topZone.bottomAnchor constant:-2] setActive:YES];
@@ -2314,7 +2322,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Factory iron profiles with editable bandwidth, voicing and core saturation.",
+    NSTextField* desc = addLabel(card, @"Changing the base model resets all transformer tweaks.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2322,23 +2330,24 @@ static void addLowerStudioDeck(RigUIState* state,
     [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
     [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
 
-    NSMutableArray<NSNumber*>* transformerPorts = [NSMutableArray arrayWithObject:@30];
-    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
-      [transformerPorts addObject:@(NAMRig::kTransformerControlFirstPort + i)];
-    NSPopUpButton* presets = addSlotPresetDropdown(card, state, @"transformer", @"Output Transformer Iron",
-        transformerPorts, @[@"Captured / Off", @"Modern Iron", @"US Vintage", @"UK Vintage", @"Small Iron",
-                            @"Tight Metal", @"Extended Range", @"Thrash Bite", @"Doom Iron", @"Studio Linear",
-                            @"Tweed Bloom", @"Class-A Chime", @"Bass Iron"], @selector(applyTransformerPreset:));
-    [[presets.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
-    [[presets.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
-    [[presets.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    NSTextField* baseLbl = addLabel(card, @"BASE MODEL", NSZeroRect,
+                                    [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
+                                    rigDimText(), NSTextAlignmentLeft);
+    baseLbl.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:deckTrans];
+    [[baseLbl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[baseLbl.centerYAnchor constraintEqualToAnchor:deckTrans.centerYAnchor] setActive:YES];
+    [baseLbl setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [[deckTrans.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[deckTrans.leadingAnchor constraintEqualToAnchor:baseLbl.trailingAnchor constant:8] setActive:YES];
+    [[deckTrans.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
 
     NAMTransformerVisualizer* transVis = [[NAMTransformerVisualizer alloc] initWithFrame:NSZeroRect];
     transVis.translatesAutoresizingMaskIntoConstraints = NO;
     transVis.profile = 0;
     state->transformerVisualizer = transVis;
     [card addSubview:transVis];
-    [[transVis.topAnchor constraintEqualToAnchor:presets.bottomAnchor constant:8] setActive:YES];
+    [[transVis.topAnchor constraintEqualToAnchor:deckTrans.bottomAnchor constant:8] setActive:YES];
     [[transVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
     [[transVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
     [[transVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];

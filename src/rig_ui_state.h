@@ -923,6 +923,7 @@ struct RigUIState {
     NSString* selectedTitle = spec[@"selectedTitle"] ?: (factoryTitles.firstObject ?: @"");
     BOOL selectedIsUser = [spec[@"selectedIsUser"] boolValue];
 
+    popup.menu.autoenablesItems = NO;
     [popup removeAllItems];
     NSInteger matchIndex = -1;
     NSInteger itemIdx = 0;

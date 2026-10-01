@@ -212,7 +212,9 @@ assert apply.index("updateControl(30,") < apply.index("sendControl(port, value)"
 
 # Slot presets contain the model selector plus all 11 trim ports, not just port 30.
 assert re.search(r"transformerPorts = \[NSMutableArray arrayWithObject:@30\];\s*for \(size_t i = 0; i < NAMRig::kTransformerControlCount; \+\+i\)\s*\[transformerPorts addObject:@\(NAMRig::kTransformerControlFirstPort \+ i\)\];", ui)
-assert re.search(r'addSlotPresetDropdown\(card, state, @"transformer", @"Output Transformer Iron",\s*transformerPorts,', ui)
+assert re.search(r'addSlotPresetDropdown\(topZone, state, @"transformer", @"Output Transformer",\s*transformerPorts,', ui)
+assert '@"OUTPUT TRANSFORMER", @"CORE SATURATION & VOICING"' in ui
+assert 'addLabel(topZone, @"PRESET"' in ui and 'addLabel(card, @"BASE MODEL"' in ui
 slot_value = body(state, "float currentPortValueForSlot(", "  ")
 assert "return (float)transformerProfile;" in slot_value
 assert "port >= NAMRig::kTransformerControlFirstPort" in slot_value
