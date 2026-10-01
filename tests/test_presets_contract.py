@@ -178,7 +178,7 @@ assert '@"CAB A LVL"' in ui_mm, "knobNames[8] must be labeled CAB A LVL"
 assert "const size_t groupCounts[3] = {4, 6, 1};" in ui_mm, \
     "Cab card must display only 1 knob (OUTPUT) directly underneath, with advanced cab knobs in Dual-Cabinet Blend Console"
 plugin_cpp = (ROOT / "src" / "nam_rig_plugin.cpp").read_text()
-assert "if (haveA) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
+assert "if (haveA && consoleOn) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
     "cab_level (CAB A LVL) must scale Cab A independently before blending with Cab B"
 theme_mm = (ROOT / "src" / "rig_theme.mm").read_text()
 assert 'case 22: return [NSString stringWithFormat:@"%+.1f dB", value];' in theme_mm, \

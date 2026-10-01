@@ -84,6 +84,8 @@ class SpeakerDynamics {
     sampleRate_ = 0.0;
   }
 
+  void bypassDamping() noexcept { smoothedDamping_ = 0.0; }
+
   void process(float* samples, size_t count, double sampleRate, int profile,
                float driveAmount, float compressionAmount, float thumpAmount,
                float resonanceAmount, float dampingAmount) noexcept {

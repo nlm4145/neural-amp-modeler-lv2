@@ -2558,7 +2558,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
     addSlotPresetDropdown(chips, state, @"cab_console", @"Dual-Cabinet Blend Console",
-                          @[@25, @48, @49, @26, @27], cabPresetTitles, @selector(applyCabConsolePreset:));
+                          @[@25, @48, @49, @26, @27, @59], cabPresetTitles, @selector(applyCabConsolePreset:));
     RigButton* invertB = rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59);
     invertB.buttonType = NSButtonTypeToggle;
     invertB.check = YES;

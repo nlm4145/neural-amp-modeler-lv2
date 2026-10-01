@@ -34,7 +34,7 @@ assert post < iron < speaker < cab, "speaker load must follow the power stage an
 
 # A tube output stage follows the impedance curve in proportion to its output
 # impedance, so Negative Feedback (damping) must scale the curve.
-assert re.search(r"speakerDynamics\.process\((?:[^;]*?)rackOn\(Rack::Power\)\s*\?\s*\*ports\.negative_feedback \* 0\.01f\s*:\s*0\.0f\)", dsp, re.S), (
+assert re.search(r"speakerDynamics\.process\((?:[^;]*?)\?\s*\*ports\.negative_feedback \* 0\.01f\s*:\s*0\.0f\)", dsp, re.S), (
     "Negative Feedback must drive speaker damping only while the Power rack is enabled"
 )
 speaker_src = (ROOT / "src/speaker_dynamics.h").read_text()

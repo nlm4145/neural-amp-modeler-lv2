@@ -1,13 +1,14 @@
 // Runtime test of the built UI, not a source-contract or a recompiled UI copy.
 // From the repository root (macOS, with a WindowServer session):
 // clang++ -std=c++20 -fobjc-arc -Isrc -Ideps/lv2/include \
-//   tests/verify_transformer_ui.mm src/rig_knobs.cpp -framework Cocoa \
+//   tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm -framework Cocoa \
 //   -framework QuartzCore -framework CoreImage \
 //   -o "$TMPDIR/verify_transformer_ui"
 // "$TMPDIR/verify_transformer_ui" \
 //   build-test/src/neural_amp_modeler_rig_ui.so
 #include "rig_ui_state.h"
 #include <dlfcn.h>
+#include <unistd.h>
 #include <objc/runtime.h>
 #include <cstdio>
 #include <stdexcept>
@@ -210,6 +211,248 @@ static void snapshot(RigUIState* state, Class presetClass,
     if (modified) CHECK(near([state->abModifiedPreset controlForPort:port], trims[i]));
   }
   if (modified) CHECK(state->presetManager.isModified && state->abModifiedPreset);
+}
+
+static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  auto echo = [&](uint32_t port, float value) {
+    runtime.descriptor->port_event(state, port, sizeof(value), 0, &value);
+  };
+  auto values = [&](const std::array<float, kRackCount>& expected, bool writes) {
+    RigPreset* captured = [presetClass captureFromState:state name:@"Rack Capture"];
+    for (size_t i = 0; i < kRackCount; ++i) {
+      testedPort = kRackControlFirstPort + i;
+      CHECK(state->rackControls[i] == expected[i]);
+      REQUIRE(state->rackButtons[i]);
+      CHECK(state->rackButtons[i].state == (expected[i] ? NSControlStateValueOn : NSControlStateValueOff));
+      CHECK([state->rackButtons[i].title isEqualToString:(expected[i] ? @"ON" : @"OFF")]);
+      CHECK([captured allControls].count((uint32_t)testedPort) == 1);
+      CHECK([captured controlForPort:(uint32_t)testedPort] == expected[i]);
+      if (writes) {
+        const auto& sent = host.writes[(uint32_t)testedPort];
+        CHECK(sent.size() == 1 && sent.back() == expected[i]);
+      }
+    }
+  };
+
+  stage = "rack switches / real clicks / unchanged pane settings";
+  std::array<float, kRackCount> expected = kRackControlDefaults;
+  values(expected, false);
+  constexpr NSInteger tabs[] = {0, 0, 0, 1, 1, 1, 2, 2};
+  for (size_t i = 0; i < kRackCount; ++i) {
+    state->selectDeckTab(tabs[i]);
+    drain();
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    RigButton* button = state->rackButtons[i];
+    REQUIRE(button);
+    CHECK(button.tag == (NSInteger)(kRackControlFirstPort + i));
+    CHECK(button.target == (id)state->uiController);
+    CHECK(button.action == NSSelectorFromString(@"controlChanged:"));
+    CHECK(button.isEnabled && !button.isHiddenOrHasHiddenAncestor);
+    CHECK(button.frame.size.width > 0 && button.frame.size.height > 0);
+    RigPreset* before = [presetClass captureFromState:state name:@"Before Toggle"];
+    for (float enabled : {0.0f, 1.0f}) {
+      host.writes.clear();
+      [button performClick:nil];
+      expected[i] = enabled;
+      CHECK(host.writes.size() == 1);
+      CHECK(host.writes[kRackControlFirstPort + i].size() == 1);
+      REQUIRE(!host.writes[kRackControlFirstPort + i].empty());
+      CHECK(host.writes[kRackControlFirstPort + i].back() == enabled);
+      values(expected, false); // Immediate capture must not need a run-loop drain.
+      REQUIRE(state->abModifiedPreset);
+      CHECK(state->presetManager.isModified);
+      CHECK([state->abModifiedPreset controlForPort:kRackControlFirstPort + i] == enabled);
+      RigPreset* after = [presetClass captureFromState:state name:@"After Toggle"];
+      for (const auto& entry : [before allControls])
+        if (entry.first < kRackControlFirstPort)
+          CHECK(near([after controlForPort:entry.first], entry.second));
+      for (NSSlider* knob : state->deckKnobs)
+        if (knob) CHECK(knob.isEnabled);
+    }
+  }
+
+  stage = "rack host echoes / no feedback writes";
+  host.writes.clear();
+  std::thread automation([&] {
+    for (size_t i = 0; i < kRackCount; ++i) echo(kRackControlFirstPort + i, i % 2 ? 1 : 0);
+  });
+  automation.join();
+  drain();
+  for (size_t i = 0; i < kRackCount; ++i) expected[i] = i % 2 ? 1 : 0;
+  values(expected, false);
+  CHECK(host.writes.empty());
+  const float rejected = 0;
+  runtime.descriptor->port_event(state, kRackControlFirstPort, sizeof(rejected) - 1, 0, &rejected);
+  runtime.descriptor->port_event(state, kRackControlFirstPort, sizeof(rejected), 1, &rejected);
+  runtime.descriptor->port_event(state, kRackControlFirstPort, sizeof(rejected), 0, nullptr);
+  runtime.descriptor->port_event(state, kRackControlFirstPort + kRackCount, sizeof(rejected), 0, &rejected);
+  values(expected, false);
+  CHECK(host.writes.empty());
+
+  stage = "rack rig save / load / named and numeric persistence";
+  RigPreset* saved = [presetClass captureFromState:state name:@"Rack Runtime"];
+  NSString* file = [testRoot stringByAppendingPathComponent:@"rack-roundtrip.json"];
+  REQUIRE([saved saveToFile:file error:nil]);
+  NSDictionary* json = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:file]
+      options:NSJSONReadingMutableContainers error:nil];
+  REQUIRE(json);
+  for (size_t i = 0; i < kRackCount; ++i) {
+    NSString* number = [NSString stringWithFormat:@"%u", kRackControlFirstPort + (uint32_t)i];
+    NSString* symbol = [NSString stringWithUTF8String:kRackControlSymbols[i]];
+    REQUIRE(json[@"ports"][number] && json[@"params"][symbol]);
+    CHECK([json[@"ports"][number] floatValue] == expected[i]);
+    CHECK([json[@"params"][symbol] floatValue] == expected[i]);
+  }
+  RigPreset* loaded = [presetClass loadFromFile:file];
+  REQUIRE(loaded);
+  [((RigPreset*)[presetClass defaultPreset]) applyToState:state];
+  host.writes.clear();
+  [loaded applyToState:state];
+  values(expected, true);
+
+  stage = "rack reset / A-B persistence";
+  host.writes.clear();
+  [(id<TransformerTestController>)state->uiController resetAllKnobs:nil];
+  values(kRackControlDefaults, true);
+  state->abModifiedPreset = loaded;
+  state->abNameA = @"Default Rig";
+  state->abNameB = RigUIState::abModifiedToken();
+  state->abShowingA = true;
+  state->abCycling = true;
+  host.writes.clear();
+  [(id<TransformerTestController>)state->uiController abTimerFired:nil];
+  CHECK(!state->abShowingA && !state->abApplyingCycle);
+  state->abCycling = false;
+  values(expected, true);
+
+  stage = "rack named-symbol load overrides numeric ports";
+  NSMutableDictionary* symbolic = [json mutableCopy];
+  NSMutableDictionary* numericPorts = [symbolic[@"ports"] mutableCopy];
+  for (size_t i = 0; i < kRackCount; ++i)
+    numericPorts[[NSString stringWithFormat:@"%u", kRackControlFirstPort + (uint32_t)i]] = @(1 - expected[i]);
+  symbolic[@"ports"] = numericPorts;
+  NSString* symbolicFile = [testRoot stringByAppendingPathComponent:@"rack-symbols.json"];
+  REQUIRE([[NSJSONSerialization dataWithJSONObject:symbolic options:0 error:nil]
+      writeToFile:symbolicFile atomically:YES]);
+  RigPreset* symbolicPreset = [presetClass loadFromFile:symbolicFile];
+  REQUIRE(symbolicPreset);
+  host.writes.clear();
+  [symbolicPreset applyToState:state];
+  values(expected, true);
+
+  stage = "rack legacy / sparse / factory defaults enabled";
+  NSMutableDictionary* legacy = [json mutableCopy];
+  for (NSString* key in @[@"ports", @"params"]) {
+    NSMutableDictionary* entries = [legacy[key] mutableCopy];
+    for (size_t i = 0; i < kRackCount; ++i) {
+      NSString* name = [key isEqualToString:@"ports"]
+          ? [NSString stringWithFormat:@"%u", kRackControlFirstPort + (uint32_t)i]
+          : [NSString stringWithUTF8String:kRackControlSymbols[i]];
+      [entries removeObjectForKey:name];
+    }
+    legacy[key] = entries;
+  }
+  NSString* legacyFile = [testRoot stringByAppendingPathComponent:@"rack-legacy.json"];
+  REQUIRE([[NSJSONSerialization dataWithJSONObject:legacy options:0 error:nil]
+      writeToFile:legacyFile atomically:YES]);
+  RigPreset* legacyPreset = [presetClass loadFromFile:legacyFile];
+  REQUIRE(legacyPreset);
+  RigPreset* sparse = [[presetClass alloc] init];
+  RigPreset* factory = [presetClass defaultPreset];
+  for (RigPreset* preset in @[legacyPreset, sparse, factory]) {
+    [loaded applyToState:state];
+    host.writes.clear();
+    [preset applyToState:state];
+    values(kRackControlDefaults, true);
+  }
+
+  stage = "rack slot capture / disk persistence / apply";
+  for (size_t i = 0; i < kRackCount; ++i) {
+    NSString* key = [NSString stringWithUTF8String:kRackSlotKeys[i]];
+    NSInteger slot = -1;
+    for (NSUInteger n = 0; n < state->deckSlotSpecs.count; ++n)
+      if ([state->deckSlotSpecs[n][@"key"] isEqualToString:key]) slot = (NSInteger)n;
+    REQUIRE(slot >= 0);
+    const uint32_t rackPort = kRackControlFirstPort + (uint32_t)i;
+    NSString* number = [NSString stringWithFormat:@"%u", rackPort];
+    echo(rackPort, 0);
+    // Non-default values expose deferred main-thread updates: capture and
+    // recall below intentionally never pump the run loop.
+    std::unordered_map<uint32_t, float> edited;
+    for (NSNumber* entry in state->deckSlotSpecs[(NSUInteger)slot][@"ports"]) {
+      const uint32_t controlPort = entry.unsignedIntValue;
+      if (controlPort == 42) edited[controlPort] = SpeakerDynamics::kModern412;
+      if (controlPort == 59) edited[controlPort] = 1;
+      for (size_t k = 0; k < kRigKnobCount; ++k) {
+        if (kRigKnobPorts[k] != controlPort) continue;
+        NSSlider* knob = state->deckKnobs[k] ?: state->knobs[k];
+        REQUIRE(knob);
+        edited[controlPort] = (float)(knob.minValue + .65 * (knob.maxValue - knob.minValue));
+      }
+    }
+    for (const auto& entry : edited) echo(entry.first, entry.second);
+    NSDictionary* captured = state->captureSlotPortValues(slot);
+    REQUIRE(captured[number]);
+    CHECK([captured[number] floatValue] == 0);
+    RigPreset* immediateRig = [presetClass captureFromState:state name:@"Immediate Slot Edits"];
+    for (const auto& entry : edited) {
+      NSString* key = [NSString stringWithFormat:@"%u", entry.first];
+      REQUIRE(captured[key]);
+      CHECK(near([captured[key] floatValue], entry.second));
+      CHECK(near([immediateRig controlForPort:entry.first], entry.second));
+    }
+    if (i == (size_t)Rack::CabConsole) {
+      REQUIRE(captured[@"59"]);
+      CHECK([captured[@"59"] floatValue] == 1);
+    }
+    state->userSlotPresets[key] = [@{@"Rack Runtime": captured} mutableCopy];
+    state->saveUserSlotPresetsToDisk();
+    state->userSlotPresets = nil;
+    state->ensureSlotPresetStorage();
+    CHECK([state->userSlotPresets[key][@"Rack Runtime"] isEqualToDictionary:captured]);
+    echo(rackPort, 1);
+    for (const auto& entry : edited) echo(entry.first, 0);
+    state->rebuildSlotPresetMenu(slot);
+    NSPopUpButton* popup = state->deckSlotSpecs[(NSUInteger)slot][@"popup"];
+    REQUIRE(popup);
+    [popup selectItemWithTitle:@"Rack Runtime"];
+    REQUIRE([popup.titleOfSelectedItem isEqualToString:@"Rack Runtime"]);
+    host.writes.clear();
+    action(popup);
+    CHECK(state->rackControls[i] == 0 && state->rackButtons[i].state == NSControlStateValueOff);
+    CHECK(host.writes[rackPort].size() == 1 && host.writes[rackPort].back() == 0);
+    REQUIRE(state->abModifiedPreset);
+    CHECK([state->abModifiedPreset controlForPort:rackPort] == 0);
+    NSDictionary* immediateSlot = state->captureSlotPortValues(slot);
+    CHECK([immediateSlot isEqualToDictionary:captured]);
+    RigPreset* recalled = [presetClass captureFromState:state name:@"Immediate Slot Recall"];
+    for (const auto& entry : edited) {
+      CHECK(near([recalled controlForPort:entry.first], entry.second));
+      CHECK(near([state->abModifiedPreset controlForPort:entry.first], entry.second));
+      const auto& sent = host.writes[entry.first];
+      CHECK(sent.size() == 1 && near(sent.back(), entry.second));
+    }
+
+    NSMutableDictionary* legacyValues = [captured mutableCopy];
+    [legacyValues removeObjectForKey:number];
+    state->userSlotPresets[key][@"Legacy Rack"] = legacyValues;
+    state->rebuildSlotPresetMenu(slot);
+    [popup selectItemWithTitle:@"Legacy Rack"];
+    REQUIRE([popup.titleOfSelectedItem isEqualToString:@"Legacy Rack"]);
+    host.writes.clear();
+    action(popup);
+    CHECK(state->rackControls[i] == 1 && state->rackButtons[i].state == NSControlStateValueOn);
+    CHECK(host.writes[rackPort].size() == 1 && host.writes[rackPort].back() == 1);
+    REQUIRE(state->abModifiedPreset);
+    CHECK([state->abModifiedPreset controlForPort:rackPort] == 1);
+  }
+  [factory applyToState:state];
+  values(kRackControlDefaults, false);
+  state->selectDeckTab(1);
+  drain();
+  testedPort = -1;
 }
 
 static void verify(const char* modulePath) {
@@ -537,7 +780,11 @@ static void verify(const char* modulePath) {
     if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"transformer"]) slot = (NSInteger)i;
   REQUIRE(slot >= 0);
   NSDictionary* slotValues = state->captureSlotPortValues(slot);
-  CHECK(slotValues.count == 12); // Model selector plus all eleven editable trims.
+  CHECK(slotValues.count == 13); // Model selector, eleven trims and rack enable.
+  NSString* enabledPort = [NSString stringWithFormat:@"%u",
+      kRackControlFirstPort + (uint32_t)Rack::Transformer];
+  REQUIRE(slotValues[enabledPort]);
+  CHECK([slotValues[enabledPort] floatValue] == 1);
   CHECK(near([slotValues[@"30"] floatValue], state->transformerProfile));
   for (size_t i = 0; i < saved.size(); ++i)
     CHECK(near([slotValues[[NSString stringWithFormat:@"%u", kTransformerControlFirstPort + (uint32_t)i]] floatValue], saved[i]));
@@ -833,6 +1080,8 @@ static void verify(const char* modulePath) {
   snapshot(state, presetClass, expected, false);
   CHECK(state->transformerProfile == Transformer::kCaptured);
   telemetry(state, expected);
+  [state->transformerPopover close];
+  verifyRackSwitches(runtime, host, presetClass);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
 }
@@ -865,7 +1114,7 @@ int main(int argc, char** argv) {
       ++failures;
       std::fprintf(stderr, "Temporary storage cleanup failed: %s\n", error.description.UTF8String);
     }
-    std::printf("%s: transformer UI runtime, %d checks, %d failures\n",
+    std::printf("%s: transformer / rack UI runtime, %d checks, %d failures\n",
                  failures ? "FAIL" : "PASS", checks, failures);
     if (syntheticShortcutFocus)
       std::puts("LIMITATION: inactive CLI app; save shortcuts used the module's installed key-monitor handler with synthetic key-window ownership.");

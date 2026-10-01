@@ -63,6 +63,7 @@ class AlignDelay {
     smoothed_ = 0.0;
     primed_ = false;
   }
+  void primeNextDelay() noexcept { primed_ = false; }
   void process(float* left, float* right, size_t count, float delayMs) {
     const double target = std::max(0.0, std::min(maxSamples_,
         static_cast<double>(delayMs) * 0.001 * rate_));
@@ -203,11 +204,30 @@ class PlateReverb {
     smoothedSize_ = -1.0f;
     cleared_ = true;
   }
+  void resetRoom() {
+    early_.clear();
+    earlyLpL_ = earlyLpR_ = 0.0f;
+    smoothedRoom_ = 0.0f;
+  }
+  void resetPlate() {
+    for (size_t b = 0; b < 2; ++b) {
+      tankAp1_[b].clear();
+      tankDelay1_[b].clear();
+      tankAp2_[b].clear();
+      tankDelay2_[b].clear();
+      tankOut_[b] = damp_[b] = 0.0f;
+    }
+    smoothedMix_ = 0.0f;
+  }
   void process(float* left, float* right, size_t count, float roomPercent,
-               float mixPercent, float decayPercent, float sizePercent,
-               float dampingPercent, float predelayMs) {
-    const float roomTarget = clamp01(roomPercent * 0.01f);
-    const float mixTarget = clamp01(mixPercent * 0.01f);
+                float mixPercent, float decayPercent, float sizePercent,
+                float dampingPercent, float predelayMs,
+                bool roomEnabled = true, bool plateEnabled = true) {
+    const float roomTarget = roomEnabled ? clamp01(roomPercent * 0.01f) : 0.0f;
+    const float mixTarget = plateEnabled ? clamp01(mixPercent * 0.01f) : 0.0f;
+    // Independent rack bypasses must also suppress already-smoothed wet tails.
+    if (!roomEnabled) smoothedRoom_ = 0.0f;
+    if (!plateEnabled) smoothedMix_ = 0.0f;
     if (roomTarget <= 0.0f && mixTarget <= 0.0f &&
         smoothedRoom_ <= 0.0f && smoothedMix_ <= 0.0f) {
       if (!cleared_) reset();

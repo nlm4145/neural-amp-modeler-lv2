@@ -904,6 +904,16 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   }
   const auto& enabled = appliedEnabled;
 
+  for (size_t i = 0; i < kRackCount; ++i) {
+    const float value = portValue(ports.rack_enabled[i], 1.0f);
+    requestedRacks[i] = !std::isfinite(value) || value >= 0.5f;
+  }
+  if (!racksLatched) {
+    appliedRacks = requestedRacks;
+    racksLatched = true;
+  }
+  const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
+
   // Output-transformer profiles are part of the amp block.  Changes use the
   // same click-safe zero crossing as model and bypass changes; the existing
   // capture remains bit-identical by default (profile 0).
@@ -924,7 +934,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     transformerLatched = true;
   } else if (desiredTransformer != transformerRequested) {
     transformerRequested = desiredTransformer;
-    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)]) {
+    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)] &&
+        rackOn(Rack::Transformer)) {
       startTransitionFadeOut();
     } else {
       // With no active amp there is no transformer signal/state to protect,
@@ -945,12 +956,19 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     speakerLatched = true;
   } else if (desiredSpeaker != speakerRequested) {
     speakerRequested = desiredSpeaker;
-    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)]) {
+    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)] &&
+        rackOn(Rack::Speaker)) {
       startTransitionFadeOut();
     } else {
       speakerApplied = speakerRequested;
       speakerDynamics.reset();
     }
+  }
+
+  // Do not change wet-tail routing halfway through an existing model fade.
+  if (requestedRacks != appliedRacks && transitionPhase == TransitionPhase::Steady) {
+    rackTransitionActive = true;
+    startTransitionFadeOut();
   }
 
   // ---- Oversample mode change detection (per stage) ----
@@ -1008,21 +1026,25 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         smoothedAmpDrive += (target - smoothedAmpDrive) * coeff;
         samples[i] *= smoothedAmpDrive;
       }
-      ampAdvanced.processPreAmp(samples, count, domainRate,
-                                *ports.bright, *ports.input_eq);
+      if (rackOn(Rack::Sculpt))
+        ampAdvanced.processPreAmp(samples, count, domainRate,
+                                  *ports.bright, *ports.input_eq);
     }
     runModel(stage, model, samples, count, domainRate);
     if (stage == stageIndex(Stage::Amp)) {
-      ampAdvanced.processPostAmp(samples, count, domainRate,
+      if (rackOn(Rack::Power))
+        ampAdvanced.processPostAmp(samples, count, domainRate,
                                  *ports.presence, *ports.depth, *ports.sag,
                                  *ports.bias, *ports.negative_feedback,
                                  *ports.master);
-      outputTransformer.process(samples, count, domainRate, transformerApplied,
+      if (rackOn(Rack::Transformer))
+        outputTransformer.process(samples, count, domainRate, transformerApplied,
                                 transformerAdjustments);
-      speakerDynamics.process(samples, count, domainRate, speakerApplied,
+      if (rackOn(Rack::Speaker))
+        speakerDynamics.process(samples, count, domainRate, speakerApplied,
                               *ports.speaker_drive, *ports.speaker_compression,
                               *ports.speaker_thump, *ports.speaker_resonance,
-                              *ports.negative_feedback * 0.01f);
+                                rackOn(Rack::Power) ? *ports.negative_feedback * 0.01f : 0.0f);
     }
   };
 
@@ -1167,6 +1189,10 @@ uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
 void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
                               bool modelProcessed, const bool* desiredEnabled) noexcept {
   const auto& enabled = appliedEnabled;
+  const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
+  const bool consoleOn = rackOn(Rack::CabConsole);
+  const bool spatialOn = rackOn(Rack::Spatial);
+  const bool reverbOn = rackOn(Rack::Reverb);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
   const int norm = std::max(0, std::min(3,
       static_cast<int>(*ports.ir_normalization + 0.5f)));
@@ -1180,8 +1206,8 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const float desiredOutput = dbToLinear(*ports.output_level);
   const float rawCabDb = *ports.cab_level;
   const float targetCab = rawCabDb <= -23.95f ? 0.0f : dbToLinear(rawCabDb);
-  const float alignmentMs = std::max(-10.0f, std::min(10.0f,
-      portValue(ports.cab2_delay, 0.0f)));
+  const float alignmentMs = consoleOn ? std::max(-10.0f, std::min(10.0f,
+      portValue(ports.cab2_delay, 0.0f))) : 0.0f;
   const float polarityTarget = portValue(ports.cab2_polarity, 0.0f) >= 0.5f
       ? -1.0f : 1.0f;
   const uint32_t fadeSamples = std::max<uint32_t>(1,
@@ -1240,7 +1266,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       haveA = cabProcessed;
     }
     if (!stereoA) std::memcpy(R, L, n * sizeof(float));
-    if (haveA) {
+    if (haveA && consoleOn) {
       for (uint32_t i = 0; i < n; ++i) {
         smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;
         L[i] *= smoothedCabLevel;
@@ -1284,7 +1310,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       cab2Align.process(BL, BR, n,
                         std::max(alignmentMs, 0.0f) + domainDelayMs);
       cab2AlignActive = true;
-      for (uint32_t i = 0; i < n; ++i) {
+      if (consoleOn) for (uint32_t i = 0; i < n; ++i) {
         smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;
         // Snap above float-rounding stalls so equal captures can fully cancel
         // and returning to normal restores an exact +1 gain.
@@ -1299,7 +1325,19 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
 
     // Width: side gain of each stereo cabinet pair, then the spread between
     // cabinet A (left) and cabinet B (right). Zero keeps exact dual mono.
-    if (haveA || haveB || smoothedWidth != 0.0f || widthTarget != 0.0f) {
+    if (!spatialOn) {
+      // Cabinet routing remains active, without mono collapse or width panning.
+      if (haveA && haveB) {
+        const float gain = std::sqrt(0.5f);
+        for (uint32_t i = 0; i < n; ++i) {
+          L[i] = (L[i] + cabBL[i]) * gain;
+          R[i] = (R[i] + cabBR[i]) * gain;
+        }
+      } else if (haveB) {
+        std::memcpy(L, cabBL.data(), n * sizeof(float));
+        std::memcpy(R, cabBR.data(), n * sizeof(float));
+      }
+    } else if (haveA || haveB || smoothedWidth != 0.0f || widthTarget != 0.0f) {
       const float* BL = cabBL.data();
       const float* BR = cabBR.data();
       for (uint32_t i = 0; i < n; ++i) {
@@ -1338,7 +1376,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
     }
 
-    if (cabProcessed) {
+    if (cabProcessed && consoleOn) {
       cabProcessedAny = true;
       const float lowCutTarget = std::max(0.0f, *ports.cab_low_cut);
       const float highCutTarget = std::min(*ports.cab_high_cut,
@@ -1384,6 +1422,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       cabHighCutEq.reset();
       cabLowCutEqR.reset();
       cabHighCutEqR.reset();
+      appliedLowCut = appliedHighCut = -1.0f;
     }
 
     if (modelProcessed) {
@@ -1440,6 +1479,22 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     }
     smoothedOutputLevel = gain;
 
+    const auto processEffects = [&] {
+      if (rackOn(Rack::Delay))
+        delayFx.process(L, R, n, portValue(ports.delay_time, 400.0f),
+                        portValue(ports.delay_feedback, 35.0f),
+                        portValue(ports.delay_damping, 40.0f),
+                        portValue(ports.delay_mix, 0.0f));
+      reverbFx.process(L, R, n, *ports.room, portValue(ports.reverb_mix, 0.0f),
+                       portValue(ports.reverb_decay, 50.0f),
+                       portValue(ports.reverb_size, 50.0f),
+                       portValue(ports.reverb_damping, 50.0f),
+                       portValue(ports.reverb_predelay, 10.0f),
+                       spatialOn, reverbOn);
+    };
+    // Rack switches fade the wet output too; model switches retain FX tails.
+    if (rackTransitionActive) processEffects();
+
     // Click-safe model/domain transition: a 5 ms equal-power fade on each
     // side. The pointer swap itself happens once, after the whole call.
     if (commitRequested) {
@@ -1474,15 +1529,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
     }
 
-    delayFx.process(L, R, n, portValue(ports.delay_time, 400.0f),
-                    portValue(ports.delay_feedback, 35.0f),
-                    portValue(ports.delay_damping, 40.0f),
-                    portValue(ports.delay_mix, 0.0f));
-    reverbFx.process(L, R, n, *ports.room, portValue(ports.reverb_mix, 0.0f),
-                     portValue(ports.reverb_decay, 50.0f),
-                     portValue(ports.reverb_size, 50.0f),
-                     portValue(ports.reverb_damping, 50.0f),
-                     portValue(ports.reverb_predelay, 10.0f));
+    if (!rackTransitionActive) processEffects();
 
     std::memcpy(ports.audio_out + off, L, n * sizeof(float));
     std::memcpy(ports.audio_out_r + off, R, n * sizeof(float));
@@ -1521,6 +1568,38 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     commitPendingSwitches();
     for (size_t st = 0; st < kStageCount; ++st)
       appliedEnabled[st] = desiredEnabled[st];
+    if (rackTransitionActive && appliedRacks != requestedRacks) {
+      const auto changed = [&](Rack rack) {
+        const size_t i = static_cast<size_t>(rack);
+        return appliedRacks[i] != requestedRacks[i];
+      };
+      if (changed(Rack::Sculpt)) ampAdvanced.resetPreAmp();
+      if (changed(Rack::Power)) {
+        ampAdvanced.resetPostAmp();
+        if (!requestedRacks[static_cast<size_t>(Rack::Power)]) speakerDynamics.bypassDamping();
+      }
+      if (changed(Rack::Transformer)) outputTransformer.reset();
+      if (changed(Rack::Speaker)) speakerDynamics.reset();
+      if (changed(Rack::Delay)) delayFx.reset();
+      if (changed(Rack::Reverb)) reverbFx.resetPlate();
+      if (changed(Rack::Spatial)) reverbFx.resetRoom();
+      if (changed(Rack::Spatial)) smoothedWidth = widthTarget;
+      if (changed(Rack::CabConsole)) {
+        // Alignment lines keep receiving audio while bypassed. Switch the
+        // read delay at silence without discarding the already-filled history.
+        cabAlign.primeNextDelay();
+        cab2Align.primeNextDelay();
+        smoothedCabLevel = targetCab;
+        smoothedCab2Level = cab2LevelTarget;
+        smoothedCab2Polarity = polarityTarget;
+        cabLowCutEq.reset(); cabLowCutEqR.reset();
+        cabHighCutEq.reset(); cabHighCutEqR.reset();
+        smoothedLowCut = std::max(0.0f, *ports.cab_low_cut);
+        smoothedHighCut = std::min(*ports.cab_high_cut, static_cast<float>(sampleRate * 0.45));
+        appliedLowCut = appliedHighCut = -1.0f;
+      }
+      appliedRacks = requestedRacks;
+    }
     if (transformerApplied != transformerRequested) {
       transformerApplied = transformerRequested;
       outputTransformer.reset();
@@ -1532,6 +1611,8 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     transitionPhase = TransitionPhase::FadeIn;
     transitionPosition = 0;
     transitionGain = 0.0f;
+  } else if (transitionPhase == TransitionPhase::Steady) {
+    rackTransitionActive = false;
   }
 }
 

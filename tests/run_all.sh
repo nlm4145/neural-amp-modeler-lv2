@@ -154,11 +154,23 @@ else
   echo "  (skipped: plugin unavailable or harness build failed)"
 fi
 
+# Against RIG_SO, this harness supplies its own identity amp and WAV fixtures.
+echo "== tests/verify_rack_bypass.cpp (deck switches / stereo cabinets / legacy defaults) =="
+if [ -f "$RIG_SO" ] && \
+    clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
+      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+      tests/verify_rack_bypass.cpp -o /tmp/verify_rack_bypass; then
+  /tmp/verify_rack_bypass "$RIG_SO" || status=1
+else
+  echo "  (failed: plugin unavailable or rack harness build failed)"
+  status=1
+fi
+
 # Opt in to AppKit runtime checks with a freshly built UI and WindowServer.
 if [ -n "${RIG_UI_SO:-}" ]; then
   echo "== tests/verify_transformer_ui.mm (editable controls and presets) =="
-  if [ -f "$RIG_UI_SO" ] && clang++ -std=c++20 $CXX_EXTRA -fobjc-arc \
-      -Isrc -Ideps/lv2/include tests/verify_transformer_ui.mm src/rig_knobs.cpp \
+  if [ -f "$RIG_UI_SO" ] && clang++ -std=c++20 $CXX_EXTRA -D_DARWIN_C_SOURCE -fobjc-arc \
+      -Isrc -Ideps/lv2/include tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm \
       -framework Cocoa -framework QuartzCore -framework CoreImage \
       -o /tmp/verify_transformer_ui; then
     /tmp/verify_transformer_ui "$RIG_UI_SO" || status=1

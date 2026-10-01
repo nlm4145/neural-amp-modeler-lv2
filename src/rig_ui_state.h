@@ -1855,7 +1855,7 @@ struct RigUIState {
     }
     if (port == 42) {
       const int idx = NAMRig::SpeakerDynamics::clampProfile((int)(value + 0.5f));
-      dispatch_async(dispatch_get_main_queue(), ^{
+      auto updateSpeaker = ^{
         if (!alive || !*alive) return;
         if (speakerProfilePopup) {
           [speakerProfilePopup selectItemAtIndex:idx];
@@ -1865,7 +1865,9 @@ struct RigUIState {
           [deckSpeakerProfilePopup selectItemAtIndex:idx];
           deckSpeakerProfilePopup.toolTip = deckSpeakerProfilePopup.selectedItem.toolTip;
         }
-      });
+      };
+      if ([NSThread isMainThread]) updateSpeaker();
+      else dispatch_async(dispatch_get_main_queue(), updateSpeaker);
       return;
     }
     // Map the port to its knob index (ports 10/11 are auto-cab, no-ops in UI).
@@ -1873,7 +1875,7 @@ struct RigUIState {
     for (size_t k = 0; k < kRigKnobCount; ++k)
       if (kRigKnobPorts[k] == port) { index = (ssize_t)k; break; }
     if (index < 0) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    auto updateKnob = ^{
       if (!alive || !*alive) return;
       if (knobs[index]) knobs[index].floatValue = value;
       if (!knobFieldEditing[index] && valueLabels[index])
@@ -1930,7 +1932,9 @@ struct RigUIState {
         else if (port == 27) cabConsoleVisualizer.highCut = value;
         cabConsoleVisualizer.needsDisplay = YES;
       }
-    });
+    };
+    if ([NSThread isMainThread]) updateKnob();
+    else dispatch_async(dispatch_get_main_queue(), updateKnob);
   }
 };
 #endif

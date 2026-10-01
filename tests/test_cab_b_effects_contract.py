@@ -118,11 +118,16 @@ assert "WavIR::linkStereoNormalization(*left, *right);" in dsp, (
 assert "delete message->irRight;" in dsp, "the worker must free the right-channel IR"
 assert "delete pending.irRight;" in dsp
 
-# Effects run AFTER the transition fade, so a model swap never cuts a tail.
+# Model swaps retain tails; rack switches fade the wet output too. Scope the
+# ordering check to calls of the lambda, not its earlier definition.
 fade = dsp.index("transitionGain = std::sin(")
 delay = dsp.index("delayFx.process(L, R, n,")
 reverb = dsp.index("reverbFx.process(L, R, n,")
-assert fade < delay < reverb, "delay and reverb must follow the click-safe fade"
+assert delay < reverb, "delay must precede reverb"
+assert dsp.index("if (rackTransitionActive) processEffects();") < fade
+assert fade < dsp.index("if (!rackTransitionActive) processEffects();"), (
+    "only rack transitions may fade the FX tail; model transitions process FX afterward"
+)
 
 # Wiring: knob map, value formatting, UI popover, and the standalone host.
 for port in range(48, 59):

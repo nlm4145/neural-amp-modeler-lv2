@@ -25,6 +25,7 @@
 #include "output_transformer.h"
 #include "space_fx.h"
 #include "speaker_dynamics.h"
+#include "rack_controls.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -181,6 +182,7 @@ public:
     float* reverb_predelay;    // in: port 58, ms
     float* cab2_polarity;      // in: port 59, invert both Cab B channels (0/1)
     std::array<float*, kTransformerControlCount> transformer_adjustments; // in: ports 60..70
+    std::array<float*, kRackCount> rack_enabled; // in: ports 71..78
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -196,8 +198,10 @@ public:
   static_assert(offsetof(Ports, reverb_predelay) == 58 * sizeof(void*));
   static_assert(offsetof(Ports, cab2_polarity) == 59 * sizeof(void*));
   static_assert(offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*));
-  static constexpr uint32_t kPortCount = 71;
-  static_assert(kPortCount == kTransformerControlFirstPort + kTransformerControlCount);
+  static_assert(offsetof(Ports, rack_enabled) == kRackControlFirstPort * sizeof(void*));
+  static constexpr uint32_t kPortCount = 79;
+  static_assert(kRackControlFirstPort == kTransformerControlFirstPort + kTransformerControlCount);
+  static_assert(kPortCount == kRackControlFirstPort + kRackCount);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -400,6 +404,9 @@ private:
   // actually runs; port changes only land at the fade's zero crossing.
   std::array<bool, kStageCount> appliedEnabled{true, true, true, false};
   bool enabledLatched = false;
+  std::array<bool, kRackCount> requestedRacks{}, appliedRacks{};
+  bool racksLatched = false;
+  bool rackTransitionActive = false;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation)
   // 4/5/6 = TRUE 2x/4x/8x (genuine UP -> model@Nx -> DOWN pipeline in this

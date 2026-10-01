@@ -116,7 +116,7 @@ assert dsp.index(snapshot) < dsp.index("auto applyModel = [&]"), "trims must be 
 assert "NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;" in standalone
 assert re.search(r"for \(size_t i = 0; i < transformerControls_\.size\(\); \+\+i\)\s*plugin_->ports\.transformer_adjustments\[i\] = &transformerControls_\[i\];", standalone)
 write = body(standalone, "static void uiWrite(", "  ")
-assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstPort &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount && size == sizeof\(float\)\) \{\s*host->transformerControls_\[port - NAMRig::kTransformerControlFirstPort\] =\s*\*static_cast<const float\*>\(buffer\);\s*return;", write)
+assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstPort &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount &&\s*size == sizeof\(float\)\) \{\s*host->transformerControls_\[port - NAMRig::kTransformerControlFirstPort\] =\s*\*static_cast<const float\*>\(buffer\);\s*return;", write)
 assert "write(controller, port, sizeof(value), 0, &value);" in body(state, "void sendControl(", "  ")
 event = body(ui, "void portEvent(")
 assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
@@ -210,7 +210,9 @@ assert "i < NAMRig::kTransformerControlCount" in apply
 assert "port = NAMRig::kTransformerControlFirstPort + i;" in apply
 assert "it != _controls.end() ? it->second : NAMRig::kTransformerControlDefaults[i]" in apply
 assert "state->sendControl(port, value);" in apply and "state->updateControl(port, value);" in apply
-assert apply.index("updateControl(30,") < apply.index("sendControl(port, value)"), "restore profile before saved trims"
+trim_apply = apply[apply.index("for (size_t i = 0; i < NAMRig::kTransformerControlCount;"):]
+assert "state->sendControl(port, value);" in trim_apply and "state->updateControl(port, value);" in trim_apply
+assert apply.index("updateControl(30,") < apply.index(trim_apply), "restore profile before saved trims"
 
 # Slot presets contain the model selector plus all 11 trim ports, not just port 30.
 assert re.search(r"transformerPorts = \[NSMutableArray arrayWithObject:@30\];\s*for \(size_t i = 0; i < NAMRig::kTransformerControlCount; \+\+i\)\s*\[transformerPorts addObject:@\(NAMRig::kTransformerControlFirstPort \+ i\)\];", ui)

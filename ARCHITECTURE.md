@@ -80,6 +80,15 @@ The standalone host connects a separate rack-control array and bounds transforme
 writes to ports 60..70, independently of the total plugin port count. UI metadata
 requests host notifications for all eight enable symbols. These are host-owned
 control ports; custom LV2 State save/restore remains limited to model paths.
+Each sound rack has an ON/OFF header button that preserves its parameter values.
+Rack switching uses the existing 5 ms fade-out/latch/fade-in, including wet audio;
+requests wait for an in-progress model transition rather than interrupting its tails.
+Spatial OFF preserves cabinet stereo and uses per-channel equal-power dual-cab
+mixing without Width or Room. Console OFF skips trims, cuts, polarity and user
+alignment, but retains cabinet processing and mandatory converter compensation.
+Power OFF also disconnects its Presence/Depth and speaker-feedback damping.
+Plate and Room have independent wet bypasses and history resets; their existing
+shared Size/Damping/Predelay shaping remains available to the enabled branch.
 
 Polarity is saved/captured/applied with presets, including A/B snapshots; a
 missing legacy value always applies 0. Reset to Default restores 0, while

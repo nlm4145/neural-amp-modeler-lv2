@@ -23,12 +23,18 @@ namespace NAMRig {
 class AmpAdvanced {
  public:
   void reset() noexcept {
+    resetPreAmp();
+    resetPostAmp();
+  }
+
+  void resetPreAmp() noexcept {
     bright_.reset();
     inputEq_.reset();
     smoothBright_ = smoothInputEq_ = 0.0f;
     appliedBright_ = appliedInputEq_ = -1.0f;
-    resetLoop();
   }
+
+  void resetPostAmp() noexcept { resetLoop(); }
 
   void processPreAmp(float* samples, size_t count, double rate,
                      float brightAmount, float inputEqAmount) noexcept {
