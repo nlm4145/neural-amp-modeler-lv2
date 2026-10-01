@@ -53,6 +53,18 @@ touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
 - `tests/test_tuner_mpm.py` — mirrors the tuner's McLeod NSDF pipeline and
   asserts pitch accuracy (<5¢) on synthetic guitar tones at 48k and 96k,
   including low E (the 96 kHz case that broke v1) and palm mute.
+- `tests/verify_tuner.c` loads the built rig via `RIG_SO` (defaults to the
+  installed plugin), without models. At 48/96 kHz and 64/512/2048-sample
+  blocks it checks accuracy, jitter smoothing, pluck hold/acquisition,
+  continuous tuning, repeated picking, string changes, noise rejection,
+  decay/silence clearing, notifications, and disable/re-enable reset.
+  Missing plugins or harness build failures fail the suite. Live rate-change resets cannot be
+  tested through the exposed LV2 interface. Run it independently with:
+
+  ```bash
+  clang -O2 -Ideps/lv2/include tests/verify_tuner.c -o /tmp/verify_tuner
+  /tmp/verify_tuner build/src/neural_amp_modeler_rig.so
+  ```
 
 The C++ harnesses in `tests/verify_*.cpp` cover the DSP blocks directly and
 are built ad hoc by `run_all.sh`:

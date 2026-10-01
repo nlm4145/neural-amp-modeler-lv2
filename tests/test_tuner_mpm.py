@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Unit tests for the rig tuner's McLeod Pitch Method (NSDF) detector.
 
-Mirrors the EXACT algorithm in src/nam_rig_plugin.cpp (process() tuner
+Mirrors the single-window detector in src/nam_rig_plugin.cpp (process() tuner
 block): cascaded RBJ lowpass (Q=0.707, fc=0.45*decimated Nyquist) ->
 decimation to ~12 kHz -> NSDF over lag range [kMinTau, kMaxTau] -> first
 peak >= 90% of best after the first positive zero-crossing -> parabolic
-vertex -> 55-1400 Hz band -> median-of-3.
+vertex -> 55-1400 Hz band, with an absolute NSDF confidence threshold.
+Streaming display behavior is tested against the real plugin in verify_tuner.c.
 
 The 96 kHz session rate is the case that killed v1 (a fixed 1000-sample lag
 range put the low E out of range) — both rates are asserted.
@@ -18,7 +19,7 @@ import numpy as np
 
 # Tuner constants — must match Tuner struct in src/nam_rig_plugin.h
 K_WINDOW = 1024   # analysis window (decimated samples)
-K_MAX_TAU = 400   # max lag at ~12 kHz -> floor ~30 Hz
+K_MAX_TAU = 300   # max lag at ~12 kHz -> floor ~40 Hz
 K_MIN_TAU = 8     # min lag -> ceiling ~1500 Hz
 
 
@@ -101,7 +102,7 @@ def tuner_detect(x, host_rate, verbose=False):
             if nsdf[p] >= 0.90 * best:
                 chosen = p
                 break
-    if chosen <= 0:
+    if chosen <= 0 or nsdf[chosen] < 0.80:
         return None, None
     s0, s1, s2 = nsdf[chosen - 1], nsdf[chosen], nsdf[chosen + 1]
     tau_f = float(chosen)

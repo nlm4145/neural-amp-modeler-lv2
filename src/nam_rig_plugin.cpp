@@ -515,8 +515,7 @@ void Plugin::tunerSetRates(double rate) {
   tuner.lp1.a1 = (float)(-2.0 * cosw / a0);
   tuner.lp1.a2 = (float)((1.0 - alpha) / a0);
   tuner.lp2 = tuner.lp1;
-  tuner.lp1.reset();
-  tuner.lp2.reset();
+  tuner.resetTracking();
 }
 
 void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
@@ -623,16 +622,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // change-gated patch:Set atoms for the UI.
   {
     const bool tunerOn = *ports.tuner_enable >= 0.5f;
-    if (!tunerOn && tuner.wasEnabled) {
-      tuner.lastNote = -1.0f;
-      tuner.lastCents = 0.0f;
-      tuner.histLen = 0;
-      tuner.histIdx = 0;
-      tuner.missCount = 0;
-      tuner.samplesSinceAnalysis = 0;
-    }
+    if (!tunerOn && tuner.wasEnabled) tuner.resetTracking();
     tuner.wasEnabled = tunerOn;
     if (tunerOn) {
+      const int onsetWindow = std::max(1, (int)std::lround(tuner.decimRate * 0.010f));
       for (uint32_t i = 0; i < sampleCount; ++i) {
         const float x = tuner.lp2.process(tuner.lp1.process(ports.audio_in[i]));
         if (++tuner.decimPhase >= tuner.decimFactor) {
@@ -640,14 +633,31 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
           tuner.ring[(size_t)tuner.ringPos] = x;
           tuner.ringPos = (tuner.ringPos + 1) % Tuner::kBuf;
           if (tuner.filled < Tuner::kBuf) ++tuner.filled;
+          if (tuner.attackSamplesRemaining > 0) --tuner.attackSamplesRemaining;
+          tuner.onsetEnergy += x * x;
+          if (++tuner.onsetSamples >= onsetWindow) {
+            const float onsetRms = std::sqrt(tuner.onsetEnergy / tuner.onsetSamples);
+            // Hard plucks briefly sharpen a real string. Keep the previous
+            // reading until the attack settles. Preserve pre-attack estimates
+            // so repeated plucks cannot continually restart acquisition.
+            if (onsetRms > 0.006f && onsetRms > 2.0f * tuner.previousRms) {
+              tuner.attackSamplesRemaining = (int)std::lround(tuner.decimRate * 0.180f);
+              tuner.missCount = 0;
+            }
+            tuner.previousRms = onsetRms;
+            tuner.onsetEnergy = 0.0f;
+            tuner.onsetSamples = 0;
+          }
         }
       }
-      // Analyze on a ~30 ms hop — rate- and block-size-independent cadence —
+      // Analyze on a ~30 ms hop (rounded up to the next block boundary)
       // as soon as the ring holds one window+lag span (no full-ring wait).
       const int span = Tuner::kWindow + Tuner::kMaxTau;
       const int hop = (int)(sampleRate * 0.030);
       tuner.samplesSinceAnalysis += (int)sampleCount;
+      if (tuner.attackSamplesRemaining > 0) tuner.samplesSinceAnalysis = 0;
       if (tuner.samplesSinceAnalysis >= hop && tuner.filled >= span) {
+        const float elapsed = (float)(tuner.samplesSinceAnalysis / sampleRate);
         tuner.samplesSinceAnalysis = 0;
         // Unwrap the most recent window (+ max lag) into linear scratch.
         float* win = tuner.scratch;
@@ -715,7 +725,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
               if (tuner.nsdf[peaks[p]] >= 0.90f * best) { chosen = peaks[p]; break; }
           }
           float midi = -1.0f;
-          if (chosen > 0) {
+          // The relative peak rule selects a period, not confidence. Reject
+          // weak periodicity rather than chasing noise as a string decays.
+          if (chosen > 0 && tuner.nsdf[chosen] >= 0.80f) {
             // Parabolic vertex refinement around the NSDF peak.
             const float s0 = tuner.nsdf[chosen - 1];
             const float s1 = tuner.nsdf[chosen];
@@ -740,32 +752,43 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
             }
           } else {
             tuner.missCount = 0;
-            // Median-of-3 display filter kills single-frame octave jumps.
-            // The write slot ROLLS — a clamped index froze slots 1/2 at the
-            // note's onset values, latching the display until silence.
+            // Median rejects isolated errors; a 250 ms low-pass calms small
+            // movements without averaging across genuinely different notes.
             tuner.noteHist[tuner.histIdx] = midi;
             tuner.histIdx = (tuner.histIdx + 1) % 3;
             tuner.histLen = std::min(tuner.histLen + 1, 3);
             if (tuner.histLen >= 3) {
               const float a = tuner.noteHist[0], b = tuner.noteHist[1], c = tuner.noteHist[2];
-              tuner.lastNote = std::max(std::min(a, b), std::min(std::max(a, b), c));
+              const float median = std::max(std::min(a, b), std::min(std::max(a, b), c));
+              const float difference = median - tuner.lastNote;
+              if (tuner.lastNote < 0.0f ||
+                  (std::fabs(difference) >= 0.5f &&
+                   std::max({a, b, c}) - std::min({a, b, c}) < 0.1f)) {
+                // Relatch a coherent new string immediately, but smooth
+                // mixed-note windows instead of locking onto their pitch.
+                tuner.lastNote = median;
+              } else if (std::fabs(difference) > 0.005f) { // half-cent deadband, not an in-tune snap
+                // Faster catch-up for coarse tuning, steady near the target.
+                const float seconds = std::fabs(difference) > 0.25f ? 0.100f : 0.250f;
+                tuner.lastNote += (1.0f - std::exp(-elapsed / seconds)) * difference;
+              }
             }
-          }
-          if (tuner.lastNote >= 0.0f) {
-            const int nearest = std::lround(tuner.lastNote);
-            tuner.lastCents = std::max(-50.0f, std::min(50.0f, (tuner.lastNote - nearest) * 100.0f));
-          } else {
-            tuner.lastCents = 0.0f;
           }
         }
       }
     }
+    if (tuner.lastNote >= 0.0f) {
+      const int nearest = std::lround(tuner.lastNote);
+      tuner.lastCents = std::max(-50.0f, std::min(50.0f, (tuner.lastNote - nearest) * 100.0f));
+    } else {
+      tuner.lastCents = 0.0f;
+    }
     // Publish results: output ports for host polling, plus patch:Set atom
     // events on the notify port for the UI — only when something actually
     // changed (note change or >=1-cent drift) to keep notify traffic low.
-    const int noteI = (int)tuner.lastNote;
+    const int noteI = (int)std::lround(tuner.lastNote);
     const int centsQ = (int)std::lround(tuner.lastCents);
-    if (noteI != (int)tuner.sentNote || centsQ != (int)tuner.sentCentsQ) {
+    if (noteI != (int)std::lround(tuner.sentNote) || centsQ != (int)tuner.sentCentsQ) {
       tuner.sentNote = tuner.lastNote;
       tuner.sentCentsQ = (float)centsQ;
       LV2_Atom_Forge_Frame frame;

@@ -341,6 +341,9 @@ private:
     int histIdx = 0;                // next write slot — MUST roll, not clamp
     int histLen = 0;
     int missCount = 0;              // consecutive analyses with no pitch
+    float onsetEnergy = 0.0f, previousRms = 0.0f;
+    int onsetSamples = 0;           // non-overlapping 10 ms envelope windows
+    int attackSamplesRemaining = 0; // decimated samples to let a pluck settle
     float nsdf[kMaxTau + 2] = {};
     float scratch[kWindow + kMaxTau] = {};   // unwrapped NSDF window
     float acf[kMaxTau + 1] = {};             // vDSP_conv output (all lags)
@@ -348,6 +351,17 @@ private:
     Biquad lp1, lp2;                // anti-alias front end
     int decimFactor = 1;
     float decimRate = 12000.0f;
+
+    void resetTracking() {
+      ringPos = filled = decimPhase = samplesSinceAnalysis = 0;
+      lastNote = -1.0f;
+      lastCents = 0.0f;
+      histIdx = histLen = missCount = 0;
+      onsetEnergy = previousRms = 0.0f;
+      onsetSamples = attackSamplesRemaining = 0;
+      lp1.reset();
+      lp2.reset();
+    }
   } tuner;
 
   // Input level meter: raw input peak (dBFS) with fast-attack / ~20 dB/s

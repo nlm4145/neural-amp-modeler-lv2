@@ -130,6 +130,16 @@ else
   echo "  (skipped: plugin not installed or harness build failed)"
 fi
 
+# Black-box stabilization checks need only the rig library, not model files.
+echo "== tests/verify_tuner.c (tuner stabilization / 48 and 96 kHz) =="
+if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner.c \
+    -o /tmp/verify_tuner; then
+  /tmp/verify_tuner "$RIG_SO" || status=1
+else
+  echo "  (failed: plugin unavailable or tuner harness build failed)"
+  status=1
+fi
+
 echo "== tests/verify_transformer_switch.cpp (96 kHz / True 8x) =="
 EXAMPLE_AMP="deps/NeuralAudio/deps/NeuralAmpModelerCore/example_models/wavenet.nam"
 if [ -f "$RIG_SO" ] && [ -f "$EXAMPLE_AMP" ] && \
