@@ -33,6 +33,7 @@
 
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
+#include "rack_controls.h"
 
 extern "C" const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index);
 
@@ -592,6 +593,8 @@ class StandaloneHost {
     }
     for (size_t i = 0; i < transformerControls_.size(); ++i)
       plugin_->ports.transformer_adjustments[i] = &transformerControls_[i];
+    for (size_t i = 0; i < rackControls_.size(); ++i)
+      plugin_->ports.rack_enabled[i] = &rackControls_[i];
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -936,8 +939,15 @@ class StandaloneHost {
       return;
     }
     if (format == 0 && port >= NAMRig::kTransformerControlFirstPort &&
-        port < NAMRig::Plugin::kPortCount && size == sizeof(float)) {
+        port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount &&
+        size == sizeof(float)) {
       host->transformerControls_[port - NAMRig::kTransformerControlFirstPort] =
+          *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kRackControlFirstPort &&
+        port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount && size == sizeof(float)) {
+      host->rackControls_[port - NAMRig::kRackControlFirstPort] =
           *static_cast<const float*>(buffer);
       return;
     }
@@ -1729,6 +1739,7 @@ class StandaloneHost {
   std::array<float, 5> speakerControls_{};
   std::array<float, 13> fxControls_{};
   NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;
+  std::array<float, NAMRig::kRackCount> rackControls_ = NAMRig::kRackControlDefaults;
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

@@ -537,6 +537,11 @@ static NSString* stageName(NSInteger stage) {
   }
   _state->sendControl(59, 0.0f);
   _state->updateControl(59, 0.0f);
+  for (size_t i = 0; i < NAMRig::kRackCount; ++i) {
+    const uint32_t port = NAMRig::kRackControlFirstPort + i;
+    _state->sendControl(port, NAMRig::kRackControlDefaults[i]);
+    _state->updateControl(port, NAMRig::kRackControlDefaults[i]);
+  }
   [self resetTransformerControls:sender];
   [self markPresetModified];
 }
@@ -725,6 +730,12 @@ static NSString* stageName(NSInteger stage) {
         const float val = [valObj floatValue];
         _state->sendControl(port, val);
         _state->updateControl(port, val);
+      }
+      NSNumber* enabledPort = spec[@"enabledPort"];
+      if (enabledPort && !values[enabledPort.stringValue]) {
+        // Slot presets saved before rack switches existed default to enabled.
+        _state->sendControl(enabledPort.unsignedIntValue, 1.0f);
+        _state->updateControl(enabledPort.unsignedIntValue, 1.0f);
       }
       [self markPresetModified];
     }
@@ -1590,7 +1601,9 @@ static NSView* addDeckKnobCell(NSView* parent,
   return cell;
 }
 
-static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString* subtitle, NSColor* titleColor) {
+static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString* subtitle,
+                                      NSColor* titleColor, RigUIState* state = nullptr,
+                                      NAMRig::Rack rackID = NAMRig::Rack::Count) {
   RigPanel* rack = addPanel(parent, NSZeroRect);
   rack.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -1610,7 +1623,30 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
   [[tLabel.leadingAnchor constraintEqualToAnchor:hView.leadingAnchor] setActive:YES];
   [[tLabel.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
 
-  if (subtitle.length) {
+  if (state && rackID != NAMRig::Rack::Count) {
+    const size_t index = static_cast<size_t>(rackID);
+    const uint32_t port = NAMRig::kRackControlFirstPort + index;
+    RigButton* button = rigButton(hView, @"ON", state->uiController,
+                                  @selector(controlChanged:), NSZeroRect);
+    button.tag = port;
+    button.buttonType = NSButtonTypeToggle;
+    button.check = YES;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.accessibilityLabel = [title stringByAppendingString:@" ON/OFF"];
+    button.toolTip = [NSString stringWithFormat:
+        @"%@. %@. OFF bypasses this rack without changing its settings; controls remain editable.",
+        title, subtitle];
+    [[button.trailingAnchor constraintEqualToAnchor:hView.trailingAnchor] setActive:YES];
+    [[button.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
+    [[button.widthAnchor constraintEqualToConstant:60] setActive:YES];
+    [[button.heightAnchor constraintEqualToConstant:22] setActive:YES];
+    tLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [tLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [[tLabel.trailingAnchor constraintLessThanOrEqualToAnchor:button.leadingAnchor constant:-10] setActive:YES];
+    state->rackButtons[index] = button;
+    state->updateControl(port, state->rackControls[index]);
+  } else if (subtitle.length) {
     NSTextField* sLabel = addLabel(hView, subtitle, NSZeroRect,
                                    [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
                                    rigDimText(), NSTextAlignmentRight);
@@ -1674,6 +1710,13 @@ static NSPopUpButton* addSlotPresetDropdown(
     @"selectedTitle": factoryTitles.firstObject ?: @"",
     @"selectedIsUser": @NO
   } mutableCopy];
+  for (size_t i = 0; i < NAMRig::kRackCount; ++i) {
+    if (![slotKey isEqualToString:[NSString stringWithUTF8String:NAMRig::kRackSlotKeys[i]]]) continue;
+    NSNumber* enabledPort = @(NAMRig::kRackControlFirstPort + i);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
+    break;
+  }
   [state->deckSlotSpecs addObject:spec];
   state->rebuildSlotPresetMenu(slotIdx);
 
@@ -1807,7 +1850,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 1. Stereo Tape Delay (4 knobs: 28, 29, 30, 31)
   {
-    RigPanel* rack = addStudioRackSection(row0, @"STEREO TAPE DELAY", @"PANNED ECHOES & DAMPING", violetColor);
+    RigPanel* rack = addStudioRackSection(row0, @"STEREO TAPE DELAY", @"PANNED ECHOES & DAMPING", violetColor, state, NAMRig::Rack::Delay);
     [row0 addArrangedSubview:rack];
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
@@ -1877,7 +1920,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 2. Studio Plate Reverb (5 knobs: 32, 33, 34, 35, 36)
   {
-    RigPanel* rack = addStudioRackSection(row0, @"STUDIO PLATE REVERB", @"DIFFUSE SPACE & SHIMMER", violetColor);
+    RigPanel* rack = addStudioRackSection(row0, @"STUDIO PLATE REVERB", @"DIFFUSE SPACE & SHIMMER", violetColor, state, NAMRig::Rack::Reverb);
     [row0 addArrangedSubview:rack];
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
@@ -1948,7 +1991,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 3. Spatial Acoustics (2 knobs: 12, 13)
   {
-    RigPanel* rack = addStudioRackSection(row0, @"SPATIAL ACOUSTICS", @"STEREO SPREAD & ROOM", emeraldColor);
+    RigPanel* rack = addStudioRackSection(row0, @"SPATIAL ACOUSTICS", @"STEREO SPREAD & ROOM", emeraldColor, state, NAMRig::Rack::Spatial);
     [row0 addArrangedSubview:rack];
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
@@ -2035,7 +2078,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 1. Dynamic Power Stage (4 knobs: 21, 16, 17, 18)
   {
-    RigPanel* rack = addStudioRackSection(row1, @"DYNAMIC POWER STAGE", @"DRIVE, SAG & FEEDBACK", goldColor);
+    RigPanel* rack = addStudioRackSection(row1, @"DYNAMIC POWER STAGE", @"DRIVE, SAG & FEEDBACK", goldColor, state, NAMRig::Rack::Power);
     [row1 addArrangedSubview:rack];
     pwrRackRef = rack;
 
@@ -2106,7 +2149,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 2. Pre-Amp Sculpting (2 knobs: 19, 20)
   {
-    RigPanel* rack = addStudioRackSection(row1, @"PRE-AMP TONAL SCULPT", @"INPUT CONDITIONING", goldColor);
+    RigPanel* rack = addStudioRackSection(row1, @"PRE-AMP TONAL SCULPT", @"INPUT CONDITIONING", goldColor, state, NAMRig::Rack::Sculpt);
     [row1 addArrangedSubview:rack];
     sculptRackRef = rack;
 
@@ -2175,7 +2218,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 3. Output Transformer (model and editable-trim presets)
   {
-    RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER", @"CORE SATURATION & VOICING", goldColor);
+    RigPanel* rack = addStudioRackSection(row1, @"OUTPUT TRANSFORMER", @"CORE SATURATION & VOICING", goldColor, state, NAMRig::Rack::Transformer);
     [row1 addArrangedSubview:rack];
     transRackRef = rack;
 
@@ -2377,7 +2420,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 1. Physical Speaker Emulation (4 knobs: 22, 23, 24, 25 + profile popup port 42)
   {
-    RigPanel* rack = addStudioRackSection(row2, @"PHYSICAL SPEAKER EMULATION", @"CONE DYNAMICS & REACTIVE LOAD", emeraldColor);
+    RigPanel* rack = addStudioRackSection(row2, @"PHYSICAL SPEAKER EMULATION", @"CONE DYNAMICS & REACTIVE LOAD", emeraldColor, state, NAMRig::Rack::Speaker);
     [row2 addArrangedSubview:rack];
 
     NSPopUpButton* deckSpkr = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -2463,7 +2506,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 2. Dual-Cabinet Blend Console (5 knobs: 8, 26, 27, 9, 10)
   {
-    RigPanel* rack = addStudioRackSection(row2, @"DUAL-CABINET BLEND CONSOLE", @"LEVEL, PHASE ALIGN & CUTS", emeraldColor);
+    RigPanel* rack = addStudioRackSection(row2, @"DUAL-CABINET BLEND CONSOLE", @"LEVEL, PHASE ALIGN & CUTS", emeraldColor, state, NAMRig::Rack::CabConsole);
     [row2 addArrangedSubview:rack];
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
@@ -3643,7 +3686,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->restoreSelectedPaths();   // re-apply the persisted rig selection
     state->presetManager = [RigPresetManager sharedManager];
     [state->presetManager rescanPresets];
-    if (state->presetManager.currentPresetName.length) {
+    // Only the standalone app owns startup preset recall; hosts restore their own state.
+    const bool standalone = [NSBundle.mainBundle.bundleIdentifier
+        isEqualToString:@"org.neuralampmodeler.lv2.standalone-rig"];
+    if (standalone && state->presetManager.currentPresetName.length) {
       RigPreset* curPreset = [state->presetManager loadPresetNamed:state->presetManager.currentPresetName];
       if (curPreset) {
         state->abApplyingCycle = true;
@@ -3685,7 +3731,7 @@ void portEvent(LV2UI_Handle handle,
   auto* state = static_cast<RigUIState*>(handle);
   if (!state) return;
   if (format == 0 && buffer && size == sizeof(float) && port >= 4 &&
-      port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
+      port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
     state->updateControl(port, *static_cast<const float*>(buffer));
     return;
   }

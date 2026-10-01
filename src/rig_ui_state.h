@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "rig_knobs.h"
+#include "rack_controls.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
 #include "speaker_dynamics.h"
@@ -105,6 +106,9 @@ struct RigUIState {
   std::array<__strong NSSlider*, kRigKnobCount> deckKnobs{};
   std::array<__strong NSTextField*, kRigKnobCount> deckValueLabels{};
   std::array<bool, kRigKnobCount> deckKnobFieldEditing{};
+
+  std::array<float, NAMRig::kRackCount> rackControls = NAMRig::kRackControlDefaults;
+  std::array<__strong RigButton*, NAMRig::kRackCount> rackButtons{};
 
   // Live hardware visualizers for the studio deck:
   __strong NAMDelayTapVisualizer* delayVisualizer = nil;
@@ -875,6 +879,10 @@ struct RigUIState {
   }
 
   float currentPortValueForSlot(uint32_t port) const {
+    if (port >= NAMRig::kRackControlFirstPort &&
+        port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
+      return rackControls[port - NAMRig::kRackControlFirstPort];
+    }
     if (port == 30) {
       return (float)transformerProfile;
     }
@@ -1736,6 +1744,26 @@ struct RigUIState {
 
   void updateControl(uint32_t port, float value) {
     auto alive = this->isAlive;
+    if (port >= NAMRig::kRackControlFirstPort &&
+        port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
+      const size_t index = port - NAMRig::kRackControlFirstPort;
+      // Keep logical state current before preset and A/B snapshots are captured.
+      rackControls[index] = std::isfinite(value)
+          ? (value >= 0.5f ? 1.0f : 0.0f) : NAMRig::kRackControlDefaults[index];
+      auto updateRack = ^{
+        if (!alive || !*alive) return;
+        RigButton* button = rackButtons[index];
+        if (!button) return;
+        const bool enabled = rackControls[index] >= 0.5f;
+        button.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+        button.title = enabled ? @"ON" : @"OFF";
+        button.primary = enabled;
+        button.needsDisplay = YES;
+      };
+      if ([NSThread isMainThread]) updateRack();
+      else dispatch_async(dispatch_get_main_queue(), updateRack);
+      return;
+    }
     if (port >= NAMRig::kTransformerControlFirstPort &&
         port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
       const size_t index = port - NAMRig::kTransformerControlFirstPort;

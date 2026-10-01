@@ -36,8 +36,8 @@ for index, symbol in enumerate(expected, 47):
 assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
-assert "kPortCount = 71" in header
-assert sorted(ports) == list(range(71)), "ports 0..59 must stay contiguous before transformer trims append at 60..70"
+assert "kPortCount = 79" in header
+assert sorted(ports) == list(range(79)), "ports 0..70 must stay contiguous before rack switches append at 71..78"
 
 
 def port_default(index: int) -> float:
@@ -135,9 +135,9 @@ assert "B ON" in ui and "onB.tag = 47;" in ui, "Cab B needs its own enable toggl
 assert "modelPickers[3]" in ui, "Cab B needs its own model picker"
 assert "std::array<LV2_URID, 4> pathURIDs{}" in state
 assert re.search(
-    r"port >= 4 &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount",
+    r"port >= 4 &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount",
     ui,
-), "the UI must still accept every original control echo, plus transformer ports 60..70"
+), "the UI must accept every original control echo, transformer trims and rack switches"
 assert "for (uint32_t port = 47; port <= 59; ++port)" in standalone, (
     "the standalone host must connect the new ports"
 )

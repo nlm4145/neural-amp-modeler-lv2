@@ -4,6 +4,7 @@
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
 #include "wav_ir.h"
+#include "rack_controls.h"
 
 #include <algorithm>
 #include <array>
@@ -351,7 +352,11 @@ struct Host {
     controls[52] = 40.0f;
     controls[55] = controls[56] = controls[57] = 50.0f;
     controls[58] = 10.0f;
-    // Connect all 60 fields explicitly; no private-mode access or layout casts.
+    std::copy(NAMRig::kTransformerControlDefaults.begin(), NAMRig::kTransformerControlDefaults.end(),
+              controls.begin() + NAMRig::kTransformerControlFirstPort);
+    std::copy(NAMRig::kRackControlDefaults.begin(), NAMRig::kRackControlDefaults.end(),
+              controls.begin() + NAMRig::kRackControlFirstPort);
+    // Connect the original fields explicitly; append the two control arrays below.
     plugin.ports = {
         sequence(control), sequence(notify), input.data(), left.data(),
         &controls[4], &controls[5], &controls[6], &controls[7], &controls[8],
@@ -366,7 +371,11 @@ struct Host {
         &controls[49], &controls[50], &controls[51], &controls[52], &controls[53],
         &controls[54], &controls[55], &controls[56], &controls[57], &controls[58],
         &controls[59]};
-    static_assert(Plugin::kPortCount == 60, "update connections if ports change");
+    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+      plugin.ports.transformer_adjustments[i] = &controls[NAMRig::kTransformerControlFirstPort + i];
+    for (size_t i = 0; i < NAMRig::kRackCount; ++i)
+      plugin.ports.rack_enabled[i] = &controls[NAMRig::kRackControlFirstPort + i];
+    static_assert(Plugin::kPortCount == 79, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

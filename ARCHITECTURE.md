@@ -22,6 +22,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
 | `src/rig_widgets.{h,mm}` | Shared custom controls: `RigKnob` (arc knob), `RigPanel` (gradient panel), `RigButton`, ImageIO thumbnail decode helpers. Used by BOTH UI targets |
 | `src/rig_knobs.{h,cpp}` | `kRigKnobPorts` / `kRigKnobDisplayOrder` (display order = signal chain, not port order) |
+| `src/rack_controls.h` | Shared eight-rack order, enable port symbols, slot keys, and enabled defaults |
 | `src/rig_tone_api.{h,mm}` | Tone3000 API base URL, OAuth/PKCE, keychain sessions, gear/stage mapping |
 | `src/rig_tone_browser.{h,mm}` | Tone Explorer: `ToneItem`, `ToneCardItem`, `ToneBrowserController` (search pagination, disk cache, downloads, favorites) |
 
@@ -64,12 +65,21 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 54–58 | `reverb_mix`/`reverb_decay`/`reverb_size`/`reverb_damping`/`reverb_predelay` | in | Plate reverb after the delay; mix 0 = exact bypass (Room stays independent) |
 | 59 | `cab2_polarity` | in | toggled/integer; 0 = normal, 1 = inverted Cab B polarity (default 0) |
 | 60–70 | `transformer_low_cut`/`transformer_high_cut`/`transformer_drive`/`transformer_mix`/`transformer_flux`/`transformer_voice_freq`/`transformer_voice_gain`/`transformer_voice_q`/`transformer_leakage_freq`/`transformer_leakage_gain`/`transformer_leakage_q` | in | Iron core model trims: frequency/drive/Q ratios default 1, gain offsets default 0 dB, mix offset defaults to 0 percentage points |
+| 71-78 | `delay_enabled`/`reverb_enabled`/`spatial_enabled`/`power_enabled`/`sculpt_enabled`/`transformer_enabled`/`speaker_enabled`/`cab_console_enabled` | in | Per-rack toggled/integer enables, all default 1; connections optional |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.
+
+Rack enables are additive controls: existing parameter ports and values stay
+unchanged. Rig presets capture all eight enables and recall every enable port;
+missing legacy values always restore 1 rather than preserving a stale OFF.
+The standalone host connects a separate rack-control array and bounds transformer
+writes to ports 60..70, independently of the total plugin port count. UI metadata
+requests host notifications for all eight enable symbols. These are host-owned
+control ports; custom LV2 State save/restore remains limited to model paths.
 
 Polarity is saved/captured/applied with presets, including A/B snapshots; a
 missing legacy value always applies 0. Reset to Default restores 0, while

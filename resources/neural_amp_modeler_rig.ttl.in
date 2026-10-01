@@ -365,4 +365,44 @@
 					lv2:symbol "transformer_leakage_q" ; lv2:name "Transformer Leakage Q Ratio" ;
 					lv2:default 1.0 ; lv2:minimum 0.25 ; lv2:maximum 4.0 ;
 					units:unit <@NAM_RIG_LV2_ID@-transformer-ratio> ; lv2:portProperty pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 71 ;
+					lv2:symbol "delay_enabled" ; lv2:name "Delay On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 72 ;
+					lv2:symbol "reverb_enabled" ; lv2:name "Reverb On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 73 ;
+					lv2:symbol "spatial_enabled" ; lv2:name "Spatial On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 74 ;
+					lv2:symbol "power_enabled" ; lv2:name "Power On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 75 ;
+					lv2:symbol "sculpt_enabled" ; lv2:name "Sculpt On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 76 ;
+					lv2:symbol "transformer_enabled" ; lv2:name "Transformer On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 77 ;
+					lv2:symbol "speaker_enabled" ; lv2:name "Speaker On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 78 ;
+					lv2:symbol "cab_console_enabled" ; lv2:name "Cab Console On" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
 				] .

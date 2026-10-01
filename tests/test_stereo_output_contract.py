@@ -51,7 +51,7 @@ assert not re.search(r"stereoSpace|StereoSpace", dsp + header), (
 assert not (ROOT / "src/stereo_space.h").exists(), "stereo_space.h must be gone"
 
 # Room is now the plate reverb's diffused, damped early-reflection cluster.
-assert re.search(r"reverbFx\.process\(L, R, n, \*ports\.room,", dsp), (
-    "Room must drive the reverb's early reflections"
+assert re.search(r"reverbFx\.process\(L, R, n,\s*rackOn\(Rack::Spatial\)\s*\?\s*\*ports\.room\s*:\s*0\.0f,", dsp), (
+    "Room must drive early reflections only while the Spatial rack is enabled"
 )
 print("  PASS  rig exposes append-only stereo output with mono-safe cabinet width")

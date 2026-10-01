@@ -3,6 +3,7 @@
 //   -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_transformer_controls.cpp -o <test>
 // Usage: <test> <freshly built neural_amp_modeler_rig.so>
 #include "nam_rig_plugin.h"
+#include "rack_controls.h"
 
 #include <dlfcn.h>
 #include <algorithm>
@@ -82,6 +83,8 @@ struct Host {
     controls[58] = 10;
     std::copy(NAMRig::kTransformerControlDefaults.begin(), NAMRig::kTransformerControlDefaults.end(),
               controls.begin() + NAMRig::kTransformerControlFirstPort);
+    std::copy(NAMRig::kRackControlDefaults.begin(), NAMRig::kRackControlDefaults.end(),
+              controls.begin() + NAMRig::kRackControlFirstPort);
     descriptor->connect_port(instance, 0, control.data());
     descriptor->connect_port(instance, 1, notify.data());
     descriptor->connect_port(instance, 2, input.data());
@@ -89,7 +92,9 @@ struct Host {
     descriptor->connect_port(instance, 31, right.data());
     for (uint32_t port = 4; port < NAMRig::Plugin::kPortCount; ++port) {
       if (port != 31) descriptor->connect_port(instance, port,
-          !trims && port >= NAMRig::kTransformerControlFirstPort ? nullptr : &controls[port]);
+          !trims && port >= NAMRig::kTransformerControlFirstPort &&
+              port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount
+              ? nullptr : &controls[port]);
     }
     run(); // Latch the requested oversampling mode before installing the amp.
     identity = new Identity;

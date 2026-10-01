@@ -15,8 +15,8 @@ ports = {
         r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
     )
 }
-assert sorted(ports) == list(range(71)), "ports 0..59 must remain contiguous before transformer trims append at 60..70"
-assert "kPortCount = 71" in header
+assert sorted(ports) == list(range(79)), "ports 0..70 must stay contiguous before rack switches append at 71..78"
+assert "kPortCount = 79" in header
 expected = ["speaker_profile", "speaker_drive", "speaker_compression",
             "speaker_thump", "speaker_resonance"]
 for index, symbol in enumerate(expected, 42):
@@ -34,8 +34,8 @@ assert post < iron < speaker < cab, "speaker load must follow the power stage an
 
 # A tube output stage follows the impedance curve in proportion to its output
 # impedance, so Negative Feedback (damping) must scale the curve.
-assert re.search(r"speakerDynamics\.process\((?:[^;]*?)\*ports\.negative_feedback \* 0\.01f\)", dsp, re.S), (
-    "Negative Feedback must drive the speaker block's damping input"
+assert re.search(r"speakerDynamics\.process\((?:[^;]*?)rackOn\(Rack::Power\)\s*\?\s*\*ports\.negative_feedback \* 0\.01f\s*:\s*0\.0f\)", dsp, re.S), (
+    "Negative Feedback must drive speaker damping only while the Power rack is enabled"
 )
 speaker_src = (ROOT / "src/speaker_dynamics.h").read_text()
 assert "smoothedDamping_" in speaker_src

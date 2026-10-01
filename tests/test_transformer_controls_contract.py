@@ -45,19 +45,21 @@ symbols = [
     "transformer_voice_q", "transformer_leakage_freq", "transformer_leakage_gain",
     "transformer_leakage_q",
 ]
+rack_symbols = ["delay_enabled", "reverb_enabled", "spatial_enabled", "power_enabled",
+                "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled"]
 port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
 )]
-assert port_pairs == list(enumerate(legacy_symbols + symbols)), (
-    "all original port indices/symbols must stay unchanged; only 60..70 may append"
+assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols)), (
+    "ports 0..70 must stay unchanged; rack switches append at 71..78"
 )
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
-assert "kPortCount = 71;" in header
+assert "kPortCount = 79;" in header
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
-assert "kPortCount == kTransformerControlFirstPort + kTransformerControlCount" in header
+assert "kPortCount == kRackControlFirstPort + kRackCount" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 # The metadata table is the shared host/preset order, not absolute profile values.
@@ -114,11 +116,11 @@ assert dsp.index(snapshot) < dsp.index("auto applyModel = [&]"), "trims must be 
 assert "NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;" in standalone
 assert re.search(r"for \(size_t i = 0; i < transformerControls_\.size\(\); \+\+i\)\s*plugin_->ports\.transformer_adjustments\[i\] = &transformerControls_\[i\];", standalone)
 write = body(standalone, "static void uiWrite(", "  ")
-assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstPort &&\s*port < NAMRig::Plugin::kPortCount && size == sizeof\(float\)\) \{\s*host->transformerControls_\[port - NAMRig::kTransformerControlFirstPort\] =\s*\*static_cast<const float\*>\(buffer\);\s*return;", write)
+assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstPort &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount && size == sizeof\(float\)\) \{\s*host->transformerControls_\[port - NAMRig::kTransformerControlFirstPort\] =\s*\*static_cast<const float\*>\(buffer\);\s*return;", write)
 assert "write(controller, port, sizeof(value), 0, &value);" in body(state, "void sendControl(", "  ")
 event = body(ui, "void portEvent(")
-assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
-    "host float echoes must include 4..70, exclude 71+, and validate format/buffer/size"
+assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
+    "host float echoes must include 4..78, exclude 79+, and validate format/buffer/size"
 )
 
 assert "int transformerProfile = NAMRig::OutputTransformer::kCaptured;" in state

@@ -7,6 +7,7 @@
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
+#include "rack_controls.h"
 #include "speaker_dynamics.h"
 #include "rig_ui_state.h"
 
@@ -66,6 +67,9 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
     for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
       symbols[@(NAMRig::kTransformerControlFirstPort + i)] =
           [NSString stringWithUTF8String:NAMRig::kTransformerControls[i].symbol];
+    for (size_t i = 0; i < NAMRig::kRackCount; ++i)
+      symbols[@(NAMRig::kRackControlFirstPort + i)] =
+          [NSString stringWithUTF8String:NAMRig::kRackControlSymbols[i]];
     map = [symbols copy];
   });
   return map;
@@ -211,6 +215,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[30] = 0.0f;  // Captured / Off
   for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
     p->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
+  for (size_t i = 0; i < NAMRig::kRackCount; ++i)
+    p->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
   p->_controls[42] = 0.0f;  // Captured / Off
 
   return p;
@@ -278,6 +284,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset->_controls[59] = 0.0f;  // Legacy presets default to normal polarity.
   for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
     preset->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
+  for (size_t i = 0; i < NAMRig::kRackCount; ++i)
+    preset->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
   NSDictionary* portsDict = root[@"ports"];
   if ([portsDict isKindOfClass:[NSDictionary class]]) {
     for (NSString* key in portsDict) {
@@ -420,6 +428,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_stages[1].transformer = static_cast<float>(state->transformerProfile);
   for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
     p->_controls[NAMRig::kTransformerControlFirstPort + i] = state->transformerAdjustments[i];
+  for (size_t i = 0; i < NAMRig::kRackCount; ++i)
+    p->_controls[NAMRig::kRackControlFirstPort + i] = state->rackControls[i];
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -470,6 +480,14 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   state->updateControl(9, _stages[2].enabled ? 1.0f : 0.0f);
   state->sendControl(47, _stages[3].enabled ? 1.0f : 0.0f);
   state->updateControl(47, _stages[3].enabled ? 1.0f : 0.0f);
+  // Always recall every rack toggle so legacy presets cannot leave stale bypasses.
+  for (size_t i = 0; i < NAMRig::kRackCount; ++i) {
+    const uint32_t port = NAMRig::kRackControlFirstPort + i;
+    auto it = _controls.find(port);
+    const float value = it != _controls.end() ? it->second : NAMRig::kRackControlDefaults[i];
+    state->sendControl(port, value);
+    state->updateControl(port, value);
+  }
 
   // 2. Modes and Profiles
   state->sendControl(20, _stages[0].oversample);
