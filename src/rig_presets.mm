@@ -713,6 +713,113 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   return [self savePreset:p error:error];
 }
 
+- (BOOL)renamePresetNamed:(NSString*)oldName to:(NSString*)newName error:(NSError**)error {
+  return [self renamePresetNamed:oldName to:newName fromState:nil error:error];
+}
+
+- (BOOL)renamePresetNamed:(NSString*)oldName
+                       to:(NSString*)newName
+                fromState:(nullable RigUIState*)state
+                    error:(NSError**)error {
+  NSString* trimmedOld = [oldName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!trimmedOld.length || [trimmedOld isEqualToString:@"Default Rig"]) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-1
+                                        userInfo:@{NSLocalizedDescriptionKey: @"The Default Rig preset cannot be renamed."}];
+    return NO;
+  }
+  NSString* trimmedNew = [newName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!trimmedNew.length) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-2
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Please enter a valid preset name."}];
+    return NO;
+  }
+  if ([trimmedNew isEqualToString:@"Default Rig"]) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-3
+                                        userInfo:@{NSLocalizedDescriptionKey: @"A preset cannot be named 'Default Rig'."}];
+    return NO;
+  }
+  if ([trimmedOld isEqualToString:trimmedNew]) {
+    return YES;
+  }
+
+  if ([_presetNames containsObject:trimmedNew] &&
+      [trimmedOld localizedCaseInsensitiveCompare:trimmedNew] != NSOrderedSame) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-4
+                                        userInfo:@{NSLocalizedDescriptionKey:
+                                                   [NSString stringWithFormat:@"A preset named '%@' already exists.", trimmedNew]}];
+    return NO;
+  }
+
+  NSString* safeOld = [trimmedOld stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+  safeOld = [safeOld stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+  NSString* oldPath = [self.presetsDirectory stringByAppendingPathComponent:
+                       [safeOld stringByAppendingPathExtension:@"json"]];
+
+  NSString* safeNew = [trimmedNew stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+  safeNew = [safeNew stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+  NSString* newPath = [self.presetsDirectory stringByAppendingPathComponent:
+                       [safeNew stringByAppendingPathExtension:@"json"]];
+
+  NSFileManager* fm = [NSFileManager defaultManager];
+  if (![fm fileExistsAtPath:oldPath]) {
+    if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                            code:-5
+                                        userInfo:@{NSLocalizedDescriptionKey:
+                                                   [NSString stringWithFormat:@"Preset file for '%@' not found.", trimmedOld]}];
+    return NO;
+  }
+
+  RigPreset* preset = nil;
+  if (state && [trimmedOld isEqualToString:_currentPresetName] && _isModified) {
+    preset = [RigPreset captureFromState:state name:trimmedNew];
+  } else {
+    preset = [RigPreset loadFromFile:oldPath];
+    if (!preset) {
+      if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
+                                              code:-6
+                                          userInfo:@{NSLocalizedDescriptionKey: @"Could not load the existing preset."}];
+      return NO;
+    }
+    preset.name = trimmedNew;
+  }
+
+  const BOOL caseOnly = [oldPath caseInsensitiveCompare:newPath] == NSOrderedSame &&
+                        ![oldPath isEqualToString:newPath];
+  NSString* tempPath = nil;
+  if (caseOnly) {
+    tempPath = [oldPath stringByAppendingString:@".tmp_rename"];
+    if (![fm moveItemAtPath:oldPath toPath:tempPath error:error]) {
+      return NO;
+    }
+  }
+
+  BOOL ok = [preset saveToFile:newPath error:error];
+  if (!ok) {
+    if (caseOnly && tempPath) {
+      [fm moveItemAtPath:tempPath toPath:oldPath error:nil];
+    }
+    return NO;
+  }
+
+  if (caseOnly && tempPath) {
+    [fm removeItemAtPath:tempPath error:nil];
+  } else if (![oldPath isEqualToString:newPath]) {
+    [fm removeItemAtPath:oldPath error:nil];
+  }
+
+  if ([_currentPresetName isEqualToString:trimmedOld]) {
+    _currentPresetName = [trimmedNew copy];
+    _isModified = NO;
+    [self persistCurrentPresetName];
+  }
+  [self rescanPresets];
+  return YES;
+}
+
 - (BOOL)deletePresetNamed:(NSString*)name error:(NSError**)error {
   if (!name.length || [name isEqualToString:@"Default Rig"]) return NO;
   NSString* path = [self.presetsDirectory stringByAppendingPathComponent:

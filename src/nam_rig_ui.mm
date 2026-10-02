@@ -98,6 +98,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)nextPresetClicked:(NSButton*)sender;
 - (void)saveCurrentPreset:(id)sender;
 - (void)savePresetAs:(id)sender;
+- (void)renameCurrentPreset:(id)sender;
 - (void)duplicateCurrentPreset:(id)sender;
 - (void)deleteCurrentPreset:(id)sender;
 - (void)revealPresetsInFinder:(id)sender;
@@ -120,6 +121,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)slotPresetPopupChanged:(NSPopUpButton*)sender;
 - (void)saveSlotPreset:(NSMenuItem*)sender;
 - (void)saveSlotPresetAs:(NSMenuItem*)sender;
+- (void)renameSlotPreset:(NSMenuItem*)sender;
 - (void)deleteSlotPreset:(NSMenuItem*)sender;
 - (void)markPresetModified;
 @end
@@ -960,13 +962,14 @@ static NSString* stageName(NSInteger stage) {
   [alert addButtonWithTitle:@"Save"];
   [alert addButtonWithTitle:@"Cancel"];
 
-  NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  RigAlertTextField* input = [[RigAlertTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
   BOOL isUser = [spec[@"selectedIsUser"] boolValue];
   input.stringValue = isUser
       ? curTitle
       : [NSString stringWithFormat:@"My %@", curTitle];
   alert.accessoryView = input;
   [alert.window setInitialFirstResponder:input];
+  [input selectText:nil];
 
   if ([alert runModal] == NSAlertFirstButtonReturn) {
     NSString* name = [input.stringValue stringByTrimmingCharactersInSet:
@@ -982,6 +985,82 @@ static NSString* stageName(NSInteger stage) {
     }
     userMap[name] = _state->captureSlotPortValues(slotIdx);
     spec[@"selectedTitle"] = name;
+    spec[@"selectedIsUser"] = @YES;
+    _state->saveUserSlotPresetsToDisk();
+    _state->rebuildSlotPresetMenu(slotIdx);
+  } else {
+    _state->resyncSlotPresetPopup(slotIdx);
+  }
+}
+
+- (void)renameSlotPreset:(NSMenuItem*)sender {
+  if (!_state) return;
+  _state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = sender.tag;
+  if (slotIdx < 0 || slotIdx >= (NSInteger)_state->deckSlotSpecs.count) return;
+  NSMutableDictionary* spec = _state->deckSlotSpecs[(NSUInteger)slotIdx];
+  BOOL isUser = [spec[@"selectedIsUser"] boolValue];
+  NSString* curTitle = spec[@"selectedTitle"];
+  NSString* slotKey = spec[@"key"] ?: @"";
+  NSString* slotTitle = spec[@"title"] ?: @"Slot";
+  if (!isUser || !curTitle.length || !slotKey.length) {
+    _state->resyncSlotPresetPopup(slotIdx);
+    return;
+  }
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = [NSString stringWithFormat:@"Rename %@ Preset", slotTitle];
+  alert.informativeText = @"Enter a new name for this preset:";
+  [alert addButtonWithTitle:@"Rename"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  RigAlertTextField* input = [[RigAlertTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  input.stringValue = curTitle;
+  alert.accessoryView = input;
+  [alert.window setInitialFirstResponder:input];
+  [input selectText:nil];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSString* newName = [input.stringValue stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!newName.length || [newName isEqualToString:curTitle]) {
+      _state->resyncSlotPresetPopup(slotIdx);
+      return;
+    }
+
+    NSMutableDictionary* userMap = _state->userSlotPresets[slotKey];
+    if (!userMap) {
+      userMap = [NSMutableDictionary dictionary];
+      _state->userSlotPresets[slotKey] = userMap;
+    }
+
+    if (userMap[newName] && ![newName isEqualToString:curTitle]) {
+      NSAlert* fail = [[NSAlert alloc] init];
+      fail.messageText = @"Preset Already Exists";
+      fail.informativeText = [NSString stringWithFormat:@"A preset named '%@' already exists for %@.", newName, slotTitle];
+      [fail runModal];
+      _state->resyncSlotPresetPopup(slotIdx);
+      return;
+    }
+
+    NSArray<NSString*>* factoryTitles = spec[@"factoryTitles"] ?: @[];
+    if ([factoryTitles containsObject:newName]) {
+      NSAlert* fail = [[NSAlert alloc] init];
+      fail.messageText = @"Reserved Name";
+      fail.informativeText = [NSString stringWithFormat:@"'%@' is a factory preset name. Please choose a different name.", newName];
+      [fail runModal];
+      _state->resyncSlotPresetPopup(slotIdx);
+      return;
+    }
+
+    NSDictionary<NSString*, NSNumber*>* values = userMap[curTitle];
+    if (!values) {
+      values = _state->captureSlotPortValues(slotIdx);
+    }
+    userMap[newName] = values;
+    [userMap removeObjectForKey:curTitle];
+
+    spec[@"selectedTitle"] = newName;
     spec[@"selectedIsUser"] = @YES;
     _state->saveUserSlotPresetsToDisk();
     _state->rebuildSlotPresetMenu(slotIdx);
@@ -1163,13 +1242,14 @@ static NSString* stageName(NSInteger stage) {
   [alert addButtonWithTitle:@"Save"];
   [alert addButtonWithTitle:@"Cancel"];
 
-  NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  RigAlertTextField* input = [[RigAlertTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
   NSString* initial = [_state->presetManager.currentPresetName isEqualToString:@"Default Rig"]
       ? @"My Custom Tone"
       : _state->presetManager.currentPresetName;
   input.stringValue = initial;
   alert.accessoryView = input;
   [alert.window setInitialFirstResponder:input];
+  [input selectText:nil];
 
   if ([alert runModal] == NSAlertFirstButtonReturn) {
     NSString* name = [input.stringValue stringByTrimmingCharactersInSet:
@@ -1188,6 +1268,60 @@ static NSString* stageName(NSInteger stage) {
       if (err) {
         NSAlert* fail = [[NSAlert alloc] init];
         fail.messageText = @"Save Failed";
+        fail.informativeText = err.localizedDescription;
+        [fail runModal];
+      }
+    }
+  } else {
+    _state->resyncPresetPopupSelection();
+  }
+}
+
+- (void)renameCurrentPreset:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSString* cur = _state->presetManager.currentPresetName;
+  if (!cur.length || [cur isEqualToString:@"Default Rig"]) {
+    _state->resyncPresetPopupSelection();
+    return;
+  }
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Rename Preset";
+  alert.informativeText = @"Enter a new name for this preset:";
+  [alert addButtonWithTitle:@"Rename"];
+  [alert addButtonWithTitle:@"Cancel"];
+
+  RigAlertTextField* input = [[RigAlertTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  input.stringValue = cur;
+  alert.accessoryView = input;
+  [alert.window setInitialFirstResponder:input];
+  [input selectText:nil];
+
+  if ([alert runModal] == NSAlertFirstButtonReturn) {
+    NSString* newName = [input.stringValue stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!newName.length) {
+      _state->resyncPresetPopupSelection();
+      return;
+    }
+    if ([newName isEqualToString:cur]) {
+      _state->resyncPresetPopupSelection();
+      return;
+    }
+    NSError* err = nil;
+    if ([_state->presetManager renamePresetNamed:cur to:newName fromState:_state error:&err]) {
+      if ([_state->abNameB isEqualToString:cur]) {
+        _state->abNameB = newName;
+      }
+      _state->abUserChoseB = false;
+      _state->abModifiedPreset = nil;
+      _state->updatePresetDisplayTitle();
+    } else {
+      _state->resyncPresetPopupSelection();
+      if (err) {
+        NSAlert* fail = [[NSAlert alloc] init];
+        fail.messageText = @"Rename Failed";
         fail.informativeText = err.localizedDescription;
         [fail runModal];
       }
@@ -1247,10 +1381,11 @@ static NSString* stageName(NSInteger stage) {
   [alert addButtonWithTitle:@"Duplicate"];
   [alert addButtonWithTitle:@"Cancel"];
 
-  NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  RigAlertTextField* input = [[RigAlertTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
   input.stringValue = suggestion;
   alert.accessoryView = input;
   [alert.window setInitialFirstResponder:input];
+  [input selectText:nil];
 
   if ([alert runModal] == NSAlertFirstButtonReturn) {
     NSString* name = [input.stringValue stringByTrimmingCharactersInSet:

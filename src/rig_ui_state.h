@@ -42,6 +42,7 @@
 @interface NSObject (NAMRigPresetShortcuts)
 - (void)saveCurrentPreset:(id)sender;
 - (void)savePresetAs:(id)sender;
+- (void)renameCurrentPreset:(id)sender;
 - (void)prevPresetClicked:(id)sender;
 - (void)nextPresetClicked:(id)sender;
 @end
@@ -648,6 +649,33 @@ struct RigUIState {
     keyEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
         handler:^NSEvent* _Nullable(NSEvent* event) {
       if (!alive || !*alive || !selfState->view || !selfState->uiController) return event;
+
+      NSEventModifierFlags mods = event.modifierFlags &
+          (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+           NSEventModifierFlagControl | NSEventModifierFlagShift);
+      NSString* chars = [event.charactersIgnoringModifiers lowercaseString] ?: @"";
+
+      // Cmd+A: Select All in active text field or text editor view
+      if (mods == NSEventModifierFlagCommand &&
+          ([chars isEqualToString:@"a"] || event.keyCode == 0)) {
+        NSWindow* targetWin = [NSApp keyWindow] ?: [NSApp modalWindow] ?: selfState->view.window;
+        NSResponder* resp = targetWin ? targetWin.firstResponder : nil;
+        if ([resp isKindOfClass:[NSText class]]) {
+          [(NSText*)resp selectAll:nil];
+          return nil;
+        }
+        if ([resp isKindOfClass:[NSTextField class]]) {
+          NSTextField* tf = (NSTextField*)resp;
+          [tf selectText:nil];
+          if (tf.currentEditor) [tf.currentEditor selectAll:nil];
+          return nil;
+        }
+        if ([resp respondsToSelector:@selector(selectAll:)]) {
+          [(id)resp selectAll:nil];
+          return nil;
+        }
+      }
+
       NSWindow* win = selfState->view.window;
       NSWindow* editorWindow = selfState->transformerPopover.contentViewController.view.window;
       if (!win || selfState->view.isHiddenOrHasHiddenAncestor) return event;
@@ -656,11 +684,6 @@ struct RigUIState {
         win = editorWindow;
       }
       if ([NSApp modalWindow] != nil) return event;
-
-      NSEventModifierFlags mods = event.modifierFlags &
-          (NSEventModifierFlagCommand | NSEventModifierFlagOption |
-           NSEventModifierFlagControl | NSEventModifierFlagShift);
-      NSString* chars = [event.charactersIgnoringModifiers lowercaseString] ?: @"";
 
       // Cmd+S saves the current preset (Cmd+Shift+S opens Save Preset As...)
       if (mods == NSEventModifierFlagCommand &&
@@ -762,6 +785,13 @@ struct RigUIState {
                                                  keyEquivalent:@""];
     saveAsItem.target = (id)uiController;
     [[presetPopup menu] addItem:saveAsItem];
+
+    NSMenuItem* renameItem = [[NSMenuItem alloc] initWithTitle:@"Rename Preset…"
+                                                         action:@selector(renameCurrentPreset:)
+                                                  keyEquivalent:@""];
+    renameItem.target = (id)uiController;
+    renameItem.enabled = ![cur isEqualToString:@"Default Rig"];
+    [[presetPopup menu] addItem:renameItem];
 
     NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete Preset"
                                                          action:@selector(deleteCurrentPreset:)
@@ -1035,6 +1065,14 @@ struct RigUIState {
     saveAsItem.target = (id)uiController;
     saveAsItem.tag = slotIdx;
     [[popup menu] addItem:saveAsItem];
+
+    NSMenuItem* renameItem = [[NSMenuItem alloc] initWithTitle:@"Rename Preset…"
+                                                         action:@selector(renameSlotPreset:)
+                                                  keyEquivalent:@""];
+    renameItem.target = (id)uiController;
+    renameItem.tag = slotIdx;
+    renameItem.enabled = selectedIsUser;
+    [[popup menu] addItem:renameItem];
 
     NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete Preset"
                                                         action:@selector(deleteSlotPreset:)

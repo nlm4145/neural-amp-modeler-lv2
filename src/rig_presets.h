@@ -60,6 +60,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)savePreset:(RigPreset*)preset error:(NSError**)error;
 - (BOOL)saveCurrentPresetFromState:(RigUIState*)state error:(NSError**)error;
 - (BOOL)savePresetNamed:(NSString*)name fromState:(RigUIState*)state error:(NSError**)error;
+- (BOOL)renamePresetNamed:(NSString*)oldName
+                       to:(NSString*)newName
+                    error:(NSError**)error;
+- (BOOL)renamePresetNamed:(NSString*)oldName
+                       to:(NSString*)newName
+                fromState:(nullable RigUIState*)state
+                    error:(NSError**)error;
 - (BOOL)deletePresetNamed:(NSString*)name error:(NSError**)error;
 - (NSString*)uniquePresetNameForBase:(NSString*)base;
 - (BOOL)duplicateCurrentPresetFromState:(RigUIState*)state error:(NSError**)error;

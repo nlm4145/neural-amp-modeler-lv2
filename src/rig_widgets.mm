@@ -1897,3 +1897,43 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [fCurve stroke];
 }
 @end
+
+@implementation RigAlertTextField
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+  NSEventModifierFlags mods = event.modifierFlags &
+      (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+       NSEventModifierFlagControl | NSEventModifierFlagShift);
+  NSString* chars = [event.charactersIgnoringModifiers lowercaseString] ?: @"";
+  if (mods == NSEventModifierFlagCommand) {
+    if ([chars isEqualToString:@"a"] || event.keyCode == 0) {
+      NSText* editor = [self currentEditor];
+      if (editor) [editor selectAll:nil];
+      else [self selectText:nil];
+      return YES;
+    }
+    if ([chars isEqualToString:@"c"] || event.keyCode == 8) {
+      NSText* editor = [self currentEditor];
+      if (editor) [editor copy:nil];
+      return YES;
+    }
+    if ([chars isEqualToString:@"v"] || event.keyCode == 9) {
+      NSText* editor = [self currentEditor];
+      if (editor) [editor paste:nil];
+      return YES;
+    }
+    if ([chars isEqualToString:@"x"] || event.keyCode == 7) {
+      NSText* editor = [self currentEditor];
+      if (editor) [editor cut:nil];
+      return YES;
+    }
+    if ([chars isEqualToString:@"z"] || event.keyCode == 6) {
+      NSText* editor = [self currentEditor];
+      if (editor && [editor.undoManager canUndo]) {
+        [editor.undoManager undo];
+        return YES;
+      }
+    }
+  }
+  return [super performKeyEquivalent:event];
+}
+@end

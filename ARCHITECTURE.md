@@ -334,7 +334,7 @@ NeuralAudio's oversampling multiplies WaveNet dilations by
 ## Studio Pro Deck — Slot Preset Dropdown Rule
 
 - Every rack slot across all Studio Pro Deck panes (Post-FX Studio, Power Stage & Iron, Cab Lab & Speaker, and any future pane or slot created) MUST use `addSlotPresetDropdown(...)` (`src/nam_rig_ui.mm`) instead of a row of inline preset chip buttons.
-- Each slot's dropdown menu lists the built-in factory presets for that module followed by any user-saved presets (persisted to `~/Library/Application Support/Axe FX/slot-presets.json`), plus `Save Preset`, `Save Preset As…`, and `Delete Preset` commands.
+- Each slot's dropdown menu lists the built-in factory presets for that module followed by any user-saved presets (persisted to `~/Library/Application Support/Axe FX/slot-presets.json`), plus `Save Preset`, `Save Preset As…`, `Rename Preset…`, and `Delete Preset` commands.
 - Every sound-processing rack, including Power Tube Character, must have an
   independent ON/OFF header button. OFF bypasses its processing without
   rewriting parameters; controls remain editable, and presets capture bypass.

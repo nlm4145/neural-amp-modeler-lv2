@@ -11,4 +11,4 @@ Whenever creating or modifying a pane or rack slot in the Studio Pro Deck (`addL
 2. **Support both factory and user-created presets**:
    - Populate the dropdown with the slot's factory presets.
    - Include user-saved presets for that slot key (persisted in `~/Library/Application Support/Axe FX/slot-presets.json`).
-   - Provide `Save Preset`, `Save Preset As…`, and `Delete Preset` menu actions so the user can create, update, and delete custom presets for every slot.
+   - Provide `Save Preset`, `Save Preset As…`, `Rename Preset…`, and `Delete Preset` menu actions so the user can create, update, rename, and delete custom presets for every slot.

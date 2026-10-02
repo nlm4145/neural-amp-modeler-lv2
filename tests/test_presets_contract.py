@@ -89,8 +89,13 @@ assert "prevPresetClicked:" in ui_mm
 assert "nextPresetClicked:" in ui_mm
 assert "saveCurrentPreset:" in ui_mm
 assert "savePresetAs:" in ui_mm
+assert "renameCurrentPreset:" in ui_mm
 assert "duplicateCurrentPreset:" in ui_mm
 assert "deleteCurrentPreset:" in ui_mm
+assert "renameSlotPreset:" in ui_mm
+assert "saveSlotPreset:" in ui_mm
+assert "saveSlotPresetAs:" in ui_mm
+assert "deleteSlotPreset:" in ui_mm
 assert "revealPresetsInFinder:" in ui_mm
 assert "markPresetModified" in ui_mm
 
@@ -104,7 +109,25 @@ assert "@selector(duplicateCurrentPreset:)" in ui_state_h
 assert "Duplicate Preset" in ui_mm, "UI must show a Duplicate Preset dialog"
 assert "uniquePresetNameForBase:" in ui_mm, "Duplicate dialog must suggest a unique name"
 
-# 5c. Verify the popup never sticks on a command row: command rows carry no
+# 5c. Verify Rename Preset wiring: manager API + menu entry + dialog flow + slot presets
+assert "renamePresetNamed:" in presets_h
+assert "renamePresetNamed:" in presets_mm
+assert '"Rename Preset…"' in ui_state_h, "Preset popup menu must offer Rename Preset…"
+assert "@selector(renameCurrentPreset:)" in ui_state_h
+assert "@selector(renameSlotPreset:)" in ui_state_h
+assert "Rename Preset" in ui_mm, "UI must show a Rename Preset dialog"
+
+# 5d. Verify RigAlertTextField and Cmd+A Select All support across UI and standalone
+widgets_h = (ROOT / "src/rig_widgets.h").read_text()
+widgets_mm = (ROOT / "src/rig_widgets.mm").read_text()
+assert "@interface RigAlertTextField : NSTextField" in widgets_h
+assert "@implementation RigAlertTextField" in widgets_mm
+assert "RigAlertTextField" in ui_mm
+assert 'selectAll:' in ui_state_h, "Key monitor must handle Cmd+A selectAll"
+standalone_mm = (ROOT / "src/standalone_main.mm").read_text()
+assert 'Select All' in standalone_mm and 'selectAll:' in standalone_mm, "Standalone must provide Edit menu with Select All"
+
+# 5e. Verify the popup never sticks on a command row: command rows carry no
 # representedObject-based name, and every Cancel/failure path re-syncs the
 # button back to the current preset.
 assert "resyncPresetPopupSelection" in ui_state_h
@@ -277,5 +300,59 @@ assert loaded["params"]["reverb_mix"] == 15.0
 assert len(loaded["ports"]) == len(expected_ports) + 1
 assert loaded["ports"]["49"] == loaded["params"]["cab2_delay"] == -7.25
 assert loaded["ports"]["59"] == loaded["params"]["cab2_polarity"] == 1.0
+
+# 8. Test preset rename file lifecycle (on-disk rename + JSON name attribute update)
+with tempfile.TemporaryDirectory() as td:
+    tpath = Path(td)
+    old_file = tpath / "Mesa Modern Lead.json"
+    new_file = tpath / "Mesa Vintage Lead.json"
+    with open(old_file, "w") as of:
+        json.dump(sample_preset, of, indent=2)
+    assert old_file.exists() and not new_file.exists()
+
+    # Simulate rename
+    with open(old_file, "r") as of:
+        data = json.load(of)
+    data["name"] = "Mesa Vintage Lead"
+    with open(new_file, "w") as nf:
+        json.dump(data, nf, indent=2)
+    old_file.unlink()
+
+    assert not old_file.exists()
+    assert new_file.exists()
+    with open(new_file, "r") as nf:
+        renamed_data = json.load(nf)
+    assert renamed_data["name"] == "Mesa Vintage Lead"
+    assert renamed_data["params"]["reverb_mix"] == 15.0
+
+# 9. Test slot preset JSON rename lifecycle
+with tempfile.TemporaryDirectory() as td:
+    tpath = Path(td)
+    slot_file = tpath / "slot-presets.json"
+    slot_data = {
+        "delay": {
+            "Space Echo": {"50": 350.0, "51": 45.0, "53": 25.0}
+        },
+        "reverb": {
+            "Big Plate": {"54": 30.0, "55": 4.5}
+        }
+    }
+    with open(slot_file, "w") as sf:
+        json.dump(slot_data, sf, indent=2)
+
+    # Rename slot preset "Space Echo" -> "Vintage Tape Delay"
+    with open(slot_file, "r") as sf:
+        loaded_slots = json.load(sf)
+    del_val = loaded_slots["delay"].pop("Space Echo")
+    loaded_slots["delay"]["Vintage Tape Delay"] = del_val
+    with open(slot_file, "w") as sf:
+        json.dump(loaded_slots, sf, indent=2)
+
+    with open(slot_file, "r") as sf:
+        updated_slots = json.load(sf)
+    assert "Space Echo" not in updated_slots["delay"]
+    assert "Vintage Tape Delay" in updated_slots["delay"]
+    assert updated_slots["delay"]["Vintage Tape Delay"]["50"] == 350.0
+    assert updated_slots["reverb"]["Big Plate"]["54"] == 30.0
 
 print("  PASS  Axe FX / NAM Rig preset contract and JSON serialization fully verified")

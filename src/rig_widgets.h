@@ -39,6 +39,11 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @property(nonatomic) BOOL check;
 @end
 
+// Text field that supports standard editing shortcuts (Cmd+A for select all,
+// Cmd+C, Cmd+V, Cmd+X, Cmd+Z) even in contexts without an active Edit menu.
+@interface RigAlertTextField : NSTextField
+@end
+
 // Freeform pin EQ drawn over a graph's frequency plot (log 20 Hz..20 kHz,
 // +/-18 dB). The frame is the plot rect outset by kPinEditorInset so edge pins
 // are not clipped. Double-click adds or removes a pin, drag moves it, the
