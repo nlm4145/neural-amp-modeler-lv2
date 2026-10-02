@@ -11,8 +11,8 @@
 
 namespace NAMRig {
 
-// Freeform "pin" EQ placed directly on the Sculpt, Transformer and Cab Console
-// graphs. Each pane owns kPinEqBandCount bands; every band is four appended
+// Freeform "pin" EQ placed directly on the Sculpt, Transformer, Cab Console
+// and Speaker graphs. Each pane owns kPinEqBandCount bands; every band is four appended
 // control ports (shape, frequency, gain, Q), so pins automate and recall with
 // presets like any other control. Shape 0 means "no pin"; a band without a pin
 // or at 0 dB is skipped entirely, so the default state is exact bypass.
@@ -20,8 +20,10 @@ namespace NAMRig {
 //   Sculpt      - pre-amp, after Bright/Input EQ/Mid Push, in the amp's True domain
 //   Transformer - after the output transformer, before the speaker, in the domain
 //   Cab Console - after the cab cuts on the stereo cabinet mix, at session rate
-enum class PinEqPane : size_t { Sculpt = 0, Transformer = 1, CabConsole = 2 };
-inline constexpr size_t kPinEqPaneCount = 3;
+//   Speaker     - after the speaker load/excursion, before the cab, in the domain
+// Panes are appended in port order (Speaker came last), not signal order.
+enum class PinEqPane : size_t { Sculpt = 0, Transformer = 1, CabConsole = 2, Speaker = 3 };
+inline constexpr size_t kPinEqPaneCount = 4;
 inline constexpr size_t kPinEqBandCount = 6;
 inline constexpr size_t kPinEqBandParams = 4;
 inline constexpr size_t kPinEqPanePorts = kPinEqBandCount * kPinEqBandParams;
@@ -40,7 +42,7 @@ inline constexpr float kPinQDefault = 1.0f;
 inline constexpr std::array<float, kPinEqBandCount> kPinFreqDefaults = {
     100.0f, 250.0f, 600.0f, 1500.0f, 3500.0f, 8000.0f};
 inline constexpr std::array<const char*, kPinEqPaneCount> kPinEqPaneSymbols = {
-    "sculpt", "transformer", "cab_console"};
+    "sculpt", "transformer", "cab_console", "speaker"};
 inline constexpr std::array<const char*, kPinEqBandParams> kPinEqParamSymbols = {
     "shape", "freq", "gain", "q"};
 

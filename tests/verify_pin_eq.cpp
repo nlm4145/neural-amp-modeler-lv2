@@ -1,11 +1,13 @@
 // Graph pin EQ (src/pin_eq.h): port layout, exact bypass, steady-state
 // response matching the drawn curve, click-free shape changes, and stability
-// at the 16x True-domain rate.
+// at the 16x True-domain rate. Also checks the Speaker graph's drawn load
+// response against the speaker DSP.
 #include <cmath>
 #include <cstdio>
 #include <vector>
 
 #include "pin_eq.h"
+#include "speaker_dynamics.h"
 
 using namespace NAMRig;
 
@@ -46,12 +48,15 @@ static double measureDb(PinEq& eq, const PinBands& bands, double rate, double hz
 int main() {
   std::printf("== pin EQ ==\n");
 
-  // Port layout: 3 panes x 6 bands x 4 params, appended after Mid Push.
+  // Port layout: 4 panes x 6 bands x 4 params, appended after Mid Push.
   CHECK(kPinEqFirstPort == kMidPushPort + 1, "pins append after mid_push");
-  CHECK(pinEqPort(PinEqPane::CabConsole, 5, kPinQ) == kRigControlPortCount - 1, "last port");
+  CHECK(pinEqPort(PinEqPane::CabConsole, 5, kPinQ) == 154, "console pins keep ports 131..154");
+  CHECK(pinEqPort(PinEqPane::Speaker, 0, kPinShape) == 155, "speaker pins append at 155");
+  CHECK(pinEqPort(PinEqPane::Speaker, 5, kPinQ) == kRigControlPortCount - 1, "last port");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::Sculpt, 0, kPinShape)) == "sculpt_pin1_shape", "symbol");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::Transformer, 2, kPinFreq)) == "transformer_pin3_freq", "symbol");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::CabConsole, 5, kPinQ)) == "cab_console_pin6_q", "symbol");
+  CHECK(pinEqSymbol(pinEqPort(PinEqPane::Speaker, 3, kPinGain)) == "speaker_pin4_gain", "symbol");
   for (uint32_t port = kPinEqFirstPort; port < kRigControlPortCount; ++port) {
     CHECK(pinEqPort(static_cast<PinEqPane>(pinEqPaneOf(port)), pinEqBandOf(port), pinEqParamOf(port)) == port,
           "round trip %u", port);
@@ -133,6 +138,37 @@ int main() {
     for (float v : buf) finite &= std::isfinite(v) && std::fabs(v) < 1.0e3f;
     CHECK(finite, "extreme pins at 1.536 MHz must stay finite and bounded");
   }
+
+  // The Speaker graph draws SpeakerDynamics::responseDb; with compression and
+  // drive at zero the DSP is linear and must measure exactly that.
+  for (int profile = SpeakerDynamics::kResistive; profile < SpeakerDynamics::kProfileCount; ++profile) {
+    for (double rate : {48000.0, 384000.0}) {
+      const float thump = 70.0f, resonance = 80.0f, damping = 0.4f;
+      for (double hz : {50.0, 100.0, 400.0, 3000.0, 9000.0}) {
+        SpeakerDynamics spk;
+        spk.reset();
+        const size_t settle = static_cast<size_t>(rate * 0.3), span = static_cast<size_t>(rate * 0.1);
+        std::vector<float> buf(settle + span);
+        for (size_t i = 0; i < buf.size(); ++i)
+          buf[i] = static_cast<float>(0.1 * std::sin(2.0 * kPi * hz * i / rate));
+        for (size_t start = 0; start < buf.size(); start += 512)
+          spk.process(buf.data() + start, std::min<size_t>(512, buf.size() - start), rate, profile,
+                      0.0f, 0.0f, thump, resonance, damping);
+        double in = 0.0, out = 0.0;
+        for (size_t i = settle; i < buf.size(); ++i) {
+          const double x = 0.1 * std::sin(2.0 * kPi * hz * i / rate);
+          in += x * x;
+          out += static_cast<double>(buf[i]) * buf[i];
+        }
+        const double got = 10.0 * std::log10(out / in);
+        const double want = SpeakerDynamics::responseDb(profile, hz, rate, thump, resonance, damping);
+        CHECK(std::fabs(got - want) < 0.05, "speaker profile %d rate %.0f, %.0f Hz: measured %.3f dB, drawn %.3f dB",
+              profile, rate, hz, got, want);
+      }
+    }
+  }
+  CHECK(SpeakerDynamics::responseDb(SpeakerDynamics::kCaptured, 100.0, 48000.0, 100, 100, 0) == 0.0,
+        "captured speaker draws flat");
 
   if (failures == 0) std::printf("  ALL PASSED\n");
   return failures == 0 ? 0 : 1;

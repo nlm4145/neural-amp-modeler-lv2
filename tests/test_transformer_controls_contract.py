@@ -49,7 +49,7 @@ symbols = [
 rack_symbols = ["delay_enabled", "reverb_enabled", "spatial_enabled", "power_enabled",
                 "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled"]
 appended_symbols = ["power_tube_enabled", "power_tube_type", "power_tube_character", "mid_push"]
-appended_symbols += [f"{pane}_pin{b}_{p}" for pane in ("sculpt", "transformer", "cab_console") for b in range(1, 7) for p in ("shape", "freq", "gain", "q")]
+appended_symbols += [f"{pane}_pin{b}_{p}" for pane in ("sculpt", "transformer", "cab_console", "speaker") for b in range(1, 7) for p in ("shape", "freq", "gain", "q")]
 port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
 )]
@@ -59,7 +59,7 @@ assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + ap
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
 assert "kPortCount = kRigControlPortCount;" in header
-assert "kRigControlPortCount = 155;" in tube_controls
+assert "kRigControlPortCount = 179;" in tube_controls
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
@@ -126,7 +126,7 @@ assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstP
 assert "write(controller, port, sizeof(value), 0, &value);" in body(state, "void sendControl(", "  ")
 event = body(ui, "void portEvent(")
 assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kRigControlPortCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
-    "host float echoes must include 4..154, exclude 155+, and validate format/buffer/size"
+    "host float echoes must include 4..178, exclude 179+, and validate format/buffer/size"
 )
 
 assert "int transformerProfile = NAMRig::OutputTransformer::kCaptured;" in state

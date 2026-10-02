@@ -187,7 +187,7 @@ public:
     float* power_tube_type;      // in: port 80, Captured/6L6-inspired/EL34-inspired
     float* power_tube_character; // in: port 81, added character (0..100%)
     float* mid_push;             // in: port 82, pre-amp midrange bell (0..100%)
-    std::array<float*, kPinEqPortCount> pin_eq; // in: ports 83..154, graph pin EQ bands
+    std::array<float*, kPinEqPortCount> pin_eq; // in: ports 83..178, graph pin EQ bands
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -322,7 +322,7 @@ private:
   AmpAdvanced ampAdvanced;
   OutputTransformer outputTransformer;
   // Graph pin EQs: Sculpt and Transformer run in the amp's domain, Console at base rate.
-  PinEq sculptPins, transformerPins, consolePins;
+  PinEq sculptPins, transformerPins, consolePins, speakerPins;
   SpeakerDynamics speakerDynamics;
   int transformerRequested = OutputTransformer::kCaptured;
   int transformerApplied = OutputTransformer::kCaptured;

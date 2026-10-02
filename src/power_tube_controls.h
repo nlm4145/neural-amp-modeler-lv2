@@ -14,8 +14,8 @@ inline constexpr float kPowerTubeCharacterDefault = 50.0f;
 inline constexpr uint32_t kMidPushPort = 82;
 // Pin EQ bands for the Sculpt/Transformer/Cab Console graphs (see pin_eq.h).
 inline constexpr uint32_t kPinEqFirstPort = 83;
-inline constexpr uint32_t kPinEqPortCount = 72;
-inline constexpr uint32_t kRigControlPortCount = 155;
+inline constexpr uint32_t kPinEqPortCount = 96;
+inline constexpr uint32_t kRigControlPortCount = 179;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

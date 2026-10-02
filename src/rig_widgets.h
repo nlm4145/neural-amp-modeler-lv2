@@ -102,6 +102,11 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @end
 
 @interface NAMSpeakerDynamicsVisualizer : NSView
+@property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
+// Resolved SpeakerDynamics profile (Auto already mapped) and power-amp
+// damping 0..1 (negative feedback while the Power rack is on).
+@property(nonatomic) int profile;
+@property(nonatomic) float damping;
 @property(nonatomic) float drive;
 @property(nonatomic) float comp;
 @property(nonatomic) float thump;

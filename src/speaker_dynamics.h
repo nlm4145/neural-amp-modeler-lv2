@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstring>
 
@@ -85,6 +86,36 @@ class SpeakerDynamics {
   }
 
   void bypassDamping() noexcept { smoothedDamping_ = 0.0; }
+
+  // Quiet-signal magnitude (dB) of the load filters at `hz`, as process() runs
+  // them once the smoothers settle: resonance, inductance and thump blended by
+  // their amounts (0..100) and the power amp's damping (0..1). Excursion
+  // compression and drive depend on level and are excluded. Profiles 0 and 1
+  // (Auto must be resolved first) return 0 dB.
+  static double responseDb(int profile, double hz, double sampleRate,
+                           float thumpAmount, float resonanceAmount,
+                           float dampingAmount) noexcept {
+    profile = clampProfile(profile);
+    if (profile == kCaptured || profile == kAuto) return 0.0;
+    sampleRate = std::max(8000.0, sampleRate);
+    const Profile& p = kProfiles_[profile];
+    Biquad resonance, thump, inductance;
+    setPeaking(resonance, p.resonanceHz, p.resonanceDb, p.resonanceQ, sampleRate);
+    setPeaking(thump, p.thumpHz, p.thumpDb, p.thumpQ, sampleRate);
+    setHighShelf(inductance, std::min(p.inductanceHz, sampleRate * 0.2), p.inductanceDb,
+                 sampleRate);
+    const double loadScale = clamp01(resonanceAmount * 0.01f) * (1.0 - 0.6 * clamp01(dampingAmount));
+    const double thumpWet = clamp01(thumpAmount * 0.01f);
+    const std::complex<double> z1 = std::polar(1.0, -2.0 * kPi * hz / sampleRate);
+    const auto blend = [&](const Biquad& f, double wet) {
+      const std::complex<double> h = (f.b0 + f.b1 * z1 + f.b2 * z1 * z1) /
+                                     (1.0 + f.a1 * z1 + f.a2 * z1 * z1);
+      return 1.0 + wet * (h - 1.0);
+    };
+    const double magnitude = std::abs(blend(resonance, loadScale) * blend(inductance, loadScale) *
+                                      blend(thump, thumpWet));
+    return 20.0 * std::log10(std::max(1.0e-12, magnitude));
+  }
 
   void process(float* samples, size_t count, double sampleRate, int profile,
                float driveAmount, float compressionAmount, float thumpAmount,

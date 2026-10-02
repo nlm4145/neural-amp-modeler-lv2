@@ -1108,6 +1108,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
   const PinBands sculptPinBands = pinBands(PinEqPane::Sculpt);
   const PinBands transformerPinBands = pinBands(PinEqPane::Transformer);
+  const PinBands speakerPinBands = pinBands(PinEqPane::Speaker);
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
@@ -1147,11 +1148,14 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         float* channels[1] = {samples};
         transformerPins.process(channels, 1, count, domainRate, transformerPinBands);
       }
-      if (rackOn(Rack::Speaker))
+      if (rackOn(Rack::Speaker)) {
         speakerDynamics.process(samples, count, domainRate, speakerApplied,
                               *ports.speaker_drive, *ports.speaker_compression,
                               *ports.speaker_thump, *ports.speaker_resonance,
                                 rackOn(Rack::Power) ? *ports.negative_feedback * 0.01f : 0.0f);
+        float* channels[1] = {samples};
+        speakerPins.process(channels, 1, count, domainRate, speakerPinBands);
+      }
     }
   };
 
@@ -1697,7 +1701,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         if (!requestedRacks[static_cast<size_t>(Rack::Power)]) speakerDynamics.bypassDamping();
       }
       if (changed(Rack::Transformer)) { outputTransformer.reset(); transformerPins.reset(); }
-      if (changed(Rack::Speaker)) speakerDynamics.reset();
+      if (changed(Rack::Speaker)) { speakerDynamics.reset(); speakerPins.reset(); }
       if (changed(Rack::Delay)) delayFx.reset();
       if (changed(Rack::Reverb)) reverbFx.resetPlate();
       if (changed(Rack::Spatial)) reverbFx.resetRoom();

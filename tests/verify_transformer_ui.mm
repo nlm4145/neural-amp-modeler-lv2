@@ -226,16 +226,53 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
   using namespace NAMRig;
   RigUIState* state = runtime.state;
   stage = "graph pin editors / wiring";
-  REQUIRE(state->sculptVisualizer && state->transformerVisualizer && state->cabConsoleVisualizer);
+  REQUIRE(state->sculptVisualizer && state->transformerVisualizer && state->cabConsoleVisualizer &&
+          state->speakerVisualizer);
   CHECK(state->pinEditors[(size_t)PinEqPane::Sculpt] == state->sculptVisualizer.pinEditor);
   CHECK(state->pinEditors[(size_t)PinEqPane::Transformer] == state->transformerVisualizer.pinEditor);
   CHECK(state->pinEditors[(size_t)PinEqPane::CabConsole] == state->cabConsoleVisualizer.pinEditor);
+  CHECK(state->pinEditors[(size_t)PinEqPane::Speaker] == state->speakerVisualizer.pinEditor);
   for (size_t pane = 0; pane < kPinEqPaneCount; ++pane) {
     NAMPinEQEditor* editor = state->pinEditors[pane];
     REQUIRE(editor && editor.onChange && editor.onCommit);
     CHECK(editor.pane == (PinEqPane)pane);
   }
   CHECK(state->sculptVisualizer.pinEditor.superview == state->sculptVisualizer);
+  CHECK(state->speakerVisualizer.pinEditor.superview == state->speakerVisualizer);
+
+  stage = "graph pin editors / speaker slot preset and drawn load";
+  NSInteger speakerSlot = -1;
+  for (NSUInteger i = 0; i < state->deckSlotSpecs.count; ++i)
+    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"speaker"]) speakerSlot = (NSInteger)i;
+  REQUIRE(speakerSlot >= 0);
+  NSDictionary* speakerValues = state->captureSlotPortValues(speakerSlot);
+  for (size_t i = 0; i < kPinEqPanePorts; ++i) {
+    const uint32_t port = pinEqPort(PinEqPane::Speaker, 0, 0) + (uint32_t)i;
+    CHECK(speakerValues[[NSString stringWithFormat:@"%u", port]] != nil);
+  }
+  // Auto resolves from the displayed Cab A path, as in the DSP; Power ON feeds damping.
+  drain();
+  state->displayPath(2, "/irs/Mesa Recto V30.wav");
+  drain();
+  CHECK(state->speakerCabPath == "/irs/Mesa Recto V30.wav");
+  const float autoProfile = SpeakerDynamics::kAuto;
+  runtime.descriptor->port_event(state, 42, sizeof(autoProfile), 0, &autoProfile);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kModern412);
+  const float nfb = 50.0f, powerOn = 1.0f, powerOff = 0.0f;
+  const uint32_t powerPort = kRackControlFirstPort + (uint32_t)Rack::Power;
+  runtime.descriptor->port_event(state, powerPort, sizeof(powerOn), 0, &powerOn);
+  runtime.descriptor->port_event(state, 38, sizeof(nfb), 0, &nfb);
+  drain();
+  CHECK(near(state->speakerVisualizer.damping, 0.5f));
+  runtime.descriptor->port_event(state, powerPort, sizeof(powerOff), 0, &powerOff);
+  drain();
+  CHECK(state->speakerVisualizer.damping == 0.0f);
+  const float captured0 = SpeakerDynamics::kCaptured;
+  runtime.descriptor->port_event(state, 42, sizeof(captured0), 0, &captured0);
+  runtime.descriptor->port_event(state, powerPort, sizeof(powerOn), 0, &powerOn);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kCaptured);
 
   stage = "graph pin editors / double-click add writes a bell";
   [runtime.window layoutIfNeeded];
@@ -579,7 +616,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 155 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 179 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:

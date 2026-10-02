@@ -26,7 +26,7 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 155 &&
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 179 &&
                   kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
@@ -134,7 +134,8 @@ void nonneutral(Controls& c, Rack rack) {
       placePin(c, PinEqPane::Transformer, kPinLowShelf, 150, -6, 0.7071f); break;
     case Rack::Speaker:
       c[42] = SpeakerDynamics::kModern412;
-      c[43] = c[44] = c[45] = c[46] = 90; break;
+      c[43] = c[44] = c[45] = c[46] = 90;
+      placePin(c, PinEqPane::Speaker, kPinBell, 2500, -7, 2.0f); break;
     case Rack::CabConsole:
       c[25] = -12; c[26] = 350; c[27] = 2200; c[48] = -9; c[49] = -7; c[59] = 1;
       placePin(c, PinEqPane::CabConsole, kPinHighShelf, 3000, 6, 0.7071f); break;
@@ -870,7 +871,8 @@ void verifyPins(const LV2_Descriptor* d) {
   for (int mode : {0, 6}) {
     const double rate = mode == 0 ? 48000 : 96000;
     Fixtures fixtures(rate);
-    for (PinEqPane pane : {PinEqPane::Sculpt, PinEqPane::Transformer, PinEqPane::CabConsole}) {
+    for (PinEqPane pane : {PinEqPane::Sculpt, PinEqPane::Transformer, PinEqPane::Speaker,
+                          PinEqPane::CabConsole}) {
       Controls base = defaults(mode), boosted = base, flat = base;
       placePin(boosted, pane, kPinBell, 997, 12);
       placePin(flat, pane, kPinBell, 997, 0);

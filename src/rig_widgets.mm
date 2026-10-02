@@ -4,6 +4,7 @@
 
 #include "pin_eq.h"
 #include "power_tube_controls.h"
+#include "speaker_dynamics.h"
 #include <array>
 #include <cmath>
 #include <algorithm>
@@ -1693,11 +1694,30 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 @end
 
 @implementation NAMSpeakerDynamicsVisualizer
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.toolTip = @"Quiet-signal response of the speaker load (resonance, voice-coil rise, thump) including the power amp's damping. Cone compression and drive react to level and are not drawn.";
+    _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Speaker
+        accent:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0]];
+    [self addSubview:_pinEditor];
+  }
+  return self;
+}
+- (NSRect)plotRect {
+  const NSRect r = self.bounds;
+  return NSMakeRect(24.0, 16.0, r.size.width - 40.0, r.size.height - 40.0);
+}
+- (void)layout {
+  [super layout];
+  _pinEditor.frame = NSInsetRect([self plotRect], -kPinEditorInset, -kPinEditorInset);
+}
 - (BOOL)isFlipped { return NO; }
 - (void)setDrive:(float)v { _drive = v; self.needsDisplay = YES; }
 - (void)setComp:(float)v { _comp = v; self.needsDisplay = YES; }
 - (void)setThump:(float)v { _thump = v; self.needsDisplay = YES; }
 - (void)setResonance:(float)v { _resonance = v; self.needsDisplay = YES; }
+- (void)setProfile:(int)v { _profile = NAMRig::SpeakerDynamics::clampProfile(v); self.needsDisplay = YES; }
+- (void)setDamping:(float)v { _damping = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
   NSRect r = self.bounds;
@@ -1714,9 +1734,12 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.95]
   };
-  [@"SPEAKER IMPEDANCE & CONE EXCURSION" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [@"SPEAKER LOAD RESPONSE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
-  NSString* stat = [NSString stringWithFormat:@"DRV: %.0f%%  •  COMP: %.0f%%  •  THUMP: %.0f%%", _drive, _comp, _thump];
+  const bool captured = _profile == NAMRig::SpeakerDynamics::kCaptured;
+  NSString* stat = captured
+      ? @"CAPTURED LOAD  •  BYPASS"
+      : [NSString stringWithFormat:@"DRV: %.0f%%  •  COMP: %.0f%%  •  THUMP: %.0f%%", _drive, _comp, _thump];
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.9]
@@ -1724,41 +1747,44 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
   [stat drawAtPoint:NSMakePoint(r.size.width - 14 - ssz.width, r.size.height - 18) withAttributes:statAttrs];
 
-  const CGFloat leftM = 24.0, rightM = 16.0, topM = 24.0, botM = 16.0;
-  const CGFloat pw = r.size.width - leftM - rightM;
-  const CGFloat ph = r.size.height - topM - botM;
-  const CGFloat base = botM + 6.0;
+  // The DSP's own load filters (speaker_dynamics.h) on the pin editor's axes:
+  // log frequency 20 Hz..20 kHz, +/-18 dB.
+  const NSRect plot = [self plotRect];
+  const CGFloat leftM = NSMinX(plot), pw = plot.size.width, botM = NSMinY(plot);
+
+  NSBezierPath* zero = [NSBezierPath bezierPath];
+  [zero moveToPoint:NSMakePoint(leftM, NSMidY(plot))];
+  [zero lineToPoint:NSMakePoint(leftM + pw, NSMidY(plot))];
+  zero.lineWidth = 0.75;
+  CGFloat dash[2] = {2.0, 3.0};
+  [zero setLineDash:dash count:2 phase:0.0];
+  [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
+  [zero stroke];
 
   NSBezierPath* zCurve = [NSBezierPath bezierPath];
-  const int nPts = 60;
-  float resPeak = 0.35f + 0.55f * (_resonance / 100.0f);
-  float thumpScale = 1.0f + 0.40f * (_thump / 100.0f);
-
+  const int nPts = 120;
   for (int i = 0; i <= nPts; ++i) {
-    float frac = (float)i / (float)nPts;
-    CGFloat px = leftM + frac * pw;
-    float d = (frac - 0.20f) / 0.08f;
-    float bell = std::exp(-0.5f * d * d) * resPeak * thumpScale;
-    float indRise = (frac > 0.60f) ? 0.35f * ((frac - 0.60f) / 0.40f) : 0.0f;
-    float zNorm = 0.15f + bell + indRise;
-
-    CGFloat py = base + zNorm * (ph * 0.85);
-    if (i == 0) [zCurve moveToPoint:NSMakePoint(px, py)];
-    else [zCurve lineToPoint:NSMakePoint(px, py)];
+    const double frac = (double)i / (double)nPts;
+    const double hz = 20.0 * std::pow(1000.0, frac);
+    const double db = NAMRig::SpeakerDynamics::responseDb(_profile, hz, kPinPlotRate,
+                                                          _thump, _resonance, _damping);
+    const NSPoint p = NSMakePoint(leftM + frac * pw, pinPlotY(plot, db));
+    if (i == 0) [zCurve moveToPoint:p];
+    else [zCurve lineToPoint:p];
   }
 
   NSBezierPath* zFill = [zCurve copy];
-  [zFill lineToPoint:NSMakePoint(leftM + pw, base)];
-  [zFill lineToPoint:NSMakePoint(leftM, base)];
+  [zFill lineToPoint:NSMakePoint(leftM + pw, botM)];
+  [zFill lineToPoint:NSMakePoint(leftM, botM)];
   [zFill closePath];
 
   NSGradient* zg = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.35]
+      initWithStartingColor:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:(captured ? 0.12 : 0.35)]
                 endingColor:[NSColor colorWithSRGBRed:0.05 green:0.25 blue:0.20 alpha:0.02]];
   [zg drawInBezierPath:zFill angle:270.0];
 
   zCurve.lineWidth = 2.0;
-  [[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.95] setStroke];
+  [[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:(captured ? 0.45 : 0.95)] setStroke];
   [zCurve stroke];
 }
 @end

@@ -888,6 +888,18 @@ struct RigUIState {
     }
   }
 
+  // Cab A path last displayed; Auto speaker profiles resolve from it like the DSP.
+  std::string speakerCabPath;
+  void refreshSpeakerVisualizer() {
+    if (!speakerVisualizer) return;
+    int profile = NAMRig::SpeakerDynamics::clampProfile((int)(currentPortValueForSlot(42) + 0.5f));
+    if (profile == NAMRig::SpeakerDynamics::kAuto)
+      profile = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabPath.c_str());
+    speakerVisualizer.profile = profile;
+    const bool powerOn = rackControls[(size_t)NAMRig::Rack::Power] >= 0.5f;
+    speakerVisualizer.damping = powerOn ? currentPortValueForSlot(38) * 0.01f : 0.0f;
+  }
+
   float currentPortValueForSlot(uint32_t port) const {
     if (NAMRig::isPinEqPort(port)) return pinEqControls[port - NAMRig::kPinEqFirstPort];
     if (port == NAMRig::kPowerTubeTypePort) return (float)powerTubeProfile;
@@ -1511,7 +1523,12 @@ struct RigUIState {
     NSMutableArray<NSString*>* savedPaths = [NSMutableArray array];
     for (const std::string& saved : availableModelPaths[stage])
       [savedPaths addObject:[NSString stringWithUTF8String:saved.c_str()]];
+    auto alive = isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (stage == 2 && alive && *alive) {
+        speakerCabPath = copy;
+        refreshSpeakerVisualizer();
+      }
       if (copy.empty()) {
         [picker removeAllItems];
         [picker addItemWithTitle:(stage == 3 ? @"No Cab B loaded" : @"No model loaded")];
@@ -1767,6 +1784,7 @@ struct RigUIState {
         if (!alive || !*alive) return;
         if (index == (size_t)NAMRig::Rack::PowerTube && powerTubeVisualizer)
           powerTubeVisualizer.enabled = rackControls[index] >= 0.5f;
+        if (index == (size_t)NAMRig::Rack::Power) refreshSpeakerVisualizer();
         RigButton* button = rackButtons[index];
         if (!button) return;
         const bool enabled = rackControls[index] >= 0.5f;
@@ -1910,6 +1928,7 @@ struct RigUIState {
           [deckSpeakerProfilePopup selectItemAtIndex:idx];
           deckSpeakerProfilePopup.toolTip = deckSpeakerProfilePopup.selectedItem.toolTip;
         }
+        refreshSpeakerVisualizer();
       };
       if ([NSThread isMainThread]) updateSpeaker();
       else dispatch_async(dispatch_get_main_queue(), updateSpeaker);
@@ -1961,6 +1980,7 @@ struct RigUIState {
         else if (port == 41) powerVisualizer.master = value;
         powerVisualizer.needsDisplay = YES;
       }
+      if (port == 38) refreshSpeakerVisualizer();
       if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort)) {
         if (port == 39) sculptVisualizer.bright = value;
         else if (port == 40) sculptVisualizer.inputEq = value;

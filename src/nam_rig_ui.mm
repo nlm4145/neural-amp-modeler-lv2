@@ -2758,7 +2758,9 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* spkrPresetTitles = @[@"PUNCHY 4x12", @"VINTAGE OPEN", @"HEAVY THUMP", @"FLAT BYPASS"];
     addSlotPresetDropdown(chips, state, @"speaker", @"Physical Speaker Emulation",
-                          @[@42, @43, @44, @45, @46], spkrPresetTitles, @selector(applySpeakerPreset:));
+                          [@[@42, @43, @44, @45, @46]
+                              arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Speaker)],
+                          spkrPresetTitles, @selector(applySpeakerPreset:));
 
     NAMSpeakerDynamicsVisualizer* spkVis = [[NAMSpeakerDynamicsVisualizer alloc] initWithFrame:NSZeroRect];
     spkVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2767,6 +2769,8 @@ static void addLowerStudioDeck(RigUIState* state,
     spkVis.thump = 50.0f;
     spkVis.resonance = 50.0f;
     state->speakerVisualizer = spkVis;
+    state->refreshSpeakerVisualizer();
+    installPinEditor(state, spkVis.pinEditor);
     [card addSubview:spkVis];
     [[spkVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
     [[spkVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
