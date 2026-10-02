@@ -599,6 +599,9 @@ class StandaloneHost {
     plugin_->ports.power_tube_type = &tubeControls_[0];
     plugin_->ports.power_tube_character = &tubeControls_[1];
     plugin_->ports.mid_push = &midPushControl_;
+    plugin_->ports.od_drive = &overdriveControls_[0];
+    plugin_->ports.od_tone = &overdriveControls_[1];
+    plugin_->ports.od_level = &overdriveControls_[2];
     for (size_t i = 0; i < pinEqControls_.size(); ++i)
       plugin_->ports.pin_eq[i] = &pinEqControls_[i];
 
@@ -965,6 +968,12 @@ class StandaloneHost {
     }
     if (format == 0 && port == NAMRig::kMidPushPort && size == sizeof(float)) {
       host->midPushControl_ = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kOverdriveDrivePort &&
+        port <= NAMRig::kOverdriveLevelPort && size == sizeof(float)) {
+      host->overdriveControls_[port - NAMRig::kOverdriveDrivePort] =
+          *static_cast<const float*>(buffer);
       return;
     }
     if (format == 0 && NAMRig::isPinEqPort(port) && size == sizeof(float)) {
@@ -1762,6 +1771,7 @@ class StandaloneHost {
   std::array<float, NAMRig::kRackCount> rackControls_ = NAMRig::kRackControlDefaults;
   std::array<float, 2> tubeControls_ = {0.0f, NAMRig::kPowerTubeCharacterDefault};
   float midPushControl_ = 0.0f;
+  std::array<float, 3> overdriveControls_ = {0.0f, NAMRig::Overdrive::kToneDefault, 0.0f};
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

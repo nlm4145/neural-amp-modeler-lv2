@@ -87,6 +87,9 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float bright;
 @property(nonatomic) float inputEq;
 @property(nonatomic) float midPush;
+@property(nonatomic) float odDrive;
+@property(nonatomic) float odTone;
+@property(nonatomic) float odLevel;
 @end
 
 @interface NAMPowerTubeVisualizer : NSView

@@ -15,7 +15,11 @@ inline constexpr uint32_t kMidPushPort = 82;
 // Pin EQ bands for the Sculpt/Transformer/Cab Console graphs (see pin_eq.h).
 inline constexpr uint32_t kPinEqFirstPort = 83;
 inline constexpr uint32_t kPinEqPortCount = 96;
-inline constexpr uint32_t kRigControlPortCount = 179;
+// Pre-Amp Tonal Sculpt overdrive (see overdrive.h), appended after the pins.
+inline constexpr uint32_t kOverdriveDrivePort = 179;
+inline constexpr uint32_t kOverdriveTonePort = 180;
+inline constexpr uint32_t kOverdriveLevelPort = 181;
+inline constexpr uint32_t kRigControlPortCount = 182;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

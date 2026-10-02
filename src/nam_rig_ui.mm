@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -63,6 +64,7 @@ static NSString* stageName(NSInteger stage) {
 
 #import "rig_theme.h"
 #import "rig_widgets.h"
+#include "overdrive.h"
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
@@ -111,6 +113,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)applySpatialPreset:(NSButton*)sender;
 - (void)applyPowerPreset:(NSButton*)sender;
 - (void)applySculptPreset:(NSButton*)sender;
+- (void)sculptPageClicked:(NSButton*)sender;
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
 - (void)applyTransformerPreset:(NSButton*)sender;
@@ -751,21 +754,32 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
+- (void)sculptPageClicked:(NSButton*)sender {
+  if (_state) _state->setSculptPage(sender.tag == 1);
+}
+
 - (void)applySculptPreset:(NSButton*)sender {
   if (!_state) return;
-  struct SculptPreset { float bright, inputEq, midPush; };
+  struct SculptPreset { float bright, inputEq, midPush, odDrive, odTone, odLevel; };
   const SculptPreset presets[] = {
-    {6.0f, 0.0f, 0.0f},   // LEAD BOOST
-    {3.0f, 75.0f, 0.0f},  // TIGHT CHUG
-    {0.0f, 60.0f, 70.0f}, // OD PUSH
-    {0.0f, 0.0f, 0.0f}    // FLAT
+    {6.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f},    // LEAD BOOST
+    {3.0f, 75.0f, 0.0f, 0.0f, 50.0f, 0.0f},   // TIGHT CHUG
+    {0.0f, 60.0f, 70.0f, 0.0f, 50.0f, 0.0f},  // OD PUSH
+    {0.0f, 30.0f, 0.0f, 20.0f, 55.0f, 6.0f},  // TS9 DRIVE
+    {0.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f}     // FLAT
   };
-  if (sender.tag >= 0 && sender.tag < 4) {
+  if (sender.tag >= 0 && sender.tag < 5) {
     const auto& p = presets[sender.tag];
     _state->sendControl(39, p.bright); _state->updateControl(39, p.bright);
     _state->sendControl(40, p.inputEq); _state->updateControl(40, p.inputEq);
     _state->sendControl(NAMRig::kMidPushPort, p.midPush);
     _state->updateControl(NAMRig::kMidPushPort, p.midPush);
+    _state->sendControl(NAMRig::kOverdriveDrivePort, p.odDrive);
+    _state->updateControl(NAMRig::kOverdriveDrivePort, p.odDrive);
+    _state->sendControl(NAMRig::kOverdriveTonePort, p.odTone);
+    _state->updateControl(NAMRig::kOverdriveTonePort, p.odTone);
+    _state->sendControl(NAMRig::kOverdriveLevelPort, p.odLevel);
+    _state->updateControl(NAMRig::kOverdriveLevelPort, p.odLevel);
     [self markPresetModified];
   }
 }
@@ -864,6 +878,18 @@ static NSString* stageName(NSInteger stage) {
       if ([spec[@"key"] isEqualToString:@"sculpt"] && !values[midPushKey]) {
         _state->sendControl(NAMRig::kMidPushPort, 0.0f);
         _state->updateControl(NAMRig::kMidPushPort, 0.0f);
+      }
+      // Sculpt presets saved before the overdrive existed recall it as OFF.
+      if ([spec[@"key"] isEqualToString:@"sculpt"]) {
+        const std::pair<uint32_t, float> odDefaults[] = {
+            {NAMRig::kOverdriveDrivePort, 0.0f},
+            {NAMRig::kOverdriveTonePort, NAMRig::Overdrive::kToneDefault},
+            {NAMRig::kOverdriveLevelPort, 0.0f}};
+        for (const auto& [port, value] : odDefaults) {
+          if (values[[NSString stringWithFormat:@"%u", port]]) continue;
+          _state->sendControl(port, value);
+          _state->updateControl(port, value);
+        }
       }
       // Slot presets saved before graph pins existed recall with no pins.
       for (NSNumber* pNum in spec[@"ports"]) {
@@ -2332,10 +2358,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [row1 addArrangedSubview:rack];
     sculptRackRef = rack;
 
-    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
-    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    kr.distribution = NSStackViewDistributionFillEqually;
-    kr.spacing = 6.0;
+    // Two pages of three knobs share the 108pt zone: EQ and the overdrive.
+    NSView* kr = [[NSView alloc] initWithFrame:NSZeroRect];
     kr.translatesAutoresizingMaskIntoConstraints = NO;
     [rack addSubview:kr];
     [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
@@ -2343,10 +2367,25 @@ static void addLowerStudioDeck(RigUIState* state,
     [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
     [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
 
-    const size_t sculptK[3] = {19, 20, 38};
-    for (size_t idx : sculptK) {
-      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    const size_t sculptPages[2][3] = {{19, 20, 38}, {39, 40, 41}};
+    NSStackView* pages[2];
+    for (size_t pg = 0; pg < 2; ++pg) {
+      NSStackView* page = [[NSStackView alloc] initWithFrame:NSZeroRect];
+      page.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+      page.distribution = NSStackViewDistributionFillEqually;
+      page.spacing = 6.0;
+      page.translatesAutoresizingMaskIntoConstraints = NO;
+      [kr addSubview:page];
+      [[page.topAnchor constraintEqualToAnchor:kr.topAnchor] setActive:YES];
+      [[page.bottomAnchor constraintEqualToAnchor:kr.bottomAnchor] setActive:YES];
+      [[page.leadingAnchor constraintEqualToAnchor:kr.leadingAnchor] setActive:YES];
+      [[page.trailingAnchor constraintEqualToAnchor:kr.trailingAnchor] setActive:YES];
+      for (size_t idx : sculptPages[pg])
+        [page addArrangedSubview:addDeckKnobCell(page, state, idx, mins, maxes, knobNames, knobDescriptions)];
+      pages[pg] = page;
     }
+    state->sculptEqKnobs = pages[0];
+    state->sculptOdKnobs = pages[1];
 
     NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
     card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2360,7 +2399,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Bright boost, mid push and bass tightening before the capture.",
+    NSTextField* desc = addLabel(card, @"TS-style overdrive and pre-amp EQ before the capture.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2370,7 +2409,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
     chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.distribution = NSStackViewDistributionFill;  // popup takes what the EQ/OD tabs leave
     chips.spacing = 6.0;
     chips.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:chips];
@@ -2379,19 +2418,36 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
-    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"OD PUSH", @"FLAT"];
+    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"OD PUSH",
+                                               @"TS9 DRIVE", @"FLAT"];
     addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp Tonal Sculpt",
-                          [@[@39, @40, @(NAMRig::kMidPushPort)]
+                          [@[@39, @40, @(NAMRig::kMidPushPort), @(NAMRig::kOverdriveDrivePort),
+                             @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)]
                               arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Sculpt)],
                           sculptPresetTitles,
                           @selector(applySculptPreset:));
+    NSArray<NSString*>* pageTitles = @[@"EQ", @"OD"];
+    NSArray<NSString*>* pageTips = @[
+      @"Show the EQ knobs: Bright, Input EQ and Mid Push.",
+      @"Show the Tube Screamer-style overdrive: Drive, Tone and Level. A dot means the overdrive is on."];
+    for (NSInteger pg = 0; pg < 2; ++pg) {
+      RigButton* b = rigChip(chips, pageTitles[pg], state->uiController, @selector(sculptPageClicked:), pg);
+      b.buttonType = NSButtonTypePushOnPushOff;
+      b.toolTip = pageTips[pg];
+      [chips addArrangedSubview:b];
+      [[b.widthAnchor constraintEqualToConstant:pg == 0 ? 34 : 44] setActive:YES];
+      [[b.heightAnchor constraintEqualToConstant:20] setActive:YES];
+      state->sculptPageButtons[(size_t)pg] = b;
+    }
 
     NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
     scVis.translatesAutoresizingMaskIntoConstraints = NO;
     scVis.bright = 0.0f;
     scVis.inputEq = 0.0f;
     scVis.midPush = 0.0f;
+    scVis.odTone = NAMRig::Overdrive::kToneDefault;
     state->sculptVisualizer = scVis;
+    state->setSculptPage(false);
     installPinEditor(state, scVis.pinEditor);
     [card addSubview:scVis];
     [[scVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
@@ -3541,14 +3597,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"CAB B LVL", @"ALIGN", @"DLY TIME", @"DLY FDBK",
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
-                                      @"MID PUSH"];
+                                      @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"OFF", @"+0%",
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
-                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF"];
+                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
+                                       @"OFF", @"50%", @"+0.0 dB"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -3588,17 +3645,22 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Reverb high damping. Controls high-frequency absorption in the plate and room reflections. Lower damping preserves bright, airy shimmer; higher damping darkens the tail for a warm, natural decay that never clutters the mix.",
       @"Reverb pre-delay. Sets the time gap (0-100 ms) before the reverb tail begins. Keeps your initial pick attack and note definition clear and upfront before the ambient reverb blooms.",
       @"Amount of added tube-inspired character. Changes clipping knee, headroom and asymmetry in the shared power-stage engine. 0% preserves the existing power-stage response. The captured amp's original tubes are not removed.",
-      @"Mid push (pre-amp). Overdrive-style midrange bell (750 Hz, up to +9 dB) before the NAM amp model, like a Tube Screamer or tight boost. Pair with Input EQ and a little Drive to stand in for a separate overdrive capture. 0% is exact bypass."
+      @"Mid push (pre-amp). Overdrive-style midrange bell (750 Hz, up to +9 dB) before the NAM amp model, like a Tube Screamer or tight boost. Pair with Input EQ and a little Drive to stand in for a separate overdrive capture. 0% is exact bypass.",
+      @"Overdrive drive (pre-amp, Tube Screamer-style). Clips only the mids above 720 Hz with a soft diode pair and mixes the clean signal back, so bass stays tight and pick attack survives. Sits in front of the amp like a pedal, ahead of Amp Drive. Low drive with Level up is the classic boost into a high-gain amp. 0% is exact bypass.",
+      @"Overdrive tone. Treble roll-off after the clipper, from dark (700 Hz) to bright (8.4 kHz). Shown on the Sculpt graph. Only applies while OD Drive is on.",
+      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, -12.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
+        100.0, 100.0, 12.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;

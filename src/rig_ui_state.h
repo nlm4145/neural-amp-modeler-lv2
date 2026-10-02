@@ -121,6 +121,12 @@ struct RigUIState {
   __strong NSPopUpButton* powerTubePopup = nil;
   __strong NAMPowerTubeVisualizer* powerTubeVisualizer = nil;
   __strong NAMSculptVisualizer* sculptVisualizer = nil;
+  // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
+  // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
+  __strong NSView* sculptEqKnobs = nil;
+  __strong NSView* sculptOdKnobs = nil;
+  std::array<__strong RigButton*, 2> sculptPageButtons{};
+  bool sculptShowsOverdrive = false;
   __strong NAMTransformerVisualizer* transformerVisualizer = nil;
   std::array<__strong NSTextField*, 4> transformerSpecLabels{};
   int transformerProfile = NAMRig::OutputTransformer::kCaptured;
@@ -890,6 +896,22 @@ struct RigUIState {
 
   // Cab A path last displayed; Auto speaker profiles resolve from it like the DSP.
   std::string speakerCabPath;
+  void setSculptPage(bool overdrive) {
+    sculptShowsOverdrive = overdrive;
+    sculptEqKnobs.hidden = overdrive;
+    sculptOdKnobs.hidden = !overdrive;
+    for (size_t i = 0; i < sculptPageButtons.size(); ++i)
+      sculptPageButtons[i].state = (i == 1) == overdrive ? NSControlStateValueOn : NSControlStateValueOff;
+    refreshSculptOverdriveIndicator();
+  }
+
+  void refreshSculptOverdriveIndicator() {
+    RigButton* od = sculptPageButtons[1];
+    if (!od) return;
+    const bool on = sculptVisualizer && sculptVisualizer.odDrive >= 0.5f;
+    od.title = on ? @"OD \u25CF" : @"OD";
+  }
+
   void refreshSpeakerVisualizer() {
     if (!speakerVisualizer) return;
     int profile = NAMRig::SpeakerDynamics::clampProfile((int)(currentPortValueForSlot(42) + 0.5f));
@@ -1981,11 +2003,17 @@ struct RigUIState {
         powerVisualizer.needsDisplay = YES;
       }
       if (port == 38) refreshSpeakerVisualizer();
-      if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort)) {
+      if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort ||
+                               (port >= NAMRig::kOverdriveDrivePort &&
+                                port <= NAMRig::kOverdriveLevelPort))) {
         if (port == 39) sculptVisualizer.bright = value;
         else if (port == 40) sculptVisualizer.inputEq = value;
-        else sculptVisualizer.midPush = value;
+        else if (port == NAMRig::kMidPushPort) sculptVisualizer.midPush = value;
+        else if (port == NAMRig::kOverdriveDrivePort) sculptVisualizer.odDrive = value;
+        else if (port == NAMRig::kOverdriveTonePort) sculptVisualizer.odTone = value;
+        else sculptVisualizer.odLevel = value;
         sculptVisualizer.needsDisplay = YES;
+        if (port == NAMRig::kOverdriveDrivePort) refreshSculptOverdriveIndicator();
       }
       if (speakerVisualizer && (port >= 43 && port <= 46)) {
         if (port == 43) speakerVisualizer.drive = value;

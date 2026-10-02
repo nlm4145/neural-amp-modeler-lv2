@@ -25,7 +25,7 @@ assert "discoverModelsForStagePath" in presets_mm, "discoverModelsForStagePath m
 assert "setStageModels" in presets_mm, "applyToState must update available stage models"
 
 # 2. Verify all knob ports are registered in the preset map
-assert "kRigKnobCount = 39" in knobs_h
+assert "kRigKnobCount = 42" in knobs_h
 expected_ports = [
     15, 23, 4, 28, 22, 12, 13, 14, 25, 26, 27, 5, 32, 33,
     34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46,
@@ -36,6 +36,9 @@ for p in expected_ports:
 assert 'symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";' in presets_mm
 expected_ports.append(81)
 assert 'symbols[@(NAMRig::kMidPushPort)] = @"mid_push";' in presets_mm
+for port, sym in (("kOverdriveDrivePort", "od_drive"), ("kOverdriveTonePort", "od_tone"),
+                  ("kOverdriveLevelPort", "od_level")):
+    assert f'symbols[@(NAMRig::{port})] = @"{sym}";' in presets_mm
 expected_ports.append(82)
 
 # 3. Verify stage powers, modes, and profiles are mapped

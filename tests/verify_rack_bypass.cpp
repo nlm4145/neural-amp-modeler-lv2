@@ -26,7 +26,7 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 179 &&
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 182 &&
                   kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
@@ -109,6 +109,7 @@ Controls defaults(int mode) {
   c[kPowerTubeCharacterPort] = kPowerTubeCharacterDefault;
   const auto pins = pinEqDefaults();
   std::copy(pins.begin(), pins.end(), c.begin() + kPinEqFirstPort);
+  c[kOverdriveTonePort] = Overdrive::kToneDefault;
   return c;
 }
 
@@ -127,7 +128,9 @@ void nonneutral(Controls& c, Rack rack) {
     case Rack::Spatial: c[32] = 90; c[33] = 65; break;
     case Rack::Power:
       c[34] = 8; c[35] = 6; c[36] = 70; c[37] = 35; c[38] = 80; c[41] = 65; break;
-    case Rack::Sculpt: c[39] = 90; c[40] = 80; placePin(c, PinEqPane::Sculpt, kPinBell, 997, 9); break;
+    case Rack::Sculpt:
+      c[39] = 90; c[40] = 80; placePin(c, PinEqPane::Sculpt, kPinBell, 997, 9);
+      c[kOverdriveDrivePort] = 60; c[kOverdriveTonePort] = 30; c[kOverdriveLevelPort] = 4; break;
     case Rack::Transformer:
       c[30] = OutputTransformer::kUKVintage;
       c[62] = 2; c[63] = 30; c[66] = 5;
@@ -310,6 +313,8 @@ void verify(const LV2_Descriptor* d) {
     // Nor does it have pin ports: unconnected pins mean no pins.
     const auto pins = pinEqDefaults();
     std::copy(pins.begin(), pins.end(), connected.begin() + kPinEqFirstPort);
+    // Nor the overdrive: unconnected means off.
+    connected[kOverdriveDrivePort] = 0;
     connected[47] = 1;
     Host explicitOn(d, rate, connected, &fixtures), legacy(d, rate, connected, &fixtures, true);
     bool match = true;

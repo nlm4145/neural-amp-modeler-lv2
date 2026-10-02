@@ -72,6 +72,9 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 81 | `power_tube_character` | in | 0-100% character, default 50%; 0 is neutral; connection optional |
 | 82 | `mid_push` | in | 0-100%; Pre-Amp Tonal Sculpt midrange bell before the amp capture (750 Hz, Q 0.8, up to +9 dB), runs in the amp's True domain after Bright/Input EQ; 0 = exact bypass; connection optional |
 | 83–178 | `{sculpt,transformer,cab_console,speaker}_pin{1..6}_{shape,freq,gain,q}` | in | Graph pin EQ (`src/pin_eq.h`): 4 panes × 6 bands × 4 params. Shape 0 Off / 1 Bell / 2 Low Shelf / 3 High Shelf; 20 Hz–20 kHz; ±18 dB; Q 0.1–10. No pin or 0 dB = exact bypass; connection optional |
+| 179 | `od_drive` | in | 0-100%; Pre-Amp Tonal Sculpt TS-style overdrive (`src/overdrive.h`), first in Sculpt ahead of Amp Drive, in the amp's True domain; 0 = exact bypass; connection optional |
+| 180 | `od_tone` | in | 0-100%, default 50%; overdrive treble roll-off (1st-order, 700 Hz–8.4 kHz); only while Drive > 0 |
+| 181 | `od_level` | in | -12..+12 dB, default 0; overdrive output trim; only while Drive > 0 |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
@@ -110,6 +113,20 @@ transformer slot preset menu capture all 11 trims. Missing legacy values restore
 neutral trims. Captured / Off remains exact bypass and disables the editors.
 Live trims glide over approximately 20 ms at the amp's processing-domain rate,
 on a persistent 32-sample cadence, without resetting filter or core histories.
+
+## Sculpt overdrive
+
+`Overdrive` (`src/overdrive.h`) models the TS9 gain stage: the clean input
+passes at unity and only the op-amp feedback branch clips,
+`y = tone(x + clip(g · bp(x))) · level`. `bp` is the 720 Hz high-pass
+(4.7k/47n) plus the feedback-cap low-pass (51p across 51k + Drive);
+`g = (51k + Drive)/4.7k` with an audio-taper 500k pot; `clip` is a soft
+symmetric algebraic limit at 0.25 FS. It runs first in Sculpt, before Amp
+Drive, Input EQ, Bright, Mid Push and the Sculpt pins, so those shape the
+pedal's output into the capture. Engaging/disengaging crossfades over ~10 ms
+and Drive 0 is bit-exact. The Sculpt graph adds the linear post-clip Tone and
+Level (`Overdrive::postClipResponseDb`); the level-dependent clipping is not
+drawn. Sculpt slot presets saved before the overdrive existed recall it OFF.
 
 ## Graph pin EQ
 

@@ -1112,6 +1112,11 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
+      // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
+      if (rackOn(Rack::Sculpt))
+        overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
+                          portValue(ports.od_tone, Overdrive::kToneDefault),
+                          portValue(ports.od_level, 0.0f));
       const float target = dbToLinear(*ports.amp_drive);
       const float coeff = 1.0f - std::exp(-1.0f /
           static_cast<float>(std::max(1.0, domainRate) * 0.010));
@@ -1694,7 +1699,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         const size_t i = static_cast<size_t>(rack);
         return appliedRacks[i] != requestedRacks[i];
       };
-      if (changed(Rack::Sculpt)) { ampAdvanced.resetPreAmp(); sculptPins.reset(); }
+      if (changed(Rack::Sculpt)) { ampAdvanced.resetPreAmp(); sculptPins.reset(); overdrive.reset(); }
       if (changed(Rack::Power)) {
         // Power owns the loop reset, not the unchanged Tube amount smoother.
         ampAdvanced.resetPostAmp(true);

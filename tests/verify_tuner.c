@@ -21,7 +21,7 @@
 #include <lv2/urid/urid.h>
 #include <lv2/worker/worker.h>
 
-enum { kPorts = 179, kRackEnd = 80, kMax = 4096, kAtom = 16384,
+enum { kPorts = 182, kRackEnd = 80, kMax = 4096, kAtom = 16384,
        kEnable = 16, kNote = 17, kCents = 18 };
 static const double pi = 3.14159265358979323846;
 static char* uris[256];
@@ -101,7 +101,7 @@ static int openHost(Host* h, const LV2_Descriptor* d, double rate,
     return 0;
   }
 
-  /* Same 179-port defaults as verify_host_smoke.c, with the tuner enabled. */
+  /* Same 182-port defaults as verify_host_smoke.c, with the tuner enabled. */
   h->ctl[7] = h->ctl[8] = h->ctl[9] = h->ctl[10] = 1.0f;
   h->ctl[20] = h->ctl[21] = 1.0f;
   h->ctl[15] = -80.0f;

@@ -28,7 +28,8 @@ assert "kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79" in h
 assert "kPowerTubeTypePort == kRackControlFirstPort + kRackCount" in header
 assert "kMidPushPort == kPowerTubeCharacterPort + 1" in header
 assert "kPinEqFirstPort == kMidPushPort + 1" in header
-assert "kPortCount == kPinEqFirstPort + kPinEqPortCount" in header
+assert "kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount" in header
+assert "kPortCount == kOverdriveLevelPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 for index, symbol in enumerate(symbols, 71):

@@ -381,7 +381,10 @@ struct Host {
     plugin.ports.mid_push = &controls[NAMRig::kMidPushPort];
     for (size_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
       plugin.ports.pin_eq[i] = &controls[NAMRig::kPinEqFirstPort + i];
-    static_assert(Plugin::kPortCount == 179, "update connections if ports change");
+    plugin.ports.od_drive = &controls[NAMRig::kOverdriveDrivePort];
+    plugin.ports.od_tone = &controls[NAMRig::kOverdriveTonePort];
+    plugin.ports.od_level = &controls[NAMRig::kOverdriveLevelPort];
+    static_assert(Plugin::kPortCount == 182, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

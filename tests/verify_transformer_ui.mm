@@ -6,6 +6,7 @@
 //   -o "$TMPDIR/verify_transformer_ui"
 // "$TMPDIR/verify_transformer_ui" \
 //   build-test/src/neural_amp_modeler_rig_ui.so
+#include "overdrive.h"
 #include "rig_ui_state.h"
 #include <dlfcn.h>
 #include <unistd.h>
@@ -321,6 +322,110 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
   drain();
 }
 
+static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  auto echo = [&](uint32_t port, float value) {
+    runtime.descriptor->port_event(state, port, sizeof(value), 0, &value);
+  };
+  stage = "sculpt overdrive / knobs and graph";
+  CHECK(kRigKnobPorts[39] == kOverdriveDrivePort && kRigKnobPorts[40] == kOverdriveTonePort &&
+        kRigKnobPorts[41] == kOverdriveLevelPort);
+  CHECK(kRigKnobDefaults[39] == 0.0f && kRigKnobDefaults[40] == Overdrive::kToneDefault &&
+        kRigKnobDefaults[41] == 0.0f);
+  for (size_t k = 39; k <= 41; ++k) {
+    REQUIRE(state->deckKnobs[k]);
+    CHECK(state->deckKnobs[k].tag == (NSInteger)kRigKnobPorts[k]);
+    CHECK([state->deckKnobs[k] isDescendantOf:state->sculptVisualizer.superview.superview]);
+  }
+  REQUIRE(state->sculptVisualizer);
+  CHECK(state->sculptVisualizer.odTone == Overdrive::kToneDefault);
+
+  stage = "sculpt overdrive / EQ-OD page switch";
+  REQUIRE(state->sculptEqKnobs && state->sculptOdKnobs && state->sculptPageButtons[0] &&
+          state->sculptPageButtons[1]);
+  CHECK(!state->sculptShowsOverdrive && !state->sculptEqKnobs.hidden && state->sculptOdKnobs.hidden);
+  CHECK(state->sculptPageButtons[0].state == NSControlStateValueOn &&
+        state->sculptPageButtons[1].state == NSControlStateValueOff);
+  CHECK([state->sculptPageButtons[1].title isEqualToString:@"OD"]);
+  for (size_t k : {19u, 20u, 38u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptEqKnobs]);
+  for (size_t k : {39u, 40u, 41u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptOdKnobs]);
+  action(state->sculptPageButtons[1]);
+  CHECK(state->sculptShowsOverdrive && state->sculptEqKnobs.hidden && !state->sculptOdKnobs.hidden);
+  CHECK(state->sculptPageButtons[1].state == NSControlStateValueOn &&
+        state->sculptPageButtons[0].state == NSControlStateValueOff);
+  [state->sculptOdKnobs.window layoutIfNeeded];
+  for (size_t k : {39u, 40u, 41u}) {
+    NSSlider* control = state->deckKnobs[k];
+    NSTextField* value = state->deckValueLabels[k];
+    REQUIRE(control && value);
+    NSView* cell = control.superview;
+    const NSRect knobRect = [control convertRect:control.bounds toView:cell];
+    const NSRect fieldRect = [value convertRect:value.bounds toView:cell];
+    CHECK(knobRect.size.width > 0 && fieldRect.size.width > 0);
+    CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5), knobRect));
+    CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5), fieldRect));
+    CHECK(!NSIntersectsRect(knobRect, fieldRect));
+  }
+  // The OD tab carries a dot while the overdrive is on, from either page.
+  action(state->sculptPageButtons[0]);
+  CHECK(!state->sculptShowsOverdrive && !state->sculptEqKnobs.hidden && state->sculptOdKnobs.hidden);
+  echo(kOverdriveDrivePort, 25.0f);
+  drain();
+  CHECK([state->sculptPageButtons[1].title isEqualToString:@"OD \u25CF"]);
+  echo(kOverdriveDrivePort, 0.0f);
+  drain();
+  CHECK([state->sculptPageButtons[1].title isEqualToString:@"OD"]);
+  echo(kOverdriveDrivePort, 40.0f);
+  echo(kOverdriveTonePort, 20.0f);
+  echo(kOverdriveLevelPort, -3.0f);
+  drain();
+  CHECK(state->sculptVisualizer.odDrive == 40.0f && state->sculptVisualizer.odTone == 20.0f &&
+        state->sculptVisualizer.odLevel == -3.0f);
+  CHECK(near(state->deckKnobs[39].floatValue, 40.0f));
+  RigPreset* captured = [presetClass captureFromState:state name:@"Overdrive"];
+  CHECK(near([captured controlForPort:kOverdriveDrivePort], 40.0f));
+  CHECK(near([captured controlForPort:kOverdriveLevelPort], -3.0f));
+
+  stage = "sculpt overdrive / slot presets";
+  NSInteger slot = -1;
+  for (NSUInteger i = 0; i < state->deckSlotSpecs.count; ++i)
+    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"sculpt"]) slot = (NSInteger)i;
+  REQUIRE(slot >= 0);
+  NSDictionary* slotValues = state->captureSlotPortValues(slot);
+  for (uint32_t port = kOverdriveDrivePort; port <= kOverdriveLevelPort; ++port)
+    CHECK(slotValues[[NSString stringWithFormat:@"%u", port]] != nil);
+  NSPopUpButton* popup = state->deckSlotSpecs[(NSUInteger)slot][@"popup"];
+  REQUIRE(popup);
+  [popup selectItemWithTitle:@"TS9 DRIVE"];
+  REQUIRE([popup.titleOfSelectedItem isEqualToString:@"TS9 DRIVE"]);
+  host.writes.clear();
+  action(popup);
+  drain();
+  REQUIRE(!host.writes[kOverdriveDrivePort].empty());
+  CHECK(host.writes[kOverdriveDrivePort].back() > 0.0f);
+  CHECK(state->sculptVisualizer.odDrive > 0.0f);
+  // A Sculpt preset saved before the overdrive existed recalls it as OFF.
+  state->ensureSlotPresetStorage();
+  if (!state->userSlotPresets[@"sculpt"]) state->userSlotPresets[@"sculpt"] = [NSMutableDictionary dictionary];
+  state->userSlotPresets[@"sculpt"][@"Pre-OD"] = @{@"39": @3.0f, @"40": @10.0f};
+  state->rebuildSlotPresetMenu(slot);
+  [popup selectItemWithTitle:@"Pre-OD"];
+  REQUIRE([popup.titleOfSelectedItem isEqualToString:@"Pre-OD"]);
+  host.writes.clear();
+  action(popup);
+  drain();
+  REQUIRE(!host.writes[kOverdriveDrivePort].empty());
+  CHECK(host.writes[kOverdriveDrivePort].back() == 0.0f);
+  CHECK(host.writes[kOverdriveTonePort].back() == Overdrive::kToneDefault);
+  CHECK(host.writes[kOverdriveLevelPort].back() == 0.0f);
+  CHECK(state->sculptVisualizer.odDrive == 0.0f);
+  [state->userSlotPresets[@"sculpt"] removeObjectForKey:@"Pre-OD"];
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+  CHECK(state->sculptVisualizer.odDrive == 0.0f && state->sculptVisualizer.odLevel == 0.0f);
+}
+
 static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) {
   using namespace NAMRig;
   RigUIState* state = runtime.state;
@@ -616,7 +721,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 179 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 182 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -1704,6 +1809,7 @@ static void verify(const char* modulePath) {
   verifyRackSwitches(runtime, host, presetClass);
   verifyPowerTube(runtime, host, presetClass);
   verifyPinEditors(runtime, host, presetClass);
+  verifySculptOverdrive(runtime, host, presetClass);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
 }

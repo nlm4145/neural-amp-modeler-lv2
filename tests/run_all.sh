@@ -47,6 +47,13 @@ if command -v clang++ >/dev/null 2>&1; then
   else
     echo "  (skipped: harness build failed)"
   fi
+  echo "== tests/verify_overdrive.cpp =="
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_overdrive.cpp \
+      -o /tmp/verify_overdrive 2>/dev/null; then
+    /tmp/verify_overdrive || status=1
+  else
+    echo "  (skipped: harness build failed)"
+  fi
   echo "== tests/verify_pin_eq.cpp =="
   if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_pin_eq.cpp \
       -o /tmp/verify_pin_eq 2>/dev/null; then

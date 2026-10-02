@@ -23,6 +23,7 @@
 #include "oversample_modes.h"
 #include "amp_advanced.h"
 #include "output_transformer.h"
+#include "overdrive.h"
 #include "pin_eq.h"
 #include "space_fx.h"
 #include "speaker_dynamics.h"
@@ -188,6 +189,9 @@ public:
     float* power_tube_character; // in: port 81, added character (0..100%)
     float* mid_push;             // in: port 82, pre-amp midrange bell (0..100%)
     std::array<float*, kPinEqPortCount> pin_eq; // in: ports 83..178, graph pin EQ bands
+    float* od_drive;             // in: port 179, Sculpt overdrive drive (0..100%, 0 = off)
+    float* od_tone;              // in: port 180, Sculpt overdrive tone (0..100%)
+    float* od_level;             // in: port 181, Sculpt overdrive level (dB)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -208,6 +212,8 @@ public:
   static_assert(offsetof(Ports, power_tube_character) == kPowerTubeCharacterPort * sizeof(void*));
   static_assert(offsetof(Ports, mid_push) == kMidPushPort * sizeof(void*));
   static_assert(offsetof(Ports, pin_eq) == kPinEqFirstPort * sizeof(void*));
+  static_assert(offsetof(Ports, od_drive) == kOverdriveDrivePort * sizeof(void*));
+  static_assert(offsetof(Ports, od_level) == kOverdriveLevelPort * sizeof(void*));
   static constexpr uint32_t kPortCount = kRigControlPortCount;
   static_assert(kRackControlFirstPort == kTransformerControlFirstPort + kTransformerControlCount);
   static_assert(kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79);
@@ -215,7 +221,10 @@ public:
   static_assert(kPowerTubeCharacterPort == kPowerTubeTypePort + 1);
   static_assert(kMidPushPort == kPowerTubeCharacterPort + 1);
   static_assert(kPinEqFirstPort == kMidPushPort + 1);
-  static_assert(kPortCount == kPinEqFirstPort + kPinEqPortCount);
+  static_assert(kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount);
+  static_assert(kOverdriveTonePort == kOverdriveDrivePort + 1);
+  static_assert(kOverdriveLevelPort == kOverdriveTonePort + 1);
+  static_assert(kPortCount == kOverdriveLevelPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -320,6 +329,7 @@ private:
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;
   AmpAdvanced ampAdvanced;
+  Overdrive overdrive;  // Sculpt's TS-style drive, ahead of Amp Drive
   OutputTransformer outputTransformer;
   // Graph pin EQs: Sculpt and Transformer run in the amp's domain, Console at base rate.
   PinEq sculptPins, transformerPins, consolePins, speakerPins;

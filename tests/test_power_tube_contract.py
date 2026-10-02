@@ -47,11 +47,12 @@ pin_symbols = [f"{pane}_pin{b}_{p}" for pane in ("sculpt", "transformer", "cab_c
 port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl,
 )]
-assert port_pairs == list(enumerate(legacy_symbols + new_symbols + pin_symbols)), (
+od_symbols = ["od_drive", "od_tone", "od_level"]
+assert port_pairs == list(enumerate(legacy_symbols + new_symbols + pin_symbols + od_symbols)), (
     "ports 0..78 must stay unchanged; power-tube controls append at 79..81, Mid Push at 82"
 )
 for name, value in (("kPowerTubeTypePort", 80), ("kPowerTubeCharacterPort", 81),
-                    ("kRigControlPortCount", 179)):
+                    ("kRigControlPortCount", 182)):
     assert re.search(rf"\b{name}\s*=\s*{value}\s*;", controls), name
 assert "kPowerTubeCharacterDefault = 50.0f;" in controls
 assert "kCaptured = 0;" in controls and "kProfileCount = 3;" in controls

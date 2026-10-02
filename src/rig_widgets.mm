@@ -4,6 +4,7 @@
 
 #include "pin_eq.h"
 #include "power_tube_controls.h"
+#include "overdrive.h"
 #include "speaker_dynamics.h"
 #include <array>
 #include <cmath>
@@ -1292,6 +1293,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Sculpt
         accent:[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:1.0]];
     [self addSubview:_pinEditor];
+    _odTone = NAMRig::Overdrive::kToneDefault;
+    self.toolTip = @"Pre-amp EQ before the capture: Tight, Bright, Mid Push and, with OD Drive on, the overdrive's Tone and Level. The overdrive's clipping depends on how hard you play and is not drawn.";
   }
   return self;
 }
@@ -1307,6 +1310,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setBright:(float)v { _bright = v; self.needsDisplay = YES; }
 - (void)setInputEq:(float)v { _inputEq = v; self.needsDisplay = YES; }
 - (void)setMidPush:(float)v { _midPush = v; self.needsDisplay = YES; }
+- (void)setOdDrive:(float)v { _odDrive = v; self.needsDisplay = YES; }
+- (void)setOdTone:(float)v { _odTone = v; self.needsDisplay = YES; }
+- (void)setOdLevel:(float)v { _odLevel = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
   NSRect r = self.bounds;
@@ -1323,10 +1329,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
-  [@"PRE-AMP TIGHTENER, MID PUSH & BRIGHT" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [@"PRE-AMP OVERDRIVE & TONAL SCULPT" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
-  NSString* stat = [NSString stringWithFormat:@"BRIGHT: %+.1f dB  •  MID: %.0f%%  •  TIGHT: %.0f%%",
-                    _bright * 0.06, _midPush, _inputEq];
+  const bool odOn = _odDrive >= 0.5f;
+  NSString* stat = odOn
+      ? [NSString stringWithFormat:@"OD: %.0f%%  •  TONE: %.0f%%  •  LEVEL: %+.1f dB",
+                                   _odDrive, _odTone, _odLevel]
+      : [NSString stringWithFormat:@"BRIGHT: %+.1f dB  •  MID: %.0f%%  •  TIGHT: %.0f%%",
+                                   _bright * 0.06, _midPush, _inputEq];
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
@@ -1350,6 +1360,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
   // The DSP's own filters (amp_advanced.h): Input EQ high-pass at 20..180 Hz,
   // Bright +6 dB shelf at 2.2 kHz, Mid Push +9 dB bell at 750 Hz (Q 0.8).
+  // With the overdrive on, its post-clip Tone and Level (overdrive.h) are
+  // added; the clipping itself depends on level and is not drawn.
   NSBezierPath* curve = [NSBezierPath bezierPath];
   const int nPts = 120;
   const float tight = std::clamp(_inputEq / 100.0f, 0.0f, 1.0f);
@@ -1367,6 +1379,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     if (tight > 0.0f) totalDb += NAMRig::pinMagnitudeDb(hp, hz, kPinPlotRate);
     if (bright > 0.0f) totalDb += NAMRig::pinMagnitudeDb(shelf, hz, kPinPlotRate);
     if (mid > 0.0f) totalDb += NAMRig::pinMagnitudeDb(bell, hz, kPinPlotRate);
+    if (odOn) totalDb += NAMRig::Overdrive::postClipResponseDb(hz, kPinPlotRate, _odTone, _odLevel);
     const NSPoint p = NSMakePoint(leftM + frac * pw, pinPlotY(plot, totalDb));
     if (i == 0) [curve moveToPoint:p];
     else [curve lineToPoint:p];

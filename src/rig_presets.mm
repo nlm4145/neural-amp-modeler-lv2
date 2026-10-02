@@ -75,6 +75,9 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
     symbols[@(NAMRig::kPowerTubeTypePort)] = @"power_tube_type";
     symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";
     symbols[@(NAMRig::kMidPushPort)] = @"mid_push";
+    symbols[@(NAMRig::kOverdriveDrivePort)] = @"od_drive";
+    symbols[@(NAMRig::kOverdriveTonePort)] = @"od_tone";
+    symbols[@(NAMRig::kOverdriveLevelPort)] = @"od_level";
     for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i) {
       const uint32_t port = NAMRig::kPinEqFirstPort + i;
       symbols[@(port)] = [NSString stringWithUTF8String:NAMRig::pinEqSymbol(port).c_str()];
