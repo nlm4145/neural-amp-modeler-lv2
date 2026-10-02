@@ -15,7 +15,10 @@
 //
 // Usage:
 //   ./nam_bench [--base 96000] [--seconds 2] [--block 512]
-//               [--factors 1,2,4,8] model1.nam [model2.nam ...]
+//               [--factors 1,2,4,8] [--polyphase 0|1] model1.nam [model2.nam ...]
+//
+// --polyphase 0 selects NeuralAudio's legacy dilation-scaling path for Nx
+// domains; 1 (default) runs the WaveNet as N native-rate phases.
 //
 // The checksum/rms/peak columns let you verify the two binaries produce
 // (near-)identical audio: any speed difference must not change the sound.
@@ -118,6 +121,8 @@ int main(int argc, char** argv) {
   double seconds = 2.0;
   size_t block = 512;
   std::vector<int> factors = {1, 2, 4, 8};
+  bool polyphase = true;
+  bool namCore = false;
   std::vector<std::string> models;
 
   for (int i = 1; i < argc; ++i) {
@@ -129,17 +134,21 @@ int main(int argc, char** argv) {
       block = (size_t)std::stoul(argv[++i]);
     else if (!std::strcmp(argv[i], "--factors") && i + 1 < argc)
       factors = parseFactors(argv[++i]);
+    else if (!std::strcmp(argv[i], "--polyphase") && i + 1 < argc)
+      polyphase = std::atoi(argv[++i]) != 0;
+    else if (!std::strcmp(argv[i], "--namcore"))
+      namCore = true;
     else
       models.emplace_back(argv[i]);
   }
   if (models.empty()) {
     std::printf("usage: nam_bench [--base 96000] [--seconds 2] [--block 512]\n"
-                "                 [--factors 1,2,4,8] model1.nam [model2.nam ...]\n");
+                "                 [--factors 1,2,4,8] [--polyphase 0|1] model1.nam [model2.nam ...]\n");
     return 1;
   }
 
-  std::printf("MULTIFRAME_8X8_CONVOLUTION=%d  base=%.0fHz block=%zu seconds=%.1f\n",
-              kMultiframe, baseRate, block, seconds);
+  std::printf("MULTIFRAME_8X8_CONVOLUTION=%d  base=%.0fHz block=%zu seconds=%.1f polyphase=%d\n",
+              kMultiframe, baseRate, block, seconds, polyphase ? 1 : 0);
 
   for (const auto& path : models) {
     std::printf("\n== %s\n", path.c_str());
@@ -159,7 +168,10 @@ int main(int argc, char** argv) {
       loader.SetExternalSampleRate((int)std::lround(domainRate));
       loader.SetDefaultMaxAudioBufferSize((int)block);
       loader.SetDefaultQualityScaleFactor(1.0f);
+      loader.SetPolyphaseOversampling(polyphase);
+      if (namCore) loader.SetWaveNetLoadMode(NeuralAudio::EModelLoadMode::NAMCore);
       NeuralAudio::NeuralModel* model = nullptr;
+      const double tLoad = nowSeconds();
       try {
         model = loader.CreateFromFile(path, /*doPrewarm=*/true);
       } catch (const std::exception& e) {
@@ -170,6 +182,7 @@ int main(int argc, char** argv) {
         std::printf("%-6d LOAD FAILED\n", f);
         continue;
       }
+      const double loadMs = 1000.0 * (nowSeconds() - tLoad);
       model->SetMaxAudioBufferSize(8 * (int)block);
       model->SetQualityScaleFactor(1.0f);
 
@@ -276,10 +289,10 @@ int main(int argc, char** argv) {
       const double upMs = 1000.0 * upSec / seconds;
       const double downMs = 1000.0 * downSec / seconds;
       const double totalMs = modelMs + upMs + downMs;
-      std::printf("%-6d %-9.0f %-11.1f %-11.2f %-11.2f %-11.1f %-7.1f %-10.4f %-8.3f %016llx  [%s]\n",
+      std::printf("%-6d %-9.0f %-11.1f %-11.2f %-11.2f %-11.1f %-7.1f %-10.4f %-8.3f %016llx  [%s] load=%.0fms\n",
                   f, domainRate, modelMs, upMs, downMs, totalMs,
                   totalMs / 10.0, rms, digest.peak,
-                  (unsigned long long)digest.fnv, mode);
+                  (unsigned long long)digest.fnv, mode, loadMs);
       delete model;
     }
   }

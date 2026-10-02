@@ -197,6 +197,20 @@ build-standalone/src/verify_cabinet_worker
 build-standalone/src/verify_parallel_cabs --benchmark
 ```
 
+### Oversampled model CPU
+
+At True Nx (and at any host rate that is a multiple of the model rate) NeuralAudio
+runs a WaveNet as N native-rate copies instead of one dilation-scaled model; the
+output is the same to float rounding, and each copy uses the fast static / A2
+kernels (plus an ARM NEON 8-channel kernel). To verify and to A/B it:
+
+```bash
+cmake --build build --target verify_polyphase_model nam_bench
+build/src/verify_polyphase_model [extra.nam ...]
+build/src/nam_bench --base 96000 --factors 1,2,4,8 --polyphase 0 model.nam   # legacy
+build/src/nam_bench --base 96000 --factors 1,2,4,8 --polyphase 1 model.nam   # polyphase
+```
+
 ## CMake Options
 
 ```-DUSE_NATIVE_ARCH=ON```: If you have a relatively modern x64 processor, you can pass ```-DUSE_NATIVE_ARCH=ON``` on your cmake command line to enable certain processor-specific optimizations.

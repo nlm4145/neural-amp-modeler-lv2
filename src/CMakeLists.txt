@@ -139,6 +139,16 @@ if (APPLE)
 	target_link_libraries(nam_bench PRIVATE ${NAM_BENCH_ACCELERATE_FRAMEWORK})
 endif()
 
+# Polyphase oversampling + NEON WaveNet kernel verification on real models
+# (EXCLUDE_FROM_ALL). Build with: cmake --build <dir> --target verify_polyphase_model
+add_executable(verify_polyphase_model EXCLUDE_FROM_ALL
+	../tests/verify_polyphase_model.cpp)
+target_include_directories(verify_polyphase_model PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio)
+target_compile_definitions(verify_polyphase_model PRIVATE
+	NAM_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_link_libraries(verify_polyphase_model PRIVATE NeuralAudio)
+
 # Platform
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")

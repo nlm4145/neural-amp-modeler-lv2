@@ -123,6 +123,23 @@ is no resampler. Consequences:
 - Even when it engages, the model's nonlinearity still fires once per
   host-rate sample — aliasing from the distortion is reduced, not eliminated.
 
+**How the dilation-scaled model is executed (polyphase, `PolyphaseModel.h`).**
+With every dilation scaled by F, each conv tap only reads samples of the same
+phase (t mod F) and everything else is per-sample, so the scaled WaveNet is
+exactly F independent native-rate copies, copy p running on samples p, p+F, ...
+The loader (`SetPolyphaseOversampling`, default on) builds it that way: F
+native-rate models in a `PolyphaseModel` that deinterleaves each block, runs
+the copies, and reinterleaves. Same output as dilation scaling to float
+rounding (≥120 dB below signal), but each copy gets the fast static/A2 kernels
+instead of falling back to NAM Core / the dynamic WaveNet (scaled dilations
+never match the static architectures). It only applies to plain WaveNets
+(no `condition_dsp`, no post-stack head conv wider than 1); others keep
+dilation scaling. 8-channel layers (A2) also have an ARM NEON kernel
+(`Neon8.h`), bit-identical to the scalar path. A2 at True 8x / 96k session:
+681 → 308 ms of CPU per second of audio in `nam_bench`; full rig 894 → 453
+µs per 128-frame block. Verified by `tests/verify_polyphase_model.cpp`
+(build target `verify_polyphase_model`; pass extra `.nam` paths to test them).
+
 **Per-stage oversampling (ports 20/21)** uses the five-mode dropdown
 None / Legacy / True 2x / True 4x / True 8x. Fresh instances default both
 nonlinear stages to **True 8x** for maximum sound quality; lower modes remain
