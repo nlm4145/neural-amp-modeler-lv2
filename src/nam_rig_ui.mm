@@ -67,10 +67,13 @@ static NSString* stageName(NSInteger stage) {
 #include "rig_ui_state.h"
 #import "rig_tone_browser.h"
 
-@interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate>
+@interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate>
 @property(nonatomic, assign) RigUIState* state;
 - (void)chooseModel:(NSButton*)sender;
-- (void)clearModel:(NSButton*)sender;
+- (void)clearModel:(id)sender;
+- (void)removeStageSelection:(id)sender;
+- (void)removeBothCabsSelection:(id)sender;
+- (void)menuNeedsUpdate:(NSMenu*)menu;
 - (void)controlChanged:(NSControl*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
@@ -181,12 +184,117 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
-- (void)clearModel:(NSButton*)sender {
-  if (_state && sender.tag >= 0 && sender.tag <= 3) {
-    _state->setStageModels((size_t)sender.tag, @[]);
-    _state->sendPath((size_t)sender.tag, "");
-    _state->setStageThumb((size_t)sender.tag, nil, 0, nil);  // revert to placeholder
-    [self markPresetModified];
+- (void)clearModel:(id)sender {
+  if (!_state) return;
+  NSInteger tag = [sender respondsToSelector:@selector(tag)] ? [sender tag] : 0;
+  if (tag < 0 || tag > 3) return;
+  size_t stage = (size_t)tag;
+  _state->setStageModels(stage, @[]);
+  _state->sendPath(stage, "");
+  if (stage <= 2) {
+    _state->setStageThumb(stage, nil, 0, nil);  // revert to placeholder
+  }
+  if (stage == 3) {
+    if (_state->powerButtons[3] && _state->powerButtons[3].state == NSControlStateValueOn) {
+      _state->powerButtons[3].state = NSControlStateValueOff;
+      _state->sendControl(47, 0.0f);
+      _state->updateControl(47, 0.0f);
+    }
+  }
+  [self markPresetModified];
+}
+
+- (void)removeStageSelection:(id)sender {
+  [self clearModel:sender];
+}
+
+- (void)removeBothCabsSelection:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  _state->setStageModels(2, @[]);
+  _state->sendPath(2, "");
+  _state->setStageThumb(2, nil, 0, nil);
+  _state->setStageModels(3, @[]);
+  _state->sendPath(3, "");
+  if (_state->powerButtons[3] && _state->powerButtons[3].state == NSControlStateValueOn) {
+    _state->powerButtons[3].state = NSControlStateValueOff;
+    _state->sendControl(47, 0.0f);
+    _state->updateControl(47, 0.0f);
+  }
+  [self markPresetModified];
+}
+
+- (void)menuNeedsUpdate:(NSMenu*)menu {
+  [menu removeAllItems];
+  if (!_state) return;
+
+  NSInteger stage = -1;
+  if ([menu.identifier isEqualToString:@"stage_card_menu_0"]) stage = 0;
+  else if ([menu.identifier isEqualToString:@"stage_card_menu_1"]) stage = 1;
+  else if ([menu.identifier isEqualToString:@"stage_card_menu_2"]) stage = 2;
+  if (stage < 0 || stage > 2) return;
+
+  if (stage < 2) {
+    BOOL hasModel = !_state->selectedPaths[(size_t)stage].empty();
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@"Remove Selection"
+                                                  action:@selector(removeStageSelection:)
+                                           keyEquivalent:@""];
+    item.target = self;
+    item.tag = stage;
+    item.enabled = hasModel;
+    item.toolTip = hasModel
+        ? [NSString stringWithFormat:@"Completely remove the selected %@ model.", stageName(stage)]
+        : [NSString stringWithFormat:@"No %@ model loaded to remove.", stageName(stage)];
+    [menu addItem:item];
+  } else {
+    BOOL hasCabA = !_state->selectedPaths[2].empty();
+    BOOL hasCabB = !_state->selectedPaths[3].empty();
+
+    if (!hasCabB) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@"Remove Selection"
+                                                    action:@selector(removeStageSelection:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = 2;
+      item.enabled = hasCabA;
+      item.toolTip = hasCabA
+          ? @"Completely remove the selected cabinet model or impulse response."
+          : @"No cabinet model or IR loaded to remove.";
+      [menu addItem:item];
+    } else {
+      NSMenuItem* itemA = [[NSMenuItem alloc] initWithTitle:@"Remove Selection"
+                                                     action:@selector(removeStageSelection:)
+                                              keyEquivalent:@""];
+      itemA.target = self;
+      itemA.tag = 2;
+      itemA.enabled = hasCabA;
+      itemA.toolTip = hasCabA
+          ? @"Completely remove Cabinet A model or impulse response."
+          : @"No Cabinet A model or IR loaded to remove.";
+      [menu addItem:itemA];
+
+      NSMenuItem* itemB = [[NSMenuItem alloc] initWithTitle:@"Remove Cab B Selection"
+                                                     action:@selector(removeStageSelection:)
+                                              keyEquivalent:@""];
+      itemB.target = self;
+      itemB.tag = 3;
+      itemB.enabled = hasCabB;
+      itemB.toolTip = hasCabB
+          ? @"Completely remove Cabinet B model or impulse response."
+          : @"No Cabinet B model or IR loaded to remove.";
+      [menu addItem:itemB];
+
+      [menu addItem:[NSMenuItem separatorItem]];
+
+      NSMenuItem* itemBoth = [[NSMenuItem alloc] initWithTitle:@"Remove Both Selections"
+                                                        action:@selector(removeBothCabsSelection:)
+                                                 keyEquivalent:@""];
+      itemBoth.target = self;
+      itemBoth.tag = 2;
+      itemBoth.enabled = hasCabA || hasCabB;
+      itemBoth.toolTip = @"Completely remove both Cabinet A and Cabinet B selections.";
+      [menu addItem:itemBoth];
+    }
   }
 }
 
@@ -3553,9 +3661,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
       NSArray<NSString*>* stageTips = @[
-        @"Pedal stage: dynamics and input conditioning feed the selected pedal NAM model before the amp.",
-        @"Amp stage: the selected NAM model, drive trim, and optional output-transformer coloration form the core amp sound.",
-        @"Cabinet stage: run a cabinet NAM model or WAV impulse response, optionally a parallel second cabinet, followed by cab level, frequency cuts, and the stereo effects."
+        @"Pedal stage: dynamics and input conditioning feed the selected pedal NAM model before the amp. Right-click card to remove selection.",
+        @"Amp stage: the selected NAM model, drive trim, and optional output-transformer coloration form the core amp sound. Right-click card to remove selection.",
+        @"Cabinet stage: run a cabinet NAM model or WAV impulse response, optionally a parallel second cabinet, followed by cab level, frequency cuts, and the stereo effects. Right-click card to remove selection."
       ];
       box.toolTip = stageTips[(NSUInteger)i];
 
@@ -3685,7 +3793,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       // Keep artwork wells and model selectors vertically aligned across all 3 tiles.
       [[thumb.heightAnchor constraintEqualToConstant:141] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
-      thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model.", stageName(i)];
+      thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model. Right-click card to remove selection.", stageName(i)];
+
+      NSMenu* cardMenu = [[NSMenu alloc] initWithTitle:[NSString stringWithFormat:@"%@ Card Menu", names[(NSUInteger)i]]];
+      cardMenu.identifier = [NSString stringWithFormat:@"stage_card_menu_%ld", (long)i];
+      cardMenu.delegate = state->uiController;
+      box.menu = cardMenu;
+      thumb.menu = cardMenu;
+      header.menu = cardMenu;
+      state->stageCards[(size_t)i] = box;
 
       // Legacy compatibility references (docked into Lower Studio Deck):
       // "ADVANCED AMP", "SPEAKER LOAD", "Speaker Dynamics / Impedance", "WIDTH / DELAY / REVERB"

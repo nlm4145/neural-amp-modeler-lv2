@@ -352,6 +352,7 @@ struct RigUIState {
   std::array<__strong NSTextField*, 4> pathLabels{};
   std::array<__strong NSButton*, 4> powerButtons{};
   std::array<__strong NSImageView*, 3> stageImages{};
+  std::array<__strong RigPanel*, 3> stageCards{};
   std::array<__strong NSTextField*, 3> stageHeaderArchBadges{};
   std::array<__strong NSTextField*, 4> stageArchBadges{};
   // auto-cab is always on — no toggle or status label needed
