@@ -153,6 +153,7 @@ constexpr size_t kAtomBufferSize = 16384;
 constexpr size_t kMessageSize = 2048;
 constexpr size_t kMessageCount = 64;
 constexpr CGFloat kToolbarStripHeight = 28.0;
+constexpr CGFloat kAudioPopupWidth = 236.0;
 
 struct CoreAudioDeviceInfo {
   AudioDeviceID deviceID = kAudioObjectUnknown;
@@ -1826,7 +1827,8 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   const CGFloat pillX = self.bounds.size.width - 24.0 - pillW;
   const CGFloat pillY = self.bounds.size.height - kToolbarStripHeight + (kToolbarStripHeight - pillH) / 2.0;
   if (_audioPopup) {
-    const CGFloat audioW = 328.0;
+    // Narrow enough that the plugin's header (A/B START button) stays uncovered.
+    const CGFloat audioW = kAudioPopupWidth;
     const CGFloat audioH = 24.0;
     const CGFloat audioX = pillX - 8.0 - audioW;
     const CGFloat audioY = self.bounds.size.height - kToolbarStripHeight + (kToolbarStripHeight - audioH) / 2.0;
@@ -1890,6 +1892,11 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   NSString* khzStr = (std::fabs(khz - std::round(khz)) < 0.05)
       ? [NSString stringWithFormat:@"%.0fk", khz]
       : [NSString stringWithFormat:@"%.1fk", khz];
+  // Same interface both ways: don't repeat the device name (full names are in the tooltip).
+  if ([inShort isEqualToString:outShort]) {
+    return [NSString stringWithFormat:@"%@%@ ▸%@ · %@/%u",
+                                      inShort, chTag, outChTag, khzStr, _host->bufferSize()];
+  }
   return [NSString stringWithFormat:@"%@%@ ▸ %@%@ · %@/%u",
                                     inShort, chTag, outShort, outChTag, khzStr, _host->bufferSize()];
 }
@@ -2249,7 +2256,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   [rootContent addSubview:headerAmp positioned:NSWindowAbove relativeTo:nil];
 
   // Top-banner Audio I/O dropdown menu (Input Device, Input Channel, Output Device, Output Channel, kHz, Buffer Size).
-  _audioPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(1520 - 24 - 136 - 8 - 328, 980 + 2, 328, 24)
+  _audioPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(1520 - 24 - 136 - 8 - kAudioPopupWidth, 980 + 2, kAudioPopupWidth, 24)
                                            pullsDown:YES];
   _audioPopup.controlSize = NSControlSizeSmall;
   _audioPopup.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium];
