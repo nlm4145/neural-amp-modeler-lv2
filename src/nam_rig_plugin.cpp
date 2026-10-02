@@ -1106,6 +1106,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // AMP's TRUE factor. With a second cabinet engaged, Cab A uses an independent
   // True domain from the shared post-amp tap and Cab B is delayed to match it.
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const PinBands sculptPinBands = pinBands(PinEqPane::Sculpt);
+  const PinBands transformerPinBands = pinBands(PinEqPane::Transformer);
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
@@ -1116,10 +1118,13 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         smoothedAmpDrive += (target - smoothedAmpDrive) * coeff;
         samples[i] *= smoothedAmpDrive;
       }
-      if (rackOn(Rack::Sculpt))
+      if (rackOn(Rack::Sculpt)) {
         ampAdvanced.processPreAmp(samples, count, domainRate,
                                   *ports.bright, *ports.input_eq,
                                   portValue(ports.mid_push, 0.0f));
+        float* channels[1] = {samples};
+        sculptPins.process(channels, 1, count, domainRate, sculptPinBands);
+      }
     }
     runModel(stage, model, samples, count, domainRate);
     if (stage == stageIndex(Stage::Amp)) {
@@ -1136,9 +1141,12 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                                   powerOn ? *ports.negative_feedback : 0.0f,
                                   powerOn ? *ports.master : 0.0f,
                                   tubeProfile, tubeCharacter);
-      if (rackOn(Rack::Transformer))
+      if (rackOn(Rack::Transformer)) {
         outputTransformer.process(samples, count, domainRate, transformerApplied,
                                 transformerAdjustments);
+        float* channels[1] = {samples};
+        transformerPins.process(channels, 1, count, domainRate, transformerPinBands);
+      }
       if (rackOn(Rack::Speaker))
         speakerDynamics.process(samples, count, domainRate, speakerApplied,
                               *ports.speaker_drive, *ports.speaker_compression,
@@ -1285,6 +1293,12 @@ uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
 // trim and cuts, DC removal, post EQ, output trim, the click-safe transition
 // fade, and the stereo effects. Runs in maxBufferSize slices on internal
 // stereo buffers, so the two output ports may alias.
+PinBands Plugin::pinBands(PinEqPane pane) const noexcept {
+  return readPinBands(pane, [&](uint32_t port) {
+    return portValue(ports.pin_eq[port - kPinEqFirstPort], pinEqDefault(port));
+  });
+}
+
 void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
                               bool modelProcessed, const bool* desiredEnabled) noexcept {
   const auto& enabled = appliedEnabled;
@@ -1293,6 +1307,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const bool spatialOn = rackOn(Rack::Spatial);
   const bool reverbOn = rackOn(Rack::Reverb);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
   const int norm = std::max(0, std::min(3,
       static_cast<int>(*ports.ir_normalization + 0.5f)));
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
@@ -1516,7 +1531,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
           R[i] = r;
         }
       }
+      float* channels[2] = {L, R};
+      consolePins.process(channels, 2, n, sampleRate, consolePinBands);
     } else {
+      consolePins.reset();
       cabLowCutEq.reset();
       cabHighCutEq.reset();
       cabLowCutEqR.reset();
@@ -1672,13 +1690,13 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         const size_t i = static_cast<size_t>(rack);
         return appliedRacks[i] != requestedRacks[i];
       };
-      if (changed(Rack::Sculpt)) ampAdvanced.resetPreAmp();
+      if (changed(Rack::Sculpt)) { ampAdvanced.resetPreAmp(); sculptPins.reset(); }
       if (changed(Rack::Power)) {
         // Power owns the loop reset, not the unchanged Tube amount smoother.
         ampAdvanced.resetPostAmp(true);
         if (!requestedRacks[static_cast<size_t>(Rack::Power)]) speakerDynamics.bypassDamping();
       }
-      if (changed(Rack::Transformer)) outputTransformer.reset();
+      if (changed(Rack::Transformer)) { outputTransformer.reset(); transformerPins.reset(); }
       if (changed(Rack::Speaker)) speakerDynamics.reset();
       if (changed(Rack::Delay)) delayFx.reset();
       if (changed(Rack::Reverb)) reverbFx.resetPlate();

@@ -379,7 +379,9 @@ struct Host {
     plugin.ports.power_tube_type = &controls[NAMRig::kPowerTubeTypePort];
     plugin.ports.power_tube_character = &controls[NAMRig::kPowerTubeCharacterPort];
     plugin.ports.mid_push = &controls[NAMRig::kMidPushPort];
-    static_assert(Plugin::kPortCount == 83, "update connections if ports change");
+    for (size_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
+      plugin.ports.pin_eq[i] = &controls[NAMRig::kPinEqFirstPort + i];
+    static_assert(Plugin::kPortCount == 155, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

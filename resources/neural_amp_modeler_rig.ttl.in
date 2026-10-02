@@ -433,4 +433,436 @@
 					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc ;
 					lv2:portProperty lv2:connectionOptional ;
 					rdfs:comment "Overdrive-style midrange bell (750 Hz, up to +9 dB) before the amp capture, part of Pre-Amp Tonal Sculpt. Zero is exact bypass."
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 83 ;
+					lv2:symbol "sculpt_pin1_shape" ; lv2:name "Sculpt Pin 1 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 84 ;
+					lv2:symbol "sculpt_pin1_freq" ; lv2:name "Sculpt Pin 1 Freq" ;
+					lv2:default 100.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 85 ;
+					lv2:symbol "sculpt_pin1_gain" ; lv2:name "Sculpt Pin 1 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 86 ;
+					lv2:symbol "sculpt_pin1_q" ; lv2:name "Sculpt Pin 1 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 87 ;
+					lv2:symbol "sculpt_pin2_shape" ; lv2:name "Sculpt Pin 2 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 88 ;
+					lv2:symbol "sculpt_pin2_freq" ; lv2:name "Sculpt Pin 2 Freq" ;
+					lv2:default 250.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 89 ;
+					lv2:symbol "sculpt_pin2_gain" ; lv2:name "Sculpt Pin 2 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 90 ;
+					lv2:symbol "sculpt_pin2_q" ; lv2:name "Sculpt Pin 2 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 91 ;
+					lv2:symbol "sculpt_pin3_shape" ; lv2:name "Sculpt Pin 3 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 92 ;
+					lv2:symbol "sculpt_pin3_freq" ; lv2:name "Sculpt Pin 3 Freq" ;
+					lv2:default 600.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 93 ;
+					lv2:symbol "sculpt_pin3_gain" ; lv2:name "Sculpt Pin 3 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 94 ;
+					lv2:symbol "sculpt_pin3_q" ; lv2:name "Sculpt Pin 3 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 95 ;
+					lv2:symbol "sculpt_pin4_shape" ; lv2:name "Sculpt Pin 4 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 96 ;
+					lv2:symbol "sculpt_pin4_freq" ; lv2:name "Sculpt Pin 4 Freq" ;
+					lv2:default 1500.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 97 ;
+					lv2:symbol "sculpt_pin4_gain" ; lv2:name "Sculpt Pin 4 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 98 ;
+					lv2:symbol "sculpt_pin4_q" ; lv2:name "Sculpt Pin 4 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 99 ;
+					lv2:symbol "sculpt_pin5_shape" ; lv2:name "Sculpt Pin 5 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 100 ;
+					lv2:symbol "sculpt_pin5_freq" ; lv2:name "Sculpt Pin 5 Freq" ;
+					lv2:default 3500.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 101 ;
+					lv2:symbol "sculpt_pin5_gain" ; lv2:name "Sculpt Pin 5 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 102 ;
+					lv2:symbol "sculpt_pin5_q" ; lv2:name "Sculpt Pin 5 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 103 ;
+					lv2:symbol "sculpt_pin6_shape" ; lv2:name "Sculpt Pin 6 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 104 ;
+					lv2:symbol "sculpt_pin6_freq" ; lv2:name "Sculpt Pin 6 Freq" ;
+					lv2:default 8000.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 105 ;
+					lv2:symbol "sculpt_pin6_gain" ; lv2:name "Sculpt Pin 6 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 106 ;
+					lv2:symbol "sculpt_pin6_q" ; lv2:name "Sculpt Pin 6 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 107 ;
+					lv2:symbol "transformer_pin1_shape" ; lv2:name "Transformer Pin 1 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 108 ;
+					lv2:symbol "transformer_pin1_freq" ; lv2:name "Transformer Pin 1 Freq" ;
+					lv2:default 100.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 109 ;
+					lv2:symbol "transformer_pin1_gain" ; lv2:name "Transformer Pin 1 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 110 ;
+					lv2:symbol "transformer_pin1_q" ; lv2:name "Transformer Pin 1 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 111 ;
+					lv2:symbol "transformer_pin2_shape" ; lv2:name "Transformer Pin 2 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 112 ;
+					lv2:symbol "transformer_pin2_freq" ; lv2:name "Transformer Pin 2 Freq" ;
+					lv2:default 250.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 113 ;
+					lv2:symbol "transformer_pin2_gain" ; lv2:name "Transformer Pin 2 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 114 ;
+					lv2:symbol "transformer_pin2_q" ; lv2:name "Transformer Pin 2 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 115 ;
+					lv2:symbol "transformer_pin3_shape" ; lv2:name "Transformer Pin 3 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 116 ;
+					lv2:symbol "transformer_pin3_freq" ; lv2:name "Transformer Pin 3 Freq" ;
+					lv2:default 600.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 117 ;
+					lv2:symbol "transformer_pin3_gain" ; lv2:name "Transformer Pin 3 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 118 ;
+					lv2:symbol "transformer_pin3_q" ; lv2:name "Transformer Pin 3 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 119 ;
+					lv2:symbol "transformer_pin4_shape" ; lv2:name "Transformer Pin 4 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 120 ;
+					lv2:symbol "transformer_pin4_freq" ; lv2:name "Transformer Pin 4 Freq" ;
+					lv2:default 1500.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 121 ;
+					lv2:symbol "transformer_pin4_gain" ; lv2:name "Transformer Pin 4 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 122 ;
+					lv2:symbol "transformer_pin4_q" ; lv2:name "Transformer Pin 4 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 123 ;
+					lv2:symbol "transformer_pin5_shape" ; lv2:name "Transformer Pin 5 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 124 ;
+					lv2:symbol "transformer_pin5_freq" ; lv2:name "Transformer Pin 5 Freq" ;
+					lv2:default 3500.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 125 ;
+					lv2:symbol "transformer_pin5_gain" ; lv2:name "Transformer Pin 5 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 126 ;
+					lv2:symbol "transformer_pin5_q" ; lv2:name "Transformer Pin 5 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 127 ;
+					lv2:symbol "transformer_pin6_shape" ; lv2:name "Transformer Pin 6 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 128 ;
+					lv2:symbol "transformer_pin6_freq" ; lv2:name "Transformer Pin 6 Freq" ;
+					lv2:default 8000.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 129 ;
+					lv2:symbol "transformer_pin6_gain" ; lv2:name "Transformer Pin 6 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 130 ;
+					lv2:symbol "transformer_pin6_q" ; lv2:name "Transformer Pin 6 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 131 ;
+					lv2:symbol "cab_console_pin1_shape" ; lv2:name "Console Pin 1 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 132 ;
+					lv2:symbol "cab_console_pin1_freq" ; lv2:name "Console Pin 1 Freq" ;
+					lv2:default 100.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 133 ;
+					lv2:symbol "cab_console_pin1_gain" ; lv2:name "Console Pin 1 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 134 ;
+					lv2:symbol "cab_console_pin1_q" ; lv2:name "Console Pin 1 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 135 ;
+					lv2:symbol "cab_console_pin2_shape" ; lv2:name "Console Pin 2 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 136 ;
+					lv2:symbol "cab_console_pin2_freq" ; lv2:name "Console Pin 2 Freq" ;
+					lv2:default 250.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 137 ;
+					lv2:symbol "cab_console_pin2_gain" ; lv2:name "Console Pin 2 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 138 ;
+					lv2:symbol "cab_console_pin2_q" ; lv2:name "Console Pin 2 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 139 ;
+					lv2:symbol "cab_console_pin3_shape" ; lv2:name "Console Pin 3 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 140 ;
+					lv2:symbol "cab_console_pin3_freq" ; lv2:name "Console Pin 3 Freq" ;
+					lv2:default 600.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 141 ;
+					lv2:symbol "cab_console_pin3_gain" ; lv2:name "Console Pin 3 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 142 ;
+					lv2:symbol "cab_console_pin3_q" ; lv2:name "Console Pin 3 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 143 ;
+					lv2:symbol "cab_console_pin4_shape" ; lv2:name "Console Pin 4 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 144 ;
+					lv2:symbol "cab_console_pin4_freq" ; lv2:name "Console Pin 4 Freq" ;
+					lv2:default 1500.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 145 ;
+					lv2:symbol "cab_console_pin4_gain" ; lv2:name "Console Pin 4 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 146 ;
+					lv2:symbol "cab_console_pin4_q" ; lv2:name "Console Pin 4 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 147 ;
+					lv2:symbol "cab_console_pin5_shape" ; lv2:name "Console Pin 5 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 148 ;
+					lv2:symbol "cab_console_pin5_freq" ; lv2:name "Console Pin 5 Freq" ;
+					lv2:default 3500.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 149 ;
+					lv2:symbol "cab_console_pin5_gain" ; lv2:name "Console Pin 5 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 150 ;
+					lv2:symbol "cab_console_pin5_q" ; lv2:name "Console Pin 5 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 151 ;
+					lv2:symbol "cab_console_pin6_shape" ; lv2:name "Console Pin 6 Shape" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:portProperty lv2:enumeration, lv2:integer, lv2:connectionOptional ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Bell" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Shelf" ],
+						[ rdfs:value 3.0 ; rdfs:label "High Shelf" ]
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 152 ;
+					lv2:symbol "cab_console_pin6_freq" ; lv2:name "Console Pin 6 Freq" ;
+					lv2:default 8000.0 ; lv2:minimum 20.0 ; lv2:maximum 20000.0 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 153 ;
+					lv2:symbol "cab_console_pin6_gain" ; lv2:name "Console Pin 6 Gain" ;
+					lv2:default 0.0 ; lv2:minimum -18.0 ; lv2:maximum 18.0 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 154 ;
+					lv2:symbol "cab_console_pin6_q" ; lv2:name "Console Pin 6 Q" ;
+					lv2:default 1.0 ; lv2:minimum 0.1 ; lv2:maximum 10.0 ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
 				] .

@@ -865,6 +865,13 @@ static NSString* stageName(NSInteger stage) {
         _state->sendControl(NAMRig::kMidPushPort, 0.0f);
         _state->updateControl(NAMRig::kMidPushPort, 0.0f);
       }
+      // Slot presets saved before graph pins existed recall with no pins.
+      for (NSNumber* pNum in spec[@"ports"]) {
+        const uint32_t port = pNum.unsignedIntValue;
+        if (!NAMRig::isPinEqPort(port) || values[pNum.stringValue]) continue;
+        _state->sendControl(port, NAMRig::pinEqDefault(port));
+        _state->updateControl(port, NAMRig::pinEqDefault(port));
+      }
       for (id portKey in values) {
         if (![portKey isKindOfClass:[NSString class]]) continue;
         id valObj = values[portKey];
@@ -1816,6 +1823,34 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
 // RULE: Every slot created in any Studio Pro Deck pane must use this helper so
 // factory presets and user-saved presets are presented in a unified dropdown menu
 // with Save Preset, Save Preset As…, and Delete Preset actions.
+// Connects a graph's pin editor to the DSP ports and the preset machinery.
+static void installPinEditor(RigUIState* state, NAMPinEQEditor* editor) {
+  if (!editor) return;
+  const NAMRig::PinEqPane pane = editor.pane;
+  state->pinEditors[(size_t)pane] = editor;
+  for (size_t i = 0; i < NAMRig::kPinEqPanePorts; ++i) {
+    const uint32_t port = NAMRig::pinEqPort(pane, 0, 0) + (uint32_t)i;
+    [editor setPortValue:state->pinEqControls[port - NAMRig::kPinEqFirstPort] forPort:port];
+  }
+  auto alive = state->isAlive;
+  editor.onChange = ^(uint32_t port, float value) {
+    if (!alive || !*alive) return;
+    state->sendControl(port, value);
+    state->updateControl(port, value);
+  };
+  editor.onCommit = ^{
+    if (!alive || !*alive) return;
+    state->markModified();
+  };
+}
+
+static NSArray<NSNumber*>* pinEqPorts(NAMRig::PinEqPane pane) {
+  NSMutableArray<NSNumber*>* ports = [NSMutableArray arrayWithCapacity:NAMRig::kPinEqPanePorts];
+  for (size_t i = 0; i < NAMRig::kPinEqPanePorts; ++i)
+    [ports addObject:@(NAMRig::pinEqPort(pane, 0, 0) + (uint32_t)i)];
+  return ports;
+}
+
 static NSPopUpButton* addSlotPresetDropdown(
     NSView* container,
     RigUIState* state,
@@ -2346,7 +2381,9 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"OD PUSH", @"FLAT"];
     addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp Tonal Sculpt",
-                          @[@39, @40, @(NAMRig::kMidPushPort)], sculptPresetTitles,
+                          [@[@39, @40, @(NAMRig::kMidPushPort)]
+                              arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Sculpt)],
+                          sculptPresetTitles,
                           @selector(applySculptPreset:));
 
     NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
@@ -2355,6 +2392,7 @@ static void addLowerStudioDeck(RigUIState* state,
     scVis.inputEq = 0.0f;
     scVis.midPush = 0.0f;
     state->sculptVisualizer = scVis;
+    installPinEditor(state, scVis.pinEditor);
     [card addSubview:scVis];
     [[scVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
     [[scVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
@@ -2472,6 +2510,7 @@ static void addLowerStudioDeck(RigUIState* state,
     NSMutableArray<NSNumber*>* transformerPorts = [NSMutableArray arrayWithObject:@30];
     for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
       [transformerPorts addObject:@(NAMRig::kTransformerControlFirstPort + i)];
+    [transformerPorts addObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Transformer)];
     NSPopUpButton* presets = addSlotPresetDropdown(topZone, state, @"transformer", @"Output Transformer",
         transformerPorts, @[@"Captured / Off", @"Modern Iron", @"US Vintage", @"UK Vintage", @"Small Iron",
                             @"Tight Metal", @"Extended Range", @"Thrash Bite", @"Doom Iron", @"Studio Linear",
@@ -2618,6 +2657,7 @@ static void addLowerStudioDeck(RigUIState* state,
     transVis.translatesAutoresizingMaskIntoConstraints = NO;
     transVis.profile = 0;
     state->transformerVisualizer = transVis;
+    installPinEditor(state, transVis.pinEditor);
     [card addSubview:transVis];
     [[transVis.topAnchor constraintEqualToAnchor:deckTrans.bottomAnchor constant:8] setActive:YES];
     [[transVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
@@ -2788,7 +2828,9 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
     addSlotPresetDropdown(chips, state, @"cab_console", @"Dual-Cabinet Blend Console",
-                          @[@25, @48, @49, @26, @27, @59], cabPresetTitles, @selector(applyCabConsolePreset:));
+                          [@[@25, @48, @49, @26, @27, @59]
+                              arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::CabConsole)],
+                          cabPresetTitles, @selector(applyCabConsolePreset:));
     RigButton* invertB = rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59);
     invertB.buttonType = NSButtonTypeToggle;
     invertB.check = YES;
@@ -2807,6 +2849,7 @@ static void addLowerStudioDeck(RigUIState* state,
     cabVis.lowCut = 0.0f;
     cabVis.highCut = 20000.0f;
     state->cabConsoleVisualizer = cabVis;
+    installPinEditor(state, cabVis.pinEditor);
     [card addSubview:cabVis];
     [[cabVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
     [[cabVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];

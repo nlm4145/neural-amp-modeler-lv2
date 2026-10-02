@@ -26,7 +26,7 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 83 &&
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 155 &&
                   kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
@@ -107,7 +107,17 @@ Controls defaults(int mode) {
             c.begin() + kTransformerControlFirstPort);
   std::copy(kRackControlDefaults.begin(), kRackControlDefaults.end(), c.begin() + kRackControlFirstPort);
   c[kPowerTubeCharacterPort] = kPowerTubeCharacterDefault;
+  const auto pins = pinEqDefaults();
+  std::copy(pins.begin(), pins.end(), c.begin() + kPinEqFirstPort);
   return c;
+}
+
+// Places one graph pin in `pane`'s first band.
+void placePin(Controls& c, PinEqPane pane, int shape, float hz, float db, float q = 1.0f) {
+  c[pinEqPort(pane, 0, kPinShape)] = static_cast<float>(shape);
+  c[pinEqPort(pane, 0, kPinFreq)] = hz;
+  c[pinEqPort(pane, 0, kPinGain)] = db;
+  c[pinEqPort(pane, 0, kPinQ)] = q;
 }
 
 void nonneutral(Controls& c, Rack rack) {
@@ -117,15 +127,17 @@ void nonneutral(Controls& c, Rack rack) {
     case Rack::Spatial: c[32] = 90; c[33] = 65; break;
     case Rack::Power:
       c[34] = 8; c[35] = 6; c[36] = 70; c[37] = 35; c[38] = 80; c[41] = 65; break;
-    case Rack::Sculpt: c[39] = 90; c[40] = 80; break;
+    case Rack::Sculpt: c[39] = 90; c[40] = 80; placePin(c, PinEqPane::Sculpt, kPinBell, 997, 9); break;
     case Rack::Transformer:
       c[30] = OutputTransformer::kUKVintage;
-      c[62] = 2; c[63] = 30; c[66] = 5; break;
+      c[62] = 2; c[63] = 30; c[66] = 5;
+      placePin(c, PinEqPane::Transformer, kPinLowShelf, 150, -6, 0.7071f); break;
     case Rack::Speaker:
       c[42] = SpeakerDynamics::kModern412;
       c[43] = c[44] = c[45] = c[46] = 90; break;
     case Rack::CabConsole:
-      c[25] = -12; c[26] = 350; c[27] = 2200; c[48] = -9; c[49] = -7; c[59] = 1; break;
+      c[25] = -12; c[26] = 350; c[27] = 2200; c[48] = -9; c[49] = -7; c[59] = 1;
+      placePin(c, PinEqPane::CabConsole, kPinHighShelf, 3000, 6, 0.7071f); break;
     case Rack::PowerTube:
       c[kPowerTubeTypePort] = PowerTube::kEL34;
       c[kPowerTubeCharacterPort] = 100; break;
@@ -294,6 +306,9 @@ void verify(const LV2_Descriptor* d) {
     // not an accidentally active EL34 from the all-racks exercise above.
     connected[kPowerTubeTypePort] = PowerTube::kCaptured;
     connected[kPowerTubeCharacterPort] = kPowerTubeCharacterDefault;
+    // Nor does it have pin ports: unconnected pins mean no pins.
+    const auto pins = pinEqDefaults();
+    std::copy(pins.begin(), pins.end(), connected.begin() + kPinEqFirstPort);
     connected[47] = 1;
     Host explicitOn(d, rate, connected, &fixtures), legacy(d, rate, connected, &fixtures, true);
     bool match = true;
@@ -850,6 +865,35 @@ void verify(const LV2_Descriptor* d) {
 }
 } // namespace
 
+// Graph pins reach the audio in every pane, and a placed 0 dB pin changes nothing.
+void verifyPins(const LV2_Descriptor* d) {
+  for (int mode : {0, 6}) {
+    const double rate = mode == 0 ? 48000 : 96000;
+    Fixtures fixtures(rate);
+    for (PinEqPane pane : {PinEqPane::Sculpt, PinEqPane::Transformer, PinEqPane::CabConsole}) {
+      Controls base = defaults(mode), boosted = base, flat = base;
+      placePin(boosted, pane, kPinBell, 997, 12);
+      placePin(flat, pane, kPinBell, 997, 0);
+      Host reference(d, rate, base, &fixtures), pin(d, rate, boosted, &fixtures), zero(d, rate, flat, &fixtures);
+      double refEnergy = 0, pinEnergy = 0;
+      bool exact = true;
+      for (int block = 0; block < 400; ++block) {
+        reference.run(); pin.run(); zero.run();
+        exact &= zero.difference(reference) == 0;
+        if (block > 200)
+          for (size_t i = 0; i < kBlock; ++i) {
+            refEnergy += double(reference.left[i]) * reference.left[i];
+            pinEnergy += double(pin.left[i]) * pin.left[i];
+          }
+      }
+      char label[200];
+      std::snprintf(label, sizeof(label), "%s pin: +12 dB bell is audible, a 0 dB pin is bit-exact (%g Hz, mode %d)",
+                    kPinEqPaneSymbols[static_cast<size_t>(pane)], rate, mode);
+      check(pinEnergy > refEnergy * 1.5 && exact && pin.finite, label);
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc != 2) { std::puts("usage: verify_rack_bypass <fresh rig .so>"); return 2; }
   void* library = dlopen(argv[1], RTLD_NOW);
@@ -858,6 +902,7 @@ int main(int argc, char** argv) {
     auto descriptor = reinterpret_cast<const LV2_Descriptor* (*)(uint32_t)>(dlsym(library, "lv2_descriptor"));
     require(descriptor && descriptor(0), "rig descriptor exported");
     verify(descriptor(0));
+    verifyPins(descriptor(0));
   } catch (const std::exception& error) {
     check(false, error.what());
   }

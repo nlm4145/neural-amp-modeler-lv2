@@ -7,6 +7,7 @@
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "output_transformer.h"
+#include "pin_eq.h"
 #include "power_tube_controls.h"
 #include "rack_controls.h"
 #include "speaker_dynamics.h"
@@ -74,6 +75,10 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
     symbols[@(NAMRig::kPowerTubeTypePort)] = @"power_tube_type";
     symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";
     symbols[@(NAMRig::kMidPushPort)] = @"mid_push";
+    for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i) {
+      const uint32_t port = NAMRig::kPinEqFirstPort + i;
+      symbols[@(port)] = [NSString stringWithUTF8String:NAMRig::pinEqSymbol(port).c_str()];
+    }
     map = [symbols copy];
   });
   return map;
@@ -224,6 +229,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kPowerTubeTypePort] = 0.0f;
   p->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
   p->_controls[42] = 0.0f;  // Captured / Off
+  for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
+    p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
   return p;
 }
@@ -294,6 +301,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     preset->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
   preset->_controls[NAMRig::kPowerTubeTypePort] = 0.0f;
   preset->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
+  // Presets saved before graph pins existed recall with no pins placed.
+  for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
+    preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
   if ([portsDict isKindOfClass:[NSDictionary class]]) {
     for (NSString* key in portsDict) {
@@ -440,6 +450,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     p->_controls[NAMRig::kRackControlFirstPort + i] = state->rackControls[i];
   p->_controls[NAMRig::kPowerTubeTypePort] = static_cast<float>(state->powerTubeProfile);
   p->_controls[NAMRig::kPowerTubeCharacterPort] = state->powerTubeCharacter;
+  for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
+    p->_controls[NAMRig::kPinEqFirstPort + i] = state->pinEqControls[i];
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -528,6 +540,13 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       ? tubeCharacterIt->second : NAMRig::kPowerTubeCharacterDefault;
   state->sendControl(NAMRig::kPowerTubeCharacterPort, tubeCharacter);
   state->updateControl(NAMRig::kPowerTubeCharacterPort, tubeCharacter);
+  for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i) {
+    const uint32_t port = NAMRig::kPinEqFirstPort + i;
+    auto it = _controls.find(port);
+    const float value = it != _controls.end() ? it->second : NAMRig::pinEqDefault(port);
+    state->sendControl(port, value);
+    state->updateControl(port, value);
+  }
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);

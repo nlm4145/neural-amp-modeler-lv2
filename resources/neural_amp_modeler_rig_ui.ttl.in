@@ -107,4 +107,148 @@
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "power_tube_character" ; ui:notifyType atom:Float
 	], [
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "mid_push" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin1_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin1_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin1_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin1_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin2_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin2_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin2_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin2_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin3_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin3_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin3_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin3_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin4_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin4_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin4_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin4_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin5_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin5_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin5_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin5_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin6_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin6_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin6_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "sculpt_pin6_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin1_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin1_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin1_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin1_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin2_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin2_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin2_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin2_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin3_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin3_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin3_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin3_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin4_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin4_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin4_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin4_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin5_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin5_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin5_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin5_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin6_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin6_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin6_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "transformer_pin6_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin1_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin1_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin1_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin1_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin2_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin2_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin2_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin2_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin3_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin3_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin3_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin3_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin4_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin4_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin4_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin4_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin5_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin5_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin5_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin5_q" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin6_shape" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin6_freq" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin6_gain" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_console_pin6_q" ; ui:notifyType atom:Float
 	] .

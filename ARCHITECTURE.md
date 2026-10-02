@@ -71,6 +71,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 80 | `power_tube_type` | in | Captured (0), 6L6-inspired (1), EL34-inspired (2); default Captured; connection optional |
 | 81 | `power_tube_character` | in | 0-100% character, default 50%; 0 is neutral; connection optional |
 | 82 | `mid_push` | in | 0-100%; Pre-Amp Tonal Sculpt midrange bell before the amp capture (750 Hz, Q 0.8, up to +9 dB), runs in the amp's True domain after Bright/Input EQ; 0 = exact bypass; connection optional |
+| 83–154 | `{sculpt,transformer,cab_console}_pin{1..6}_{shape,freq,gain,q}` | in | Graph pin EQ (`src/pin_eq.h`): 3 panes × 6 bands × 4 params. Shape 0 Off / 1 Bell / 2 Low Shelf / 3 High Shelf; 20 Hz–20 kHz; ±18 dB; Q 0.1–10. No pin or 0 dB = exact bypass; connection optional |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
@@ -109,6 +110,21 @@ transformer slot preset menu capture all 11 trims. Missing legacy values restore
 neutral trims. Captured / Off remains exact bypass and disables the editors.
 Live trims glide over approximately 20 ms at the amp's processing-domain rate,
 on a persistent 32-sample cadence, without resetting filter or core histories.
+
+## Graph pin EQ
+
+The Sculpt, Transformer and Cab Console graphs share one frequency axis
+(log 20 Hz–20 kHz, ±18 dB) and each hosts an `NAMPinEQEditor` overlay:
+double-click adds or removes a pin, drag sets frequency/gain, scroll sets Q,
+right-click picks bell/shelf. Each pane is six RBJ bands (`PinEq`, double
+precision) on appended ports 83–154. Sculpt pins run pre-amp after Mid Push and
+Transformer pins after the output transformer, both in the amp's True domain;
+Cab Console pins run on the stereo cab mix after the cuts, at session rate. The
+owning rack's ON/OFF bypasses its pins. Gain/frequency/Q glide ~20 ms; a shape
+change glides to 0 dB, switches at unity and glides back. Rig presets and A/B
+snapshots capture all 72 values; the three slot presets capture their pane's 24.
+Presets and slot presets saved before pins existed recall with no pins. The
+graphs draw the DSP's actual filter magnitudes (Sculpt, cuts) on the same axes.
 
 ## "Oversampling" reality — and TRUE oversampling (2x, optional)
 

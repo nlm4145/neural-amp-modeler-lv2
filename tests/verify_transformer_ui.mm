@@ -9,6 +9,7 @@
 #include "rig_ui_state.h"
 #include <dlfcn.h>
 #include <unistd.h>
+#include <objc/message.h>
 #include <objc/runtime.h>
 #include <cstdio>
 #include <limits>
@@ -217,6 +218,70 @@ static void snapshot(RigUIState* state, Class presetClass,
     if (modified) CHECK(near([state->abModifiedPreset controlForPort:port], trims[i]));
   }
   if (modified) CHECK(state->presetManager.isModified && state->abModifiedPreset);
+}
+
+// Graph pins: each frequency graph hosts an editor whose edits reach the host,
+// the logical state, preset capture and recall; host echoes update the editor.
+static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  stage = "graph pin editors / wiring";
+  REQUIRE(state->sculptVisualizer && state->transformerVisualizer && state->cabConsoleVisualizer);
+  CHECK(state->pinEditors[(size_t)PinEqPane::Sculpt] == state->sculptVisualizer.pinEditor);
+  CHECK(state->pinEditors[(size_t)PinEqPane::Transformer] == state->transformerVisualizer.pinEditor);
+  CHECK(state->pinEditors[(size_t)PinEqPane::CabConsole] == state->cabConsoleVisualizer.pinEditor);
+  for (size_t pane = 0; pane < kPinEqPaneCount; ++pane) {
+    NAMPinEQEditor* editor = state->pinEditors[pane];
+    REQUIRE(editor && editor.onChange && editor.onCommit);
+    CHECK(editor.pane == (PinEqPane)pane);
+  }
+  CHECK(state->sculptVisualizer.pinEditor.superview == state->sculptVisualizer);
+
+  stage = "graph pin editors / double-click add writes a bell";
+  [runtime.window layoutIfNeeded];
+  NAMPinEQEditor* console = state->pinEditors[(size_t)PinEqPane::CabConsole];
+  const NSRect b = console.bounds;
+  REQUIRE(b.size.width > 40 && b.size.height > 20);
+  host.writes.clear();
+  // Center of the plot is 632 Hz (log midpoint of 20 Hz..20 kHz) at 0 dB; aim above it.
+  const NSPoint at = NSMakePoint(NSMidX(b), NSMidY(b) + (b.size.height * 0.5 - kPinEditorInset) * 0.5);
+  ((void (*)(id, SEL, NSPoint))objc_msgSend)(console, sel_registerName("addPinAt:"), at);
+  const uint32_t shape = pinEqPort(PinEqPane::CabConsole, 0, kPinShape);
+  const uint32_t freq = pinEqPort(PinEqPane::CabConsole, 0, kPinFreq);
+  const uint32_t gain = pinEqPort(PinEqPane::CabConsole, 0, kPinGain);
+  REQUIRE(!host.writes[shape].empty() && !host.writes[freq].empty() && !host.writes[gain].empty());
+  CHECK(host.writes[shape].back() == kPinBell);
+  CHECK(std::fabs(host.writes[freq].back() - 632.5f) < 15.0f);
+  CHECK(std::fabs(host.writes[gain].back() - kPinGainMax * 0.5f) < 0.5f);
+  CHECK(state->pinEqControls[shape - kPinEqFirstPort] == kPinBell);
+  CHECK(state->presetManager.isModified);
+
+  stage = "graph pin editors / preset capture, host echo and recall";
+  RigPreset* captured = [presetClass captureFromState:state name:@"Pins"];
+  CHECK([captured controlForPort:shape] == kPinBell);
+  CHECK(near([captured controlForPort:gain], host.writes[gain].back()));
+  const uint32_t sculptGain = pinEqPort(PinEqPane::Sculpt, 3, kPinGain);
+  const float echoed = -7.5f;
+  runtime.descriptor->port_event(state, sculptGain, sizeof(echoed), 0, &echoed);
+  drain();
+  CHECK(state->pinEqControls[sculptGain - kPinEqFirstPort] == echoed);
+  const float wild = 99.0f;  // host values are clamped to the pin range
+  runtime.descriptor->port_event(state, sculptGain, sizeof(wild), 0, &wild);
+  drain();
+  CHECK(state->pinEqControls[sculptGain - kPinEqFirstPort] == kPinGainMax);
+  host.writes.clear();
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+  for (uint32_t i = 0; i < kPinEqPortCount; ++i) {
+    const uint32_t port = kPinEqFirstPort + i;
+    CHECK(near(state->pinEqControls[i], pinEqDefault(port)));
+    CHECK(!host.writes[port].empty() && near(host.writes[port].back(), pinEqDefault(port)));
+  }
+  [captured applyToState:state];
+  drain();
+  CHECK(state->pinEqControls[shape - kPinEqFirstPort] == kPinBell);
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
 }
 
 static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) {
@@ -514,7 +579,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 83 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 155 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -1292,7 +1357,13 @@ static void verify(const char* modulePath) {
     if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"transformer"]) slot = (NSInteger)i;
   REQUIRE(slot >= 0);
   NSDictionary* slotValues = state->captureSlotPortValues(slot);
-  CHECK(slotValues.count == 13); // Model selector, eleven trims and rack enable.
+  // Model selector, eleven trims, the pane's 24 graph-pin ports and rack enable.
+  CHECK(slotValues.count == 13 + kPinEqPanePorts);
+  for (size_t i = 0; i < kPinEqPanePorts; ++i) {
+    const uint32_t port = pinEqPort(PinEqPane::Transformer, 0, 0) + (uint32_t)i;
+    NSNumber* pin = slotValues[[NSString stringWithFormat:@"%u", port]];
+    CHECK(pin && near([pin floatValue], pinEqDefault(port)));
+  }
   NSString* enabledPort = [NSString stringWithFormat:@"%u",
       kRackControlFirstPort + (uint32_t)Rack::Transformer];
   REQUIRE(slotValues[enabledPort]);
@@ -1595,6 +1666,7 @@ static void verify(const char* modulePath) {
   [state->transformerPopover close];
   verifyRackSwitches(runtime, host, presetClass);
   verifyPowerTube(runtime, host, presetClass);
+  verifyPinEditors(runtime, host, presetClass);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
 }

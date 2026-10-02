@@ -3,6 +3,7 @@
 #pragma once
 
 #include "output_transformer.h"
+#include "pin_eq.h"
 
 #ifdef __OBJC__
 #import <Cocoa/Cocoa.h>
@@ -38,6 +39,21 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @property(nonatomic) BOOL check;
 @end
 
+// Freeform pin EQ drawn over a graph's frequency plot (log 20 Hz..20 kHz,
+// +/-18 dB). The frame is the plot rect outset by kPinEditorInset so edge pins
+// are not clipped. Double-click adds or removes a pin, drag moves it, the
+// scroll wheel sets its width (Q), right-click picks bell/shelf.
+static constexpr CGFloat kPinEditorInset = 6.0;
+@interface NAMPinEQEditor : NSView
+- (instancetype)initWithPane:(NAMRig::PinEqPane)pane accent:(NSColor*)accent;
+@property(nonatomic, readonly) NAMRig::PinEqPane pane;
+// Fired for every value the editor changes (drag, scroll, menus).
+@property(nonatomic, copy) void (^onChange)(uint32_t port, float value);
+// Fired once a gesture finishes, for preset "modified" tracking.
+@property(nonatomic, copy) void (^onCommit)(void);
+- (void)setPortValue:(float)value forPort:(uint32_t)port;
+@end
+
 // Studio Deck Hardware Visualizers
 @interface NAMDelayTapVisualizer : NSView
 @property(nonatomic) float timeMs;
@@ -67,6 +83,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @end
 
 @interface NAMSculptVisualizer : NSView
+@property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 @property(nonatomic) float bright;
 @property(nonatomic) float inputEq;
 @property(nonatomic) float midPush;
@@ -79,6 +96,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @end
 
 @interface NAMTransformerVisualizer : NSView
+@property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 @property(nonatomic) int profile;
 @property(nonatomic) NAMRig::OutputTransformer::Parameters parameters;
 @end
@@ -91,6 +109,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @end
 
 @interface NAMCabConsoleVisualizer : NSView
+@property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 @property(nonatomic) float cabALevel;
 @property(nonatomic) float cabBLevel;
 @property(nonatomic) float alignDelay;

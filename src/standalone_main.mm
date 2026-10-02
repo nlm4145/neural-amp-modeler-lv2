@@ -599,6 +599,8 @@ class StandaloneHost {
     plugin_->ports.power_tube_type = &tubeControls_[0];
     plugin_->ports.power_tube_character = &tubeControls_[1];
     plugin_->ports.mid_push = &midPushControl_;
+    for (size_t i = 0; i < pinEqControls_.size(); ++i)
+      plugin_->ports.pin_eq[i] = &pinEqControls_[i];
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -963,6 +965,10 @@ class StandaloneHost {
     }
     if (format == 0 && port == NAMRig::kMidPushPort && size == sizeof(float)) {
       host->midPushControl_ = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && NAMRig::isPinEqPort(port) && size == sizeof(float)) {
+      host->pinEqControls_[port - NAMRig::kPinEqFirstPort] = *static_cast<const float*>(buffer);
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1756,6 +1762,7 @@ class StandaloneHost {
   std::array<float, NAMRig::kRackCount> rackControls_ = NAMRig::kRackControlDefaults;
   std::array<float, 2> tubeControls_ = {0.0f, NAMRig::kPowerTubeCharacterDefault};
   float midPushControl_ = 0.0f;
+  std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

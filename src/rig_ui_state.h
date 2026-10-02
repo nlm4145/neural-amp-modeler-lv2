@@ -131,6 +131,10 @@ struct RigUIState {
   std::array<bool, NAMRig::kTransformerControlCount> transformerFieldEditing{};
   __strong NAMSpeakerDynamicsVisualizer* speakerVisualizer = nil;
   __strong NAMCabConsoleVisualizer* cabConsoleVisualizer = nil;
+  // Graph pins (Sculpt / Transformer / Cab Console): logical values for preset
+  // and A/B capture, plus the editors drawn over each graph.
+  std::array<float, NAMRig::kPinEqPortCount> pinEqControls = NAMRig::pinEqDefaults();
+  std::array<__strong NAMPinEQEditor*, NAMRig::kPinEqPaneCount> pinEditors{};
   __strong RigButton* cab2PolarityButton = nil;
   bool cab2PolarityInverted = false;
 
@@ -885,6 +889,7 @@ struct RigUIState {
   }
 
   float currentPortValueForSlot(uint32_t port) const {
+    if (NAMRig::isPinEqPort(port)) return pinEqControls[port - NAMRig::kPinEqFirstPort];
     if (port == NAMRig::kPowerTubeTypePort) return (float)powerTubeProfile;
     if (port == NAMRig::kPowerTubeCharacterPort) return powerTubeCharacter;
     if (port >= NAMRig::kRackControlFirstPort &&
@@ -1789,6 +1794,18 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateTube();
       else dispatch_async(dispatch_get_main_queue(), updateTube);
+      return;
+    }
+    if (NAMRig::isPinEqPort(port)) {
+      const float pinValue = NAMRig::clampPinEqValue(port, value);
+      pinEqControls[port - NAMRig::kPinEqFirstPort] = pinValue;
+      auto updatePin = ^{
+        if (!alive || !*alive) return;
+        NAMPinEQEditor* editor = pinEditors[NAMRig::pinEqPaneOf(port)];
+        [editor setPortValue:pinValue forPort:port];
+      };
+      if ([NSThread isMainThread]) updatePin();
+      else dispatch_async(dispatch_get_main_queue(), updatePin);
       return;
     }
     if (port == NAMRig::kPowerTubeCharacterPort) value = NAMRig::PowerTube::clampCharacter(value);
