@@ -105,4 +105,6 @@
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "power_tube_type" ; ui:notifyType atom:Float
 	], [
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "power_tube_character" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "mid_push" ; ui:notifyType atom:Float
 	] .

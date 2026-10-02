@@ -32,8 +32,9 @@ class AmpAdvanced {
   void resetPreAmp() noexcept {
     bright_.reset();
     inputEq_.reset();
-    smoothBright_ = smoothInputEq_ = 0.0f;
-    appliedBright_ = appliedInputEq_ = -1.0f;
+    midPush_.reset();
+    smoothBright_ = smoothInputEq_ = smoothMidPush_ = 0.0f;
+    appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
   }
 
   void resetPostAmp(bool preserveTubeCharacter = false) noexcept {
@@ -45,14 +46,17 @@ class AmpAdvanced {
   bool hasTubeCharacter() const noexcept { return smoothTubeCharacter_ > 0.0f; }
 
   void processPreAmp(float* samples, size_t count, double rate,
-                     float brightAmount, float inputEqAmount) noexcept {
+                     float brightAmount, float inputEqAmount,
+                     float midPushAmount = 0.0f) noexcept {
     const float brightTarget = clamp01(brightAmount * 0.01f);
     const float inputEqTarget = clamp01(inputEqAmount * 0.01f);
-    if (brightTarget <= 0.0f && inputEqTarget <= 0.0f &&
-        smoothBright_ <= 0.0f && smoothInputEq_ <= 0.0f) {
+    const float midPushTarget = std::isfinite(midPushAmount) ? clamp01(midPushAmount * 0.01f) : 0.0f;
+    if (brightTarget <= 0.0f && inputEqTarget <= 0.0f && midPushTarget <= 0.0f &&
+        smoothBright_ <= 0.0f && smoothInputEq_ <= 0.0f && smoothMidPush_ <= 0.0f) {
       bright_.reset();
       inputEq_.reset();
-      appliedBright_ = appliedInputEq_ = -1.0f;
+      midPush_.reset();
+      appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
       return;
     }
     for (size_t start = 0; start < count; start += kChunk) {
@@ -60,6 +64,7 @@ class AmpAdvanced {
       const float smooth = chunkCoeff(rate, n);
       glide(smoothBright_, brightTarget, smooth);
       glide(smoothInputEq_, inputEqTarget, smooth);
+      glide(smoothMidPush_, midPushTarget, smooth);
       if (smoothInputEq_ != appliedInputEq_) {
         if (smoothInputEq_ > 0.0f)
           setHighPass(inputEq_, 20.0f + 160.0f * smoothInputEq_, rate);
@@ -74,13 +79,24 @@ class AmpAdvanced {
           bright_.reset();
         appliedBright_ = smoothBright_;
       }
+      // Overdrive-style mid hump in front of the capture (Tube Screamer /
+      // tight-boost voicing); pair with Input EQ for the low cut.
+      if (smoothMidPush_ != appliedMidPush_) {
+        if (smoothMidPush_ > 0.0f)
+          setPeak(midPush_, kMidPushMaxDb * smoothMidPush_, kMidPushHz, kMidPushQ, rate);
+        else
+          midPush_.reset();
+        appliedMidPush_ = smoothMidPush_;
+      }
       const bool eqOn = smoothInputEq_ > 0.0f;
       const bool brightOn = smoothBright_ > 0.0f;
+      const bool midOn = smoothMidPush_ > 0.0f;
       float* s = samples + start;
       for (size_t i = 0; i < n; ++i) {
         double x = s[i];
         if (eqOn) x = inputEq_.advance(x);
         if (brightOn) x = bright_.advance(x);
+        if (midOn) x = midPush_.advance(x);
         s[i] = static_cast<float>(x);
       }
     }
@@ -223,6 +239,9 @@ class AmpAdvanced {
   static constexpr double kKnee = 0.7;
   static constexpr double kPi = 3.14159265358979323846;
   static constexpr double kQ = 0.7071067811865476;
+  static constexpr double kMidPushMaxDb = 9.0;
+  static constexpr float kMidPushHz = 750.0f;
+  static constexpr double kMidPushQ = 0.8;
 
   struct Filter {
     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
@@ -309,6 +328,19 @@ class AmpAdvanced {
     f.a2 = (1.0 - alpha) / a0;
   }
 
+  static void setPeak(Filter& f, double gainDb, float frequency, double q,
+                      double rate) noexcept {
+    const double A = std::pow(10.0, gainDb / 40.0);
+    const double w0 = 2.0 * kPi * frequency / rate;
+    const double c = std::cos(w0), alpha = std::sin(w0) / (2.0 * q);
+    const double a0 = 1.0 + alpha / A;
+    f.b0 = (1.0 + alpha * A) / a0;
+    f.b1 = -2.0 * c / a0;
+    f.b2 = (1.0 - alpha * A) / a0;
+    f.a1 = f.b1;
+    f.a2 = (1.0 - alpha / A) / a0;
+  }
+
   static void setShelf(Filter& f, double gainDb, float frequency, double rate,
                        bool high) noexcept {
     const double A = std::pow(10.0, gainDb / 40.0);
@@ -339,9 +371,9 @@ class AmpAdvanced {
     f.a2 = a2 / a0;
   }
 
-  Filter bright_, inputEq_, depth_, presence_;
-  float smoothBright_ = 0.0f, smoothInputEq_ = 0.0f;
-  float appliedBright_ = -1.0f, appliedInputEq_ = -1.0f;
+  Filter bright_, inputEq_, midPush_, depth_, presence_;
+  float smoothBright_ = 0.0f, smoothInputEq_ = 0.0f, smoothMidPush_ = 0.0f;
+  float appliedBright_ = -1.0f, appliedInputEq_ = -1.0f, appliedMidPush_ = -1.0f;
   float smoothPresence_ = 0.0f, smoothDepth_ = 0.0f, smoothSag_ = 0.0f;
   float smoothBias_ = 0.0f, smoothFeedback_ = 0.0f, smoothMaster_ = 0.0f;
   float smoothTubeCharacter_ = 0.0f;

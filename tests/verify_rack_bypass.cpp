@@ -26,8 +26,8 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 82 &&
-                  kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81,
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 83 &&
+                  kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
                   static_cast<size_t>(Rack::Spatial) == 2 && static_cast<size_t>(Rack::Power) == 3 &&

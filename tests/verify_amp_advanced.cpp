@@ -439,6 +439,43 @@ int main() {
     CHECK(tubeOff, "Tube OFF clears preserved character and restores exact legacy Power startup");
   }
 
+  // ---- Mid Push: overdrive-style bell before the capture ----
+  {
+    const auto midGainDb = [](float midPush, double frequency, double sampleRate) {
+      const size_t n = static_cast<size_t>(sampleRate * 0.5);
+      std::vector<float> tone(n);
+      for (size_t i = 0; i < n; ++i)
+        tone[i] = 0.1f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * frequency * i / sampleRate));
+      auto out = tone;
+      NAMRig::AmpAdvanced pre;
+      pre.processPreAmp(out.data(), out.size(), sampleRate, 0.0f, 0.0f, midPush);
+      double in2 = 0.0, out2 = 0.0;
+      for (size_t i = n / 2; i < n; ++i) { in2 += tone[i] * tone[i]; out2 += out[i] * out[i]; }
+      return 10.0 * std::log10(out2 / in2);
+    };
+    auto bypass = input;
+    NAMRig::AmpAdvanced zero;
+    zero.processPreAmp(bypass.data(), bypass.size(), rate, 0.0f, 0.0f, 0.0f);
+    CHECK(bypass == input, "Mid Push 0% is bit-transparent");
+    bool shaped = true;
+    for (double sr : {48000.0, 96000.0, 768000.0}) {
+      const double peak = midGainDb(100.0f, 750.0, sr);
+      const double low = midGainDb(100.0f, 80.0, sr);
+      const double high = midGainDb(100.0f, 8000.0, sr);
+      const double half = midGainDb(50.0f, 750.0, sr);
+      std::printf("        %.0f Hz: 750 Hz %+.2f dB (50%% %+.2f), 80 Hz %+.2f, 8 kHz %+.2f\n",
+                  sr, peak, half, low, high);
+      shaped &= std::fabs(peak - 9.0) < 0.3 && std::fabs(half - 4.5) < 0.3 &&
+                std::fabs(low) < 1.0 && std::fabs(high) < 1.0;
+    }
+    CHECK(shaped, "Mid Push is a +9 dB 750 Hz bell, flat at the extremes, at base and True 8x rates");
+    auto nan = input;
+    NAMRig::AmpAdvanced nanAmp;
+    nanAmp.processPreAmp(nan.data(), nan.size(), rate, 0.0f, 0.0f,
+                         std::numeric_limits<float>::quiet_NaN());
+    CHECK(nan == input, "non-finite Mid Push falls back to bypass");
+  }
+
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);
   return failures ? 1 : 0;
 }

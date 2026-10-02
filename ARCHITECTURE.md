@@ -70,6 +70,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 79 | `power_tube_enabled` | in | Independent Tube Character rack enable, default 1; connection optional |
 | 80 | `power_tube_type` | in | Captured (0), 6L6-inspired (1), EL34-inspired (2); default Captured; connection optional |
 | 81 | `power_tube_character` | in | 0-100% character, default 50%; 0 is neutral; connection optional |
+| 82 | `mid_push` | in | 0-100%; Pre-Amp Tonal Sculpt midrange bell before the amp capture (750 Hz, Q 0.8, up to +9 dB), runs in the amp's True domain after Bright/Input EQ; 0 = exact bypass; connection optional |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.

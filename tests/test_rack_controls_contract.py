@@ -26,7 +26,8 @@ assert "offsetof(Ports, rack_enabled) == kRackControlFirstPort * sizeof(void*)" 
 assert "kPortCount = kRigControlPortCount;" in header
 assert "kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79" in header
 assert "kPowerTubeTypePort == kRackControlFirstPort + kRackCount" in header
-assert "kPortCount == kPowerTubeCharacterPort + 1" in header
+assert "kMidPushPort == kPowerTubeCharacterPort + 1" in header
+assert "kPortCount == kMidPushPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 for index, symbol in enumerate(symbols, 71):

@@ -597,6 +597,7 @@ class StandaloneHost {
       plugin_->ports.rack_enabled[i] = &rackControls_[i];
     plugin_->ports.power_tube_type = &tubeControls_[0];
     plugin_->ports.power_tube_character = &tubeControls_[1];
+    plugin_->ports.mid_push = &midPushControl_;
 
     worker_ = std::thread([this] { workerLoop(); });
 
@@ -957,6 +958,10 @@ class StandaloneHost {
         port <= NAMRig::kPowerTubeCharacterPort && size == sizeof(float)) {
       host->tubeControls_[port - NAMRig::kPowerTubeTypePort] =
           *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port == NAMRig::kMidPushPort && size == sizeof(float)) {
+      host->midPushControl_ = *static_cast<const float*>(buffer);
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1749,6 +1754,7 @@ class StandaloneHost {
   NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;
   std::array<float, NAMRig::kRackCount> rackControls_ = NAMRig::kRackControlDefaults;
   std::array<float, 2> tubeControls_ = {0.0f, NAMRig::kPowerTubeCharacterDefault};
+  float midPushControl_ = 0.0f;
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;

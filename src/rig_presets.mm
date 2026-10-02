@@ -73,6 +73,7 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
           [NSString stringWithUTF8String:NAMRig::kRackControlSymbols[i]];
     symbols[@(NAMRig::kPowerTubeTypePort)] = @"power_tube_type";
     symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";
+    symbols[@(NAMRig::kMidPushPort)] = @"mid_push";
     map = [symbols copy];
   });
   return map;

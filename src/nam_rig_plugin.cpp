@@ -1118,7 +1118,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       }
       if (rackOn(Rack::Sculpt))
         ampAdvanced.processPreAmp(samples, count, domainRate,
-                                  *ports.bright, *ports.input_eq);
+                                  *ports.bright, *ports.input_eq,
+                                  portValue(ports.mid_push, 0.0f));
     }
     runModel(stage, model, samples, count, domainRate);
     if (stage == stageIndex(Stage::Amp)) {

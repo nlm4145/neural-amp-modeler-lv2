@@ -185,6 +185,7 @@ public:
     std::array<float*, kRackCount> rack_enabled; // in: ports 71..79
     float* power_tube_type;      // in: port 80, Captured/6L6-inspired/EL34-inspired
     float* power_tube_character; // in: port 81, added character (0..100%)
+    float* mid_push;             // in: port 82, pre-amp midrange bell (0..100%)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -203,12 +204,14 @@ public:
   static_assert(offsetof(Ports, rack_enabled) == kRackControlFirstPort * sizeof(void*));
   static_assert(offsetof(Ports, power_tube_type) == kPowerTubeTypePort * sizeof(void*));
   static_assert(offsetof(Ports, power_tube_character) == kPowerTubeCharacterPort * sizeof(void*));
+  static_assert(offsetof(Ports, mid_push) == kMidPushPort * sizeof(void*));
   static constexpr uint32_t kPortCount = kRigControlPortCount;
   static_assert(kRackControlFirstPort == kTransformerControlFirstPort + kTransformerControlCount);
   static_assert(kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79);
   static_assert(kPowerTubeTypePort == kRackControlFirstPort + kRackCount);
   static_assert(kPowerTubeCharacterPort == kPowerTubeTypePort + 1);
-  static_assert(kPortCount == kPowerTubeCharacterPort + 1);
+  static_assert(kMidPushPort == kPowerTubeCharacterPort + 1);
+  static_assert(kPortCount == kMidPushPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};

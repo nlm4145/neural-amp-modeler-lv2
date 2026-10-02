@@ -752,16 +752,19 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)applySculptPreset:(NSButton*)sender {
   if (!_state) return;
-  struct SculptPreset { float bright, inputEq; };
+  struct SculptPreset { float bright, inputEq, midPush; };
   const SculptPreset presets[] = {
-    {6.0f, 0.0f},  // LEAD BOOST
-    {3.0f, 75.0f}, // TIGHT CHUG
-    {0.0f, 0.0f}   // FLAT
+    {6.0f, 0.0f, 0.0f},   // LEAD BOOST
+    {3.0f, 75.0f, 0.0f},  // TIGHT CHUG
+    {0.0f, 60.0f, 70.0f}, // OD PUSH
+    {0.0f, 0.0f, 0.0f}    // FLAT
   };
-  if (sender.tag >= 0 && sender.tag < 3) {
+  if (sender.tag >= 0 && sender.tag < 4) {
     const auto& p = presets[sender.tag];
     _state->sendControl(39, p.bright); _state->updateControl(39, p.bright);
     _state->sendControl(40, p.inputEq); _state->updateControl(40, p.inputEq);
+    _state->sendControl(NAMRig::kMidPushPort, p.midPush);
+    _state->updateControl(NAMRig::kMidPushPort, p.midPush);
     [self markPresetModified];
   }
 }
@@ -855,6 +858,12 @@ static NSString* stageName(NSInteger stage) {
       // Existing transformer slot presets stored only the model selector.
       if ([spec[@"key"] isEqualToString:@"transformer"])
         [self resetTransformerControls:sender];
+      // Sculpt presets saved before Mid Push existed recall it as OFF.
+      NSString* midPushKey = [NSString stringWithFormat:@"%u", NAMRig::kMidPushPort];
+      if ([spec[@"key"] isEqualToString:@"sculpt"] && !values[midPushKey]) {
+        _state->sendControl(NAMRig::kMidPushPort, 0.0f);
+        _state->updateControl(NAMRig::kMidPushPort, 0.0f);
+      }
       for (id portKey in values) {
         if (![portKey isKindOfClass:[NSString class]]) continue;
         id valObj = values[portKey];
@@ -2298,7 +2307,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
     [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
 
-    const size_t sculptK[2] = {19, 20};
+    const size_t sculptK[3] = {19, 20, 38};
     for (size_t idx : sculptK) {
       [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
     }
@@ -2315,7 +2324,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Bright boost and bass tightening before the capture.",
+    NSTextField* desc = addLabel(card, @"Bright boost, mid push and bass tightening before the capture.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2334,14 +2343,16 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
-    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"FLAT"];
+    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"OD PUSH", @"FLAT"];
     addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp Tonal Sculpt",
-                          @[@39, @40], sculptPresetTitles, @selector(applySculptPreset:));
+                          @[@39, @40, @(NAMRig::kMidPushPort)], sculptPresetTitles,
+                          @selector(applySculptPreset:));
 
     NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
     scVis.translatesAutoresizingMaskIntoConstraints = NO;
     scVis.bright = 0.0f;
     scVis.inputEq = 0.0f;
+    scVis.midPush = 0.0f;
     state->sculptVisualizer = scVis;
     [card addSubview:scVis];
     [[scVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
@@ -3481,14 +3492,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"THUMP", @"RESONANCE",
                                       @"CAB B LVL", @"ALIGN", @"DLY TIME", @"DLY FDBK",
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
-                                      @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER"];
+                                      @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
+                                      @"MID PUSH"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"OFF", @"+0%",
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
-                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%"];
+                                       @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -3527,17 +3539,18 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Reverb space size. Scales the reverb plate tank dimensions and the room's early reflections. Smaller sizes sound tight and intimate; larger sizes expand into a vast acoustic hall.",
       @"Reverb high damping. Controls high-frequency absorption in the plate and room reflections. Lower damping preserves bright, airy shimmer; higher damping darkens the tail for a warm, natural decay that never clutters the mix.",
       @"Reverb pre-delay. Sets the time gap (0-100 ms) before the reverb tail begins. Keeps your initial pick attack and note definition clear and upfront before the ambient reverb blooms.",
-      @"Amount of added tube-inspired character. Changes clipping knee, headroom and asymmetry in the shared power-stage engine. 0% preserves the existing power-stage response. The captured amp's original tubes are not removed."
+      @"Amount of added tube-inspired character. Changes clipping knee, headroom and asymmetry in the shared power-stage engine. 0% preserves the existing power-stage response. The captured amp's original tubes are not removed.",
+      @"Mid push (pre-amp). Overdrive-style midrange bell (750 Hz, up to +9 dB) before the NAM amp model, like a Tube Screamer or tight boost. Pair with Input EQ and a little Drive to stand in for a separate overdrive capture. 0% is exact bypass."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+        24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;

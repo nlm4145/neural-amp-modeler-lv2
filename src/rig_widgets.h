@@ -69,6 +69,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @interface NAMSculptVisualizer : NSView
 @property(nonatomic) float bright;
 @property(nonatomic) float inputEq;
+@property(nonatomic) float midPush;
 @end
 
 @interface NAMPowerTubeVisualizer : NSView

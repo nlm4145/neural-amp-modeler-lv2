@@ -10,7 +10,9 @@ namespace NAMRig {
 inline constexpr uint32_t kPowerTubeTypePort = 80;
 inline constexpr uint32_t kPowerTubeCharacterPort = 81;
 inline constexpr float kPowerTubeCharacterDefault = 50.0f;
-inline constexpr uint32_t kRigControlPortCount = 82;
+// Pre-Amp Tonal Sculpt mid push (0..100%), appended after the tube controls.
+inline constexpr uint32_t kMidPushPort = 82;
+inline constexpr uint32_t kRigControlPortCount = 83;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

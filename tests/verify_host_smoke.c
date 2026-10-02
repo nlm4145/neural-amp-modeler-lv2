@@ -1,5 +1,5 @@
 /* Minimal LV2 host smoke test for the BUILT rig plugin (.so path = argv[1]):
- *   - instantiate with urid:map + worker:schedule, connect all 82 ports,
+ *   - instantiate with urid:map + worker:schedule, connect all 83 ports,
  *     run blocks both smaller and LARGER than the un-negotiated 512 default
  *     maxBlockLength (the chain must slice, not overrun).
  *   - latency port must read 0 with no models loaded.
@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
   CHECK(h != NULL, "instantiate at 48 kHz");
   if (!h) return 1;
 
-  enum { kPorts = 82, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
+  enum { kPorts = 83, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
   float ctl[kPorts] = {0};           /* mirrors Plugin::kPortCount */

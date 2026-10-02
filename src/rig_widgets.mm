@@ -956,6 +956,7 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
 - (BOOL)isFlipped { return NO; }
 - (void)setBright:(float)v { _bright = v; self.needsDisplay = YES; }
 - (void)setInputEq:(float)v { _inputEq = v; self.needsDisplay = YES; }
+- (void)setMidPush:(float)v { _midPush = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
   NSRect r = self.bounds;
@@ -972,9 +973,9 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
-  [@"PRE-AMP TIGHTENER & BRIGHT SHELF" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [@"PRE-AMP TIGHTENER, MID PUSH & BRIGHT" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
-  NSString* stat = [NSString stringWithFormat:@"BRIGHT: %+.1f dB  •  TIGHT: %.0f%%", _bright, _inputEq];
+  NSString* stat = [NSString stringWithFormat:@"BRIGHT: %+.1f dB  •  MID: %.0f%%  •  TIGHT: %.0f%%", _bright, _midPush, _inputEq];
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
@@ -1006,7 +1007,9 @@ void rigApplyTracking(NSTextField* label, CGFloat kern) {
     CGFloat px = leftM + frac * pw;
     float lowCutDb = (frac < 0.35f) ? -12.0f * tightNorm * (1.0f - frac / 0.35f) : 0.0f;
     float highBoostDb = (frac > 0.60f) ? brightDb * ((frac - 0.60f) / 0.40f) : 0.0f;
-    float totalDb = lowCutDb + highBoostDb;
+    const float midDist = (frac - 0.45f) / 0.12f;
+    float midPushDb = 9.0f * (_midPush / 100.0f) * std::exp(-midDist * midDist);
+    float totalDb = lowCutDb + highBoostDb + midPushDb;
 
     CGFloat py = midY + (totalDb / 15.0f) * (ph * 0.45);
     if (i == 0) [curve moveToPoint:NSMakePoint(px, py)];

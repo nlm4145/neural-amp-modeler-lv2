@@ -1944,9 +1944,10 @@ struct RigUIState {
         else if (port == 41) powerVisualizer.master = value;
         powerVisualizer.needsDisplay = YES;
       }
-      if (sculptVisualizer && (port == 39 || port == 40)) {
+      if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort)) {
         if (port == 39) sculptVisualizer.bright = value;
         else if (port == 40) sculptVisualizer.inputEq = value;
+        else sculptVisualizer.midPush = value;
         sculptVisualizer.needsDisplay = YES;
       }
       if (speakerVisualizer && (port >= 43 && port <= 46)) {

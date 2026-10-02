@@ -514,7 +514,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 82 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 83 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
