@@ -547,10 +547,11 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* dir = [@("~/Library/Application Support/Axe FX") stringByExpandingTildeInPath];
   [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSString* path = [dir stringByAppendingPathComponent:@"browse-filters.txt"];
-  NSString* line = [NSString stringWithFormat:@"%@\n%@\n%ld\n",
+  NSString* line = [NSString stringWithFormat:@"%@\n%@\n%ld\n%@\n",
                     self.gear.titleOfSelectedItem ?: @"",
-                    self.sort.titleOfSelectedItem ?: @"",
-                    (long)self.archControl.selectedSegment];
+                    self.browseSort ?: @"Newest",
+                    (long)self.archControl.selectedSegment,
+                    self.favoritesSort ?: @"Alphabetical"];
   [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort arch:(NSSegmentedControl*)arch {
@@ -567,6 +568,16 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* savedGear = lines.count > 0 ? lines[0] : @"";
   NSString* savedSort = lines.count > 1 ? lines[1] : @"";
   NSInteger savedArch = (lines.count > 2 && [lines[2] length]) ? [lines[2] integerValue] : 0;
+  NSString* savedFavSort = lines.count > 3 ? lines[3] : @"";
+
+  ToneBrowserController* controller = [gear.target isKindOfClass:[ToneBrowserController class]]
+      ? (ToneBrowserController*)gear.target
+      : ([sort.target isKindOfClass:[ToneBrowserController class]] ? (ToneBrowserController*)sort.target : nil);
+  if (controller) {
+    if (savedSort.length) controller.browseSort = savedSort;
+    if (savedFavSort.length) controller.favoritesSort = savedFavSort;
+  }
+
   for (NSString* title in gear.itemTitles)
     if ([title isEqualToString:savedGear]) { [gear selectItemWithTitle:title]; break; }
   for (NSString* title in sort.itemTitles)
@@ -577,6 +588,112 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 }
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort {
   [self restoreFilterSelectionForGear:gear sort:sort arch:nil];
+}
+
+- (void)updateSortMenuForCurrentMode {
+  if (!self.sort) return;
+  [self.sort removeAllItems];
+  if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Local"]) {
+    [self.sort addItemsWithTitles:@[@"Alphabetical", @"Time Downloaded", @"Alphabetical (Z-A)", @"Time Downloaded (Oldest)"]];
+    NSArray<NSString*>* tips = @[
+      @"Alphabetical — Order tones alphabetically by title (A to Z).",
+      @"Time Downloaded — Order tones by most recent download timestamp on this Mac.",
+      @"Alphabetical (Z-A) — Order tones reverse-alphabetically by title (Z to A).",
+      @"Time Downloaded (Oldest) — Order tones by earliest download timestamp on this Mac."
+    ];
+    for (NSUInteger i = 0; i < tips.count && i < (NSUInteger)self.sort.numberOfItems; ++i) {
+      [self.sort itemAtIndex:(NSInteger)i].toolTip = tips[i];
+    }
+    self.sort.enabled = YES;
+    NSString* targetSort = [self.mode isEqualToString:@"Favorites"]
+        ? (self.favoritesSort.length ? self.favoritesSort : @"Alphabetical")
+        : (self.localSort.length ? self.localSort : @"Alphabetical");
+    if ([self.sort itemWithTitle:targetSort]) {
+      [self.sort selectItemWithTitle:targetSort];
+    } else {
+      [self.sort selectItemAtIndex:0];
+    }
+    self.sort.toolTip = self.sort.selectedItem.toolTip ?: @"Choose sorting order for tones.";
+  } else if ([self.mode isEqualToString:@"Recent"]) {
+    [self.sort addItemWithTitle:@"Most Recent"];
+    [self.sort itemAtIndex:0].toolTip = @"Recent mode displays tones ordered by most recently modified.";
+    self.sort.enabled = NO;
+    self.sort.toolTip = @"Recent mode displays tones ordered by most recently modified.";
+  } else {
+    // Browse mode
+    [self.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
+    NSArray<NSString*>* sortTips = @[
+      @"Newest — Show the most recently published tones first.",
+      @"Trending — Use Tone3000's current popularity ranking.",
+      @"Most Downloaded — Show tones with the highest download counts first.",
+      @"Oldest — Show the earliest published tones first.",
+      @"Best Match — Prioritize search relevance for the current query."
+    ];
+    for (NSUInteger i = 0; i < sortTips.count && i < (NSUInteger)self.sort.numberOfItems; ++i) {
+      [self.sort itemAtIndex:(NSInteger)i].toolTip = sortTips[i];
+    }
+    self.sort.enabled = YES;
+    NSString* targetSort = self.browseSort.length ? self.browseSort : @"Newest";
+    if ([self.sort itemWithTitle:targetSort]) {
+      [self.sort selectItemWithTitle:targetSort];
+    } else {
+      [self.sort selectItemAtIndex:0];
+    }
+    self.sort.toolTip = self.sort.selectedItem.toolTip ?: @"Choose the ordering used for Tone3000 search results.";
+  }
+}
+
+- (NSDate*)effectiveDownloadDateForItem:(ToneItem*)item {
+  if (!item) return [NSDate distantPast];
+  if (item.modified && ![item.modified isEqualToDate:[NSDate distantPast]]) {
+    return item.modified;
+  }
+  NSFileManager* fm = [NSFileManager defaultManager];
+  if (item.models.count > 0) {
+    NSString* firstModel = item.models.firstObject;
+    NSString* folder = firstModel.stringByDeletingLastPathComponent;
+    NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+    NSDictionary* attrs = [fm attributesOfItemAtPath:manifestPath error:nil];
+    if (attrs.fileModificationDate) {
+      item.modified = attrs.fileModificationDate;
+      return item.modified;
+    }
+    attrs = [fm attributesOfItemAtPath:firstModel error:nil];
+    if (attrs.fileModificationDate) {
+      item.modified = attrs.fileModificationDate;
+      return item.modified;
+    }
+    attrs = [fm attributesOfItemAtPath:folder error:nil];
+    if (attrs.fileModificationDate) {
+      item.modified = attrs.fileModificationDate;
+      return item.modified;
+    }
+  }
+  NSString* library = [@"~/Music/Tone3000 Library" stringByExpandingTildeInPath];
+  if (item.title.length) {
+    NSString* category = @"Amp";
+    if (item.stage == 0) category = @"Pedal";
+    else if (item.stage == 2) category = @"Cab";
+    else if ([item.gear.lowercaseString isEqualToString:@"amp-cab"] || [item.gear.lowercaseString isEqualToString:@"full-rig"])
+      category = @"Full Rig";
+
+    NSString* folder = [[library stringByAppendingPathComponent:category]
+                        stringByAppendingPathComponent:safeFilename(item.title)];
+    NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+    NSDictionary* attrs = [fm attributesOfItemAtPath:manifestPath error:nil];
+    if (attrs.fileModificationDate) {
+      item.modified = attrs.fileModificationDate;
+      item.local = YES;
+      return item.modified;
+    }
+    attrs = [fm attributesOfItemAtPath:folder error:nil];
+    if (attrs.fileModificationDate) {
+      item.modified = attrs.fileModificationDate;
+      item.local = YES;
+      return item.modified;
+    }
+  }
+  return [NSDate distantPast];
 }
 
 - (void)dealloc {
@@ -598,6 +715,9 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     _allItems = [NSMutableArray array]; _visibleItems = @[];
     _searchResults = [NSMutableArray array];
     _images = [NSMutableDictionary dictionary]; _mode = @"Browse";
+    _browseSort = @"Newest";
+    _favoritesSort = @"Alphabetical";
+    _localSort = @"Alphabetical";
     _selectedArch = @"2";
     _nextSearchPage = 1; _searchTotalPages = 0; _searchGeneration = 0;
     _searchIds = [NSMutableSet set];
@@ -763,7 +883,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSDictionary* sortValues = @{@"Newest":@"newest", @"Trending":@"trending",
                                @"Most Downloaded":@"downloads-all-time", @"Oldest":@"oldest",
                                @"Best Match":@"best-match"};
-  NSString* sort = sortValues[self.sort.titleOfSelectedItem] ?: @"newest";
+  NSString* sortKey = self.browseSort.length ? self.browseSort : (self.sort.titleOfSelectedItem ?: @"Newest");
+  NSString* sort = sortValues[sortKey] ?: @"newest";
   // Mirror tone3000.com's server-side gear filter so the result set and order
   // match the site (the site/NAM Rig send &gears=... rather than filtering
   // client-side after pulling all gear types). No &architecture= param is sent
@@ -976,10 +1097,28 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)sortChanged:(id)sender {
   if ([sender isKindOfClass:NSPopUpButton.class]) {
     NSPopUpButton* popup = sender;
-    popup.toolTip = popup.selectedItem.toolTip ?: @"Choose the ordering used for Tone3000 search results.";
+    popup.toolTip = popup.selectedItem.toolTip ?: @"Choose sorting order.";
+  }
+  if ([self.mode isEqualToString:@"Favorites"]) {
+    self.favoritesSort = self.sort.titleOfSelectedItem;
+    if (sender) [self persistFilterSelection];
+    [self filterChanged:nil];
+    return;
+  }
+  if ([self.mode isEqualToString:@"Local"]) {
+    self.localSort = self.sort.titleOfSelectedItem;
+    if (sender) [self persistFilterSelection];
+    [self filterChanged:nil];
+    return;
+  }
+  if ([self.mode isEqualToString:@"Browse"]) {
+    self.browseSort = self.sort.titleOfSelectedItem;
+    if (sender) [self persistFilterSelection];
+    [self refreshOnline];
+    return;
   }
   if (sender) [self persistFilterSelection];
-  [self refreshOnline];
+  [self filterChanged:nil];
 }
 
 // Infinite scroll: as the user nears the bottom of the tone list, pull the
@@ -1488,6 +1627,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)selectMode:(NSButton*)sender {
   self.mode = sender.title;
   for (RigButton* b in self.modeButtons) b.state = (b == sender) ? NSControlStateValueOn : NSControlStateValueOff;
+  [self updateSortMenuForCurrentMode];
   [self filterChanged:nil];
 }
 - (void)controlTextDidChange:(NSNotification*)notification { [self filterChanged:nil]; }
@@ -1528,7 +1668,43 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     [shown addObject:item];
   }
   if ([self.mode isEqualToString:@"Recent"]) {
-    [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) { return [b.modified compare:a.modified]; }];
+    [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
+      NSDate* dateA = [self effectiveDownloadDateForItem:a];
+      NSDate* dateB = [self effectiveDownloadDateForItem:b];
+      return [dateB compare:dateA];
+    }];
+  } else if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Local"]) {
+    NSString* sortChoice = self.sort.titleOfSelectedItem ?: ([self.mode isEqualToString:@"Favorites"] ? self.favoritesSort : self.localSort) ?: @"Alphabetical";
+    if ([sortChoice hasPrefix:@"Time Downloaded"] || [sortChoice containsString:@"Downloaded"]) {
+      const BOOL oldestFirst = [sortChoice containsString:@"Oldest"];
+      [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
+        NSDate* dateA = [self effectiveDownloadDateForItem:a];
+        NSDate* dateB = [self effectiveDownloadDateForItem:b];
+        const BOOL aHasDate = ![dateA isEqualToDate:[NSDate distantPast]];
+        const BOOL bHasDate = ![dateB isEqualToDate:[NSDate distantPast]];
+        if (aHasDate && !bHasDate) return NSOrderedAscending;
+        if (!aHasDate && bHasDate) return NSOrderedDescending;
+        if (!aHasDate && !bHasDate) {
+          return [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+        }
+        NSComparisonResult res = oldestFirst ? [dateA compare:dateB] : [dateB compare:dateA];
+        if (res == NSOrderedSame) {
+          return [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+        }
+        return res;
+      }];
+    } else {
+      const BOOL reverse = [sortChoice containsString:@"Z-A"] || [sortChoice containsString:@"Reverse"];
+      [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
+        NSComparisonResult res = [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+        if (reverse) {
+          if (res == NSOrderedAscending) return NSOrderedDescending;
+          if (res == NSOrderedDescending) return NSOrderedAscending;
+          return NSOrderedSame;
+        }
+        return res;
+      }];
+    }
   }
   self.visibleItems = shown;
   [self.collectionView reloadData];
@@ -2161,8 +2337,11 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (void)finishModelDownload:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads {
   NSDictionary* manifest = @{@"powered_by": @"Tone3000", @"tone": item.toneData ?: @{}, @"downloads": downloads};
   NSData* json = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:nil];
-  [json writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
+  NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+  [json writeToFile:manifestPath options:NSDataWritingAtomic error:nil];
   NSFileManager* fm = [NSFileManager defaultManager];
+  NSDate* mtime = [[fm attributesOfItemAtPath:manifestPath error:nil] fileModificationDate] ?: [NSDate date];
+  item.modified = mtime;
   NSMutableArray<NSString*>* paths = [NSMutableArray array];
   for (NSDictionary* d in downloads) {
     NSString* p = [folder stringByAppendingPathComponent:d[@"local_filename"]];
@@ -2193,6 +2372,9 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     }
   }
   [self.collectionView reloadData];
+  if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Recent"] || [self.mode isEqualToString:@"Local"]) {
+    [self filterChanged:nil];
+  }
 }
 
 @end

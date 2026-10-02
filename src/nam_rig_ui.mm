@@ -1657,7 +1657,7 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   controller.gear.toolTip = @"Filter Tone3000 results by capture type: amps, cabinets, pedals, or complete amp-and-cab rigs.";
   [browser addSubview:controller.gear];
 
-  const CGFloat sortW = 160.0;
+  const CGFloat sortW = 180.0;
   controller.sort = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24 + searchW + 12 + gearW + 10, bh - 38, sortW, 28) pullsDown:NO];
   [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
   NSArray<NSString*>* sortTips = @[
@@ -1689,6 +1689,7 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
   [ToneBrowserController restoreFilterSelectionForGear:controller.gear sort:controller.sort arch:controller.archControl];
   [controller archChanged:nil];
+  [controller updateSortMenuForCurrentMode];
   controller.gear.toolTip = popupTooltip(@"Filters Tone3000 results by capture type.",
                                          controller.gear);
   controller.sort.toolTip = popupTooltip(@"Orders Tone3000 search results.",

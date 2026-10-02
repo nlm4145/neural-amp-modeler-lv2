@@ -52,6 +52,9 @@ struct RigUIState;
 @property(nonatomic, copy) NSString* accessToken;
 @property(nonatomic, copy) NSString* refreshToken;
 @property(nonatomic, copy) NSString* mode;
+@property(nonatomic, copy) NSString* browseSort;
+@property(nonatomic, copy) NSString* favoritesSort;
+@property(nonatomic, copy) NSString* localSort;
 // Pagination state for the online search. The explorer mirrors tone3000.com:
 // the API returns {data, page, page_size, total, total_pages} and a search is
 // fetched page-by-page (page_size=100) in server order until exhausted.
@@ -99,6 +102,8 @@ struct RigUIState;
 - (void)filterChanged:(id)sender;
 - (void)sortChanged:(id)sender;
 - (void)archChanged:(id)sender;
+- (void)updateSortMenuForCurrentMode;
+- (NSDate*)effectiveDownloadDateForItem:(ToneItem*)item;
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort;
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort arch:(NSSegmentedControl*)arch;
 - (void)toggleFavoriteFromCard:(ToneItem*)item;
