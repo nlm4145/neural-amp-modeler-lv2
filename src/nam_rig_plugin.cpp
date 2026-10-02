@@ -280,21 +280,21 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   for (auto& loader : loaders)
     loader.SetDefaultMaxAudioBufferSize(size);
   // Per-stage, per-level converter sizing. Level L of a True-2^L cascade sees
-  // a block of 2^L * size samples: level 0 (2x) sees 2x, level 1 (4x) sees
-  // 4x, level 2 (8x) sees 8x. Every level is sized for the worst case (8x)
-  // so any mode change is safe with no host callback; the domain scratch and
-  // the pedal->amp chain buffer are sized for 8x too.
+  // a block of 2^L * size samples: level 0 (2x) sees 2x ... level 3 (16x)
+  // sees 16x. Every level is sized for the worst case (kMaxOsFactor) so any
+  // mode change is safe with no host callback; the domain scratch and the
+  // pedal->amp chain buffer are sized for it too.
   for (size_t st = 0; st < kStageCount; ++st) {
     for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
-      osUp[st][lvl].setMaxBlockSize(static_cast<size_t>(8 * size));
-      osDown[st][lvl].setMaxBlockSize(static_cast<size_t>(8 * size));
+      osUp[st][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+      osDown[st][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
       osUp[st][lvl].reset();
       osDown[st][lvl].reset();
     }
-    osScratch[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
-    osScratch2[st].assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+    osScratch[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
+    osScratch2[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   }
-  osChain.assign(static_cast<size_t>(8 * size) + 64, 0.0f);
+  osChain.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   const size_t post = static_cast<size_t>(std::max(1, size));
   postL.assign(post, 0.0f);
   postR.assign(post, 0.0f);
@@ -363,7 +363,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         //                    (NeuralAudio stretches the model's dilations;
         //                    a "4x" Legacy model runs the SAME math per
         //                    sample, just reaches further back in time).
-        // TRUE Nx (4..6): Nx * session rate — the model is created for the
+        // TRUE Nx (4..7): Nx * session rate — the model is created for the
         //                    genuine pipeline domain it will process in.
         const int sessionRate = static_cast<int>(rig->sampleRate);
         const int mode = requestedMode;
@@ -391,12 +391,12 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         // the heap. The transient window after ANY mode click is the danger:
         // the audio thread flips its pipeline immediately while the OLD
         // (just replaced) or NEW models keep processing whatever block shape
-        // the pipeline now feeds. Size for the worst case (8x = 4096 samples
+        // the pipeline now feeds. Size for the worst case (16x = 8192 samples
         // at a 512 max block) in EVERY mode — a few MB per model, no CPU.
         // Do NOT make this mode-conditional; that re-opens the 2026-08-29
         // click-crash (verified via unified-log forensics).
         if (response.model) {
-          response.model->SetMaxAudioBufferSize(8 * rig->maxBufferSize);
+          response.model->SetMaxAudioBufferSize(kMaxOsFactor * rig->maxBufferSize);
           // Maximum-sound policy: always select the full A2/Slimmable tier.
           response.model->SetQualityScaleFactor(1.0f);
         }
@@ -1153,7 +1153,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   auto processTrueGroup = [&](size_t owner, const size_t* stages,
                               size_t stageCount, float* samples,
                               uint32_t count, int f) -> uint32_t {
-    const size_t levels = f == 8 ? 3 : (f == 4 ? 2 : 1);
+    const size_t levels = cascadeLevels(f);
     float* bufs[2] = {osScratch[owner].data(), osScratch2[owner].data()};
     size_t n = osUp[owner][0].process(samples, count, bufs[0]);
     for (size_t c = 1; c < levels && n > 0; ++c)
@@ -1257,7 +1257,7 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
 
 uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
                                int factor) noexcept {
-  const size_t levels = factor == 8 ? 3 : (factor == 4 ? 2 : 1);
+  const size_t levels = cascadeLevels(factor);
   float* bufs[2] = {osScratch[stage].data(), osScratch2[stage].data()};
   size_t n = osUp[stage][0].process(samples, count, bufs[0]);
   for (size_t level = 1; level < levels && n > 0; ++level)

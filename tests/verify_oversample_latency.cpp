@@ -1,7 +1,7 @@
 // Verifies the fixed pipeline delay of the True-Nx cascades (the values the
 // plugin reports on the lv2:latency port): an impulse through the same
 // up-chain -> down-chain path as Plugin::processTrueGroup must land exactly
-// 23 / 35 / 41 base frames late for 2x / 4x / 8x, at every block size.
+// 23 / 35 / 41 / 44 base frames late for 2x / 4x / 8x / 16x, at every block size.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -17,18 +17,18 @@ static int g_fail = 0;
   } while (0)
 
 static int measure(int levels, int block) {
-  NAMRig::Up2x up[3];
-  NAMRig::Down2x dn[3];
-  for (int l = 0; l < 3; ++l) {
-    up[l].setMaxBlockSize(8 * (size_t)block);
-    dn[l].setMaxBlockSize(8 * (size_t)block);
+  NAMRig::Up2x up[4];
+  NAMRig::Down2x dn[4];
+  for (int l = 0; l < 4; ++l) {
+    up[l].setMaxBlockSize(16 * (size_t)block);
+    dn[l].setMaxBlockSize(16 * (size_t)block);
     up[l].reset();
     dn[l].reset();
   }
   const int impulsePos = 10000, totalLen = 20000;
   std::vector<float> in(totalLen, 0.0f), out(totalLen, 0.0f);
   in[impulsePos] = 1.0f;
-  std::vector<float> bufA(8 * block + 64), bufB(8 * block + 64);
+  std::vector<float> bufA(16 * block + 64), bufB(16 * block + 64);
   float* bufs[2] = {bufA.data(), bufB.data()};
   std::vector<float> chain(block);
   for (int off = 0; off < totalLen; off += block) {
@@ -57,8 +57,8 @@ static int measure(int levels, int block) {
 }
 
 int main() {
-  const int expected[3] = {23, 35, 41};  // == Plugin::cascadeLatencyFrames
-  for (int levels = 1; levels <= 3; ++levels) {
+  const int expected[4] = {23, 35, 41, 44};  // == Plugin::cascadeLatencyFrames
+  for (int levels = 1; levels <= 4; ++levels) {
     bool ok = true;
     int got = -1;
     for (int block : {512, 137, 64}) {

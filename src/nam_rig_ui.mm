@@ -44,7 +44,8 @@ static NSArray<NSString*>* oversampleDescriptions() {
     @"None — Runs the model without rate adaptation. Use only when the model and session rates already match; otherwise timing and tone may be wrong.",
     @"True 2x — Upsamples, runs the nonlinear model at 2x, then filters back down for lower aliasing with a moderate CPU cost.",
     @"True 4x — Runs the nonlinear model in a true 4x domain for stronger alias rejection at a higher CPU cost.",
-    @"True 8x — Maximum-quality true oversampling and strongest alias rejection; also the highest CPU setting."
+    @"True 8x — Strong alias rejection; the default and the best quality-per-CPU setting.",
+    @"True 16x — Maximum true oversampling. Roughly doubles the stage's CPU versus 8x for alias rejection that is mostly inaudible."
   ];
   return descriptions;
 }
@@ -430,8 +431,8 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
-// Per-stage oversample control (pedal/amp tiles): ports 20/21, four visible
-// modes mapped onto the sparse LV2 values 0, 4, 5, 6.
+// Per-stage oversample control (pedal/amp tiles): ports 20/21, five visible
+// modes mapped onto the sparse LV2 values 0, 4, 5, 6, 7.
 - (void)stageOversampleChanged:(NSPopUpButton*)sender {
   sender.toolTip = popupTooltip(
       [NSString stringWithFormat:@"Sets %@-stage oversampling.",
@@ -3744,10 +3745,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
       // Per-stage oversample dropdown (pedal + amp only — a WAV cab IR is
       // linear and cannot alias; a .nam cab follows the amp's mode). Sits
-      // left of the ON button, four modes: None / True 2x / True 4x / True 8x.
+      // left of the ON button, five modes: None / True 2x / 4x / 8x / 16x.
       if (i < 2) {
         NSPopUpButton* so = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [so addItemsWithTitles:@[@"None", @"True 2x", @"True 4x", @"True 8x"]];
+        [so addItemsWithTitles:@[@"None", @"True 2x", @"True 4x", @"True 8x", @"True 16x"]];
         so.controlSize = NSControlSizeSmall;
         so.tag = 20 + i;                 // port 20 = pedal, 21 = amp
         so.target = state->uiController;

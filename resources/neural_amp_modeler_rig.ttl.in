@@ -115,19 +115,21 @@
 				], [
 					a lv2:ControlPort, lv2:InputPort ;
 					lv2:index 20 ; lv2:symbol "pedal_oversample" ; lv2:name "Pedal Oversample" ;
-					lv2:default 6.0 ; lv2:minimum 0.0 ; lv2:maximum 6.0 ; lv2:portProperty lv2:integer ;
+					lv2:default 6.0 ; lv2:minimum 0.0 ; lv2:maximum 7.0 ; lv2:portProperty lv2:integer ;
 					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "None" ] ,
 						[ rdfs:value 4.0 ; rdfs:label "True 2x" ] ,
 						[ rdfs:value 5.0 ; rdfs:label "True 4x" ] ,
-						[ rdfs:value 6.0 ; rdfs:label "True 8x" ]
+						[ rdfs:value 6.0 ; rdfs:label "True 8x" ] ,
+						[ rdfs:value 7.0 ; rdfs:label "True 16x" ]
 				], [
 					a lv2:ControlPort, lv2:InputPort ;
 					lv2:index 21 ; lv2:symbol "amp_oversample" ; lv2:name "Amp Oversample" ;
-					lv2:default 6.0 ; lv2:minimum 0.0 ; lv2:maximum 6.0 ; lv2:portProperty lv2:integer ;
+					lv2:default 6.0 ; lv2:minimum 0.0 ; lv2:maximum 7.0 ; lv2:portProperty lv2:integer ;
 					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "None" ] ,
 						[ rdfs:value 4.0 ; rdfs:label "True 2x" ] ,
 						[ rdfs:value 5.0 ; rdfs:label "True 4x" ] ,
-						[ rdfs:value 6.0 ; rdfs:label "True 8x" ]
+						[ rdfs:value 6.0 ; rdfs:label "True 8x" ] ,
+						[ rdfs:value 7.0 ; rdfs:label "True 16x" ]
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 22 ;
 					lv2:symbol "amp_drive" ; lv2:name "Amp Drive" ;
