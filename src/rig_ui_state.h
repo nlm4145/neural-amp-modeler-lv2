@@ -96,7 +96,34 @@ struct RigUIState {
   // Mute on tune setting
   bool muteOnTune = true;
   float unmutedOutputLevel = 0.0f;
+  // True while the output is held at -80 dB by the tuner. Guards against a
+  // second mute capturing the muted knob (NSSlider clamps -80 to its -20 dB
+  // minimum) as the level to restore.
+  bool tunerMuted = false;
   __strong NSButton* muteOnTuneButton = nil;
+
+  // Main thread only. Idempotent: repeated calls never overwrite the saved level.
+  void muteOutputForTuner() {
+    if (tunerMuted) return;
+    for (size_t k = 0; k < kRigKnobCount; ++k) {
+      if (kRigKnobPorts[k] == 5) {
+        NSSlider* outK = knobs[k] ?: deckKnobs[k];
+        if (outK) unmutedOutputLevel = outK.floatValue;
+        break;
+      }
+    }
+    tunerMuted = true;
+    sendControl(5, -80.0f);
+    updateControl(5, -80.0f);
+  }
+
+  // Main thread only. No-op unless the tuner muted the output.
+  void restoreOutputAfterTuner() {
+    if (!tunerMuted) return;
+    tunerMuted = false;
+    sendControl(5, unmutedOutputLevel);
+    updateControl(5, unmutedOutputLevel);
+  }
 
   // Lower Studio Deck inside expansionSlot
   __strong NSView* deckContainer = nil;
@@ -173,17 +200,7 @@ struct RigUIState {
           tunerButton.needsDisplay = YES;
         }
         if (tunerPanel) tunerPanel.hidden = NO;
-        if (muteOnTune) {
-          for (size_t k = 0; k < kRigKnobCount; ++k) {
-            if (kRigKnobPorts[k] == 5) {
-              NSSlider* outK = knobs[k] ?: deckKnobs[k];
-              if (outK) unmutedOutputLevel = outK.floatValue;
-              break;
-            }
-          }
-          sendControl(5, -80.0f);
-          updateControl(5, -80.0f);
-        }
+        if (muteOnTune) muteOutputForTuner();
       } else if (prevTab == 3) {
         // Leaving Tuner tab: disable tuner DSP and restore output if muted
         sendControl(16, 0.0f);
@@ -196,10 +213,8 @@ struct RigUIState {
           tunerButton.needsDisplay = YES;
         }
         if (tunerPanel) tunerPanel.hidden = YES;
-        if (muteOnTune) {
-          sendControl(5, unmutedOutputLevel);
-          updateControl(5, unmutedOutputLevel);
-        }
+        // Restore whenever the tuner muted, even if Mute was switched off since.
+        restoreOutputAfterTuner();
         if (tunerNoteLabel) {
           tunerNoteLabel.stringValue = @"—";
           tunerNoteLabel.textColor = rigText();

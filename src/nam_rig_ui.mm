@@ -143,20 +143,8 @@ static NSString* stageName(NSInteger stage) {
   }
   sender.needsDisplay = YES;
   if (_state->tunerButton && _state->tunerButton.state == NSControlStateValueOn) {
-    if (_state->muteOnTune) {
-      for (size_t k = 0; k < kRigKnobCount; ++k) {
-        if (kRigKnobPorts[k] == 5) {
-          NSSlider* outK = _state->knobs[k] ?: _state->deckKnobs[k];
-          if (outK) _state->unmutedOutputLevel = outK.floatValue;
-          break;
-        }
-      }
-      _state->sendControl(5, -80.0f);
-      _state->updateControl(5, -80.0f);
-    } else {
-      _state->sendControl(5, _state->unmutedOutputLevel);
-      _state->updateControl(5, _state->unmutedOutputLevel);
-    }
+    if (_state->muteOnTune) _state->muteOutputForTuner();
+    else _state->restoreOutputAfterTuner();
   }
 }
 - (void)markPresetModified {
@@ -309,6 +297,8 @@ static NSString* stageName(NSInteger stage) {
   const float value = [sender isKindOfClass:NSButton.class]
       ? (((NSButton*)sender).state == NSControlStateValueOn ? 1.0f : 0.0f)
       : sender.floatValue;
+  // A manual Output change while tuner-muted takes over from the saved level.
+  if (sender.tag == 5) _state->tunerMuted = false;
   _state->sendControl((uint32_t)sender.tag, value);
   _state->updateControl((uint32_t)sender.tag, value);
   [self markPresetModified];
@@ -386,6 +376,7 @@ static NSString* stageName(NSInteger stage) {
   if (clamped < knob.minValue) clamped = knob.minValue;
   if (clamped > knob.maxValue) clamped = knob.maxValue;
   knob.doubleValue = clamped;
+  if (port == 5) _state->tunerMuted = false;
   _state->sendControl((uint32_t)port, (float)clamped);
   _state->updateControl((uint32_t)port, (float)clamped);
   [self markPresetModified];
@@ -406,22 +397,9 @@ static NSString* stageName(NSInteger stage) {
   }
   sender.needsDisplay = YES;
   if (on) {
-    if (_state->muteOnTune) {
-      for (size_t k = 0; k < kRigKnobCount; ++k) {
-        if (kRigKnobPorts[k] == 5) {
-          NSSlider* outK = _state->knobs[k] ?: _state->deckKnobs[k];
-          if (outK) _state->unmutedOutputLevel = outK.floatValue;
-          break;
-        }
-      }
-      _state->sendControl(5, -80.0f);
-      _state->updateControl(5, -80.0f);
-    }
+    if (_state->muteOnTune) _state->muteOutputForTuner();
   } else {
-    if (_state->muteOnTune) {
-      _state->sendControl(5, _state->unmutedOutputLevel);
-      _state->updateControl(5, _state->unmutedOutputLevel);
-    }
+    _state->restoreOutputAfterTuner();
     if (_state->tunerNoteLabel) {
       _state->tunerNoteLabel.stringValue = @"—";
       _state->tunerNoteLabel.textColor = rigText();
