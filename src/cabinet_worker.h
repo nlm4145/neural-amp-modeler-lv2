@@ -5,7 +5,17 @@
 #include <cstdint>
 #include <thread>
 
+#if defined(__APPLE__)
 #include <mach/mach_types.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace NAMRig {
 
@@ -59,8 +69,13 @@ class CabinetWorker {
   void run(uint32_t periodTicks) noexcept;
 
   std::thread thread_;
+#if defined(__APPLE__)
   semaphore_t wake_ = MACH_PORT_NULL;
   semaphore_t completion_ = MACH_PORT_NULL;
+#elif defined(_WIN32)
+  HANDLE wake_ = NULL;
+  HANDLE completion_ = NULL;
+#endif
   void* group_ = nullptr;
   bool started_ = false;
   std::atomic<bool> stopping_{false};
@@ -69,7 +84,11 @@ class CabinetWorker {
   void (*process_)(void*) noexcept = nullptr;
   void* context_ = nullptr;
   // Scheduling cache is owned by start/submit/stop, never the worker loop.
+#if defined(__APPLE__)
   thread_t helperThread_ = MACH_PORT_NULL;  // Borrowed from the live pthread.
+#elif defined(_WIN32)
+  HANDLE helperThread_ = NULL;
+#endif
   uint32_t periodTicks_ = 0;
   uint32_t computationTicks_ = 0;
   uint32_t policyConstraint_ = 0;

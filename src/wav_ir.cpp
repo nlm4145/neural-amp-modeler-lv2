@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include <Accelerate/Accelerate.h>
+#include "dsp_accel.h"
 
 namespace NAMRig {
 namespace {
@@ -188,7 +188,7 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
 
   if (taps.size() <= kBlock) return;
   partitions = static_cast<uint32_t>((taps.size() - kBlock + kBlock - 1) / kBlock);
-  fftSetup = vDSP_create_fftsetup(kLog2Fft, kFFTRadix2);
+  fft = std::make_unique<DSP::RealFFT>(kFft);
   tailSpectra.assign(static_cast<size_t>(partitions) * 2 * kBins, 0.0f);
   tailNyq.assign(partitions, 0.0f);
   fdl.assign(static_cast<size_t>(partitions) * 2 * kBins, 0.0f);
@@ -198,26 +198,23 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   fftTime.assign(kFft, 0.0f);
   accRe.assign(kBins, 0.0f);
   accIm.assign(kBins, 0.0f);
-  const float scale = 1.0f / (4.0f * static_cast<float>(kFft));
+  const float scale = fft->roundTripScale();
   for (uint32_t p = 0; p < partitions; ++p) {
     const size_t start = kBlock + static_cast<size_t>(p) * kBlock;
     const size_t len = std::min<size_t>(kBlock, taps.size() - start);
     std::memset(fftTime.data(), 0, kFft * sizeof(float));
     std::memcpy(fftTime.data(), taps.data() + start, len * sizeof(float));
-    DSPSplitComplex sp{tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins,
-                       tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins + kBins};
-    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(fftTime.data()), 2, &sp, 1, kBins);
-    vDSP_fft_zrip(fftSetup, &sp, 1, kLog2Fft, kFFTDirection_Forward);
-    tailNyq[p] = sp.imagp[0] * scale;
-    sp.imagp[0] = 0.0f;
-    vDSP_vsmul(sp.realp, 1, &scale, sp.realp, 1, kBins);
-    vDSP_vsmul(sp.imagp, 1, &scale, sp.imagp, 1, kBins);
+    float* spRe = tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins;
+    float* spIm = spRe + kBins;
+    fft->forward(fftTime.data(), spRe, spIm);
+    tailNyq[p] = spIm[0] * scale;
+    spIm[0] = 0.0f;
+    DSP::vsmul(spRe, scale, spRe, kBins);
+    DSP::vsmul(spIm, scale, spIm, kBins);
   }
 }
 
-WavIR::~WavIR() {
-  if (fftSetup) vDSP_destroy_fftsetup(fftSetup);
-}
+WavIR::~WavIR() = default;
 
 void WavIR::linkStereoNormalization(WavIR& left, WavIR& right) noexcept {
   const double peak = std::max(left.responsePeak, right.responsePeak);
@@ -281,37 +278,32 @@ void WavIR::flushBlock() noexcept {
   std::memcpy(fftTime.data(), fillBuf.data(), kBlock * sizeof(float));
   std::memset(fftTime.data() + kBlock, 0, kBlock * sizeof(float));
   fdlNewest = fdlNewest + 1 == partitions ? 0 : fdlNewest + 1;
-  DSPSplitComplex x{fdl.data() + static_cast<size_t>(fdlNewest) * 2 * kBins,
-                    fdl.data() + static_cast<size_t>(fdlNewest) * 2 * kBins + kBins};
-  vDSP_ctoz(reinterpret_cast<const DSPComplex*>(fftTime.data()), 2, &x, 1, kBins);
-  vDSP_fft_zrip(fftSetup, &x, 1, kLog2Fft, kFFTDirection_Forward);
-  fdlNyq[fdlNewest] = x.imagp[0];
-  x.imagp[0] = 0.0f;
+  float* xRe = fdl.data() + static_cast<size_t>(fdlNewest) * 2 * kBins;
+  float* xIm = xRe + kBins;
+  fft->forward(fftTime.data(), xRe, xIm);
+  fdlNyq[fdlNewest] = xIm[0];
+  xIm[0] = 0.0f;
 
   std::memset(accRe.data(), 0, kBins * sizeof(float));
   std::memset(accIm.data(), 0, kBins * sizeof(float));
-  DSPSplitComplex acc{accRe.data(), accIm.data()};
   float nyqAcc = 0.0f;
   for (uint32_t p = 0; p < partitions; ++p) {
     const uint32_t slot = fdlNewest >= p ? fdlNewest - p
                                          : fdlNewest + partitions - p;
-    DSPSplitComplex xs{fdl.data() + static_cast<size_t>(slot) * 2 * kBins,
-                       fdl.data() + static_cast<size_t>(slot) * 2 * kBins + kBins};
-    DSPSplitComplex hs{tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins,
-                       tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins + kBins};
-    vDSP_zvma(&xs, 1, &hs, 1, &acc, 1, &acc, 1, kBins);
+    const float* xsRe = fdl.data() + static_cast<size_t>(slot) * 2 * kBins;
+    const float* xsIm = xsRe + kBins;
+    const float* hsRe = tailSpectra.data() + static_cast<size_t>(p) * 2 * kBins;
+    const float* hsIm = hsRe + kBins;
+    DSP::zvma(xsRe, xsIm, hsRe, hsIm, accRe.data(), accIm.data(), kBins);
     nyqAcc += fdlNyq[slot] * tailNyq[p];
   }
   accIm[0] = nyqAcc;
-  vDSP_fft_zrip(fftSetup, &acc, 1, kLog2Fft, kFFTDirection_Inverse);
-  vDSP_ztoc(&acc, 1, reinterpret_cast<DSPComplex*>(fftTime.data()), 2, kBins);
+  fft->inverse(accRe.data(), accIm.data(), fftTime.data());
 
   const uint32_t first = std::min(kFft, kRing - ringPos);
-  vDSP_vadd(ring.data() + ringPos, 1, fftTime.data(), 1,
-            ring.data() + ringPos, 1, first);
+  DSP::vadd(ring.data() + ringPos, fftTime.data(), first);
   if (first < kFft)
-    vDSP_vadd(ring.data(), 1, fftTime.data() + first, 1, ring.data(), 1,
-              kFft - first);
+    DSP::vadd(ring.data(), fftTime.data() + first, kFft - first);
   fillPos = 0;
 }
 
@@ -336,8 +328,8 @@ void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexc
         ? std::min(count - done, kBlock - fillPos)
         : std::min(count - done, kBlock);
     std::memcpy(historyAndInput.data() + history, samples + done, t * sizeof(float));
-    vDSP_conv(historyAndInput.data(), 1, reversedHead.data(), 1,
-              headOut.data(), 1, t, headLen);
+    DSP::conv(historyAndInput.data(), reversedHead.data(),
+              headOut.data(), t, headLen);
     if (history) std::memmove(historyAndInput.data(), historyAndInput.data() + t,
                               history * sizeof(float));
     if (partitions) {

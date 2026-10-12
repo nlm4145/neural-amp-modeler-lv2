@@ -5,14 +5,26 @@
 #include <exception>
 #include <limits>
 
+#if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach/semaphore.h>
 #include <mach/thread_policy.h>
 #include <os/workgroup.h>
 #include <pthread.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <avrt.h>
+#endif
 
 namespace NAMRig {
+#if defined(__APPLE__)
 namespace {
 
 kern_return_t waitSemaphore(semaphore_t semaphore) noexcept {
@@ -237,5 +249,123 @@ void CabinetWorker::run(uint32_t periodTicks) noexcept {
   }
   if (joined) os_workgroup_leave(group, &token);
 }
+
+#elif defined(_WIN32)
+
+bool CabinetWorker::start(void* /*workgroup*/, double periodSeconds) noexcept {
+  if (started_ || thread_.joinable()) return false;
+  if (!std::isfinite(periodSeconds) || periodSeconds <= 0.0) return false;
+
+  wake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  completion_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!wake_ || !completion_) {
+    stop();
+    return false;
+  }
+
+  LARGE_INTEGER freq;
+  if (QueryPerformanceFrequency(&freq)) {
+    periodTicks_ = static_cast<uint32_t>(periodSeconds * freq.QuadPart);
+    minimumWindowTicks_ = static_cast<uint64_t>(0.0001 * freq.QuadPart);
+  }
+
+  try {
+    thread_ = std::thread(&CabinetWorker::run, this, periodTicks_);
+  } catch (...) {
+    stop();
+    return false;
+  }
+
+  if (WaitForSingleObject(completion_, INFINITE) != WAIT_OBJECT_0 ||
+      !setupSucceeded_.load(std::memory_order_acquire)) {
+    stop();
+    return false;
+  }
+
+  started_ = true;
+  return true;
+}
+
+void CabinetWorker::stop() noexcept {
+  wait();
+  started_ = false;
+  if (thread_.joinable()) {
+    stopping_.store(true, std::memory_order_release);
+    SetEvent(wake_);
+    thread_.join();
+  }
+  if (completion_) {
+    CloseHandle(completion_);
+    completion_ = NULL;
+  }
+  if (wake_) {
+    CloseHandle(wake_);
+    wake_ = NULL;
+  }
+  process_ = nullptr;
+  context_ = nullptr;
+  state_.store(JobState::Idle, std::memory_order_relaxed);
+  setupSucceeded_.store(false, std::memory_order_relaxed);
+  stopping_.store(false, std::memory_order_relaxed);
+}
+
+bool CabinetWorker::submit(void (*process)(void*) noexcept,
+                           void* context, uint64_t deadlineTicks) noexcept {
+  if (!started_ || stopping_.load(std::memory_order_acquire)) return false;
+  if (!process || state_.load(std::memory_order_acquire) != JobState::Idle)
+    return false;
+  std::fenv_t environment;
+  if (std::fegetenv(&environment) != 0) return false;
+
+  if (deadlineTicks != 0) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (deadlineTicks <= static_cast<uint64_t>(now.QuadPart))
+      return false;
+  }
+
+  process_ = process;
+  context_ = context;
+  environment_ = environment;
+  state_.store(JobState::Published, std::memory_order_release);
+  SetEvent(wake_);
+  return true;
+}
+
+void CabinetWorker::wait() noexcept {
+  if (state_.load(std::memory_order_acquire) == JobState::Idle) return;
+  if (WaitForSingleObject(completion_, INFINITE) != WAIT_OBJECT_0 ||
+      state_.load(std::memory_order_acquire) != JobState::Complete) {
+    std::terminate();
+  }
+  state_.store(JobState::Idle, std::memory_order_release);
+}
+
+void CabinetWorker::run(uint32_t /*periodTicks*/) noexcept {
+  DWORD taskIndex = 0;
+  HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+  setupSucceeded_.store(true, std::memory_order_release);
+  SetEvent(completion_);
+
+  for (;;) {
+    DWORD waitRes = WaitForSingleObject(wake_, INFINITE);
+    if (waitRes != WAIT_OBJECT_0) std::terminate();
+    if (stopping_.load(std::memory_order_acquire)) break;
+    if (state_.load(std::memory_order_acquire) != JobState::Published) {
+      if (stopping_.load(std::memory_order_acquire)) break;
+      std::terminate();
+    }
+    std::fesetenv(&environment_);
+    process_(context_);
+    state_.store(JobState::Complete, std::memory_order_release);
+    SetEvent(completion_);
+  }
+
+  if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
+}
+
+#endif
 
 }  // namespace NAMRig

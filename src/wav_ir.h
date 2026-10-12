@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 
-#include <Accelerate/Accelerate.h>
+#include "dsp_accel.h"
 
 namespace NAMRig {
 // Cab impulse response convolution with ZERO added latency:
@@ -58,7 +58,7 @@ private:
   // forward+inverse round-trip scale, 1/(4*kFft), is folded into the stored
   // partition spectra at load time.
   uint32_t partitions = 0;
-  FFTSetup fftSetup = nullptr;
+  std::unique_ptr<DSP::RealFFT> fft;
   std::vector<float> tailSpectra;  // partitions * 2 * kBins
   std::vector<float> tailNyq;      // partitions
   std::vector<float> fdl;          // partitions * 2 * kBins

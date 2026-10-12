@@ -61,6 +61,7 @@ set(RIG_SOURCES nam_rig_lv2.cpp
 	cabinet_worker.cpp cabinet_worker.h
 	nam_rig_plugin.cpp
 	nam_rig_plugin.h
+	dsp_accel.cpp dsp_accel.h
 	dynamics.h
 	wav_ir.cpp
 	wav_ir.h
@@ -149,10 +150,85 @@ target_compile_definitions(verify_polyphase_model PRIVATE
 	NAM_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(verify_polyphase_model PRIVATE NeuralAudio)
 
+if (NOT APPLE)
+	add_library(pffft STATIC
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/src/pffft.c
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/src/pffft_common.c
+	)
+	target_compile_definitions(pffft PUBLIC PFFFT_STATIC_DEFINE)
+	target_include_directories(pffft PUBLIC
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include/pffft
+	)
+	target_link_libraries(neural_amp_modeler_rig PRIVATE pffft)
+	target_include_directories(neural_amp_modeler_rig PUBLIC
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio/deps/RTNeural/modules/json
+	)
+endif()
+
 # Platform
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+if (WIN32)
 	target_compile_definitions(neural_amp_modeler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+	target_compile_definitions(neural_amp_modeler_rig PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PFFFT_STATIC_DEFINE)
+	target_link_libraries(neural_amp_modeler_rig PRIVATE winmm avrt ole32)
+
+	add_library(neural_amp_modeler_rig_ui MODULE
+		nam_rig_win32_ui.cpp
+		win32_ui_view.h win32_ui_view.cpp
+		win32_presets.h win32_presets.cpp
+	)
+	target_compile_definitions(neural_amp_modeler_rig_ui PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PFFFT_STATIC_DEFINE)
+	target_include_directories(neural_amp_modeler_rig_ui PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/lv2/include
+		../deps/NeuralAudio
+		../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies
+		../deps/NeuralAudio/deps/RTNeural/modules/json
+	)
+	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE
+		gdiplus gdi32 comctl32 comdlg32 shell32 ole32 oleaut32 uuid shlwapi
+	)
+	set_target_properties(neural_amp_modeler_rig_ui PROPERTIES
+		PREFIX ""
+		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
+	)
+
+	option(BUILD_AXE_FX_STANDALONE "Build Axe FX standalone host application" ON)
+	if (BUILD_AXE_FX_STANDALONE)
+		add_executable(axe_fx_standalone WIN32
+			standalone_main_win32.cpp
+			win32_audio.h win32_audio.cpp
+			win32_asio.h
+			win32_ui_view.h win32_ui_view.cpp
+			win32_presets.h win32_presets.cpp
+			cabinet_worker.cpp cabinet_worker.h
+			nam_rig_plugin.cpp nam_rig_plugin.h
+			dsp_accel.cpp dsp_accel.h
+			wav_ir.cpp wav_ir.h
+			oversample.cpp oversample.h oversample_modes.h
+			amp_advanced.h output_transformer.h speaker_dynamics.h space_fx.h
+		)
+		target_compile_definitions(axe_fx_standalone PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PFFFT_STATIC_DEFINE)
+		target_include_directories(axe_fx_standalone PRIVATE
+			${CMAKE_CURRENT_SOURCE_DIR}
+			../deps/NeuralAudio
+			../deps/lv2/include
+			../deps/denormal
+			../deps/pffft/include
+			../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies
+			../deps/NeuralAudio/deps/RTNeural/modules/json
+		)
+		target_link_libraries(axe_fx_standalone PRIVATE
+			NeuralAudio pffft
+			gdiplus gdi32 comctl32 comdlg32 shell32 ole32 oleaut32 uuid shlwapi winmm avrt
+		)
+		set_target_properties(axe_fx_standalone PROPERTIES
+			OUTPUT_NAME "Axe FX"
+		)
+	endif()
 endif()
 
 if (APPLE)
@@ -170,7 +246,7 @@ if (APPLE)
 	target_include_directories(verify_cabinet_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	add_executable(verify_parallel_cabs EXCLUDE_FROM_ALL
 		../tests/verify_parallel_cabs.cpp nam_rig_plugin.cpp wav_ir.cpp
-		oversample.cpp cabinet_worker.cpp)
+		oversample.cpp cabinet_worker.cpp dsp_accel.cpp)
 	target_include_directories(verify_parallel_cabs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
 	target_link_libraries(verify_parallel_cabs PRIVATE NeuralAudio ${ACCELERATE_FRAMEWORK})
@@ -212,6 +288,7 @@ if (APPLE)
 			standalone_main.mm
 			cabinet_worker.cpp cabinet_worker.h
 			nam_rig_plugin.cpp nam_rig_plugin.h
+			dsp_accel.cpp dsp_accel.h
 			wav_ir.cpp wav_ir.h
 			oversample.cpp oversample.h oversample_modes.h
 			amp_advanced.h output_transformer.h speaker_dynamics.h space_fx.h

@@ -14,7 +14,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	link_libraries( "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9.0>>:-lstdc++fs>" )
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-	add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+	add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
 else()
 	message(FATAL_ERROR "Unrecognized Platform!")
 endif()
@@ -27,21 +27,29 @@ add_subdirectory(src)
 
 # create neural_amp_modeler.lv2
 add_custom_target(copy_binaries ALL
-	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler>" neural_amp_modeler.lv2/
-	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig>" neural_amp_modeler.lv2/
+	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
 	DEPENDS neural_amp_modeler neural_amp_modeler_rig
 )
 
 if (APPLE)
 	add_custom_target(copy_ui ALL
-		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_ui>" neural_amp_modeler.lv2/
-		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig_ui>" neural_amp_modeler.lv2/
+		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
 		DEPENDS neural_amp_modeler_ui neural_amp_modeler_rig_ui
 	)
 	set(NAM_UI_SEE_ALSO ",<neural_amp_modeler_ui.ttl>")
 	set(NAM_RIG_UI_SEE_ALSO ",<neural_amp_modeler_rig_ui.ttl>")
 	configure_file(resources/neural_amp_modeler_ui.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_ui.ttl)
 	configure_file(resources/neural_amp_modeler_rig_ui.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_rig_ui.ttl)
+elseif (WIN32)
+	add_custom_target(copy_ui ALL
+		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+		DEPENDS neural_amp_modeler_rig_ui
+	)
+	set(NAM_UI_SEE_ALSO "")
+	set(NAM_RIG_UI_SEE_ALSO ",<neural_amp_modeler_rig_ui.ttl>")
+	configure_file(resources/neural_amp_modeler_rig_ui_win.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_rig_ui.ttl)
 else()
 	set(NAM_UI_SEE_ALSO "")
 	set(NAM_RIG_UI_SEE_ALSO "")

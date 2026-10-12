@@ -118,15 +118,17 @@ jobs:
     env:
       ARCHIVE_NAME: neural_amp_modeler_lv2_win_x64${{ matrix.native_arch == 'ON' && 'v3' || '' }}.zip
     steps:
-    - uses: actions/checkout@v3.3.0
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
     
-    - name: Build Plugin
-      working-directory: ${{github.workspace}}/build
+    - name: Configure CMake
       run: |
-        cmake.exe -G "Visual Studio 18 2026" -A x64  -T ClangCL -DUSE_NATIVE_ARCH=${{ matrix.native_arch }} -DBUILD_NAMCORE=ON -DBUILD_INTERNAL_STATIC_WAVENET=ON -DBUILD_INTERNAL_STATIC_LSTM=ON ..
-        cmake --build . --config=release -j4
+        cmake -S . -B build -A x64 -T ClangCL -DUSE_NATIVE_ARCH=${{ matrix.native_arch }} -DBUILD_NAMCORE=ON -DBUILD_INTERNAL_STATIC_WAVENET=ON -DBUILD_INTERNAL_STATIC_LSTM=ON
+
+    - name: Build All Targets
+      run: |
+        cmake --build build --config Release -j4
 
     - name: Add LV2 Archive
       run: Compress-Archive -Path ${{github.workspace}}\build\neural_amp_modeler.lv2 -Destination ${{ env.ARCHIVE_NAME }}
@@ -140,3 +142,23 @@ jobs:
         asset_path: ./${{ env.ARCHIVE_NAME }}
         asset_name: ${{ env.ARCHIVE_NAME }}
         asset_content_type: application/zip
+
+    - name: Install Inno Setup
+      if: matrix.native_arch == 'OFF'
+      run: choco install innosetup --no-progress
+
+    - name: Build Windows Installer
+      if: matrix.native_arch == 'OFF'
+      run: |
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBuildDir="${{ github.workspace }}\build" "${{ github.workspace }}\installer\AxeFX_Installer.iss"
+
+    - name: Upload Installer Asset
+      if: matrix.native_arch == 'OFF'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create_release.outputs.upload_url }}
+        asset_path: ./installer/Output/AxeFX_Setup_x64.exe
+        asset_name: AxeFX_Setup_x64.exe
+        asset_content_type: application/octet-stream

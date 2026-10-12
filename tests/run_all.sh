@@ -76,14 +76,14 @@ if command -v clang++ >/dev/null 2>&1; then
     echo "  (skipped: harness build failed)"
   fi
   echo "== tests/verify_oversample_shared.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/oversample.cpp \
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
       tests/verify_oversample_shared.cpp -o /tmp/verify_os_shared 2>/dev/null; then
     /tmp/verify_os_shared || status=1
   else
     echo "  (skipped: harness build failed)"
   fi
   echo "== tests/verify_oversample_cpp.cpp =="
-  if clang++ -O2 -std=c++20 $CXX_EXTRA -framework Accelerate -Isrc src/oversample.cpp \
+  if clang++ -O2 -std=c++20 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
       tests/verify_oversample_cpp.cpp -o /tmp/verify_os 2>/dev/null; then
     /tmp/verify_os || status=1
   else
@@ -97,28 +97,28 @@ if command -v clang++ >/dev/null 2>&1; then
     echo "  (skipped: harness build failed)"
   fi
   echo "== tests/verify_oversample_batched.cpp (old vs batched vDSP_conv) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/oversample.cpp \
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
       tests/verify_oversample_batched.cpp -o /tmp/verify_osb 2>/dev/null; then
     /tmp/verify_osb || status=1
   else
     echo "  (skipped: harness build failed)"
   fi
   echo "== tests/verify_oversample_cascade.cpp (True 4x/8x per-level chains) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/oversample.cpp \
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
       tests/verify_oversample_cascade.cpp -o /tmp/verify_voc 2>/dev/null; then
     /tmp/verify_voc || status=1
   else
     echo "  (skipped: harness build failed)"
   fi
   echo "== tests/verify_oversample_latency.cpp (True cascade pipeline delay) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/oversample.cpp \
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
       tests/verify_oversample_latency.cpp -o /tmp/verify_os_latency 2>/dev/null; then
     /tmp/verify_os_latency || status=1
   else
     echo "  (skipped: harness build failed)"
   fi
   echo "== tests/verify_wav_ir.cpp (partitioned-FFT cab IR vs direct conv) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/wav_ir.cpp \
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc -Ideps/pffft src/dsp_accel.cpp src/wav_ir.cpp \
       tests/verify_wav_ir.cpp -o /tmp/verify_wav_ir 2>/dev/null; then
     /tmp/verify_wav_ir /tmp || status=1
   else

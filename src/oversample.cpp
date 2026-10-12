@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <Accelerate/Accelerate.h>
+#include "dsp_accel.h"
 
 namespace NAMRig {
 
@@ -101,7 +101,7 @@ size_t Up2x::process(const float* in, size_t n, float* out) {
     // In-bounds by the same guarantee that made each position emittable:
     // (m-1) + 24 <= total - j0.
     float* dst = scr + total;        // scratch tail: never aliases in/out
-    vDSP_conv(scr + j0, 1, P, 1, dst, 1, m, 24);
+    DSP::conv24(scr + j0, P, dst, m);
     for (size_t i = 0; i < m; ++i) {
       out[2 * i] = scr[j0 + 11 + i];
       out[2 * i + 1] = dst[i];
@@ -172,10 +172,8 @@ size_t Down2x::process(const float* in, size_t n, float* out) {
     float* dst = scr + total;        // scratch tail: never aliases in/out
     float* oddB = dst + m;
     float* evenB = oddB + (m + 23);
-    DSPSplitComplex split{oddB, evenB};
-    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(scr + j0), 2, &split, 1,
-              m + 23);
-    vDSP_conv(oddB, 1, P, 1, dst, 1, m, 24);
+    DSP::deinterleave(scr + j0, oddB, evenB, m + 23);
+    DSP::conv24(oddB, P, dst, m);
     for (size_t i = 0; i < m; ++i) out[i] = 0.5f * (evenB[i + 11] + dst[i]);
   }
   emitted_ += m;

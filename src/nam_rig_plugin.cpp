@@ -7,7 +7,7 @@
 #include <cstring>
 #include <fstream>
 
-#include <Accelerate/Accelerate.h>
+#include "dsp_accel.h"
 
 #include <lv2/core/lv2_util.h>
 #include "dynamics.h"
@@ -711,9 +711,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
           // comes from a prefix sum of squares — the old O(W * tauMax)
           // scalar burst on the audio thread collapses to one fast conv.
           // vDSP_conv needs signal length (kMaxTau+1) + kWindow - 1 = span.
-          vDSP_conv(win, 1, win, 1, tuner.acf, 1,
-                    (vDSP_Length)(Tuner::kMaxTau + 1),
-                    (vDSP_Length)Tuner::kWindow);
+          DSP::conv(win, win, tuner.acf,
+                    Tuner::kMaxTau + 1,
+                    Tuner::kWindow);
           {
             double c = 0.0;
             tuner.sqPrefix[0] = 0.0;
@@ -1489,10 +1489,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         }
         if (haveA && haveB) {
           const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - w);
-          const float near = std::cos(theta);
-          const float far = std::sin(theta);
-          outL = aL * near + bL * far;
-          outR = aR * far + bR * near;
+          const float gainNear = std::cos(theta);
+          const float gainFar = std::sin(theta);
+          outL = aL * gainNear + bL * gainFar;
+          outR = aR * gainFar + bR * gainNear;
         }
         L[i] = outL;
         R[i] = outR;

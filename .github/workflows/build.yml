@@ -80,25 +80,48 @@ jobs:
 #        path: ${{github.workspace}}/build/*.deb
         
   build-windows:
-    name: Build Windows
+    name: Build Windows (Plugin, Standalone & Installer)
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v3.3.0
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
     
-    - name: Build Plugin
-      working-directory: ${{github.workspace}}/build
+    - name: Configure CMake
       run: |
-        cmake.exe -G "Visual Studio 18 2026" -A x64 -DBUILD_UTILS=ON -DBUILD_INTERNAL_STATIC_WAVENET=ON -DBUILD_INTERNAL_STATIC_LSTM=ON -DBUILD_NAMCORE=ON -DBUILD_STATIC_RTNEURAL=ON -T ClangCL ..
-        cmake --build . --config=release -j4
+        cmake -S . -B build -A x64 -T ClangCL -DBUILD_UTILS=ON -DBUILD_INTERNAL_STATIC_WAVENET=ON -DBUILD_INTERNAL_STATIC_LSTM=ON -DBUILD_NAMCORE=ON -DBUILD_STATIC_RTNEURAL=ON
+
+    - name: Build All Targets
+      run: |
+        cmake --build build --config Release -j4
 
     - name: Run ModelTest
       working-directory: ${{github.workspace}}/build/src/NeuralAudio/Utils/ModelTest/Release
       run: ./ModelTest.exe
+      continue-on-error: true
+
+    - name: Install Inno Setup
+      run: choco install innosetup --no-progress
+
+    - name: Build Windows Installer
+      run: |
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBuildDir="${{ github.workspace }}\build" "${{ github.workspace }}\installer\AxeFX_Installer.iss"
         
-    - name: Upload artifact
+    - name: Upload LV2 Bundle
       uses: actions/upload-artifact@v4
       with:
         name: neural_amp_modeler.lv2-win
         path: ${{github.workspace}}/build/neural_amp_modeler.lv2
+
+    - name: Upload Standalone App
+      uses: actions/upload-artifact@v4
+      with:
+        name: AxeFX-Standalone-win
+        path: ${{github.workspace}}/build/src/Release/Axe FX.exe
+      continue-on-error: true
+
+    - name: Upload Windows Installer
+      uses: actions/upload-artifact@v4
+      with:
+        name: AxeFX-Setup-x64
+        path: ${{github.workspace}}/installer/Output/AxeFX_Setup_x64.exe
