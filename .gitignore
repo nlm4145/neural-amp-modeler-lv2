@@ -1,4 +1,6 @@
 # Build output — build.sh builds out-of-tree, but keep the repo clean regardless
 build*/
 *.lv2/
+*.zip
+dist_temp/
 /.idea
