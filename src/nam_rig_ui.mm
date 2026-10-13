@@ -431,13 +431,7 @@ static NSString* stageName(NSInteger stage) {
   sender.toolTip = popupTooltip(
       @"Sets WAV impulse-response gain handling. Changes glide smoothly.", sender);
   if (!_state) return;
-  _state->sendControl(24, (float)sender.indexOfSelectedItem);
-  // Original changes the taps at load time (it bypasses resampling/truncation),
-  // so re-send both current cabinet paths whenever the mode changes in either
-  // direction. Element applies the control write before the following patch.
-  for (size_t stage = 2; stage <= 3; ++stage)
-    if (!_state->selectedPaths[stage].empty())
-      _state->sendPath(stage, _state->selectedPaths[stage].c_str());
+  _state->sendControl(24, sender.indexOfSelectedItem == 0 ? 1.0f : 2.0f);
   [self markPresetModified];
 }
 
@@ -3993,12 +3987,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                                           constant:-6] setActive:YES];
       } else {
         NSPopUpButton* norm = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [norm addItemsWithTitles:@[@"Preserve", @"Peak", @"Loudness", @"Original"]];
+        [norm addItemsWithTitles:@[@"Peak", @"Loudness"]];
         NSArray<NSString*>* normalizationDescriptions = @[
-          @"Preserve — Retains the impulse response's captured transfer gain across sample rates.",
-          @"Peak — Scales the strongest audible-band response to unity, maximizing headroom without clipping the IR response.",
-          @"Loudness — Matches average audible-band response energy to unity for the most consistent perceived level.",
-          @"Original — Uses every decoded source tap untouched: no resampling, transfer correction, truncation, fade, or normalization. A sample-rate mismatch intentionally changes playback speed."
+          @"Peak - Scales the strongest audible-band response to unity for more headroom; this is not an output limiter.",
+          @"Loudness - Matches average audible-band response energy to unity for consistent cabinet levels."
         ];
         for (NSUInteger item = 0; item < normalizationDescriptions.count; ++item)
           [norm itemAtIndex:item].toolTip = normalizationDescriptions[item];
@@ -4011,7 +4003,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[norm.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
         [[norm.widthAnchor constraintEqualToConstant:104] setActive:YES];
         [[norm.heightAnchor constraintEqualToConstant:24] setActive:YES];
-        [norm selectItemAtIndex:2];
+        [norm selectItemAtIndex:1];
         norm.toolTip = popupTooltip(@"Sets WAV impulse-response gain handling. Changes glide smoothly.", norm);
         state->irNormPopup = norm;
         [[hdrArch.trailingAnchor constraintLessThanOrEqualToAnchor:norm.leadingAnchor
@@ -4226,18 +4218,15 @@ void portEvent(LV2UI_Handle handle,
     state->lastTunerNote = v;
   else if (propertyId == state->tunerCentsURID)
     state->lastTunerCents = v;
-  else if (propertyId == state->inputDbURID)
-    state->lastInputDb = v;
-  else if (propertyId == state->outputDbURID)
-    state->lastOutputDb = v;
-  else
+  else if (propertyId == state->inputDbURID) {
+    state->updateInputDbDisplay(v);
     return;
-  if (propertyId == state->inputDbURID)
-    state->updateInputDbDisplay();
-  else if (propertyId == state->outputDbURID)
-    state->updateOutputDbDisplay();
-  else
-    state->updateTunerDisplay();
+  } else if (propertyId == state->outputDbURID) {
+    state->updateOutputDbDisplay(v);
+    return;
+  } else
+    return;
+  state->updateTunerDisplay();
 }
 
 const void* extensionData(const char*) { return nullptr; }

@@ -97,7 +97,7 @@ Controls defaults(int mode) {
   c[15] = -80;
   c[20] = c[21] = static_cast<float>(mode);
   c[23] = 150;
-  c[24] = 3; // Original fixture taps, with no normalization ambiguity.
+  c[24] = 1; // Peak response normalization, linked across each stereo fixture.
   c[27] = 20000;
   c[43] = c[44] = 25;
   c[45] = c[46] = 50;

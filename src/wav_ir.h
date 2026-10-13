@@ -21,16 +21,14 @@ class WavIR {
 public:
   // channel: -1 sums every channel to mono, otherwise selects one channel.
   static std::unique_ptr<WavIR> load(const char* path, double hostRate,
-                                     int maxBlockSize, bool original = false,
-                                     int channel = -1);
+                                     int maxBlockSize, int channel = -1);
   // Peak/Loudness normalization for a stereo IR must use one linked scale so
   // the source file's inter-channel balance is preserved.
   static void linkStereoNormalization(WavIR& left, WavIR& right) noexcept;
   static unsigned channelCount(const char* path);
   static constexpr double kMaxSeconds = 0.17;
   ~WavIR();
-  // normalizationMode: 0 preserve the corrected capture's transfer gain,
-  // 1 peak, 2 loudness, 3 original source taps (scale remains unity).
+  // normalizationMode: 1 peak, 2 loudness; all other values use loudness.
   void process(float* samples, uint32_t count, int normalizationMode) noexcept;
 
 private:

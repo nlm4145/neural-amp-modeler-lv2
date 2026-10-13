@@ -30,6 +30,7 @@
 #include "rack_controls.h"
 #include "power_tube_controls.h"
 #include "oversample_modes.h"
+#include "ir_normalization.h"
 #include "output_transformer.h"
 #include "speaker_dynamics.h"
 #import "rig_theme.h"
@@ -77,12 +78,13 @@ struct RigUIState {
   LV2_URID outputDbURID = 0;
 
   // Input level meter (title bar): dBFS readout + bar with peak-hold color.
-  static constexpr CFAbsoluteTime kMeterUiIntervalSec = 0.5;
+  static constexpr CFAbsoluteTime kMeterUiIntervalSec = 0.033; // 30 fps smooth meter updates
   __strong NSTextField* inDbLabel = nil;
   __strong NSView* inDbBar = nil;
   __strong NSLayoutConstraint* inDbBarWidth = nil;
   float lastInputDb = -120.0f;
   CFAbsoluteTime lastInputDbUiTime = 0.0;
+  CFAbsoluteTime lastInputClipTime = 0.0;
   bool inputDbUpdatePending = false;
 
   // Output level meter: dBFS readout + bar with peak-hold color.
@@ -91,6 +93,7 @@ struct RigUIState {
   __strong NSLayoutConstraint* outDbBarWidth = nil;
   float lastOutputDb = -120.0f;
   CFAbsoluteTime lastOutputDbUiTime = 0.0;
+  CFAbsoluteTime lastOutputClipTime = 0.0;
   bool outputDbUpdatePending = false;
 
   // Mute on tune setting
@@ -303,25 +306,31 @@ struct RigUIState {
         : [NSString stringWithFormat:@"%+.1f dB", db];
     const CGFloat frac = (clamped + 60.0f) / 60.0f;
     if (inDbBarWidth) inDbBarWidth.constant = 110.0 * frac;
-    NSColor* fill = db > -1.0f ? [NSColor colorWithSRGBRed:0.92 green:0.26 blue:0.21 alpha:1.0]
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (db > -1.0f) lastInputClipTime = now;
+    const bool isClipping = (db > -1.0f) || (now - lastInputClipTime < 0.8);
+    NSColor* fill = isClipping ? [NSColor colorWithSRGBRed:0.92 green:0.26 blue:0.21 alpha:1.0]
                   : db > -6.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.55 blue:0.25 alpha:1.0]
                                 : rigAccent();
     if (inDbBar) inDbBar.layer.backgroundColor = fill.CGColor;
   }
 
-  // Redraw the input meter from lastInputDb on a 500ms cadence.
-  void updateInputDbDisplay() {
+  // Redraw the input meter: instant attack on peaks, 30 fps smooth decay.
+  void updateInputDbDisplay(float newDb) {
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
       const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-      const CFAbsoluteTime elapsed = now - lastInputDbUiTime;
-      if (elapsed >= kMeterUiIntervalSec) {
+      if (newDb > lastInputDb || (now - lastInputDbUiTime >= kMeterUiIntervalSec)) {
+        lastInputDb = newDb;
         lastInputDbUiTime = now;
         applyInputDbDisplayNow();
-      } else if (!inputDbUpdatePending) {
+        return;
+      }
+      lastInputDb = newDb;
+      if (!inputDbUpdatePending) {
         inputDbUpdatePending = true;
-        const double remain = std::max(0.05, kMeterUiIntervalSec - elapsed);
+        const double remain = std::max(0.01, kMeterUiIntervalSec - (now - lastInputDbUiTime));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
           if (!alive || !*alive) return;
@@ -333,6 +342,10 @@ struct RigUIState {
     });
   }
 
+  void updateInputDbDisplay() {
+    updateInputDbDisplay(lastInputDb);
+  }
+
   void applyOutputDbDisplayNow() {
     if (!outDbLabel) return;
     const float db = lastOutputDb;
@@ -341,25 +354,31 @@ struct RigUIState {
         : [NSString stringWithFormat:@"%+.1f dB", db];
     const CGFloat frac = (clamped + 60.0f) / 60.0f;
     if (outDbBarWidth) outDbBarWidth.constant = 110.0 * frac;
-    NSColor* fill = db > -0.5f ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (db > -0.5f) lastOutputClipTime = now;
+    const bool isClipping = (db > -0.5f) || (now - lastOutputClipTime < 0.8);
+    NSColor* fill = isClipping ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
                   : db > -4.0f  ? [NSColor colorWithSRGBRed:1.00 green:0.60 blue:0.20 alpha:1.0]
                                 : [NSColor colorWithSRGBRed:0.20 green:0.80 blue:0.95 alpha:1.0];
     if (outDbBar) outDbBar.layer.backgroundColor = fill.CGColor;
   }
 
-  // Redraw the output meter from lastOutputDb on a 500ms cadence.
-  void updateOutputDbDisplay() {
+  // Redraw the output meter: instant attack on peaks, 30 fps smooth decay.
+  void updateOutputDbDisplay(float newDb) {
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
       const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-      const CFAbsoluteTime elapsed = now - lastOutputDbUiTime;
-      if (elapsed >= kMeterUiIntervalSec) {
+      if (newDb > lastOutputDb || (now - lastOutputDbUiTime >= kMeterUiIntervalSec)) {
+        lastOutputDb = newDb;
         lastOutputDbUiTime = now;
         applyOutputDbDisplayNow();
-      } else if (!outputDbUpdatePending) {
+        return;
+      }
+      lastOutputDb = newDb;
+      if (!outputDbUpdatePending) {
         outputDbUpdatePending = true;
-        const double remain = std::max(0.05, kMeterUiIntervalSec - elapsed);
+        const double remain = std::max(0.01, kMeterUiIntervalSec - (now - lastOutputDbUiTime));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
           if (!alive || !*alive) return;
@@ -369,6 +388,10 @@ struct RigUIState {
         });
       }
     });
+  }
+
+  void updateOutputDbDisplay() {
+    updateOutputDbDisplay(lastOutputDb);
   }
 
   __strong NSView* view = nil;
@@ -1958,7 +1981,7 @@ struct RigUIState {
       return;
     }
     if (port == 24) {
-      const int idx = std::max(0, std::min(3, (int)(value + 0.5f)));
+      const int idx = NAMRig::decodeIrNormalization(value) - 1;
       dispatch_async(dispatch_get_main_queue(), ^{
         if (!alive || !*alive) return;
         if (irNormPopup) {

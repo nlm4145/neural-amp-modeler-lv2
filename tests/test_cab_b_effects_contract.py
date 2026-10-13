@@ -110,7 +110,7 @@ assert "if (haveA && haveB)" in dsp and "outL = bL;" in dsp, (
 assert "WavIR* irRight;" in header and "std::array<WavIR*, kStageCount> irsRight{};" in header
 assert "WavIR* irRight = nullptr;" in header, "the pending switch must carry the right-channel IR"
 assert re.search(r"const unsigned channels = WavIR::channelCount\(message->path\);", dsp)
-assert re.search(r"WavIR::load\(message->path, rig->sampleRate,\s*rig->maxBufferSize, original, 1\)", dsp), (
+assert re.search(r"WavIR::load\(message->path, rig->sampleRate,\s*rig->maxBufferSize, 1\)", dsp), (
     "channel 1 must load into the right-channel convolver"
 )
 assert "WavIR::linkStereoNormalization(*left, *right);" in dsp, (

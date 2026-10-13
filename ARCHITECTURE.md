@@ -12,7 +12,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 |---|---|
 | `src/nam_rig_lv2.cpp` | LV2 descriptor: instantiate/run/cleanup, extension data (options, state, worker) |
 | `src/nam_rig_plugin.{h,cpp}` | Rig DSP: 3 serial stages (Pedal/Amp/Cab), EQ, tuner, worker model-swap chain |
-| `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: zero-latency hybrid convolution (direct head + uniform partitioned FFT tail), load-time normalize + windowed-sinc resample + truncation fade |
+| `src/wav_ir.{h,cpp}` | Cab-stage `.wav` IR: zero-latency hybrid convolution (direct head + uniform partitioned FFT tail), windowed-sinc resample + transfer-gain correction + truncation fade, smoothed response-based normalization |
 | `src/amp_advanced.h` | Pre-amp Bright/Input EQ and the virtual power stage: a negative-feedback loop solved exactly per sample, with Presence/Depth in the feedback path, Sag as supply headroom, Bias plus envelope-driven bias excursion, Master as drive |
 | `src/output_transformer.h` | Optional post-power-stage/pre-cab output-transformer profiles: bandwidth, flux-domain core saturation (leaky integrator → saturator → inverse), asymmetry, voicing, high leakage resonance |
 | `src/speaker_dynamics.h` | Speaker impedance curve (low resonance + rising voice-coil inductance, both scaled down by Negative Feedback), Thump, excursion compression (lowers the resonance Q), low-band-only Speaker Drive |
@@ -44,7 +44,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 15 | `gate_threshold` | in | dB, −80 = OFF |
 | 22 | `amp_drive` | in | dB between pedal and amp |
 | 23 | `gate_release` | in | expander release, ms |
-| 24 | `ir_normalization` | in | Preserve / Peak / Loudness / Original. Preserve retains transfer gain across sample rates; Peak and Loudness normalize the corrected IR. Original reloads decoded source taps without resampling, transfer correction, truncation, fade, or normalization. |
+| 24 | `ir_normalization` | in | Peak (1) / Loudness (2, default). Both normalize the sample-rate-corrected IR without changing its tone. Removed Preserve (0) and Original (3) values recall as Loudness; mode changes glide without reloading the IR. |
 | 25 | `cab_level` | in | post-cab dB trim |
 | 26 | `cab_low_cut` | in | Hz, 0 = OFF |
 | 27 | `cab_high_cut` | in | Hz, 20 kHz = OFF |

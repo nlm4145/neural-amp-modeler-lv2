@@ -1148,8 +1148,28 @@ class StandaloneHost {
       const float* ch0 = static_cast<const float*>(captureList->mBuffers[0].mData);
       const float* ch1 = static_cast<const float*>(captureList->mBuffers[1].mData);
       if (ch0 && ch1) {
+        // Measure channel peaks to avoid halving mono instruments (e.g. guitar in In 1 or In 2
+        // on a multi-channel interface with In 1+2 selected). If only one channel is active,
+        // route it at unity gain (0 dB) rather than cutting it by -6 dB.
+        float p0 = 0.0f, p1 = 0.0f;
         for (UInt32 i = 0; i < frames; ++i) {
-          dstMono[i] = 0.5f * (ch0[i] + ch1[i]);
+          const float a = std::fabs(ch0[i]);
+          const float b = std::fabs(ch1[i]);
+          if (a > p0) p0 = a;
+          if (b > p1) p1 = b;
+        }
+        constexpr float kActiveThreshold = 1.0e-4f; // ~ -80 dBFS
+        if (p0 > kActiveThreshold && p1 <= std::max(kActiveThreshold, 0.05f * p0)) {
+          std::copy_n(ch0, frames, dstMono);
+          return;
+        }
+        if (p1 > kActiveThreshold && p0 <= std::max(kActiveThreshold, 0.05f * p1)) {
+          std::copy_n(ch1, frames, dstMono);
+          return;
+        }
+        // Both channels active (stereo instrument/pedals) or both quiet: sum at unity gain
+        for (UInt32 i = 0; i < frames; ++i) {
+          dstMono[i] = ch0[i] + ch1[i];
         }
         return;
       }

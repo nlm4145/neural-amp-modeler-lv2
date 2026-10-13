@@ -91,9 +91,8 @@ def response_stats(taps, rate):
 
 def normalization_scales(taps, rate):
     peak, rms = response_stats(taps, rate)
-    return (1.0,
-            1.0 / peak if peak > 1e-12 else 1.0,
-            1.0 / rms if rms > 1e-12 else 1.0)
+    return {1: 1.0 / peak if peak > 1e-12 else 1.0,
+            2: 1.0 / rms if rms > 1e-12 else 1.0}
 
 
 def test_equal_rate_is_identity():
@@ -214,12 +213,13 @@ def test_ir_transfer_gain_is_sample_rate_invariant():
 
 
 def test_selectable_normalization():
-    """Preserve retains gain; Peak and Loudness normalize response metrics."""
+    """Only Peak and Loudness are supported and normalize response metrics."""
     for amplitude in (1.0, 0.1, 0.01):
         ir = synth_cab_ir(seed=23) * amplitude
         taps = wav_ir_load_taps(ir, 48000, 48000)
-        preserve, peak_scale, loudness_scale = normalization_scales(taps, 48000)
-        assert preserve == 1.0 and np.array_equal(taps, ir)
+        scales = normalization_scales(taps, 48000)
+        assert set(scales) == {1, 2}
+        peak_scale, loudness_scale = scales[1], scales[2]
         peak, _ = response_stats(taps * peak_scale, 48000)
         _, rms = response_stats(taps * loudness_scale, 48000)
         assert abs(peak - 1.0) < 1e-6

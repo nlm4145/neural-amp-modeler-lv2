@@ -147,7 +147,7 @@ public:
     float* amp_oversample;     // in: port 21, amp mode (0..6); cab follows amp
     float* amp_drive;          // in: port 22, gain between pedal and amp (dB)
     float* gate_release;       // in: port 23, expander release time (ms)
-    float* ir_normalization;   // in: port 24, 0 preserve / 1 peak / 2 loudness
+    float* ir_normalization;   // in: port 24, 1 peak / 2 loudness; legacy 0/3 -> loudness
     float* cab_level;          // in: port 25, post-cab trim (dB)
     float* cab_low_cut;        // in: port 26, Hz (0 = off)
     float* cab_high_cut;       // in: port 27, Hz (20 kHz = off)

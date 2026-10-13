@@ -2,7 +2,9 @@
 // exact response (zero latency), arbitrary chunk sizes, head-only and
 // multi-partition IR lengths, truncation fade, and normalization modes.
 // Build: clang++ -O2 -std=c++17 -framework Accelerate -Isrc src/wav_ir.cpp
-//        tests/verify_wav_ir.cpp   (run with a scratch dir as argv[1])
+//        src/dsp_accel.cpp tests/verify_wav_ir.cpp
+//        (run with a scratch dir as argv[1])
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -118,6 +120,7 @@ static double runCase(const char* dir, size_t irLen, uint32_t rate,
   writeWavF32(path, taps, rate);
   auto ir = NAMRig::WavIR::load(path.c_str(), rate, 512);
   const auto ref = truncateFade(taps, rate);
+  const float scale = static_cast<float>(1.0 / responseStats(ref, rate).rms);
 
   const size_t n = 20000;
   std::vector<float> x(n), y(n);
@@ -126,7 +129,7 @@ static double runCase(const char* dir, size_t irLen, uint32_t rate,
   size_t done = 0;
   while (done < n) {
     const size_t t = std::min<size_t>(1 + rng() % 700, n - done);
-    ir->process(y.data() + done, static_cast<uint32_t>(t), 0);
+    ir->process(y.data() + done, static_cast<uint32_t>(t), 2);
     done += t;
   }
   double worst = 0.0, peak = 0.0;
@@ -134,6 +137,7 @@ static double runCase(const char* dir, size_t irLen, uint32_t rate,
     double acc = 0.0;
     const size_t kMax = std::min(ref.size() - 1, i);
     for (size_t k = 0; k <= kMax; ++k) acc += (double)ref[k] * x[i - k];
+    acc *= scale;
     worst = std::max(worst, std::fabs(acc - (double)y[i]));
     peak = std::max(peak, std::fabs(acc));
   }
@@ -169,15 +173,17 @@ int main(int argc, char** argv) {
     const std::string path = std::string(dir) + "/ir_length.wav";
     writeWavF32(path, taps, 48000);
     auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
+    const float scale = static_cast<float>(
+        1.0 / responseStats(truncateFade(taps, 48000), 48000).rms);
     std::vector<float> rendered(14000, 0.0f);
     rendered[0] = 1.0f;
-    ir->process(rendered.data(), static_cast<uint32_t>(rendered.size()), 0);
+    ir->process(rendered.data(), static_cast<uint32_t>(rendered.size()), 2);
     char message[192];
     std::snprintf(message, sizeof(message),
                   "a 104 ms tail survives (%.3f) while a 187 ms tail is truncated (%.3e)",
                   static_cast<double>(rendered[5000]),
                   static_cast<double>(rendered[9000]));
-    CHECK(std::fabs(rendered[5000] - 0.25f) < 1e-4 &&
+    CHECK(std::fabs(rendered[5000] - 0.25f * scale) < 1e-4 &&
               std::fabs(rendered[9000]) < 1e-6, message);
   }
 
@@ -192,14 +198,19 @@ int main(int argc, char** argv) {
     writeWavF32Stereo(path, interleaved, 48000);
     CHECK(NAMRig::WavIR::channelCount(path.c_str()) == 2,
           "channelCount reports a stereo cabinet IR");
-    auto left = NAMRig::WavIR::load(path.c_str(), 48000, 512, false, 0);
-    auto right = NAMRig::WavIR::load(path.c_str(), 48000, 512, false, 1);
-    auto mono = NAMRig::WavIR::load(path.c_str(), 48000, 512, false, -1);
+    auto left = NAMRig::WavIR::load(path.c_str(), 48000, 512, 0);
+    auto right = NAMRig::WavIR::load(path.c_str(), 48000, 512, 1);
+    auto mono = NAMRig::WavIR::load(path.c_str(), 48000, 512, -1);
+    NAMRig::WavIR::linkStereoNormalization(*left, *right);
+    std::vector<float> monoTaps(frames, 0.0f);
+    monoTaps[0] = 0.5f;
+    monoTaps[40] = 0.25f;
+    const float monoScale = static_cast<float>(1.0 / responseStats(monoTaps, 48000).peak);
     std::vector<float> l(512, 0.0f), r(512, 0.0f), m(512, 0.0f);
     l[0] = r[0] = m[0] = 1.0f;
-    left->process(l.data(), 512, 0);
-    right->process(r.data(), 512, 0);
-    mono->process(m.data(), 512, 0);
+    left->process(l.data(), 512, 1);
+    right->process(r.data(), 512, 1);
+    mono->process(m.data(), 512, 1);
     char message[192];
     std::snprintf(message, sizeof(message),
                   "stereo channels load independently (L[0] %.3f, R[40] %.3f, R[0] %.3e)",
@@ -207,8 +218,9 @@ int main(int argc, char** argv) {
                   static_cast<double>(r[0]));
     CHECK(std::fabs(l[0] - 1.0f) < 1e-4 && std::fabs(r[40] - 0.5f) < 1e-4 &&
               std::fabs(r[0]) < 1e-6, message);
-    CHECK(std::fabs(m[0] - 0.5f) < 1e-4 && std::fabs(m[40] - 0.25f) < 1e-4,
-          "channel -1 averages both channels (the pre-stereo behaviour)");
+    CHECK(std::fabs(m[0] - 0.5f * monoScale) < 1e-4 &&
+              std::fabs(m[40] - 0.25f * monoScale) < 1e-4,
+          "channel -1 averages both channels before response normalization");
 
     // Stereo normalization is linked: a deliberately quieter right channel
     // must remain quieter instead of being independently raised to unity.
@@ -218,8 +230,8 @@ int main(int argc, char** argv) {
     const std::string balancePath = std::string(dir) + "/ir_stereo_balance.wav";
     writeWavF32Stereo(balancePath, unbalanced, 48000);
     for (int mode : {1, 2}) {
-      auto linkedL = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, false, 0);
-      auto linkedR = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, false, 1);
+      auto linkedL = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, 0);
+      auto linkedR = NAMRig::WavIR::load(balancePath.c_str(), 48000, 512, 1);
       NAMRig::WavIR::linkStereoNormalization(*linkedL, *linkedR);
       std::vector<float> outL(512, 0.0f), outR(512, 0.0f);
       outL[0] = outR[0] = 1.0f;
@@ -231,27 +243,24 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Original mode keeps the decoded source taps exactly as stored, even when
-  // the host rate differs. This intentionally skips resampling, transfer-gain
-  // correction, truncation, and the truncation fade.
+  // Legacy Preserve (0) and Original (3) values now use Loudness (2).
   {
     std::vector<float> taps(5000);
     for (size_t i = 0; i < taps.size(); ++i)
       taps[i] = static_cast<float>((static_cast<int>(i % 29) - 14) * 0.001);
-    const std::string path = std::string(dir) + "/ir_original.wav";
+    const std::string path = std::string(dir) + "/ir_fallback.wav";
     writeWavF32(path, taps, 48000);
-    auto ir = NAMRig::WavIR::load(path.c_str(), 96000, 512, true);
-    std::vector<float> rendered(7000, 0.0f);
-    rendered[0] = 1.0f;
-    ir->process(rendered.data(), static_cast<uint32_t>(rendered.size()), 0);
-    double worst = 0.0;
-    for (size_t i = 0; i < taps.size(); ++i)
-      worst = std::max(worst, std::fabs(static_cast<double>(rendered[i] - taps[i])));
-    char message[160];
-    std::snprintf(message, sizeof(message),
-                  "Original keeps every decoded source tap untouched (worst %.3e, tail %.3e)",
-                  worst, static_cast<double>(rendered[5000]));
-    CHECK(worst < 1e-5 && std::fabs(rendered[5000]) < 1e-5, message);
+    std::vector<float> rendered[4];
+    for (int mode : {2, 0, 3}) {
+      auto ir = NAMRig::WavIR::load(path.c_str(), 96000, 512);
+      rendered[mode].assign(12000, 0.0f);
+      rendered[mode][0] = 1.0f;
+      ir->process(rendered[mode].data(), static_cast<uint32_t>(rendered[mode].size()), mode);
+      if (mode != 2)
+        CHECK(std::equal(rendered[mode].begin(), rendered[mode].end(), rendered[2].begin(),
+                         [](float a, float b) { return std::fabs(a - b) < 1e-5f; }),
+              mode == 0 ? "legacy Preserve matches Loudness" : "legacy Original matches Loudness");
+    }
   }
 
   // Normalization operates on the audible transfer response, not on an
@@ -270,13 +279,11 @@ int main(int argc, char** argv) {
       rendered[mode][0] = 1.0f;
       ir->process(rendered[mode].data(), 4096, mode);
     }
-    double preserveWorst = 0.0;
-    for (size_t i = 0; i < taps.size(); ++i)
-      preserveWorst = std::max(
-          preserveWorst, std::fabs(static_cast<double>(rendered[0][i] - taps[i])));
     const ResponseStats peak = responseStats(rendered[1], 48000.0);
     const ResponseStats loudness = responseStats(rendered[2], 48000.0);
-    CHECK(preserveWorst < 1e-5, "Preserve retains source-rate transfer gain");
+    CHECK(std::equal(rendered[0].begin(), rendered[0].end(), rendered[2].begin(),
+                     [](float a, float b) { return std::fabs(a - b) < 1e-5f; }),
+          "legacy mode 0 uses Loudness at the source rate");
     CHECK(std::fabs(peak.peak - 1.0) < 2e-3,
           "Peak sets maximum audible response magnitude to unity");
     CHECK(std::fabs(loudness.rms - 1.0) < 2e-3,
@@ -296,7 +303,7 @@ int main(int argc, char** argv) {
     const std::string path = std::string(dir) + "/ir_rate.wav";
     writeWavF32(path, taps, 48000);
     double worstDb = 0.0;
-    for (int mode = 0; mode < 3; ++mode) {
+    for (int mode : {1, 2}) {
       std::vector<float> rendered[2];
       const double rates[] = {48000.0, 96000.0};
       for (int r = 0; r < 2; ++r) {
@@ -313,7 +320,7 @@ int main(int argc, char** argv) {
     }
     char msg[160];
     std::snprintf(msg, sizeof(msg),
-                  "all normalization modes are sample-rate invariant (worst %.3f dB)",
+                  "Peak and Loudness are sample-rate invariant (worst %.3f dB)",
                   worstDb);
     CHECK(worstDb < 0.10, msg);
   }
@@ -321,14 +328,14 @@ int main(int argc, char** argv) {
   // Switching modes should not step the output gain at a block boundary.
   {
     const std::string path = std::string(dir) + "/ir_smooth.wav";
-    writeWavF32(path, {0.1f}, 48000);
+    writeWavF32(path, {0.1f, 0.1f}, 48000);
     auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
     std::vector<float> before(512, 1.0f), after(4096, 1.0f);
-    ir->process(before.data(), static_cast<uint32_t>(before.size()), 0);
-    ir->process(after.data(), static_cast<uint32_t>(after.size()), 1);
+    ir->process(before.data(), static_cast<uint32_t>(before.size()), 1);
+    ir->process(after.data(), static_cast<uint32_t>(after.size()), 2);
     CHECK(std::fabs(after.front() - before.back()) < 0.01f &&
-              after.back() > 0.99f && after[1000] > after.front(),
-          "normalization changes glide without a gain step");
+              after.back() > 1.1f && after[1000] > after.front(),
+          "Peak to Loudness glides without a gain step");
   }
 
   std::printf(g_fail ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", g_fail);

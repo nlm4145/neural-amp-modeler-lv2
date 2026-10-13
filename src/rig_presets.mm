@@ -6,6 +6,7 @@
 
 #include "rig_knobs.h"
 #include "oversample_modes.h"
+#include "ir_normalization.h"
 #include "output_transformer.h"
 #include "pin_eq.h"
 #include "power_tube_controls.h"
@@ -328,6 +329,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     }
   }
 
+  // Controls win over the stale stage field in older Windows captures.
+  const float savedNorm = preset->_controls.count(24) ? preset->_controls[24]
+      : preset->_stages[2].irNormalization;
+  preset->_stages[2].irNormalization = NAMRig::decodeIrNormalization(savedNorm);
+  preset->_controls[24] = preset->_stages[2].irNormalization;
+
   // Migrate v1 presets where cab_level (port 25) scaled the combined Cab A + Cab B
   // sum rather than Cab A alone. Adding cab_level to cab2_level (port 48) when Cab B
   // is active preserves the exact effective level of Cab B from v1 sessions.
@@ -458,7 +465,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   // IR Normalization
   if (state->irNormPopup) {
-    p->_stages[2].irNormalization = static_cast<float>(state->irNormPopup.indexOfSelectedItem);
+    p->_stages[2].irNormalization = state->irNormPopup.indexOfSelectedItem == 0 ? 1.0f : 2.0f;
   } else {
     p->_stages[2].irNormalization = 2.0f;
   }

@@ -11,6 +11,7 @@
 
 #include <lv2/core/lv2_util.h>
 #include "dynamics.h"
+#include "ir_normalization.h"
 #include "wav_ir.h"
 
 namespace NAMRig {
@@ -341,20 +342,18 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
     if (length > 0 && length < MAX_FILE_NAME) {
       if ((message->stage == Stage::Cab || message->stage == Stage::Cab2) &&
           endsWithWav(message->path)) {
-        const bool original = rig->ports.ir_normalization &&
-                              *rig->ports.ir_normalization >= 2.5f;
         const unsigned channels = WavIR::channelCount(message->path);
         if (channels >= 2) {
           auto left = WavIR::load(message->path, rig->sampleRate,
-                                  rig->maxBufferSize, original, 0);
+                                  rig->maxBufferSize, 0);
           auto right = WavIR::load(message->path, rig->sampleRate,
-                                   rig->maxBufferSize, original, 1);
+                                   rig->maxBufferSize, 1);
           WavIR::linkStereoNormalization(*left, *right);
           response.ir = left.release();
           response.irRight = right.release();
         } else {
           response.ir = WavIR::load(message->path, rig->sampleRate,
-                                    rig->maxBufferSize, original).release();
+                                    rig->maxBufferSize).release();
         }
       } else {
         // The stage's oversample mode decides the loader external rate.
@@ -601,8 +600,12 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       meter.lastDb = blockDb;
     else
       meter.lastDb = std::max(blockDb, meter.lastDb - releasePerBlock);
-    // Change-gate: send only on >=0.5 dB drift so the notify stream stays quiet.
-    if (std::fabs(meter.lastDb - meter.sentDb) >= 0.5f) {
+    // Change-gate: on attack, publish quickly (>=0.25 dB rise, or >=0.1 dB if hot/near clipping > -3 dB)
+    // so transient peaks are immediately received by the UI; on decay, publish on >=0.5 dB drift.
+    const bool isAttack = meter.lastDb > meter.sentDb;
+    const float threshold = (isAttack && meter.lastDb > -3.0f) ? 0.1f
+                          : isAttack ? 0.25f : 0.5f;
+    if (std::fabs(meter.lastDb - meter.sentDb) >= threshold) {
       meter.sentDb = meter.lastDb;
       LV2_Atom_Forge_Frame frame;
       lv2_atom_forge_frame_time(&forge, 0);
@@ -1317,8 +1320,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const bool reverbOn = rackOn(Rack::Reverb);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
   const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
-  const int norm = std::max(0, std::min(3,
-      static_cast<int>(*ports.ir_normalization + 0.5f)));
+  const int norm = decodeIrNormalization(*ports.ir_normalization);
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
   const float widthTarget = std::max(0.0f, std::min(1.0f, *ports.stereo_width * 0.01f));
   const float rawCab2Db = portValue(ports.cab2_level, 0.0f);
@@ -1677,7 +1679,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       outMeter.lastDb = blockDb;
     else
       outMeter.lastDb = std::max(blockDb, outMeter.lastDb - releasePerBlock);
-    if (std::fabs(outMeter.lastDb - outMeter.sentDb) >= 0.5f) {
+    const bool isOutAttack = outMeter.lastDb > outMeter.sentDb;
+    const float outThreshold = (isOutAttack && outMeter.lastDb > -3.0f) ? 0.1f
+                             : isOutAttack ? 0.25f : 0.5f;
+    if (std::fabs(outMeter.lastDb - outMeter.sentDb) >= outThreshold) {
       outMeter.sentDb = outMeter.lastDb;
       LV2_Atom_Forge_Frame frame;
       lv2_atom_forge_frame_time(&forge, 0);

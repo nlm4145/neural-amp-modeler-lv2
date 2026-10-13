@@ -15,6 +15,7 @@
 #include <iomanip>
 
 #include "oversample_modes.h"
+#include "ir_normalization.h"
 #include "output_transformer.h"
 
 #ifndef M_PI
@@ -117,13 +118,7 @@ std::string formatTubeType(float v) {
 }
 
 std::string formatNormalization(float v) {
-  int n = static_cast<int>(v);
-  switch (n) {
-    case 0: return "Preserve";
-    case 1: return "Peak";
-    case 2: return "Loudness";
-    default: return "Loudness";
-  }
+  return NAMRig::decodeIrNormalization(v) == 1 ? "Peak" : "Loudness";
 }
 
 std::string getFileNameOnly(const std::string& path) {
@@ -222,7 +217,7 @@ void Win32UIView::initLayout() {
   addControl(25, ControlType::Knob, 40, 495, 60, 55, "A LEVEL", -20.0f, 20.0f, 0.0f, "dB", formatDb);
   addControl(26, ControlType::Knob, 110, 495, 60, 55, "LOW CUT", 0.0f, 500.0f, 0.0f, "Hz", formatHz);
   addControl(27, ControlType::Knob, 180, 495, 60, 55, "HIGH CUT", 2000.0f, 20000.0f, 20000.0f, "Hz", formatHz);
-  addControl(24, ControlType::Dropdown, 140, 565, 110, 24, "NORM", 0.0f, 2.0f, 2.0f, "", formatNormalization);
+  addControl(24, ControlType::Dropdown, 140, 565, 110, 24, "NORM", 1.0f, 2.0f, 2.0f, "", formatNormalization);
 
   // Cab B
   addControl(47, ControlType::Toggle, 500, 427, 45, 22, "B ON", 0.0f, 1.0f, 0.0f, "", nullptr);
@@ -371,6 +366,7 @@ LRESULT Win32UIView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 void Win32UIView::setControlValue(uint32_t port, float value, bool notify) {
+  if (port == 24) value = NAMRig::decodeIrNormalization(value);
   auto it = controls_.find(port);
   if (it != controls_.end()) {
     it->second.currentValue = std::max(it->second.minValue, std::min(it->second.maxValue, value));
@@ -767,8 +763,7 @@ void Win32UIView::onMouseDown(int x, int y, bool isRight) {
           if (next > 2.0f) next = 0.0f;
           setControlValue(c.port, next, true);
         } else if (c.port == 24) {
-          float next = c.currentValue + 1.0f;
-          if (next > 2.0f) next = 0.0f;
+          const float next = NAMRig::decodeIrNormalization(c.currentValue) == 1 ? 2.0f : 1.0f;
           setControlValue(c.port, next, true);
         }
         return;
@@ -977,6 +972,7 @@ RigPreset Win32UIView::capturePreset(const std::string& name) const {
     p.stages[s].path = stagePaths_[s];
     p.stages[s].enabled = (s < 3);
   }
+  p.stages[2].irNormalization = p.controls[24];
   return p;
 }
 
