@@ -43,6 +43,8 @@ struct Win32UI {
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
   LV2_URID inputDbURID = 0;
+  LV2_URID preAmpDbURID = 0;
+  LV2_URID postAmpDbURID = 0;
   LV2_URID outputDbURID = 0;
   std::array<LV2_URID, 4> pathURIDs = {};
 
@@ -119,6 +121,8 @@ static LV2UI_Handle instantiate(
   ui->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   ui->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
   ui->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
+  ui->preAmpDbURID = map->map(map->handle, NAM_RIG_PRE_AMP_DB_URI);
+  ui->postAmpDbURID = map->map(map->handle, NAM_RIG_POST_AMP_DB_URI);
   ui->outputDbURID = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
   for (size_t i = 0; i < kPathURIs.size(); ++i) {
     ui->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);

@@ -9,6 +9,9 @@ status=0
 echo "== tests/test_max_quality_defaults.py =="
 python3 tests/test_max_quality_defaults.py || status=1
 
+echo "== tests/test_stage_db_meters.py =="
+python3 tests/test_stage_db_meters.py || status=1
+
 echo "== tests/test_a2_fast_ring_copy.py =="
 python3 tests/test_a2_fast_ring_copy.py || status=1
 
