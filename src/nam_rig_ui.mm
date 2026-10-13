@@ -4158,12 +4158,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->stageMeters[2] = m2;
     state->stageMeters[3] = m3;
 
-    for (RigStageMeterView* m : {m0, m1, m2, m3}) {
-      [[m.widthAnchor constraintEqualToConstant:meterWidth] setActive:YES];
-      [[m.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
-      [[m.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
-    }
-
     [boxRow addArrangedSubview:m0];
     [boxRow addArrangedSubview:tileBoxes[0]];
     [boxRow addArrangedSubview:m1];
@@ -4171,6 +4165,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [boxRow addArrangedSubview:m2];
     [boxRow addArrangedSubview:tileBoxes[2]];
     [boxRow addArrangedSubview:m3];
+
+    for (RigStageMeterView* m : {m0, m1, m2, m3}) {
+      [[m.widthAnchor constraintEqualToConstant:meterWidth] setActive:YES];
+      [[m.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
+      [[m.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
+    }
 
     // Proportional stage tile widths: pedal 4 units, amp 6 units, cab 6 units
     [[tileBoxes[1].widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor

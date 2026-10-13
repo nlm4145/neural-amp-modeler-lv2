@@ -2005,15 +2005,15 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
   // Subtitle
   NSDictionary* subAttr = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightSemibold],
+    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: rigDimText(),
     NSParagraphStyleAttributeName: centerStyle
   };
-  NSRect subRect = NSMakeRect(2, 19, w - 4, 11);
+  NSRect subRect = NSMakeRect(1, 19, w - 2, 11);
   [_subtitle drawInRect:subRect withAttributes:subAttr];
 
   // Numeric dB readout pill
-  NSRect readoutPill = NSMakeRect(3, 31, w - 6, 14);
+  NSRect readoutPill = NSMakeRect(2, 31, w - 4, 14);
   NSBezierPath* pillPath = [NSBezierPath bezierPathWithRoundedRect:readoutPill xRadius:3.0 yRadius:3.0];
   [rigRaised() setFill];
   [pillPath fill];
