@@ -89,13 +89,9 @@ struct RigUIState {
 
   // Pre-amp level meter (between pedal and amp): dBFS readout + hardware meter.
   float lastPreAmpDb = -120.0f;
-  CFAbsoluteTime lastPreAmpDbUiTime = 0.0;
-  bool preAmpDbUpdatePending = false;
 
   // Post-amp level meter (between amp and cab): dBFS readout + hardware meter.
   float lastPostAmpDb = -120.0f;
-  CFAbsoluteTime lastPostAmpDbUiTime = 0.0;
-  bool postAmpDbUpdatePending = false;
 
   // Output level meter: dBFS readout + bar with peak-hold color.
   __strong NSTextField* outDbLabel = nil;
@@ -311,7 +307,6 @@ struct RigUIState {
   }
 
   void applyInputDbDisplayNow() {
-    if (stageMeters[0]) [stageMeters[0] setLevelDb:lastInputDb];
     if (!inDbLabel) return;
     const float db = lastInputDb;
     const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);
@@ -349,62 +344,23 @@ struct RigUIState {
     });
   }
 
-  void applyPreAmpDbDisplayNow() {
-    if (stageMeters[1]) [stageMeters[1] setLevelDb:lastPreAmpDb];
-  }
-
-  void updatePreAmpDbDisplay() {
+  void updateStageMeter(size_t stage, float db) {
+    if (stage >= stageMeters.size() || !std::isfinite(db)) return;
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
-      const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-      const CFAbsoluteTime elapsed = now - lastPreAmpDbUiTime;
-      if (elapsed >= kMeterUiIntervalSec) {
-        lastPreAmpDbUiTime = now;
-        applyPreAmpDbDisplayNow();
-      } else if (!preAmpDbUpdatePending) {
-        preAmpDbUpdatePending = true;
-        const double remain = std::max(0.05, kMeterUiIntervalSec - elapsed);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-          if (!alive || !*alive) return;
-          preAmpDbUpdatePending = false;
-          lastPreAmpDbUiTime = CFAbsoluteTimeGetCurrent();
-          applyPreAmpDbDisplayNow();
-        });
-      }
-    });
-  }
-
-  void applyPostAmpDbDisplayNow() {
-    if (stageMeters[2]) [stageMeters[2] setLevelDb:lastPostAmpDb];
-  }
-
-  void updatePostAmpDbDisplay() {
-    auto alive = this->isAlive;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (!alive || !*alive) return;
-      const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-      const CFAbsoluteTime elapsed = now - lastPostAmpDbUiTime;
-      if (elapsed >= kMeterUiIntervalSec) {
-        lastPostAmpDbUiTime = now;
-        applyPostAmpDbDisplayNow();
-      } else if (!postAmpDbUpdatePending) {
-        postAmpDbUpdatePending = true;
-        const double remain = std::max(0.05, kMeterUiIntervalSec - elapsed);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remain * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-          if (!alive || !*alive) return;
-          postAmpDbUpdatePending = false;
-          lastPostAmpDbUiTime = CFAbsoluteTimeGetCurrent();
-          applyPostAmpDbDisplayNow();
-        });
+      // Preserve each delivered peak; the widget timer throttles only drawing.
+      if (stageMeters[stage]) [stageMeters[stage] setLevelDb:db];
+      switch (stage) {
+        case 0: lastInputDb = db; updateInputDbDisplay(); break;
+        case 1: lastPreAmpDb = db; break;
+        case 2: lastPostAmpDb = db; break;
+        case 3: lastOutputDb = db; updateOutputDbDisplay(); break;
       }
     });
   }
 
   void applyOutputDbDisplayNow() {
-    if (stageMeters[3]) [stageMeters[3] setLevelDb:lastOutputDb];
     if (!outDbLabel) return;
     const float db = lastOutputDb;
     const float clamped = db < -60.0f ? -60.0f : (db > 0.0f ? 0.0f : db);

@@ -45,15 +45,16 @@ assert "LV2_URID postAmpDbURID = 0;" in ui_h
 assert "float lastPreAmpDb = -120.0f;" in ui_h
 assert "float lastPostAmpDb = -120.0f;" in ui_h
 assert "std::array<__strong RigStageMeterView*, 4> stageMeters{};" in ui_h
-assert "void applyPreAmpDbDisplayNow()" in ui_h
-assert "void applyPostAmpDbDisplayNow()" in ui_h
-assert "void updatePreAmpDbDisplay()" in ui_h
-assert "void updatePostAmpDbDisplay()" in ui_h
+assert "void updateStageMeter(size_t stage, float db)" in ui_h
+assert "[stageMeters[stage] setLevelDb:db]" in ui_h
 
 # 5. Verify UI widget class
 assert "@interface RigStageMeterView : NSView" in widgets_h
 assert "@implementation RigStageMeterView" in widgets_mm
 assert "- (void)setLevelDb:(float)db" in widgets_mm
+assert "advancePeakAtTime:CACurrentMediaTime()" in widgets_mm
+assert "NSRunLoopCommonModes" in widgets_mm
+assert "if (self.clipping)" in widgets_mm
 
 # 6. Verify layout and order in nam_rig_ui.mm
 assert 'RigStageMeterView* m0 = [[RigStageMeterView alloc] initWithTitle:@"IN"' in ui_mm
@@ -72,8 +73,7 @@ assert "[boxRow addArrangedSubview:m3];" in ui_mm
 # 7. Verify port event dispatch
 assert "state->preAmpDbURID" in ui_mm
 assert "state->postAmpDbURID" in ui_mm
-assert "state->updatePreAmpDbDisplay();" in ui_mm
-assert "state->updatePostAmpDbDisplay();" in ui_mm
+assert "state->updateStageMeter(i, v);" in ui_mm
 
 # 8. Verify Win32 mapping compatibility
 assert "ui->preAmpDbURID" in win32_cpp

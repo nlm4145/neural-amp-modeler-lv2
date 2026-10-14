@@ -1,6 +1,7 @@
 #import "rig_widgets.h"
 #import "rig_theme.h"
 #import <ImageIO/ImageIO.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "pin_eq.h"
 #include "power_tube_controls.h"
@@ -1944,6 +1945,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   float _levelDb;
   float _peakDb;
   CFAbsoluteTime _peakHoldTime;
+  CFAbsoluteTime _lastPeakUpdateTime;
+  CFAbsoluteTime _clipUntil;
+  NSTimer* _meterTimer;
 }
 
 - (instancetype)initWithTitle:(NSString*)title
@@ -1963,19 +1967,44 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
 - (BOOL)isFlipped { return YES; }
 
+- (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
+  [_meterTimer invalidate];
+  _meterTimer = nil;
+  if (!self.window) return;
+  __weak RigStageMeterView* weakSelf = self;
+  _meterTimer = [NSTimer timerWithTimeInterval:1.0 / 30.0 repeats:YES block:^(NSTimer* timer) {
+    RigStageMeterView* meter = weakSelf;
+    if (!meter) { [timer invalidate]; return; }
+    [meter advancePeakAtTime:CACurrentMediaTime()];
+    meter.needsDisplay = YES;
+  }];
+  [[NSRunLoop mainRunLoop] addTimer:_meterTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)dealloc { [_meterTimer invalidate]; }
+
+- (void)advancePeakAtTime:(CFAbsoluteTime)now {
+  const double elapsed = std::max(0.0, now - std::max(_lastPeakUpdateTime, _peakHoldTime));
+  _peakDb = std::max(_levelDb, _peakDb - static_cast<float>(20.0 * elapsed));
+  _lastPeakUpdateTime = now;
+}
+
 - (void)setLevelDb:(float)db {
+  if (!std::isfinite(db)) return;
+  const CFAbsoluteTime now = CACurrentMediaTime();
+  [self advancePeakAtTime:now];
   _levelDb = db;
-  const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-  if (db > _peakDb) {
+  if (db >= _peakDb) {
     _peakDb = db;
-    _peakHoldTime = now;
-  } else if (now - _peakHoldTime > 1.2) {
-    _peakDb = std::max(db, _peakDb - 2.5f);
+    _peakHoldTime = now + 1.2;
   }
-  self.needsDisplay = YES;
+  if (db >= -0.5f) _clipUntil = now + 1.2;
 }
 
 - (float)levelDb { return _levelDb; }
+- (float)peakDb { return _peakDb; }
+- (BOOL)clipping { return _levelDb >= -0.5f || CACurrentMediaTime() < _clipUntil; }
 
 - (void)drawRect:(NSRect)dirtyRect {
   const NSRect bounds = self.bounds;
@@ -2050,7 +2079,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const CGFloat ledY = trackTopY - 6.5;
   NSRect ledRect = NSMakeRect(ledX, ledY, ledSize, ledSize);
   NSBezierPath* ledPath = [NSBezierPath bezierPathWithOvalInRect:ledRect];
-  if (_levelDb >= -0.5f) {
+  if (self.clipping) {
     [[NSColor colorWithSRGBRed:1.0 green:0.18 blue:0.18 alpha:1.0] setFill];
   } else {
     [[NSColor colorWithSRGBRed:0.28 green:0.08 blue:0.08 alpha:1.0] setFill];

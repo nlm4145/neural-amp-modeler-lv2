@@ -142,6 +142,8 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic, copy) NSString* subtitle;
 @property(nonatomic, strong) NSColor* accentColor;
 @property(nonatomic, readonly) float levelDb;
+@property(nonatomic, readonly) float peakDb;
+@property(nonatomic, readonly) BOOL clipping;
 @end
 
 // ImageIO decode at the target pixel size instead of full resolution — grid

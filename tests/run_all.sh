@@ -181,6 +181,18 @@ else
   echo "  (skipped: plugin unavailable or harness build failed)"
 fi
 
+# Meter placement must be verified against real processing, including merged True domains.
+echo "== tests/verify_stage_db_meters.cpp (inter-stage signal boundaries) =="
+if [ -f "$RIG_SO" ] && \
+    clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
+      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+      tests/verify_stage_db_meters.cpp -o /tmp/verify_stage_db_meters; then
+  /tmp/verify_stage_db_meters "$RIG_SO" || status=1
+else
+  echo "  (failed: plugin unavailable or meter harness build failed)"
+  status=1
+fi
+
 # Against RIG_SO, this harness supplies its own identity amp and WAV fixtures.
 echo "== tests/verify_rack_bypass.cpp (deck switches / stereo cabinets / legacy defaults) =="
 if [ -f "$RIG_SO" ] && \

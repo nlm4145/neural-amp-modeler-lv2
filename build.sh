@@ -58,8 +58,10 @@ else
 fi
 
 # Build intermediates live next to the installed plugin (hidden so the DAW's
-# bundle scanner ignores them), never inside the git repo.
-BUILD_DIR="${BUILD_DIR:-$LV2_DIR/.build-neural-amp-modeler}"
+# bundle scanner ignores them). Key the cache by checkout path so worktrees
+# cannot reuse a CMake cache generated from a different source directory.
+REPO_BUILD_ID="$(printf '%s' "$REPO_DIR" | cksum)"
+BUILD_DIR="${BUILD_DIR:-$LV2_DIR/.build-neural-amp-modeler-${REPO_BUILD_ID%% *}}"
 BUNDLE="$BUILD_DIR/neural_amp_modeler.lv2"
 INSTALL_BUNDLE="$LV2_DIR/neural_amp_modeler.lv2"
 

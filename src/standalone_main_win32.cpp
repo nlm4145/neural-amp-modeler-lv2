@@ -8,9 +8,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <memory>
@@ -110,6 +112,26 @@ class MessageQueue {
   std::atomic<size_t> write_{0};
 };
 
+struct StandaloneMeter {
+  explicit StandaloneMeter(float initialDb) : latestDb(initialDb) {}
+
+  std::atomic<float> latestDb;
+  std::atomic<float> pendingPeakDb{-120.0f};
+
+  void store(float db) noexcept {
+    latestDb.store(db);
+    float peak = pendingPeakDb.load();
+    while (db > peak && !pendingPeakDb.compare_exchange_weak(peak, db)) {}
+  }
+
+  void applyTo(NAMRigWin32::Win32UIView& view, NAMRigWin32::MeterStage stage) {
+    // Preserve transients between UI polls without replacing the current reading.
+    const float peak = pendingPeakDb.exchange(-120.0f);
+    if (peak > -120.0f) view.setMeterLevel(stage, peak);
+    view.setMeterLevel(stage, latestDb.load());
+  }
+};
+
 struct WorkItem {
   std::vector<uint8_t> data;
 };
@@ -201,6 +223,7 @@ class StandaloneApp {
     atomSequence_ = uridMap_.map(LV2_ATOM__Sequence);
     eventTransfer_ = uridMap_.map(LV2_ATOM__eventTransfer);
     atomInt_ = uridMap_.map(LV2_ATOM__Int);
+    atomFloat_ = uridMap_.map(LV2_ATOM__Float);
     atomObject_ = uridMap_.map(LV2_ATOM__Object);
     atomPath_ = uridMap_.map(LV2_ATOM__Path);
     atomURID_ = uridMap_.map(LV2_ATOM__URID);
@@ -208,6 +231,8 @@ class StandaloneApp {
     patchProperty_ = uridMap_.map(LV2_PATCH__property);
     patchValue_ = uridMap_.map(LV2_PATCH__value);
     maxBlockLength_ = uridMap_.map(LV2_BUF_SIZE__maxBlockLength);
+    preAmpDbURID_ = uridMap_.map(NAM_RIG_PRE_AMP_DB_URI);
+    postAmpDbURID_ = uridMap_.map(NAM_RIG_POST_AMP_DB_URI);
 
     pathURIDs_[0] = uridMap_.map(NAM_RIG_PEDAL_URI);
     pathURIDs_[1] = uridMap_.map(NAM_RIG_AMP_URI);
@@ -442,7 +467,10 @@ class StandaloneApp {
     float note = controls_[17];
     float cents = controls_[18];
     uiView_->setTuner(note, cents);
-    uiView_->setAudioLevels(inPeakMeter_.load(), outPeakMeter_.load());
+    inPeakMeter_.applyTo(*uiView_, NAMRigWin32::MeterStage::Input);
+    preAmpDbMeter_.applyTo(*uiView_, NAMRigWin32::MeterStage::PreAmp);
+    postAmpDbMeter_.applyTo(*uiView_, NAMRigWin32::MeterStage::PostAmp);
+    outPeakMeter_.applyTo(*uiView_, NAMRigWin32::MeterStage::Output);
   }
 
   void startAudio() {
@@ -495,7 +523,27 @@ class StandaloneApp {
     }
     inPeakMeter_.store(maxIn > 1e-4f ? 20.0f * std::log10(maxIn) : -80.0f);
 
+    // The DSP replaces atom.size with the used size, so restore capacity each block.
+    resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom), true);
     plugin_->process(count);
+
+    const auto* notify = reinterpret_cast<const LV2_Atom_Sequence*>(notifyBuffer_.data());
+    LV2_ATOM_SEQUENCE_FOREACH(notify, event) {
+      if (event->body.type != atomObject_ || event->body.size < sizeof(LV2_Atom_Object_Body))
+        continue;
+      const auto* object = reinterpret_cast<const LV2_Atom_Object*>(&event->body);
+      if (object->body.otype != patchSet_) continue;
+      const LV2_Atom* property = nullptr;
+      const LV2_Atom* value = nullptr;
+      lv2_atom_object_get(object, patchProperty_, &property, patchValue_, &value, 0);
+      if (!property || property->type != atomURID_ || property->size != sizeof(LV2_URID) ||
+          !value || value->type != atomFloat_ || value->size != sizeof(float))
+        continue;
+      const auto propID = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
+      const float db = reinterpret_cast<const LV2_Atom_Float*>(value)->body;
+      if (propID == preAmpDbURID_) preAmpDbMeter_.store(db);
+      else if (propID == postAmpDbURID_) postAmpDbMeter_.store(db);
+    }
 
     // Measure peak out & write outputs
     float maxOut = 0.0f;
@@ -677,6 +725,7 @@ class StandaloneApp {
   LV2_URID atomSequence_ = 0;
   LV2_URID eventTransfer_ = 0;
   LV2_URID atomInt_ = 0;
+  LV2_URID atomFloat_ = 0;
   LV2_URID atomObject_ = 0;
   LV2_URID atomPath_ = 0;
   LV2_URID atomURID_ = 0;
@@ -684,6 +733,8 @@ class StandaloneApp {
   LV2_URID patchProperty_ = 0;
   LV2_URID patchValue_ = 0;
   LV2_URID maxBlockLength_ = 0;
+  LV2_URID preAmpDbURID_ = 0;
+  LV2_URID postAmpDbURID_ = 0;
   std::array<LV2_URID, 4> pathURIDs_{};
   int32_t maxFramesOption_ = kMaxFrames;
 
@@ -697,8 +748,10 @@ class StandaloneApp {
   std::vector<uint8_t> notifyBuffer_;
 
   MessageQueue uiToAudio_;
-  std::atomic<float> inPeakMeter_{-80.0f};
-  std::atomic<float> outPeakMeter_{-80.0f};
+  StandaloneMeter inPeakMeter_{-80.0f};
+  StandaloneMeter outPeakMeter_{-80.0f};
+  StandaloneMeter preAmpDbMeter_{-120.0f};
+  StandaloneMeter postAmpDbMeter_{-120.0f};
 
   std::thread workerThread_;
   std::mutex workerMutex_;

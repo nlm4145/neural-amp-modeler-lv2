@@ -3789,12 +3789,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:12] setActive:YES];
     [[boxRow.heightAnchor constraintEqualToConstant:242] setActive:YES];
 
-    // Stage tiles get widths proportional to their layout units (4/6/6):
-    // the pedal tile is narrower, amp and cab wider — no squish, no oversized
-    // cab card. Under the cab card, only the basic OUTPUT knob is shown while
-    // CAB A LVL, CAB B LVL, ALIGN, LOW CUT, and HIGH CUT live in the
-    // Dual-Cabinet Blend Console.
-    const CGFloat tileUnits[3] = {4.0, 6.0, 6.0};
+    // Reserve pedal header space beside the meters without shrinking the amp's
+    // six 70pt value cells. Cabinet blend controls live in the lower console;
+    // only the OUTPUT knob remains under the cabinet card.
+    const CGFloat tileUnits[3] = {4.65, 6.0, 6.0};
     NSView* knobGroups[3] = {nil, nil, nil};
     RigPanel* tileBoxes[3] = {nil, nil, nil};
 
@@ -4172,7 +4170,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[m.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
     }
 
-    // Proportional stage tile widths: pedal 4 units, amp 6 units, cab 6 units
+    // Proportional stage tile widths, including the pedal header's minimum budget.
     [[tileBoxes[1].widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor
                                            multiplier:tileUnits[1] / tileUnits[0]] setActive:YES];
     [[tileBoxes[2].widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor
@@ -4278,26 +4276,17 @@ void portEvent(LV2UI_Handle handle,
     state->lastTunerNote = v;
   else if (propertyId == state->tunerCentsURID)
     state->lastTunerCents = v;
-  else if (propertyId == state->inputDbURID)
-    state->lastInputDb = v;
-  else if (propertyId == state->preAmpDbURID)
-    state->lastPreAmpDb = v;
-  else if (propertyId == state->postAmpDbURID)
-    state->lastPostAmpDb = v;
-  else if (propertyId == state->outputDbURID)
-    state->lastOutputDb = v;
-  else
+  else {
+    const LV2_URID meters[] = {state->inputDbURID, state->preAmpDbURID,
+                              state->postAmpDbURID, state->outputDbURID};
+    for (size_t i = 0; i < 4; ++i)
+      if (propertyId == meters[i]) {
+        state->updateStageMeter(i, v);
+        return;
+      }
     return;
-  if (propertyId == state->inputDbURID)
-    state->updateInputDbDisplay();
-  else if (propertyId == state->preAmpDbURID)
-    state->updatePreAmpDbDisplay();
-  else if (propertyId == state->postAmpDbURID)
-    state->updatePostAmpDbDisplay();
-  else if (propertyId == state->outputDbURID)
-    state->updateOutputDbDisplay();
-  else
-    state->updateTunerDisplay();
+  }
+  state->updateTunerDisplay();
 }
 
 const void* extensionData(const char*) { return nullptr; }

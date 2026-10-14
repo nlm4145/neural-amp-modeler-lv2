@@ -1112,8 +1112,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   const PinBands transformerPinBands = pinBands(PinEqPane::Transformer);
   const PinBands speakerPinBands = pinBands(PinEqPane::Speaker);
   float blockPreAmpPeak = 0.0f;
-  float blockPreAmpFallback = 0.0f;
   float blockPostAmpPeak = 0.0f;
+  bool ampMetersCapturedThisSlice = false;
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
@@ -1170,6 +1170,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         float* channels[1] = {samples};
         speakerPins.process(channels, 1, count, domainRate, speakerPinBands);
       }
+      // Capture in the amp's domain, before a grouped NAM cabinet or decimation.
+      for (size_t i = 0; i < count; ++i)
+        blockPostAmpPeak = std::max(blockPostAmpPeak, std::fabs(samples[i]));
+      ampMetersCapturedThisSlice = true;
     }
   };
 
@@ -1217,20 +1221,16 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     float* io = ports.audio_out + off;
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
-    bool postAmpCapturedThisSlice = false;
+    ampMetersCapturedThisSlice = false;
     for (size_t st = 0; st < kSerialStageCount;) {
-      if (st == 1 && blockPreAmpPeak == 0.0f) {
+      if (st == 2 && !ampMetersCapturedThisSlice) {
+        // With no active amp, both boundaries carry the post-pedal signal.
         for (uint32_t i = 0; i < sliceLen; ++i) {
           const float a = std::fabs(chain[i]);
-          if (a > blockPreAmpFallback) blockPreAmpFallback = a;
-        }
-      }
-      if (st == 2 && !postAmpCapturedThisSlice) {
-        for (uint32_t i = 0; i < sliceLen; ++i) {
-          const float a = std::fabs(chain[i]);
+          if (a > blockPreAmpPeak) blockPreAmpPeak = a;
           if (a > blockPostAmpPeak) blockPostAmpPeak = a;
         }
-        postAmpCapturedThisSlice = true;
+        ampMetersCapturedThisSlice = true;
       }
 
       const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);
@@ -1262,16 +1262,15 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       if (group[groupCount - 1] == 2) cabProcessed = true;
       st = next;
     }
-    if (!postAmpCapturedThisSlice) {
+    if (!ampMetersCapturedThisSlice) {
       for (uint32_t i = 0; i < sliceLen; ++i) {
         const float a = std::fabs(chain[i]);
+        if (a > blockPreAmpPeak) blockPreAmpPeak = a;
         if (a > blockPostAmpPeak) blockPostAmpPeak = a;
       }
     }
     std::memcpy(io, chain, sliceLen * sizeof(float));
   }
-  if (blockPreAmpPeak == 0.0f)
-    blockPreAmpPeak = blockPreAmpFallback;
   // A parallel Cab A NAM model keeps the True-Nx domain it was loaded for.
   // Its independent converter therefore adds one more cascade; Cab B is
   // delayed by the same amount below so both branches remain aligned.

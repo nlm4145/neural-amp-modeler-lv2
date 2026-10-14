@@ -209,9 +209,13 @@ static void port_event(
     } else if (propID == ui->tunerCentsURID) {
       ui->view->setTuner(ui->view->getControlValue(16), val);
     } else if (propID == ui->inputDbURID) {
-      ui->view->setAudioLevels(val, 0.0f);
+      ui->view->setMeterLevel(NAMRigWin32::MeterStage::Input, val);
+    } else if (propID == ui->preAmpDbURID) {
+      ui->view->setMeterLevel(NAMRigWin32::MeterStage::PreAmp, val);
+    } else if (propID == ui->postAmpDbURID) {
+      ui->view->setMeterLevel(NAMRigWin32::MeterStage::PostAmp, val);
     } else if (propID == ui->outputDbURID) {
-      ui->view->setAudioLevels(0.0f, val);
+      ui->view->setMeterLevel(NAMRigWin32::MeterStage::Output, val);
     }
   }
 }
