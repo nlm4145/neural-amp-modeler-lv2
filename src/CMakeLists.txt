@@ -256,7 +256,7 @@ if (APPLE)
 		rig_theme.h rig_theme.mm
 		rig_widgets.h rig_widgets.mm)
 	target_include_directories(neural_amp_modeler_ui PRIVATE ../deps/lv2/include)
-	target_link_libraries(neural_amp_modeler_ui PRIVATE ${COCOA_FRAMEWORK} ${IMAGEIO_FRAMEWORK})
+	target_link_libraries(neural_amp_modeler_ui PRIVATE ${COCOA_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_ui PRIVATE -fobjc-arc)
 	set_target_properties(neural_amp_modeler_ui PROPERTIES
 		PREFIX ""

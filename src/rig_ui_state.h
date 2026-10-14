@@ -75,6 +75,8 @@ struct RigUIState {
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
   LV2_URID inputDbURID = 0;
+  LV2_URID preAmpDbURID = 0;
+  LV2_URID postAmpDbURID = 0;
   LV2_URID outputDbURID = 0;
 
   // Input level meter (title bar): dBFS readout + bar with peak-hold color.
@@ -87,6 +89,12 @@ struct RigUIState {
   CFAbsoluteTime lastInputClipTime = 0.0;
   bool inputDbUpdatePending = false;
 
+  // Pre-amp level meter (between pedal and amp): dBFS readout + hardware meter.
+  float lastPreAmpDb = -120.0f;
+
+  // Post-amp level meter (between amp and cab): dBFS readout + hardware meter.
+  float lastPostAmpDb = -120.0f;
+
   // Output level meter: dBFS readout + bar with peak-hold color.
   __strong NSTextField* outDbLabel = nil;
   __strong NSView* outDbBar = nil;
@@ -95,6 +103,9 @@ struct RigUIState {
   CFAbsoluteTime lastOutputDbUiTime = 0.0;
   CFAbsoluteTime lastOutputClipTime = 0.0;
   bool outputDbUpdatePending = false;
+
+  // Stage decibel readers across the main cards row (0: IN, 1: PRE, 2: POST, 3: OUT).
+  std::array<__strong RigStageMeterView*, 4> stageMeters{};
 
   // Mute on tune setting
   bool muteOnTune = true;
@@ -342,8 +353,20 @@ struct RigUIState {
     });
   }
 
-  void updateInputDbDisplay() {
-    updateInputDbDisplay(lastInputDb);
+  void updateStageMeter(size_t stage, float db) {
+    if (stage >= stageMeters.size() || !std::isfinite(db)) return;
+    auto alive = this->isAlive;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
+      // Preserve each delivered peak; the widget timer throttles only drawing.
+      if (stageMeters[stage]) [stageMeters[stage] setLevelDb:db];
+      switch (stage) {
+        case 0: updateInputDbDisplay(db); break;
+        case 1: lastPreAmpDb = db; break;
+        case 2: lastPostAmpDb = db; break;
+        case 3: updateOutputDbDisplay(db); break;
+      }
+    });
   }
 
   void applyOutputDbDisplayNow() {

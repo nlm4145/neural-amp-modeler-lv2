@@ -9,6 +9,7 @@
 #include <gdiplus.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <sstream>
@@ -27,6 +28,8 @@ namespace NAMRigWin32 {
 namespace {
 
 const wchar_t* kWin32ViewClassName = L"NAMRigWin32ViewClass";
+constexpr UINT_PTR kMeterTimerId = 1;
+const RECT kMetersRect = {774, 8, 1160, 60};
 
 // Axe FX dark theme colors
 const Gdiplus::Color kBgColor(255, 17, 18, 21);            // #111215
@@ -42,6 +45,7 @@ const Gdiplus::Color kTextMuted(255, 140, 146, 160);       // #8c92a0
 const Gdiplus::Color kKnobBody(255, 31, 35, 43);           // #1f232b
 const Gdiplus::Color kKnobRim(255, 56, 62, 74);            // #383e4a
 const Gdiplus::Color kTrackBg(255, 42, 46, 56);            // #2a2e38
+const Gdiplus::Color kClipColor(255, 242, 51, 46);
 
 std::string formatDb(float v) {
   char buf[32];
@@ -263,6 +267,7 @@ HWND Win32UIView::create(HWND parent, int x, int y, int width, int height) {
 
   hwnd_ = CreateWindowExW(0, kWin32ViewClassName, L"Axe FX",
                           style, x, y, width, height, parent, NULL, hInstance, this);
+  if (hwnd_) SetTimer(hwnd_, kMeterTimerId, 33, NULL);
   return hwnd_;
 #else
   (void)parent; (void)x; (void)y; (void)width; (void)height;
@@ -285,6 +290,7 @@ LRESULT CALLBACK Win32UIView::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
   if (msg == WM_NCCREATE) {
     CREATESTRUCT* cs = reinterpret_cast<CREATESTRUCT*>(lParam);
     self = reinterpret_cast<Win32UIView*>(cs->lpCreateParams);
+    self->hwnd_ = hwnd;
     SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
   } else {
     self = reinterpret_cast<Win32UIView*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
@@ -312,6 +318,18 @@ LRESULT Win32UIView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_ERASEBKGND:
       return 1; // flicker-free
+
+    case WM_TIMER:
+      if (wParam == kMeterTimerId) {
+        advanceMeterPeaks(std::chrono::steady_clock::now());
+        InvalidateRect(hwnd_, &kMetersRect, FALSE);
+        return 0;
+      }
+      break;
+
+    case WM_DESTROY:
+      KillTimer(hwnd_, kMeterTimerId);
+      break;
 
     case WM_LBUTTONDOWN:
       onMouseDown(LOWORD(lParam), HIWORD(lParam), false);
@@ -400,13 +418,39 @@ void Win32UIView::setTuner(float note, float cents) {
 #endif
 }
 
-void Win32UIView::setAudioLevels(float inPeak, float outPeak) {
-  inPeak_ = inPeak;
-  outPeak_ = outPeak;
+void Win32UIView::setAudioLevels(float inDb, float outDb) {
+  setMeterLevel(MeterStage::Input, inDb);
+  setMeterLevel(MeterStage::Output, outDb);
+}
+
+void Win32UIView::advanceMeterPeaks(std::chrono::steady_clock::time_point now) {
+  for (auto& meter : meters_) {
+    const auto releaseStart = std::max(meter.lastPeakUpdate, meter.peakHoldUntil);
+    if (now > releaseStart) {
+      const float elapsed = std::chrono::duration<float>(now - releaseStart).count();
+      meter.peakDb = std::max(meter.levelDb, meter.peakDb - 20.0f * elapsed);
+    }
+    meter.lastPeakUpdate = now;
+  }
+}
+
+void Win32UIView::setMeterLevel(MeterStage stage, float db) {
+  const size_t index = static_cast<size_t>(stage);
+  if (index >= meters_.size()) return;
+  const auto now = std::chrono::steady_clock::now();
+  advanceMeterPeaks(now);
+  auto& meter = meters_[index];
+  meter.levelDb = std::isfinite(db) ? std::max(-120.0f, db) : -120.0f;
+  if (meter.levelDb >= meter.peakDb) {
+    meter.peakDb = meter.levelDb;
+    meter.peakHoldUntil = now + std::chrono::milliseconds(1200);
+  }
+  if (meter.levelDb >= -0.5f) {
+    meter.clipUntil = now + std::chrono::milliseconds(1200);
+  }
 #ifdef _WIN32
   if (hwnd_) {
-    RECT r = {770, 10, 830, 60};
-    InvalidateRect(hwnd_, &r, FALSE);
+    InvalidateRect(hwnd_, &kMetersRect, FALSE);
   }
 #endif
 }
@@ -518,6 +562,59 @@ void Win32UIView::paint(HDC hdc) {
       }
     } else {
       g.DrawString(L"Tuner Mute", -1, &smallFont, Gdiplus::PointF(345.0f, 25.0f), &mutedBrush);
+    }
+
+    // Compact dBFS meters occupy the unused right side of the header.
+    const auto meterNow = std::chrono::steady_clock::now();
+    advanceMeterPeaks(meterNow);
+    const wchar_t* meterTitles[] = {L"IN", L"PRE", L"POST", L"OUT"};
+    for (size_t i = 0; i < meters_.size(); ++i) {
+      const auto& meter = meters_[i];
+      const float x = 774.0f + static_cast<float>(i) * 98.0f;
+      const float y = 8.0f;
+      const Gdiplus::Color& accent = (i == 1 || i == 2) ? kAccentCyan : kAccentOrange;
+      const Gdiplus::Color& levelColor = meter.levelDb >= -0.5f ? kClipColor
+          : meter.levelDb >= -6.0f ? kAccentOrange : accent;
+      Gdiplus::SolidBrush accentBrush(accent);
+      Gdiplus::SolidBrush levelBrush(levelColor);
+      Gdiplus::SolidBrush trackBrush(kTrackBg);
+      g.FillRectangle(&btnBg, x, y, 92.0f, 52.0f);
+      g.DrawRectangle(&headerBorder, x, y, 92.0f, 52.0f);
+      g.DrawString(meterTitles[i], -1, &valueFont, Gdiplus::PointF(x + 5.0f, y + 4.0f), &accentBrush);
+
+      wchar_t dbText[32];
+      if (meter.levelDb <= -119.0f) {
+        swprintf(dbText, 32, L"-inf");
+      } else {
+        swprintf(dbText, 32, L"%+.1f", meter.levelDb);
+      }
+      Gdiplus::StringFormat rightAlign;
+      rightAlign.SetAlignment(Gdiplus::StringAlignmentFar);
+      g.DrawString(dbText, -1, &valueFont, Gdiplus::RectF(x + 31.0f, y + 4.0f, 47.0f, 14.0f),
+                   &rightAlign, &levelBrush);
+      Gdiplus::SolidBrush clipBrush(meter.levelDb >= -0.5f || meterNow < meter.clipUntil
+          ? kClipColor : kInactiveLed);
+      g.FillEllipse(&clipBrush, x + 82.0f, y + 8.0f, 4.0f, 4.0f);
+
+      const float trackX = x + 6.0f;
+      const float trackY = y + 24.0f;
+      const float fraction = (std::clamp(meter.levelDb, -60.0f, 0.0f) + 60.0f) / 60.0f;
+      g.FillRectangle(&trackBrush, trackX, trackY, 80.0f, 7.0f);
+      if (fraction > 0.0f) {
+        g.FillRectangle(&levelBrush, trackX, trackY, 80.0f * fraction, 7.0f);
+      }
+      if (meter.peakDb > -60.0f) {
+        const float peakX = trackX + 79.0f * (std::clamp(meter.peakDb, -60.0f, 0.0f) + 60.0f) / 60.0f;
+        Gdiplus::Pen peakPen(kTextBright, 1.0f);
+        g.DrawLine(&peakPen, peakX, trackY - 1.0f, peakX, trackY + 8.0f);
+      }
+      for (float tick : {-60.0f, -24.0f, -12.0f, -6.0f, 0.0f}) {
+        const float tickX = trackX + 80.0f * (tick + 60.0f) / 60.0f;
+        g.DrawLine(&headerBorder, tickX, trackY + 8.0f, tickX, trackY + 10.0f);
+      }
+      g.DrawString(L"-60", -1, &labelFont, Gdiplus::PointF(trackX - 2.0f, y + 37.0f), &mutedBrush);
+      g.DrawString(L"dBFS", -1, &labelFont, Gdiplus::PointF(x + 32.0f, y + 37.0f), &mutedBrush);
+      g.DrawString(L"0", -1, &labelFont, Gdiplus::PointF(x + 79.0f, y + 37.0f), &mutedBrush);
     }
 
     // Draw Stage Cards

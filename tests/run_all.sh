@@ -9,6 +9,9 @@ status=0
 echo "== tests/test_max_quality_defaults.py =="
 python3 tests/test_max_quality_defaults.py || status=1
 
+echo "== tests/test_stage_db_meters.py =="
+python3 tests/test_stage_db_meters.py || status=1
+
 echo "== tests/test_a2_fast_ring_copy.py =="
 python3 tests/test_a2_fast_ring_copy.py || status=1
 
@@ -176,6 +179,18 @@ if [ -f "$RIG_SO" ] && \
   /tmp/verify_transformer_controls "$RIG_SO" || status=1
 else
   echo "  (skipped: plugin unavailable or harness build failed)"
+fi
+
+# Meter placement must be verified against real processing, including merged True domains.
+echo "== tests/verify_stage_db_meters.cpp (inter-stage signal boundaries) =="
+if [ -f "$RIG_SO" ] && \
+    clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
+      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+      tests/verify_stage_db_meters.cpp -o /tmp/verify_stage_db_meters; then
+  /tmp/verify_stage_db_meters "$RIG_SO" || status=1
+else
+  echo "  (failed: plugin unavailable or meter harness build failed)"
+  status=1
 fi
 
 # Against RIG_SO, this harness supplies its own identity amp and WAV fixtures.

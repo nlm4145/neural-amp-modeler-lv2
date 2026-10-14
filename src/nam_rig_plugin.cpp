@@ -208,6 +208,8 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
   uris.inputDb = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
+  uris.preAmpDb = map->map(map->handle, NAM_RIG_PRE_AMP_DB_URI);
+  uris.postAmpDb = map->map(map->handle, NAM_RIG_POST_AMP_DB_URI);
   uris.outputDb = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
 
   for (auto& loader : loaders) {
@@ -1112,6 +1114,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   const PinBands sculptPinBands = pinBands(PinEqPane::Sculpt);
   const PinBands transformerPinBands = pinBands(PinEqPane::Transformer);
   const PinBands speakerPinBands = pinBands(PinEqPane::Speaker);
+  float blockPreAmpPeak = 0.0f;
+  float blockPostAmpPeak = 0.0f;
+  bool ampMetersCapturedThisSlice = false;
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
@@ -1133,6 +1138,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                                   portValue(ports.mid_push, 0.0f));
         float* channels[1] = {samples};
         sculptPins.process(channels, 1, count, domainRate, sculptPinBands);
+      }
+      for (size_t i = 0; i < count; ++i) {
+        const float a = std::fabs(samples[i]);
+        if (a > blockPreAmpPeak) blockPreAmpPeak = a;
       }
     }
     runModel(stage, model, samples, count, domainRate);
@@ -1164,6 +1173,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         float* channels[1] = {samples};
         speakerPins.process(channels, 1, count, domainRate, speakerPinBands);
       }
+      // Capture in the amp's domain, before a grouped NAM cabinet or decimation.
+      for (size_t i = 0; i < count; ++i)
+        blockPostAmpPeak = std::max(blockPostAmpPeak, std::fabs(samples[i]));
+      ampMetersCapturedThisSlice = true;
     }
   };
 
@@ -1211,7 +1224,18 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     float* io = ports.audio_out + off;
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
+    ampMetersCapturedThisSlice = false;
     for (size_t st = 0; st < kSerialStageCount;) {
+      if (st == 2 && !ampMetersCapturedThisSlice) {
+        // With no active amp, both boundaries carry the post-pedal signal.
+        for (uint32_t i = 0; i < sliceLen; ++i) {
+          const float a = std::fabs(chain[i]);
+          if (a > blockPreAmpPeak) blockPreAmpPeak = a;
+          if (a > blockPostAmpPeak) blockPostAmpPeak = a;
+        }
+        ampMetersCapturedThisSlice = true;
+      }
+
       const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);
       if (!enabled[st] || !models[st] || deferredCab) {
         ++st;
@@ -1241,6 +1265,13 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       if (group[groupCount - 1] == 2) cabProcessed = true;
       st = next;
     }
+    if (!ampMetersCapturedThisSlice) {
+      for (uint32_t i = 0; i < sliceLen; ++i) {
+        const float a = std::fabs(chain[i]);
+        if (a > blockPreAmpPeak) blockPreAmpPeak = a;
+        if (a > blockPostAmpPeak) blockPostAmpPeak = a;
+      }
+    }
     std::memcpy(io, chain, sliceLen * sizeof(float));
   }
   // A parallel Cab A NAM model keeps the True-Nx domain it was loaded for.
@@ -1255,6 +1286,48 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
 
   processPostChain(ports.audio_out, sampleCount, cabProcessed, modelProcessed,
                    desiredEnabled);
+
+  // ---- Pre-amp level meter (after pedal + pre-amp sculpt, before amp model) ----
+  {
+    const float blockDb = blockPreAmpPeak > 1e-9f ? 20.0f * std::log10(blockPreAmpPeak) : -120.0f;
+    const float releasePerBlock = 20.0f * (float)sampleCount / (float)sampleRate;
+    if (blockDb >= preAmpMeter.lastDb)
+      preAmpMeter.lastDb = blockDb;
+    else
+      preAmpMeter.lastDb = std::max(blockDb, preAmpMeter.lastDb - releasePerBlock);
+    if (std::fabs(preAmpMeter.lastDb - preAmpMeter.sentDb) >= 0.5f) {
+      preAmpMeter.sentDb = preAmpMeter.lastDb;
+      LV2_Atom_Forge_Frame frame;
+      lv2_atom_forge_frame_time(&forge, 0);
+      lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+      lv2_atom_forge_key(&forge, uris.patchProperty);
+      lv2_atom_forge_urid(&forge, uris.preAmpDb);
+      lv2_atom_forge_key(&forge, uris.patchValue);
+      lv2_atom_forge_float(&forge, preAmpMeter.lastDb);
+      lv2_atom_forge_pop(&forge, &frame);
+    }
+  }
+
+  // ---- Post-amp level meter (after amp + post-amp effects, before cabinet) ----
+  {
+    const float blockDb = blockPostAmpPeak > 1e-9f ? 20.0f * std::log10(blockPostAmpPeak) : -120.0f;
+    const float releasePerBlock = 20.0f * (float)sampleCount / (float)sampleRate;
+    if (blockDb >= postAmpMeter.lastDb)
+      postAmpMeter.lastDb = blockDb;
+    else
+      postAmpMeter.lastDb = std::max(blockDb, postAmpMeter.lastDb - releasePerBlock);
+    if (std::fabs(postAmpMeter.lastDb - postAmpMeter.sentDb) >= 0.5f) {
+      postAmpMeter.sentDb = postAmpMeter.lastDb;
+      LV2_Atom_Forge_Frame frame;
+      lv2_atom_forge_frame_time(&forge, 0);
+      lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+      lv2_atom_forge_key(&forge, uris.patchProperty);
+      lv2_atom_forge_urid(&forge, uris.postAmpDb);
+      lv2_atom_forge_key(&forge, uris.patchValue);
+      lv2_atom_forge_float(&forge, postAmpMeter.lastDb);
+      lv2_atom_forge_pop(&forge, &frame);
+    }
+  }
 }
 
 void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,

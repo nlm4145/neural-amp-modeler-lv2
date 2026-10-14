@@ -142,8 +142,23 @@ struct Runtime {
   ~Runtime() {
     if (state) {
       [state->transformerPopover close];
+      // Retain the widgets and their timers to check actual UI teardown even
+      // while AppKit/test traversal arrays still retain the view hierarchy.
+      auto meters = state->stageMeters;
+      std::array<NSTimer* __strong, 4> timers{};
+      std::array<float, 4> levels{};
+      for (size_t i = 0; i < meters.size(); ++i) {
+        timers[i] = [meters[i] valueForKey:@"meterTimer"];
+        levels[i] = meters[i].levelDb;
+      }
       descriptor->cleanup(state);
+      state = nullptr;
       drain(); // Exercise queued updates after teardown as well.
+      for (size_t i = 0; i < meters.size(); ++i) {
+        CHECK(!meters[i].window);
+        CHECK(!timers[i].isValid);
+        CHECK(near(meters[i].levelDb, levels[i]));
+      }
     }
     [window orderOut:nil];
   }
@@ -1174,6 +1189,192 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   testedPort = -1;
 }
 
+static void verifyStageMeters(Runtime& runtime) {
+  RigUIState* state = runtime.state;
+  testedPort = -1;
+  stage = "stage meters / 1520pt layout / architecture badges / amp value cells";
+  [runtime.window.contentView layoutSubtreeIfNeeded];
+  CHECK(near(state->rigContent.bounds.size.width, 1520));
+  CHECK(near(runtime.window.contentView.bounds.size.width, 1520));
+  REQUIRE(state->stageCards[0] && state->stageCards[1] && state->stageCards[2]);
+  const CGFloat pedalWidth = state->stageCards[0].bounds.size.width;
+  CHECK(std::fabs(state->stageCards[1].bounds.size.width - pedalWidth * 6.0 / 4.65) < 1.0);
+  CHECK(std::fabs(state->stageCards[2].bounds.size.width - pedalWidth * 6.0 / 4.65) < 1.0);
+  for (size_t i = 0; i < 3; ++i) {
+    NSTextField* badge = state->stageHeaderArchBadges[i];
+    REQUIRE(badge && badge.superview);
+    NSString* original = badge.stringValue;
+    badge.stringValue = i < 2 ? @"  A2 \u00b7 WAVENET  " : @"  WAV IR  ";
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    CHECK(badge.bounds.size.width + 0.5 >= badge.intrinsicContentSize.width);
+    CHECK(NSContainsRect(badge.superview.bounds, badge.frame));
+    for (NSView* sibling in badge.superview.subviews)
+      if (sibling != badge && !sibling.hidden) CHECK(!NSIntersectsRect(badge.frame, sibling.frame));
+    badge.stringValue = original;
+  }
+  for (size_t slot : {4u, 14u, 15u, 5u, 6u, 7u}) {
+    const size_t k = kRigKnobDisplayOrder[slot];
+    NSSlider* knob = state->knobs[k];
+    NSTextField* value = state->valueLabels[k];
+    REQUIRE(knob && value && knob.superview);
+    NSView* cell = knob.superview;
+    CHECK(cell.bounds.size.width >= 70.0);
+    CHECK(near(value.bounds.size.width, 70));
+    CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5),
+                         [value convertRect:value.bounds toView:cell]));
+    CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5),
+                         [knob convertRect:knob.bounds toView:cell]));
+  }
+
+  stage = "stage meters / independent exported patch:Set routing";
+  const std::array<LV2_URID, 4> properties = {state->inputDbURID, state->preAmpDbURID,
+                                            state->postAmpDbURID, state->outputDbURID};
+  NSArray<NSString*>* titles = @[@"IN", @"PRE", @"POST", @"OUT"];
+  LV2_Atom_Forge forge;
+  lv2_atom_forge_init(&forge, state->map);
+  auto notify = [&](size_t i, float db) {
+    alignas(LV2_Atom_Object) uint8_t buffer[128]{};
+    lv2_atom_forge_set_buffer(&forge, buffer, sizeof(buffer));
+    LV2_Atom_Forge_Frame frame;
+    REQUIRE(lv2_atom_forge_object(&forge, &frame, 0, state->patchSet));
+    lv2_atom_forge_key(&forge, state->patchProperty);
+    lv2_atom_forge_urid(&forge, properties[i]);
+    lv2_atom_forge_key(&forge, state->patchValue);
+    lv2_atom_forge_float(&forge, db);
+    lv2_atom_forge_pop(&forge, &frame);
+    const auto* atom = reinterpret_cast<const LV2_Atom*>(buffer);
+    runtime.descriptor->port_event(state, 1, lv2_atom_total_size(atom), state->eventTransfer, buffer);
+  };
+  std::array<float, 4> expected = {-35, -45, -55, -65};
+  auto levels = [&] {
+    const float last[] = {state->lastInputDb, state->lastPreAmpDb,
+                          state->lastPostAmpDb, state->lastOutputDb};
+    for (size_t i = 0; i < expected.size(); ++i) {
+      CHECK(near(state->stageMeters[i].levelDb, expected[i]));
+      CHECK(near(last[i], expected[i]));
+    }
+  };
+  for (size_t i = 0; i < properties.size(); ++i) {
+    REQUIRE(properties[i] && state->stageMeters[i]);
+    CHECK(state->stageMeters[i].window == runtime.window);
+    NSTimer* timer = [state->stageMeters[i] valueForKey:@"meterTimer"];
+    REQUIRE(timer && timer.isValid);
+    CHECK(near(timer.timeInterval, 1.0 / 30.0));
+    CHECK([state->stageMeters[i].title isEqualToString:titles[i]]);
+    CHECK(!state->stageMeters[i].isHiddenOrHasHiddenAncestor);
+    CHECK(state->stageMeters[i].bounds.size.width > 0 && state->stageMeters[i].bounds.size.height > 0);
+    for (size_t j = 0; j < i; ++j) CHECK(properties[i] != properties[j]);
+    notify(i, expected[i]);
+  }
+  drain();
+  levels();
+  for (size_t i = 0; i < properties.size(); ++i) {
+    expected[i] = -30.0f - (float)i;
+    notify(i, expected[i]);
+    drain();
+    levels();
+    CHECK(near(state->stageMeters[i].peakDb, expected[i]));
+    CHECK(!state->stageMeters[i].clipping);
+  }
+
+  stage = "stage meters / queued clip peak survives 20dB per second notifications";
+  const double start = CACurrentMediaTime();
+  auto waitUntil = [&](double seconds) {
+    const double remaining = start + seconds - CACurrentMediaTime();
+    if (remaining > 0)
+      [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:remaining]];
+  };
+  // Queue peaks and lower levels before any drain: reading a shared last-value
+  // slot in the dispatched block would lose both the transient and its clip.
+  notify(0, 0); // No more valid IN notifications: sustained clipping must outlive the hold.
+  notify(3, 0); notify(3, -1);
+  for (size_t i : {1u, 2u}) { notify(i, -20); notify(i, -40); }
+  expected = {0, -40, -40, -1};
+  drain();
+  levels();
+  for (int step = 1; step <= 3; ++step) {
+    waitUntil(step * 0.1);
+    expected[3] = -2.0f * step;
+    notify(3, expected[3]);
+    drain();
+    levels();
+    for (size_t i : {0u, 3u}) {
+      CHECK(near(state->stageMeters[i].peakDb, 0));
+      CHECK(state->stageMeters[i].clipping);
+    }
+  }
+  CHECK(CACurrentMediaTime() - start < RigUIState::kMeterUiIntervalSec);
+
+  stage = "stage meters / nonfinite notifications ignored / 1.2 second clip hold";
+  waitUntil(0.9);
+  std::array<float, 4> peaks{};
+  for (size_t i = 0; i < properties.size(); ++i) peaks[i] = state->stageMeters[i].peakDb;
+  for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                        std::numeric_limits<float>::infinity(),
+                        -std::numeric_limits<float>::infinity()}) {
+    for (size_t i = 0; i < properties.size(); ++i) {
+      notify(i, invalid);
+      [state->stageMeters[i] setLevelDb:invalid];
+    }
+  }
+  drain();
+  levels();
+  for (size_t i = 0; i < properties.size(); ++i) {
+    CHECK(near(state->stageMeters[i].peakDb, peaks[i]));
+    CHECK(bool(state->stageMeters[i].clipping) == (i == 0 || i == 3));
+  }
+
+  stage = "stage meters / autonomous decay / transient clip expires / sustained clip remains";
+  waitUntil(1.35);
+  for (size_t i = 0; i < properties.size(); ++i)
+    CHECK(bool(state->stageMeters[i].clipping) == (i == 0));
+  waitUntil(1.8);
+  const double elapsed = CACurrentMediaTime() - start;
+  const float decayed = std::max(-40.0f, -20.0f - (float)(20.0 * std::max(0.0, elapsed - 1.2)));
+  CHECK(decayed < -28); // About -32 dB, not a frozen -20 dB or an immediate -40 dB.
+  for (size_t i : {1u, 2u}) CHECK(std::fabs(state->stageMeters[i].peakDb - decayed) < 1.5f);
+  for (size_t i : {0u, 3u}) CHECK(near(state->stageMeters[i].peakDb, expected[i]));
+  for (size_t i = 0; i < properties.size(); ++i)
+    CHECK(bool(state->stageMeters[i].clipping) == (i == 0));
+  levels();
+  REQUIRE(state->inDbLabel && state->outDbLabel && state->inDbBarWidth && state->outDbBarWidth);
+  CHECK([state->inDbLabel.stringValue isEqualToString:@"+0.0 dB"]);
+  CHECK([state->outDbLabel.stringValue isEqualToString:@"-6.0 dB"]);
+  CHECK(near(state->inDbBarWidth.constant, 110));
+  CHECK(near(state->outDbBarWidth.constant, 99));
+
+  stage = "stage meters / timer attach / detach / reattach / no widget retain cycle";
+  __weak RigStageMeterView* weakMeter;
+  @autoreleasepool {
+    Class meterClass = NSClassFromString(@"RigStageMeterView");
+    REQUIRE(meterClass);
+    RigStageMeterView* meter = [(RigStageMeterView*)[meterClass alloc]
+        initWithTitle:@"TEST" subtitle:@"" accentColor:rigAccent()];
+    weakMeter = meter;
+    CHECK([meter valueForKey:@"meterTimer"] == nil);
+    [runtime.window.contentView addSubview:meter];
+    NSTimer* timer = [meter valueForKey:@"meterTimer"];
+    REQUIRE(timer && timer.isValid);
+    CHECK(near(timer.timeInterval, 1.0 / 30.0));
+    [meter removeFromSuperview];
+    CHECK(!timer.isValid && [meter valueForKey:@"meterTimer"] == nil);
+    [runtime.window.contentView addSubview:meter];
+    NSTimer* restarted = [meter valueForKey:@"meterTimer"];
+    REQUIRE(restarted && restarted.isValid && restarted != timer);
+    [meter removeFromSuperview];
+    CHECK(!restarted.isValid);
+    meter = nil;
+  }
+  drain();
+  CHECK(weakMeter == nil);
+
+  stage = "stage meters / queued notifications discarded after UI cleanup";
+  // No drain before Runtime's destructor: the retained widgets must not receive
+  // these valid updates once cleanup has cleared the shared isAlive guard.
+  for (size_t i = 0; i < properties.size(); ++i) notify(i, -80.0f - (float)i);
+  levels();
+}
+
 static void verify(const char* modulePath) {
   using Transformer = NAMRig::OutputTransformer;
   using namespace NAMRig;
@@ -1810,6 +2011,7 @@ static void verify(const char* modulePath) {
   verifyPowerTube(runtime, host, presetClass);
   verifyPinEditors(runtime, host, presetClass);
   verifySculptOverdrive(runtime, host, presetClass);
+  verifyStageMeters(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
 }
@@ -1842,7 +2044,7 @@ int main(int argc, char** argv) {
       ++failures;
       std::fprintf(stderr, "Temporary storage cleanup failed: %s\n", error.description.UTF8String);
     }
-    std::printf("%s: transformer / power tube / rack UI runtime, %d checks, %d failures\n",
+    std::printf("%s: transformer / power tube / rack / stage meter UI runtime, %d checks, %d failures\n",
                  failures ? "FAIL" : "PASS", checks, failures);
     if (syntheticShortcutFocus)
       std::puts("LIMITATION: inactive CLI app; save shortcuts used the module's installed key-monitor handler with synthetic key-window ownership.");

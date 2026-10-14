@@ -17,6 +17,8 @@
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 #define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
+#define NAM_RIG_PRE_AMP_DB_URI NAM_RIG_URI "-pre-amp-db"
+#define NAM_RIG_POST_AMP_DB_URI NAM_RIG_URI "-post-amp-db"
 #define NAM_RIG_OUTPUT_DB_URI NAM_RIG_URI "-output-db"
 
 #include <array>
@@ -3385,6 +3387,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
     state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
     state->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
+    state->preAmpDbURID = map->map(map->handle, NAM_RIG_PRE_AMP_DB_URI);
+    state->postAmpDbURID = map->map(map->handle, NAM_RIG_POST_AMP_DB_URI);
     state->outputDbURID = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
     for (size_t i = 0; i < kPathURIs.size(); ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
@@ -3779,13 +3783,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:12] setActive:YES];
     [[boxRow.heightAnchor constraintEqualToConstant:242] setActive:YES];
 
-    // Stage tiles get widths proportional to their layout units (4/6/6):
-    // the pedal tile is narrower, amp and cab wider — no squish, no oversized
-    // cab card. Under the cab card, only the basic OUTPUT knob is shown while
-    // CAB A LVL, CAB B LVL, ALIGN, LOW CUT, and HIGH CUT live in the
-    // Dual-Cabinet Blend Console.
-    const CGFloat tileUnits[3] = {4.0, 6.0, 6.0};
-    const CGFloat tileGap = 22.0;
+    // Reserve pedal header space beside the meters without shrinking the amp's
+    // six 70pt value cells. Cabinet blend controls live in the lower console;
+    // only the OUTPUT knob remains under the cabinet card.
+    const CGFloat tileUnits[3] = {4.65, 6.0, 6.0};
     NSView* knobGroups[3] = {nil, nil, nil};
     RigPanel* tileBoxes[3] = {nil, nil, nil};
 
@@ -4109,24 +4110,73 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[grp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
 
       tileBoxes[i] = box;
-      [boxRow addArrangedSubview:box];
-      if (i > 0) {
-        // Width proportional to knob count: pedal 4 units, amp/cab 6 each.
-        // (boxRow has no distribution; these constraints set the ratios.)
-        [[box.widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor
-                                       multiplier:tileUnits[i] / tileUnits[0]] setActive:YES];
-      }
-      // Fixed 22pt gaps between tiles (NSStackView spacing is off without
-      // a distribution, so use explicit inter-tile spacing constraints).
-      if (i > 0) {
-        [[box.leadingAnchor constraintEqualToAnchor:tileBoxes[i-1].trailingAnchor
-                                           constant:tileGap] setActive:YES];
-      }
       state->setStageThumb((size_t)i, nil, 0, nil);
     }
-    // Pin the row ends so the proportional widths resolve against boxRow.
-    [[tileBoxes[0].leadingAnchor constraintEqualToAnchor:boxRow.leadingAnchor] setActive:YES];
-    [[tileBoxes[2].trailingAnchor constraintEqualToAnchor:boxRow.trailingAnchor] setActive:YES];
+
+    const CGFloat meterWidth = 36.0;
+    const CGFloat meterGap = 8.0;
+    NSColor* goldColor = [NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:1.0];
+    NSColor* violetColor = [NSColor colorWithSRGBRed:0.80 green:0.60 blue:1.00 alpha:1.0];
+    NSColor* emeraldColor = [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0];
+
+    RigStageMeterView* m0 = [[RigStageMeterView alloc] initWithTitle:@"IN"
+                                                            subtitle:@"RAW"
+                                                         accentColor:rigAccent()];
+    m0.toolTip = @"Raw input peak meter (dBFS) before all gate, compressor, and stage processing.";
+    m0.translatesAutoresizingMaskIntoConstraints = NO;
+
+    RigStageMeterView* m1 = [[RigStageMeterView alloc] initWithTitle:@"PRE"
+                                                            subtitle:@"AMP IN"
+                                                         accentColor:goldColor];
+    m1.toolTip = @"Pre-amp peak meter (dBFS) after the pedal, overdrive, amp drive boost, and pre-amp tonal sculpt, directly before entering the NAM amp model.";
+    m1.translatesAutoresizingMaskIntoConstraints = NO;
+
+    RigStageMeterView* m2 = [[RigStageMeterView alloc] initWithTitle:@"POST"
+                                                            subtitle:@"CAB IN"
+                                                         accentColor:violetColor];
+    m2.toolTip = @"Post-amp peak meter (dBFS) after the NAM amp model, power stage, tube, output transformer, and speaker dynamics, directly before entering the cabinet stage.";
+    m2.translatesAutoresizingMaskIntoConstraints = NO;
+
+    RigStageMeterView* m3 = [[RigStageMeterView alloc] initWithTitle:@"OUT"
+                                                            subtitle:@"MASTER"
+                                                         accentColor:emeraldColor];
+    m3.toolTip = @"Master output peak meter (dBFS) after the cabinet and master stereo effects.";
+    m3.translatesAutoresizingMaskIntoConstraints = NO;
+
+    state->stageMeters[0] = m0;
+    state->stageMeters[1] = m1;
+    state->stageMeters[2] = m2;
+    state->stageMeters[3] = m3;
+
+    [boxRow addArrangedSubview:m0];
+    [boxRow addArrangedSubview:tileBoxes[0]];
+    [boxRow addArrangedSubview:m1];
+    [boxRow addArrangedSubview:tileBoxes[1]];
+    [boxRow addArrangedSubview:m2];
+    [boxRow addArrangedSubview:tileBoxes[2]];
+    [boxRow addArrangedSubview:m3];
+
+    for (RigStageMeterView* m : {m0, m1, m2, m3}) {
+      [[m.widthAnchor constraintEqualToConstant:meterWidth] setActive:YES];
+      [[m.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
+      [[m.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
+    }
+
+    // Proportional stage tile widths, including the pedal header's minimum budget.
+    [[tileBoxes[1].widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor
+                                           multiplier:tileUnits[1] / tileUnits[0]] setActive:YES];
+    [[tileBoxes[2].widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor
+                                           multiplier:tileUnits[2] / tileUnits[0]] setActive:YES];
+
+    // Horizontal inter-stage chain: IN -> Pedal -> PRE -> Amp -> POST -> Cab -> OUT
+    [[m0.leadingAnchor constraintEqualToAnchor:boxRow.leadingAnchor] setActive:YES];
+    [[tileBoxes[0].leadingAnchor constraintEqualToAnchor:m0.trailingAnchor constant:meterGap] setActive:YES];
+    [[m1.leadingAnchor constraintEqualToAnchor:tileBoxes[0].trailingAnchor constant:meterGap] setActive:YES];
+    [[tileBoxes[1].leadingAnchor constraintEqualToAnchor:m1.trailingAnchor constant:meterGap] setActive:YES];
+    [[m2.leadingAnchor constraintEqualToAnchor:tileBoxes[1].trailingAnchor constant:meterGap] setActive:YES];
+    [[tileBoxes[2].leadingAnchor constraintEqualToAnchor:m2.trailingAnchor constant:meterGap] setActive:YES];
+    [[m3.leadingAnchor constraintEqualToAnchor:tileBoxes[2].trailingAnchor constant:meterGap] setActive:YES];
+    [[m3.trailingAnchor constraintEqualToAnchor:boxRow.trailingAnchor] setActive:YES];
 
     for (size_t k = 0; k < kRigKnobCount; ++k) {
       if (!state->knobs[k] && state->deckKnobs[k]) state->knobs[k] = state->deckKnobs[k];
@@ -4218,14 +4268,16 @@ void portEvent(LV2UI_Handle handle,
     state->lastTunerNote = v;
   else if (propertyId == state->tunerCentsURID)
     state->lastTunerCents = v;
-  else if (propertyId == state->inputDbURID) {
-    state->updateInputDbDisplay(v);
+  else {
+    const LV2_URID meters[] = {state->inputDbURID, state->preAmpDbURID,
+                              state->postAmpDbURID, state->outputDbURID};
+    for (size_t i = 0; i < 4; ++i)
+      if (propertyId == meters[i]) {
+        state->updateStageMeter(i, v);
+        return;
+      }
     return;
-  } else if (propertyId == state->outputDbURID) {
-    state->updateOutputDbDisplay(v);
-    return;
-  } else
-    return;
+  }
   state->updateTunerDisplay();
 }
 

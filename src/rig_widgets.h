@@ -130,6 +130,22 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float highCut;
 @end
 
+// Vertical inter-stage decibel meter (IN, PRE, POST, OUT).
+// Features hardware-style scale markings (-60..0 dBFS), clip LED,
+// peak-hold bar, dynamic level-responsive fill, and digital numeric dB readout.
+@interface RigStageMeterView : NSView
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                  accentColor:(NSColor*)accentColor;
+- (void)setLevelDb:(float)db;
+@property(nonatomic, copy) NSString* title;
+@property(nonatomic, copy) NSString* subtitle;
+@property(nonatomic, strong) NSColor* accentColor;
+@property(nonatomic, readonly) float levelDb;
+@property(nonatomic, readonly) float peakDb;
+@property(nonatomic, readonly) BOOL clipping;
+@end
+
 // ImageIO decode at the target pixel size instead of full resolution — grid
 // scrolling stays cheap even when tones ship multi-megapixel artwork.
 NSImage* rigThumbnailFromFile(NSString* path, CGFloat maxPixelSize);

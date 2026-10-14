@@ -1,6 +1,7 @@
 #import "rig_widgets.h"
 #import "rig_theme.h"
 #import <ImageIO/ImageIO.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "pin_eq.h"
 #include "power_tube_controls.h"
@@ -1935,5 +1936,227 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     }
   }
   return [super performKeyEquivalent:event];
+}
+@end
+
+// ---- RigStageMeterView ----
+
+@implementation RigStageMeterView {
+  float _levelDb;
+  float _peakDb;
+  CFAbsoluteTime _peakHoldTime;
+  CFAbsoluteTime _lastPeakUpdateTime;
+  CFAbsoluteTime _clipUntil;
+  NSTimer* _meterTimer;
+}
+
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                  accentColor:(NSColor*)accentColor {
+  if ((self = [super initWithFrame:NSZeroRect])) {
+    _title = [title copy];
+    _subtitle = [subtitle copy];
+    _accentColor = accentColor ?: rigAccent();
+    _levelDb = -120.0f;
+    _peakDb = -120.0f;
+    _peakHoldTime = 0.0;
+    self.wantsLayer = YES;
+  }
+  return self;
+}
+
+- (BOOL)isFlipped { return YES; }
+
+- (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
+  [_meterTimer invalidate];
+  _meterTimer = nil;
+  if (!self.window) return;
+  __weak RigStageMeterView* weakSelf = self;
+  _meterTimer = [NSTimer timerWithTimeInterval:1.0 / 30.0 repeats:YES block:^(NSTimer* timer) {
+    RigStageMeterView* meter = weakSelf;
+    if (!meter) { [timer invalidate]; return; }
+    [meter advancePeakAtTime:CACurrentMediaTime()];
+    meter.needsDisplay = YES;
+  }];
+  [[NSRunLoop mainRunLoop] addTimer:_meterTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)dealloc { [_meterTimer invalidate]; }
+
+- (void)advancePeakAtTime:(CFAbsoluteTime)now {
+  const double elapsed = std::max(0.0, now - std::max(_lastPeakUpdateTime, _peakHoldTime));
+  _peakDb = std::max(_levelDb, _peakDb - static_cast<float>(20.0 * elapsed));
+  _lastPeakUpdateTime = now;
+}
+
+- (void)setLevelDb:(float)db {
+  if (!std::isfinite(db)) return;
+  const CFAbsoluteTime now = CACurrentMediaTime();
+  [self advancePeakAtTime:now];
+  _levelDb = db;
+  if (db >= _peakDb) {
+    _peakDb = db;
+    _peakHoldTime = now + 1.2;
+  }
+  if (db >= -0.5f) _clipUntil = now + 1.2;
+}
+
+- (float)levelDb { return _levelDb; }
+- (float)peakDb { return _peakDb; }
+- (BOOL)clipping { return _levelDb >= -0.5f || CACurrentMediaTime() < _clipUntil; }
+
+- (void)drawRect:(NSRect)dirtyRect {
+  const NSRect bounds = self.bounds;
+  const CGFloat w = bounds.size.width;
+  const CGFloat h = bounds.size.height;
+  if (w <= 0 || h <= 0) return;
+
+  // Background panel
+  NSRect panelRect = NSInsetRect(bounds, 0.5, 0.5);
+  NSBezierPath* panelPath = [NSBezierPath bezierPathWithRoundedRect:panelRect xRadius:8.0 yRadius:8.0];
+  NSGradient* bgGrad = [[NSGradient alloc] initWithStartingColor:rigPanelBottom() endingColor:rigPanelTop()];
+  [bgGrad drawInBezierPath:panelPath angle:-90.0];
+  panelPath.lineWidth = 1.0;
+  [rigPanelBorder() setStroke];
+  [panelPath stroke];
+
+  // Header Title
+  NSMutableParagraphStyle* centerStyle = [[NSMutableParagraphStyle alloc] init];
+  centerStyle.alignment = NSTextAlignmentCenter;
+  NSDictionary* titleAttr = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:9.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: _accentColor,
+    NSParagraphStyleAttributeName: centerStyle
+  };
+  NSRect titleRect = NSMakeRect(2, 6, w - 4, 13);
+  [_title drawInRect:titleRect withAttributes:titleAttr];
+
+  // Subtitle
+  NSDictionary* subAttr = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightSemibold],
+    NSForegroundColorAttributeName: rigDimText(),
+    NSParagraphStyleAttributeName: centerStyle
+  };
+  NSRect subRect = NSMakeRect(1, 19, w - 2, 11);
+  [_subtitle drawInRect:subRect withAttributes:subAttr];
+
+  // Numeric dB readout pill
+  NSRect readoutPill = NSMakeRect(2, 31, w - 4, 14);
+  NSBezierPath* pillPath = [NSBezierPath bezierPathWithRoundedRect:readoutPill xRadius:3.0 yRadius:3.0];
+  [rigRaised() setFill];
+  [pillPath fill];
+  [rigPanelBorder() setStroke];
+  pillPath.lineWidth = 0.5;
+  [pillPath stroke];
+
+  NSString* dbStr = (_levelDb <= -119.0f) ? @"  —  "
+      : [NSString stringWithFormat:@"%+.1f", _levelDb];
+  NSColor* dbTextColor = (_levelDb >= -0.5f) ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
+      : (_levelDb >= -6.0f) ? rigOrange()
+      : (_levelDb >= -12.0f) ? [NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:1.0]
+      : rigText();
+  NSDictionary* dbAttr = @{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSForegroundColorAttributeName: dbTextColor,
+    NSParagraphStyleAttributeName: centerStyle
+  };
+  NSRect dbTextRect = NSMakeRect(readoutPill.origin.x, readoutPill.origin.y + 1, readoutPill.size.width, readoutPill.size.height - 2);
+  [dbStr drawInRect:dbTextRect withAttributes:dbAttr];
+
+  // Track Slot Geometry
+  const CGFloat trackW = 7.0;
+  const CGFloat trackX = w - trackW - 6.0;
+  const CGFloat trackTopY = 56.0;
+  const CGFloat trackBottomY = h - 10.0;
+  const CGFloat trackH = trackBottomY - trackTopY;
+  if (trackH <= 0) return;
+  NSRect trackRect = NSMakeRect(trackX, trackTopY, trackW, trackH);
+
+  // Clip LED (at top of meter)
+  const CGFloat ledSize = 4.0;
+  const CGFloat ledX = trackX + (trackW - ledSize) * 0.5;
+  const CGFloat ledY = trackTopY - 6.5;
+  NSRect ledRect = NSMakeRect(ledX, ledY, ledSize, ledSize);
+  NSBezierPath* ledPath = [NSBezierPath bezierPathWithOvalInRect:ledRect];
+  if (self.clipping) {
+    [[NSColor colorWithSRGBRed:1.0 green:0.18 blue:0.18 alpha:1.0] setFill];
+  } else {
+    [[NSColor colorWithSRGBRed:0.28 green:0.08 blue:0.08 alpha:1.0] setFill];
+  }
+  [ledPath fill];
+
+  // Track Slot Background
+  NSBezierPath* trackPath = [NSBezierPath bezierPathWithRoundedRect:trackRect xRadius:2.5 yRadius:2.5];
+  [[rigRaised() blendedColorWithFraction:0.35 ofColor:NSColor.blackColor] setFill];
+  [trackPath fill];
+  trackPath.lineWidth = 0.5;
+  [[rigPanelBorder() colorWithAlphaComponent:0.6] setStroke];
+  [trackPath stroke];
+
+  // Fill Bar
+  const float clampedDb = std::clamp(_levelDb, -60.0f, 0.0f);
+  const CGFloat frac = (_levelDb <= -119.0f) ? 0.0 : (clampedDb + 60.0f) / 60.0f;
+  const CGFloat fillH = trackH * frac;
+  if (fillH > 0.5) {
+    NSRect fillRect = NSMakeRect(trackX + 0.5, trackBottomY - fillH, trackW - 1.0, fillH);
+    NSBezierPath* fillPath = [NSBezierPath bezierPathWithRoundedRect:fillRect xRadius:1.5 yRadius:1.5];
+    NSColor* fillColor = (_levelDb >= -0.5f) ? [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1.0]
+        : (_levelDb >= -6.0f) ? rigOrange()
+        : (_levelDb >= -12.0f) ? [NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:1.0]
+        : _accentColor;
+    [fillColor setFill];
+    [fillPath fill];
+  }
+
+  // Peak Hold Indicator
+  if (_peakDb > -60.0f) {
+    const float clampedPeak = std::clamp(_peakDb, -60.0f, 0.0f);
+    const CGFloat peakFrac = (clampedPeak + 60.0f) / 60.0f;
+    const CGFloat peakY = trackBottomY - trackH * peakFrac;
+    NSRect peakRect = NSMakeRect(trackX, peakY - 0.75, trackW, 1.5);
+    NSBezierPath* peakPath = [NSBezierPath bezierPathWithRect:peakRect];
+    [[NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.9] setFill];
+    [peakPath fill];
+  }
+
+  // Scale Tick Marks and Labels (Left of track)
+  static const struct {
+    float dbVal;
+    const char* label;
+  } kTicks[] = {
+    {0.0f, "0"},
+    {-6.0f, "-6"},
+    {-12.0f, "-12"},
+    {-24.0f, "-24"},
+    {-40.0f, "-40"},
+    {-60.0f, "-60"}
+  };
+
+  NSMutableParagraphStyle* rightStyle = [[NSMutableParagraphStyle alloc] init];
+  rightStyle.alignment = NSTextAlignmentRight;
+  NSDictionary* tickAttr = @{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:6.5 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: [rigDimText() colorWithAlphaComponent:0.7],
+    NSParagraphStyleAttributeName: rightStyle
+  };
+
+  for (const auto& tick : kTicks) {
+    const CGFloat vFrac = (tick.dbVal + 60.0f) / 60.0f;
+    const CGFloat tickY = trackBottomY - trackH * vFrac;
+
+    // Tick notch line
+    NSBezierPath* notch = [NSBezierPath bezierPath];
+    [notch moveToPoint:NSMakePoint(trackX - 3.5, tickY)];
+    [notch lineToPoint:NSMakePoint(trackX - 1.0, tickY)];
+    notch.lineWidth = 1.0;
+    [[rigPanelBorder() colorWithAlphaComponent:0.8] setStroke];
+    [notch stroke];
+
+    // Label
+    NSString* tStr = [NSString stringWithUTF8String:tick.label];
+    NSRect tRect = NSMakeRect(1.0, tickY - 4.5, trackX - 5.0, 9.0);
+    [tStr drawInRect:tRect withAttributes:tickAttr];
+  }
 }
 @end
