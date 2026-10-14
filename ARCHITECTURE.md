@@ -114,6 +114,22 @@ neutral trims. Captured / Off remains exact bypass and disables the editors.
 Live trims glide over approximately 20 ms at the amp's processing-domain rate,
 on a persistent 32-sample cadence, without resetting filter or core histories.
 
+## Input gate
+
+`NoiseGate` (`src/dynamics.h`) runs before Input Level and the compressor,
+without lookahead or added latency. Threshold -80 dB is exact bypass and resets
+gate history. Opening uses a 0.15 ms envelope attack, 0.08 ms of above-threshold
+onset confirmation across short AC troughs (rejecting isolated spikes), and a
+0.1 ms gain attack. Rejected spikes cannot raise the closed expansion envelope.
+Independent tail tracking retains 6 dB hysteresis, a 20 ms hold, and the existing
+2:1 expansion curve with a -60 dB gain floor. Natural tails ease into expansion
+with up to twice the selected gain-release time. A large fast/slow envelope
+divergence against a fixed 25 ms reference below the close threshold, confirmed
+for 3 ms, latches mute behavior: 3 ms detector decay,
+at most 5 ms remaining hold, and the selected gain-release time. A confirmed
+onset clears that latch immediately. Controls and preset port indices do not
+change; signals below the opening threshold still cannot reliably reopen the gate.
+
 ## Sculpt overdrive
 
 `Overdrive` (`src/overdrive.h`) models the TS9 gain stage: the clean input

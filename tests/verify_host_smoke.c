@@ -5,6 +5,8 @@
  *   - latency port must read 0 with no models loaded.
  *   - toggling cab_enabled mid-stream must ride the 5 ms fade: the
  *     sample-to-sample output/input gain step stays small, never a hard jump.
+ *   - gate at 20 ms release suppresses idle noise and reopens on a modest pick
+ *     within 0.8 ms through the actual LV2 control/audio ports.
  * Plain C so it builds with clang even where the C++ toolchain is broken.
  */
 #include <dlfcn.h>
@@ -128,6 +130,34 @@ int main(int argc, char** argv) {
            "cab toggles ride the fade: worst per-sample gain step %.4f < 0.05",
            worstStep);
   CHECK(worstStep < 0.05, msg);
+
+  ctl[15] = -40.0f;
+  ctl[23] = 20.0f;
+  float idleGain = 1.0f;
+  int gateFinite = 1, gateStereo = 1, firstUnity = -1;
+  /* Settle the gate, then reopen inside a single 64-sample block. No models
+     or effects are active, so the output is the gate's un-delayed signal. */
+  for (int b = 0; b < 500; ++b) {
+    LV2_Atom_Sequence* seq = (LV2_Atom_Sequence*)controlBuf;
+    seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
+    seq->atom.type = mapUri(NULL, LV2_ATOM__Sequence);
+    ((LV2_Atom_Sequence*)notifyBuf)->atom.size = kAtom - sizeof(LV2_Atom);
+    const float input = b == 499 ? 0.013f : 0.0003f;
+    for (uint32_t i = 0; i < 64; ++i) inBuf[i] = input;
+    d->run(h, 64);
+    for (uint32_t i = 0; i < 64; ++i) {
+      gateFinite &= isfinite(outBuf[i]);
+      gateStereo &= outBuf[i] == outRightBuf[i];
+      if (b == 498) idleGain = outBuf[i] / input;
+      if (b == 499 && firstUnity < 0 && outBuf[i] / input > 0.95f)
+        firstUnity = (int)i;
+    }
+  }
+  CHECK(idleGain < 0.10f, "gate ports: -40 dB / 20 ms suppresses idle input");
+  CHECK(firstUnity >= 0 && (firstUnity + 1) / 48000.0 <= 0.0008,
+        "gate ports: modest pick reopens to >95% gain within 0.8 ms");
+  CHECK(gateFinite && gateStereo && ctl[29] == 0.0f,
+        "gate ports: finite dual-mono output without added latency");
 
   d->cleanup(h);
   printf(fails ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", fails);

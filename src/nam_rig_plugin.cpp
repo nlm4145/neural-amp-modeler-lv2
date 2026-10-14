@@ -855,53 +855,14 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     *ports.tuner_cents = tuner.lastCents;
   }
 
-  // Hysteretic downward expander (before input trim). The detector has a fast
-  // attack and program-dependent release; a 6 dB close threshold plus 20 ms
-  // hold prevents chatter. Below threshold, a 2:1 expansion curve preserves
-  // tails instead of snapping to digital silence. At -80 dB it is bypassed.
-  const float gateThreshold = *ports.gate_threshold;
-  const bool gateActive = gateThreshold > -79.99f;
-  if (!gateActive) {
-    gateDetector = 0.0f;
-    gateGain = 1.0f;
-    gateOpen = true;
-    gateHoldRemaining = 0;
-  }
-  const float gateOpenLin = dbToLinear(gateThreshold);
-  const float gateCloseLin = dbToLinear(gateThreshold - 6.0f);
-  const float releaseSeconds = std::max(0.020f, *ports.gate_release * 0.001f);
-  const float detectorAttack = 1.0f - std::exp(-1.0f / (sampleRate * 0.001));
-  const float detectorRelease = 1.0f - std::exp(-1.0f / (sampleRate * releaseSeconds * 0.5f));
-  const float gainAttack = 1.0f - std::exp(-1.0f / (sampleRate * 0.0005));
-  const float gainRelease = 1.0f - std::exp(-1.0f / (sampleRate * releaseSeconds));
-  const uint32_t gateHoldSamples = static_cast<uint32_t>(sampleRate * 0.020);
+  // Before input trim: fast qualified onset, independent tail tracking and
+  // mute-aware release. The existing threshold/release controls stay unchanged.
+  noiseGate.configure(sampleRate, *ports.gate_threshold, *ports.gate_release);
 
   const float desiredInput = dbToLinear(*ports.input_level);
   float gain = smoothedInputLevel;
   for (uint32_t i = 0; i < sampleCount; ++i) {
-    float in = ports.audio_in[i];
-    if (gateActive) {
-      const float level = std::fabs(in);
-      const float detectorCoeff = level > gateDetector ? detectorAttack : detectorRelease;
-      gateDetector += (level - gateDetector) * detectorCoeff;
-      if (!gateOpen && gateDetector >= gateOpenLin) {
-        gateOpen = true;
-        gateHoldRemaining = gateHoldSamples;
-      } else if (gateOpen) {
-        if (gateDetector >= gateCloseLin) {
-          gateHoldRemaining = gateHoldSamples;
-        } else if (gateHoldRemaining > 0) {
-          --gateHoldRemaining;
-        } else {
-          gateOpen = false;
-        }
-      }
-      const float expanded = std::max(0.001f,
-          gateDetector / std::max(gateCloseLin, 1.0e-9f));
-      const float target = gateOpen ? 1.0f : std::min(1.0f, expanded);
-      gateGain += (target - gateGain) * (target > gateGain ? gainAttack : gainRelease);
-      in *= gateGain;
-    }
+    const float in = noiseGate.process(ports.audio_in[i]);
     gain = std::fabs(desiredInput - gain) > kSmoothEpsilon
              ? gain + (desiredInput - gain) * trimSmoothCoeff
              : desiredInput;

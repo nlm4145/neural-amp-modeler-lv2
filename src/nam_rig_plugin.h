@@ -21,6 +21,7 @@
 
 #include "oversample.h"
 #include "oversample_modes.h"
+#include "dynamics.h"
 #include "amp_advanced.h"
 #include "output_transformer.h"
 #include "overdrive.h"
@@ -326,10 +327,7 @@ private:
   AlignDelay cabAlign, cab2Align;
   StereoDelay delayFx;
   PlateReverb reverbFx;
-  float gateDetector = 0.0f;
-  float gateGain = 1.0f;
-  bool gateOpen = true;
-  uint32_t gateHoldRemaining = 0;
+  NoiseGate noiseGate;
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;
   AmpAdvanced ampAdvanced;

@@ -19,6 +19,17 @@ python3 tests/test_a2_fast_ring_copy.py || status=1
 # for broken Command Line Tools libc++ headers).
 CXX_EXTRA="${CXXFLAGS:-}"
 
+# Critical gate regressions must fail closed, including missing C++ toolchains.
+echo "== tests/verify_noise_gate.cpp =="
+if command -v clang++ >/dev/null 2>&1 && \
+    clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_noise_gate.cpp \
+      -o /tmp/verify_noise_gate; then
+  /tmp/verify_noise_gate || status=1
+else
+  echo "  (failed: C++ compiler unavailable or noise gate harness build failed)"
+  status=1
+fi
+
 # C++ oversampler verification (built ad hoc; skipped silently if clang++
 # is unavailable or the build fails).
 if command -v clang++ >/dev/null 2>&1; then
