@@ -23,6 +23,7 @@ struct RigPreset {
   float speakerProfile = 0.0f; // port 42
   std::array<StagePreset, 4> stages;
   std::unordered_map<uint32_t, float> controls;
+  std::unordered_map<std::string, std::string> slotPresets;
 
   static RigPreset createDefault();
   static std::vector<RigPreset> getFactoryPresets();
@@ -59,6 +60,11 @@ class PresetManager {
   bool renameSlotPreset(const std::string& slotKey, const std::string& oldName,
                         const std::string& newName);
   bool deleteSlotPreset(const std::string& slotKey, const std::string& name);
+  size_t propagateSlotValues(const std::string& slotKey, const std::string& presetName,
+                             const std::unordered_map<std::string, float>& params);
+  void renameSlotPresetInAllPresets(const std::string& slotKey, const std::string& oldName,
+                                    const std::string& newName);
+  void deleteSlotPresetInAllPresets(const std::string& slotKey, const std::string& deletedName);
 
   static const char* portToSymbol(uint32_t port);
   static int32_t symbolToPort(const std::string& symbol);

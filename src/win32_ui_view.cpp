@@ -979,6 +979,8 @@ void Win32UIView::showPresetMenu(int screenX, int screenY) {
   AppendMenuW(hMenu, MF_STRING, 5002, L"Save Preset As...");
   AppendMenuW(hMenu, MF_STRING, 5003, L"Rename Preset...");
   AppendMenuW(hMenu, MF_STRING, 5004, L"Delete Preset");
+  AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+  AppendMenuW(hMenu, MF_STRING, 5005, L"Propagate to All Presets");
 
   int selected = TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
                                   screenX, screenY, hwnd_, NULL);
@@ -1014,6 +1016,18 @@ void Win32UIView::showPresetMenu(int screenX, int screenY) {
     // Delete Preset
     pm.deletePresetNamed(pm.currentPresetName());
     if (!factory.empty()) applyPreset(factory[0]);
+  } else if (selected == 5005) {
+    // Propagate to All Presets
+    RigPreset cur = capturePreset(pm.currentPresetName());
+    for (const auto& uname : userNames) {
+      RigPreset p;
+      if (pm.loadPresetNamed(uname, p)) {
+        for (const auto& pair : cur.controls) {
+          p.controls[pair.first] = pair.second;
+        }
+        pm.savePresetNamed(uname, p);
+      }
+    }
   }
 #else
   (void)screenX; (void)screenY;

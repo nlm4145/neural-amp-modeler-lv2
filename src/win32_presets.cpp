@@ -406,6 +406,15 @@ bool RigPreset::loadFromFile(const std::string& path) {
     }
   }
 
+  slotPresets.clear();
+  if (root.contains("slot_presets") && root["slot_presets"].is_object()) {
+    for (auto& el : root["slot_presets"].items()) {
+      if (el.value().is_string()) {
+        slotPresets[el.key()] = el.value().get<std::string>();
+      }
+    }
+  }
+
   return true;
 }
 
@@ -428,6 +437,13 @@ bool RigPreset::saveToFile(const std::string& path) const {
     stagesArr.push_back(st);
   }
   root["stages"] = stagesArr;
+  if (!slotPresets.empty()) {
+    json sp = json::object();
+    for (const auto& pair : slotPresets) {
+      sp[pair.first] = pair.second;
+    }
+    root["slot_presets"] = sp;
+  }
 
   json portsObj = json::object();
   json paramsObj = json::object();
@@ -642,6 +658,7 @@ bool PresetManager::saveSlotPreset(const std::string& slotKey, const std::string
   std::ofstream fout(slotPresetsFile_);
   if (!fout.is_open()) return false;
   fout << std::setw(2) << root << std::endl;
+  propagateSlotValues(slotKey, name, params);
   return true;
 }
 
@@ -663,6 +680,7 @@ bool PresetManager::renameSlotPreset(const std::string& slotKey, const std::stri
       std::ofstream fout(slotPresetsFile_);
       if (!fout.is_open()) return false;
       fout << std::setw(2) << root << std::endl;
+      renameSlotPresetInAllPresets(slotKey, oldName, newName);
       return true;
     }
   }
@@ -684,10 +702,79 @@ bool PresetManager::deleteSlotPreset(const std::string& slotKey, const std::stri
       std::ofstream fout(slotPresetsFile_);
       if (!fout.is_open()) return false;
       fout << std::setw(2) << root << std::endl;
+      deleteSlotPresetInAllPresets(slotKey, name);
       return true;
     }
   }
   return false;
+}
+
+size_t PresetManager::propagateSlotValues(
+    const std::string& slotKey,
+    const std::string& presetName,
+    const std::unordered_map<std::string, float>& params) {
+  if (params.empty()) return 0;
+  rescanPresets();
+  size_t count = 0;
+  for (const auto& uname : userPresetNames_) {
+    std::string file = presetsDir_ + "\\" + uname + ".json";
+    RigPreset p;
+    if (p.loadFromFile(file)) {
+      for (const auto& pair : params) {
+        int32_t port = -1;
+        try {
+          port = std::stoi(pair.first);
+        } catch (...) {
+          port = symbolToPort(pair.first);
+        }
+        if (port >= 0) {
+          p.controls[static_cast<uint32_t>(port)] = pair.second;
+        }
+      }
+      if (!slotKey.empty() && !presetName.empty()) {
+        p.slotPresets[slotKey] = presetName;
+      }
+      if (p.saveToFile(file)) {
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+void PresetManager::renameSlotPresetInAllPresets(const std::string& slotKey,
+                                                const std::string& oldName,
+                                                const std::string& newName) {
+  if (slotKey.empty() || oldName.empty() || newName.empty()) return;
+  rescanPresets();
+  for (const auto& uname : userPresetNames_) {
+    std::string file = presetsDir_ + "\\" + uname + ".json";
+    RigPreset p;
+    if (p.loadFromFile(file)) {
+      auto it = p.slotPresets.find(slotKey);
+      if (it != p.slotPresets.end() && it->second == oldName) {
+        it->second = newName;
+        p.saveToFile(file);
+      }
+    }
+  }
+}
+
+void PresetManager::deleteSlotPresetInAllPresets(const std::string& slotKey,
+                                                const std::string& deletedName) {
+  if (slotKey.empty() || deletedName.empty()) return;
+  rescanPresets();
+  for (const auto& uname : userPresetNames_) {
+    std::string file = presetsDir_ + "\\" + uname + ".json";
+    RigPreset p;
+    if (p.loadFromFile(file)) {
+      auto it = p.slotPresets.find(slotKey);
+      if (it != p.slotPresets.end() && it->second == deletedName) {
+        p.slotPresets.erase(it);
+        p.saveToFile(file);
+      }
+    }
+  }
 }
 
 } // namespace NAMRigWin32

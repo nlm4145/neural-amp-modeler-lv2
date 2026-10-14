@@ -125,6 +125,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)saveSlotPresetAs:(NSMenuItem*)sender;
 - (void)renameSlotPreset:(NSMenuItem*)sender;
 - (void)deleteSlotPreset:(NSMenuItem*)sender;
+- (void)propagateSlotPresetToAll:(NSMenuItem*)sender;
 - (void)markPresetModified;
 @end
 @implementation NAMRigUIController
@@ -915,9 +916,19 @@ static NSString* stageName(NSInteger stage) {
     userMap = [NSMutableDictionary dictionary];
     _state->userSlotPresets[slotKey] = userMap;
   }
-  userMap[curTitle] = _state->captureSlotPortValues(slotIdx);
+  NSDictionary* captured = _state->captureSlotPortValues(slotIdx);
+  userMap[curTitle] = captured;
   _state->saveUserSlotPresetsToDisk();
   _state->rebuildSlotPresetMenu(slotIdx);
+  if (_state->presetManager) {
+    [_state->presetManager propagateSlotValues:captured
+                                       slotKey:slotKey
+                                slotPresetName:curTitle
+                                         error:nil];
+    _state->presetManager.isModified = NO;
+    _state->abModifiedPreset = nil;
+    _state->updatePresetDisplayTitle();
+  }
 }
 
 - (void)saveSlotPresetAs:(NSMenuItem*)sender {
@@ -957,11 +968,21 @@ static NSString* stageName(NSInteger stage) {
       userMap = [NSMutableDictionary dictionary];
       _state->userSlotPresets[slotKey] = userMap;
     }
-    userMap[name] = _state->captureSlotPortValues(slotIdx);
+    NSDictionary* captured = _state->captureSlotPortValues(slotIdx);
+    userMap[name] = captured;
     spec[@"selectedTitle"] = name;
     spec[@"selectedIsUser"] = @YES;
     _state->saveUserSlotPresetsToDisk();
     _state->rebuildSlotPresetMenu(slotIdx);
+    if (_state->presetManager) {
+      [_state->presetManager propagateSlotValues:captured
+                                         slotKey:slotKey
+                                  slotPresetName:name
+                                           error:nil];
+      _state->presetManager.isModified = NO;
+      _state->abModifiedPreset = nil;
+      _state->updatePresetDisplayTitle();
+    }
   } else {
     _state->resyncSlotPresetPopup(slotIdx);
   }
@@ -1038,6 +1059,11 @@ static NSString* stageName(NSInteger stage) {
     spec[@"selectedIsUser"] = @YES;
     _state->saveUserSlotPresetsToDisk();
     _state->rebuildSlotPresetMenu(slotIdx);
+    if (_state->presetManager) {
+      [_state->presetManager renameSlotPresetInAllPresetsFrom:curTitle
+                                                          to:newName
+                                                     slotKey:slotKey];
+    }
   } else {
     _state->resyncSlotPresetPopup(slotIdx);
   }
@@ -1072,9 +1098,40 @@ static NSString* stageName(NSInteger stage) {
     spec[@"selectedIsUser"] = @NO;
     _state->saveUserSlotPresetsToDisk();
     _state->rebuildSlotPresetMenu(slotIdx);
+    if (_state->presetManager) {
+      [_state->presetManager deleteSlotPresetInAllPresetsNamed:curTitle
+                                                       slotKey:slotKey];
+    }
   } else {
     _state->resyncSlotPresetPopup(slotIdx);
   }
+}
+
+- (void)propagateSlotPresetToAll:(NSMenuItem*)sender {
+  if (!_state || !_state->presetManager) return;
+  _state->ensureSlotPresetStorage();
+  const NSInteger slotIdx = sender.tag;
+  if (slotIdx < 0 || slotIdx >= (NSInteger)_state->deckSlotSpecs.count) return;
+  NSMutableDictionary* spec = _state->deckSlotSpecs[(NSUInteger)slotIdx];
+  NSString* slotKey = spec[@"key"] ?: @"";
+  NSString* curTitle = spec[@"selectedTitle"] ?: @"";
+  NSString* slotTitle = spec[@"title"] ?: @"Slot";
+  NSDictionary* captured = _state->captureSlotPortValues(slotIdx);
+  NSUInteger count = [_state->presetManager propagateSlotValues:captured
+                                                        slotKey:slotKey
+                                                 slotPresetName:curTitle
+                                                          error:nil];
+  _state->presetManager.isModified = NO;
+  _state->abModifiedPreset = nil;
+  _state->updatePresetDisplayTitle();
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = [NSString stringWithFormat:@"%@ Settings Propagated", slotTitle];
+  alert.informativeText = [NSString stringWithFormat:
+      @"Propagated current %@ settings to %lu saved preset%@.",
+      slotTitle, (unsigned long)count, count == 1 ? @"" : @"s"];
+  [alert addButtonWithTitle:@"OK"];
+  [alert runModal];
 }
 
 - (void)zoomChanged:(NSComboBox*)sender {
