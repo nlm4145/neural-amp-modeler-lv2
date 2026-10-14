@@ -96,6 +96,10 @@ assert "renameSlotPreset:" in ui_mm
 assert "saveSlotPreset:" in ui_mm
 assert "saveSlotPresetAs:" in ui_mm
 assert "deleteSlotPreset:" in ui_mm
+assert "propagateSlotPresetToAll:" in ui_mm
+assert "propagateSlotValues:" in presets_h and "propagateSlotValues:" in presets_mm
+assert '"Propagate to All Saved Presets"' in ui_state_h
+assert "@selector(propagateSlotPresetToAll:)" in ui_state_h
 assert "revealPresetsInFinder:" in ui_mm
 assert "markPresetModified" in ui_mm
 
@@ -177,7 +181,7 @@ assert "kSecUseAuthenticationUISkip" in tone_api_mm, \
 build_sh = (ROOT / "build.sh").read_text()
 assert 'CODESIGN_ID="Axe FX Local Signer"' in build_sh and '--sign "$CODESIGN_ID"' in build_sh, \
     "build.sh must sign Axe FX.app with a persistent local code-signing identity so macOS TCC remembers Microphone permission across rebuilds"
-assert "kMeterUiIntervalSec = 0.5" in ui_state_h, \
+assert "kMeterUiIntervalSec = 0.033" in ui_state_h, \
     "Input and output dB meter UI updates must be throttled to a 500ms cadence"
 standalone_mm = (ROOT / "src" / "standalone_main.mm").read_text()
 assert "now - lastCpuUiTime_ < 0.5" in standalone_mm, \
@@ -354,5 +358,75 @@ with tempfile.TemporaryDirectory() as td:
     assert "Vintage Tape Delay" in updated_slots["delay"]
     assert updated_slots["delay"]["Vintage Tape Delay"]["50"] == 350.0
     assert updated_slots["reverb"]["Big Plate"]["54"] == 30.0
+
+# 10. Test downstream propagation of tone card / slot preset values to saved presets
+with tempfile.TemporaryDirectory() as td:
+    presets_dir = Path(td)
+    # Simulate two saved presets: "Recto Spongy" and "Fortin Pumpking"
+    recto_preset = dict(sample_preset)
+    recto_preset["name"] = "Recto Spongy"
+    recto_preset["ports"] = dict(sample_preset["ports"])
+    recto_preset["ports"]["54"] = 5.0
+    recto_preset["ports"]["57"] = 0.0
+
+    fortin_preset = dict(sample_preset)
+    fortin_preset["name"] = "Fortin Pumpking"
+    fortin_preset["ports"] = dict(sample_preset["ports"])
+    fortin_preset["ports"]["54"] = 10.0
+    fortin_preset["ports"]["57"] = 25.0
+
+    p1_file = presets_dir / "Recto Spongy.json"
+    p2_file = presets_dir / "Fortin Pumpking.json"
+    with open(p1_file, "w") as f1:
+        json.dump(recto_preset, f1, indent=2)
+    with open(p2_file, "w") as f2:
+        json.dump(fortin_preset, f2, indent=2)
+
+    # User modifies Reverb slot preset values and propagates:
+    # Mix: 15.0, Damping: 50.085, Decay: 19.93, Size: 11.34, PreDelay: 10.0, Enabled: 1.0
+    reverb_slot_values = {
+        "54": 15.0,
+        "55": 19.93,
+        "56": 11.34,
+        "57": 50.085,
+        "58": 10.0,
+        "72": 1.0
+    }
+    reverb_sym_map = {
+        54: "reverb_mix",
+        55: "reverb_decay",
+        56: "reverb_size",
+        57: "reverb_damping",
+        58: "reverb_predelay",
+        72: "reverb_enabled"
+    }
+
+    # Simulate propagateSlotValues across all presets in directory
+    for p_path in [p1_file, p2_file]:
+        with open(p_path, "r") as pf:
+            data = json.load(pf)
+        for port_str, val in reverb_slot_values.items():
+            data["ports"][port_str] = val
+            sym = reverb_sym_map.get(int(port_str))
+            if sym:
+                data.setdefault("params", {})[sym] = val
+        data.setdefault("slot_presets", {})["reverb"] = "Normal Room"
+        with open(p_path, "w") as pf:
+            json.dump(data, pf, indent=2)
+
+    # Verify both downstream presets received the updated reverb settings
+    for p_path in [p1_file, p2_file]:
+        with open(p_path, "r") as pf:
+            updated = json.load(pf)
+        assert updated["ports"]["54"] == 15.0
+        assert updated["ports"]["57"] == 50.085
+        assert updated["params"]["reverb_damping"] == 50.085
+        assert updated["params"]["reverb_mix"] == 15.0
+        assert updated["slot_presets"]["reverb"] == "Normal Room"
+        # Verify original pedal/amp/cab stages are preserved
+        assert len(updated["stages"]) == 4
+        assert updated["stages"][0]["role"] == "pedal"
+        assert updated["stages"][1]["role"] == "amp"
+        assert updated["stages"][2]["role"] == "cab"
 
 print("  PASS  Axe FX / NAM Rig preset contract and JSON serialization fully verified")

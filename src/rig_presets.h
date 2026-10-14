@@ -32,6 +32,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSString* name;
 @property(nonatomic, copy, nullable) NSString* filePath;
 @property(nonatomic) float speakerProfile;   // port 42
+@property(nonatomic, strong) NSMutableDictionary<NSString*, NSString*>* slotPresets;
 
 - (RigStagePreset*)stageAtIndex:(size_t)index;
 - (void)setControl:(uint32_t)port value:(float)value;
@@ -78,6 +79,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString*)previousPresetName;
 - (void)revealPresetsInFinder;
 - (void)ensureDefaultPresetExists;
+
+- (NSUInteger)propagateSlotValues:(NSDictionary<NSString*, NSNumber*>*)values
+                          slotKey:(NSString*)slotKey
+                   slotPresetName:(nullable NSString*)presetName
+                            error:(NSError**)error;
+- (void)renameSlotPresetInAllPresetsFrom:(NSString*)oldName
+                                      to:(NSString*)newName
+                                 slotKey:(NSString*)slotKey;
+- (void)deleteSlotPresetInAllPresetsNamed:(NSString*)deletedName
+                                  slotKey:(NSString*)slotKey;
 
 - (NSString*)displayTitle;
 - (void)persistCurrentPresetName;

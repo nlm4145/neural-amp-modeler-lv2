@@ -176,6 +176,13 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   std::unordered_map<uint32_t, float> _controls;
 }
 
+- (instancetype)init {
+  if (self = [super init]) {
+    _slotPresets = [NSMutableDictionary dictionary];
+  }
+  return self;
+}
+
 - (RigStagePreset*)stageAtIndex:(size_t)index {
   if (index >= _stages.size()) return &_stages[0];
   return &_stages[index];
@@ -256,6 +263,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset.filePath = filePath;
   preset.name = root[@"name"] ?: [filePath.lastPathComponent stringByDeletingPathExtension];
   preset.speakerProfile = [root[@"speaker_profile"] floatValue];
+  NSDictionary* spDict = root[@"slot_presets"];
+  if ([spDict isKindOfClass:[NSDictionary class]]) {
+    preset.slotPresets = [spDict mutableCopy];
+  } else {
+    preset.slotPresets = [NSMutableDictionary dictionary];
+  }
 
   const char* roles[] = {"pedal", "amp", "cab", "cab2"};
   for (size_t s = 0; s < 4; ++s) {
@@ -387,6 +400,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     [stagesList addObject:st];
   }
   root[@"stages"] = stagesList;
+  if (self.slotPresets.count > 0) {
+    root[@"slot_presets"] = [self.slotPresets copy];
+  }
 
   NSMutableDictionary* portsDict = [NSMutableDictionary dictionary];
   NSMutableDictionary* paramsDict = [NSMutableDictionary dictionary];
@@ -497,6 +513,17 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[30] = p->_stages[1].transformer;
   p->_controls[42] = p.speakerProfile;
 
+  if (state && state->deckSlotSpecs) {
+    for (NSDictionary* spec in state->deckSlotSpecs) {
+      if (![spec isKindOfClass:[NSDictionary class]]) continue;
+      NSString* key = spec[@"key"];
+      NSString* title = spec[@"selectedTitle"];
+      if (key.length && title.length) {
+        p.slotPresets[key] = title;
+      }
+    }
+  }
+
   return p;
 }
 
@@ -599,6 +626,23 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       state->setStageModels(s, @[]);
       state->sendPath(s, "");
       state->setStageThumb(s, nil, 0, nil);
+    }
+  }
+
+  // 5. Studio Pro Deck slot presets recall
+  if (state && state->deckSlotSpecs) {
+    state->ensureSlotPresetStorage();
+    for (NSInteger slotIdx = 0; slotIdx < (NSInteger)state->deckSlotSpecs.count; ++slotIdx) {
+      NSMutableDictionary* spec = state->deckSlotSpecs[(NSUInteger)slotIdx];
+      NSString* slotKey = spec[@"key"] ?: @"";
+      NSString* savedTitle = self.slotPresets[slotKey];
+      if (savedTitle.length) {
+        NSDictionary* userMap = state->userSlotPresets[slotKey];
+        const BOOL isUser = (userMap && userMap[savedTitle] != nil);
+        spec[@"selectedTitle"] = savedTitle;
+        spec[@"selectedIsUser"] = @(isUser);
+        state->rebuildSlotPresetMenu(slotIdx);
+      }
     }
   }
 }
@@ -983,6 +1027,113 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     if (saved.length && [_presetNames containsObject:saved]) {
       _currentPresetName = saved;
       _isModified = NO;
+    }
+  }
+}
+
+- (NSUInteger)propagateSlotValues:(NSDictionary<NSString*, NSNumber*>*)values
+                          slotKey:(NSString*)slotKey
+                   slotPresetName:(nullable NSString*)presetName
+                            error:(NSError**)error {
+  if (!values.count) return 0;
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* dir = self.presetsDirectory;
+  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:error];
+  if (!files) return 0;
+
+  NSDictionary<NSNumber*, NSString*>* portMap = portToSymbolMap();
+  NSUInteger updatedCount = 0;
+
+  for (NSString* f in files) {
+    if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    NSString* fullPath = [dir stringByAppendingPathComponent:f];
+    NSData* data = [NSData dataWithContentsOfFile:fullPath];
+    if (!data) continue;
+    NSError* parseErr = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&parseErr];
+    if (![obj isKindOfClass:[NSMutableDictionary class]]) continue;
+    NSMutableDictionary* root = (NSMutableDictionary*)obj;
+
+    NSMutableDictionary* portsDict = [root[@"ports"] isKindOfClass:[NSDictionary class]]
+        ? [root[@"ports"] mutableCopy] : [NSMutableDictionary dictionary];
+    NSMutableDictionary* paramsDict = [root[@"params"] isKindOfClass:[NSDictionary class]]
+        ? [root[@"params"] mutableCopy] : [NSMutableDictionary dictionary];
+
+    for (NSString* portStr in values) {
+      NSNumber* val = values[portStr];
+      portsDict[portStr] = val;
+      uint32_t portNum = (uint32_t)portStr.longLongValue;
+      NSString* sym = portMap[@(portNum)];
+      if (sym.length) {
+        paramsDict[sym] = val;
+      }
+    }
+    root[@"ports"] = portsDict;
+    root[@"params"] = paramsDict;
+
+    if (slotKey.length && presetName.length) {
+      NSMutableDictionary* sp = [root[@"slot_presets"] isKindOfClass:[NSDictionary class]]
+          ? [root[@"slot_presets"] mutableCopy] : [NSMutableDictionary dictionary];
+      sp[slotKey] = presetName;
+      root[@"slot_presets"] = sp;
+    }
+
+    NSData* outData = [NSJSONSerialization dataWithJSONObject:root options:NSJSONWritingPrettyPrinted error:nil];
+    if (outData && [outData writeToFile:fullPath atomically:YES]) {
+      updatedCount++;
+    }
+  }
+
+  return updatedCount;
+}
+
+- (void)renameSlotPresetInAllPresetsFrom:(NSString*)oldName
+                                      to:(NSString*)newName
+                                 slotKey:(NSString*)slotKey {
+  if (!oldName.length || !newName.length || !slotKey.length) return;
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* dir = self.presetsDirectory;
+  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+  for (NSString* f in files) {
+    if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    NSString* fullPath = [dir stringByAppendingPathComponent:f];
+    NSData* data = [NSData dataWithContentsOfFile:fullPath];
+    if (!data) continue;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
+    if (![obj isKindOfClass:[NSMutableDictionary class]]) continue;
+    NSMutableDictionary* root = (NSMutableDictionary*)obj;
+    NSMutableDictionary* sp = [root[@"slot_presets"] isKindOfClass:[NSDictionary class]]
+        ? [root[@"slot_presets"] mutableCopy] : nil;
+    if (sp && [sp[slotKey] isEqualToString:oldName]) {
+      sp[slotKey] = newName;
+      root[@"slot_presets"] = sp;
+      NSData* outData = [NSJSONSerialization dataWithJSONObject:root options:NSJSONWritingPrettyPrinted error:nil];
+      if (outData) [outData writeToFile:fullPath atomically:YES];
+    }
+  }
+}
+
+- (void)deleteSlotPresetInAllPresetsNamed:(NSString*)deletedName
+                                  slotKey:(NSString*)slotKey {
+  if (!deletedName.length || !slotKey.length) return;
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* dir = self.presetsDirectory;
+  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+  for (NSString* f in files) {
+    if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    NSString* fullPath = [dir stringByAppendingPathComponent:f];
+    NSData* data = [NSData dataWithContentsOfFile:fullPath];
+    if (!data) continue;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
+    if (![obj isKindOfClass:[NSMutableDictionary class]]) continue;
+    NSMutableDictionary* root = (NSMutableDictionary*)obj;
+    NSMutableDictionary* sp = [root[@"slot_presets"] isKindOfClass:[NSDictionary class]]
+        ? [root[@"slot_presets"] mutableCopy] : nil;
+    if (sp && [sp[slotKey] isEqualToString:deletedName]) {
+      [sp removeObjectForKey:slotKey];
+      root[@"slot_presets"] = sp;
+      NSData* outData = [NSJSONSerialization dataWithJSONObject:root options:NSJSONWritingPrettyPrinted error:nil];
+      if (outData) [outData writeToFile:fullPath atomically:YES];
     }
   }
 }

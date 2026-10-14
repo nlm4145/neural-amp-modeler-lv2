@@ -1120,6 +1120,15 @@ struct RigUIState {
     deleteItem.enabled = selectedIsUser;
     [[popup menu] addItem:deleteItem];
 
+    [[popup menu] addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* propagateItem = [[NSMenuItem alloc] initWithTitle:@"Propagate to All Saved Presets"
+                                                           action:@selector(propagateSlotPresetToAll:)
+                                                    keyEquivalent:@""];
+    propagateItem.target = (id)uiController;
+    propagateItem.tag = slotIdx;
+    [[popup menu] addItem:propagateItem];
+
     if (matchIndex >= 0) {
       [popup selectItemAtIndex:matchIndex];
     } else if (popup.numberOfItems > 0) {
