@@ -11,6 +11,7 @@
 #include "pin_eq.h"
 #include "power_tube_controls.h"
 #include "rack_controls.h"
+#include "rig_control_metadata.h"
 #include "speaker_dynamics.h"
 #include "rig_ui_state.h"
 
@@ -18,71 +19,10 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
   static NSDictionary<NSNumber*, NSString*>* map = nil;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    NSMutableDictionary* symbols = [@{
-      @4: @"input_level",
-      @5: @"output_level",
-      @7: @"pedal_enabled",
-      @8: @"amp_enabled",
-      @9: @"cab_enabled",
-      @12: @"bass",
-      @13: @"mid",
-      @14: @"treble",
-      @15: @"gate_threshold",
-      @20: @"pedal_oversample",
-      @21: @"amp_oversample",
-      @22: @"amp_drive",
-      @23: @"gate_release",
-      @24: @"ir_normalization",
-      @25: @"cab_level",
-      @26: @"cab_low_cut",
-      @27: @"cab_high_cut",
-      @28: @"compressor",
-      @30: @"transformer_type",
-      @32: @"stereo_width",
-      @33: @"room",
-      @34: @"presence",
-      @35: @"depth",
-      @36: @"sag",
-      @37: @"bias",
-      @38: @"negative_feedback",
-      @39: @"bright",
-      @40: @"input_eq",
-      @41: @"master",
-      @42: @"speaker_profile",
-      @43: @"speaker_drive",
-      @44: @"speaker_compression",
-      @45: @"speaker_thump",
-      @46: @"speaker_resonance",
-      @47: @"cab2_enabled",
-      @48: @"cab2_level",
-      @49: @"cab2_delay",
-      @50: @"delay_time",
-      @51: @"delay_feedback",
-      @52: @"delay_damping",
-      @53: @"delay_mix",
-      @54: @"reverb_mix",
-      @55: @"reverb_decay",
-      @56: @"reverb_size",
-      @57: @"reverb_damping",
-      @58: @"reverb_predelay",
-      @59: @"cab2_polarity"
-    } mutableCopy];
-    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
-      symbols[@(NAMRig::kTransformerControlFirstPort + i)] =
-          [NSString stringWithUTF8String:NAMRig::kTransformerControls[i].symbol];
-    for (size_t i = 0; i < NAMRig::kRackCount; ++i)
-      symbols[@(NAMRig::kRackControlFirstPort + i)] =
-          [NSString stringWithUTF8String:NAMRig::kRackControlSymbols[i]];
-    symbols[@(NAMRig::kPowerTubeTypePort)] = @"power_tube_type";
-    symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";
-    symbols[@(NAMRig::kMidPushPort)] = @"mid_push";
-    symbols[@(NAMRig::kOverdriveDrivePort)] = @"od_drive";
-    symbols[@(NAMRig::kOverdriveTonePort)] = @"od_tone";
-    symbols[@(NAMRig::kOverdriveLevelPort)] = @"od_level";
-    for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i) {
-      const uint32_t port = NAMRig::kPinEqFirstPort + i;
-      symbols[@(port)] = [NSString stringWithUTF8String:NAMRig::pinEqSymbol(port).c_str()];
-    }
+    NSMutableDictionary* symbols = [NSMutableDictionary dictionary];
+    NAMRig::forEachRigControlSymbol([&](uint32_t port, const char* symbol) {
+      symbols[@(port)] = [NSString stringWithUTF8String:symbol];
+    });
     map = [symbols copy];
   });
   return map;

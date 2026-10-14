@@ -23,6 +23,10 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/rig_widgets.{h,mm}` | Shared custom controls: `RigKnob` (arc knob), `RigPanel` (gradient panel), `RigButton`, ImageIO thumbnail decode helpers. Used by BOTH UI targets |
 | `src/rig_knobs.{h,cpp}` | `kRigKnobPorts` / `kRigKnobDisplayOrder` (display order = signal chain, not port order) |
 | `src/rack_controls.h` | Shared nine-rack order, enable port symbols, slot keys, and enabled defaults |
+| `src/rig_control_metadata.h` | Shared preset port-to-symbol metadata; native serialization adapters retain their existing coverage |
+| `src/win32_control_defaults.h` | Allocation-free Windows preset/host defaults; macOS defaults remain independent |
+| `src/standalone_controls.h` | Initialization-only binding of native host control-storage ranges to the asserted DSP port layout |
+| `src/standalone_worker.{h,cpp}` | Shared LV2 worker request/response queues and shutdown draining for both standalone hosts |
 | `src/power_tube_controls.h` | Tube-inspired profile parameters and appended control ports |
 | `src/rig_tone_api.{h,mm}` | Tone3000 API base URL, OAuth/PKCE, keychain sessions, gear/stage mapping |
 | `src/rig_tone_browser.{h,mm}` | Tone Explorer: `ToneItem`, `ToneCardItem`, `ToneBrowserController` (search pagination, disk cache, downloads, favorites) |
@@ -312,6 +316,15 @@ UI sends path → `work()` loads the model OFF the audio thread →
 `workResponse()` (audio thread) swaps pointers and schedules a deferred
 `kWorkTypeFree` for the OLD model → worker deletes it later. Never load or
 free on the audio thread; never touch `rig->models[]` from `work()`.
+
+Both standalone hosts compose `StandaloneWorker` rather than maintaining
+separate worker implementations. Its stable schedule feature is connected
+before plugin initialization; processing starts afterward. Audio callbacks
+still use `try_lock` to take one response snapshot, unlock, then deliver it.
+Stop audio callbacks and external scheduling before `stop()`: it drains queued
+work and delivers remaining responses while the worker is still available for
+deferred frees, then joins before the plugin is destroyed. WASAPI shutdown
+requires a confirmed thread join, not an unchecked three-second timeout.
 
 ## UI-side persistence (Element-specific)
 

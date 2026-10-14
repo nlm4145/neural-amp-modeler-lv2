@@ -18,7 +18,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstdio>
@@ -34,6 +33,8 @@
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
 #include "rack_controls.h"
+#include "standalone_controls.h"
+#include "standalone_worker.h"
 
 extern "C" const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index);
 
@@ -514,8 +515,6 @@ class StandaloneHost {
   StandaloneHost() {
     mapFeature_.handle = this;
     mapFeature_.map = mapURI;
-    scheduleFeature_.handle = this;
-    scheduleFeature_.schedule_work = scheduleWork;
     logFeature_.handle = this;
     logFeature_.printf = logPrintf;
     logFeature_.vprintf = logVPrintf;
@@ -555,7 +554,7 @@ class StandaloneHost {
     options_[1] = {};
 
     mapLV2Feature_ = {LV2_URID__map, &mapFeature_};
-    scheduleLV2Feature_ = {LV2_WORKER__schedule, &scheduleFeature_};
+    scheduleLV2Feature_ = {LV2_WORKER__schedule, worker_.scheduleFeature()};
     logLV2Feature_ = {LV2_LOG__log, &logFeature_};
     optionsLV2Feature_ = {LV2_OPTIONS__options, options_.data()};
     const LV2_Feature* dspFeatures[] = {&mapLV2Feature_, &scheduleLV2Feature_,
@@ -572,40 +571,20 @@ class StandaloneHost {
     plugin_->ports.notify = reinterpret_cast<LV2_Atom_Sequence*>(notifyBuffer_.data());
     plugin_->ports.audio_in = input_.data();
     plugin_->ports.audio_out = output_.data();
-    for (uint32_t port = 4; port <= 30; ++port) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
-                                 port * sizeof(void*)) = &controls_[port - 4];
-    }
     plugin_->ports.audio_out_r = outputR_.data();
-    plugin_->ports.stereo_width = &stereoControls_[0];
-    plugin_->ports.room = &stereoControls_[1];
-    for (uint32_t port = 34; port <= 41; ++port) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
-                                 port * sizeof(void*)) = &advancedControls_[port - 34];
-    }
-    for (uint32_t port = 42; port <= 46; ++port) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
-                                 port * sizeof(void*)) = &speakerControls_[port - 42];
-    }
-    static_assert(offsetof(NAMRig::Plugin::Ports, cab2_polarity) == 59 * sizeof(void*));
-    for (uint32_t port = 47; port <= 59; ++port) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) +
-                                 port * sizeof(void*)) = &fxControls_[port - 47];
-    }
-    for (size_t i = 0; i < transformerControls_.size(); ++i)
-      plugin_->ports.transformer_adjustments[i] = &transformerControls_[i];
-    for (size_t i = 0; i < rackControls_.size(); ++i)
-      plugin_->ports.rack_enabled[i] = &rackControls_[i];
-    plugin_->ports.power_tube_type = &tubeControls_[0];
-    plugin_->ports.power_tube_character = &tubeControls_[1];
-    plugin_->ports.mid_push = &midPushControl_;
-    plugin_->ports.od_drive = &overdriveControls_[0];
-    plugin_->ports.od_tone = &overdriveControls_[1];
-    plugin_->ports.od_level = &overdriveControls_[2];
-    for (size_t i = 0; i < pinEqControls_.size(); ++i)
-      plugin_->ports.pin_eq[i] = &pinEqControls_[i];
+    NAMRig::bindStandaloneControls(plugin_->ports, {
+        {4, controls_}, {32, stereoControls_}, {34, advancedControls_},
+        {42, speakerControls_}, {47, fxControls_},
+        {NAMRig::kTransformerControlFirstPort, transformerControls_},
+        {NAMRig::kRackControlFirstPort, rackControls_},
+        {NAMRig::kPowerTubeTypePort, tubeControls_},
+        {NAMRig::kMidPushPort, {&midPushControl_, 1}},
+        {NAMRig::kPinEqFirstPort, pinEqControls_},
+        {NAMRig::kOverdriveDrivePort, overdriveControls_}});
 
-    worker_ = std::thread([this] { workerLoop(); });
+    if (!worker_.start(plugin_.get(),
+                       {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
+      return fail(error, @"The rig worker could not be started.");
 
     parentLV2Feature_ = {LV2_UI__parent, (__bridge void*)parent};
     mapUILV2Feature_ = {LV2_URID__map, &mapFeature_};
@@ -665,12 +644,7 @@ class StandaloneHost {
       uiDescriptor_->cleanup(uiHandle_);
       uiHandle_ = nullptr;
     }
-    {
-      std::lock_guard<std::mutex> lock(workerMutex_);
-      workerStopping_ = true;
-    }
-    workerCV_.notify_one();
-    if (worker_.joinable()) worker_.join();
+    worker_.stop();
     plugin_.reset();
   }
 
@@ -771,9 +745,6 @@ class StandaloneHost {
   }
 
  private:
-  struct WorkItem { std::vector<uint8_t> data; };
-  struct WorkResponse { std::vector<uint8_t> data; };
-
   static NSString* audioSettingsFilePath() {
     NSArray<NSString*>* paths = NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES);
@@ -870,58 +841,6 @@ class StandaloneHost {
     const int result = logVPrintf(handle, type, format, args);
     va_end(args);
     return result;
-  }
-
-  static LV2_Worker_Status scheduleWork(LV2_Worker_Schedule_Handle handle,
-                                        uint32_t size, const void* data) {
-    auto* host = static_cast<StandaloneHost*>(handle);
-    if (!data || !size) return LV2_WORKER_ERR_UNKNOWN;
-    WorkItem item;
-    item.data.resize(size);
-    std::memcpy(item.data.data(), data, size);
-    {
-      std::lock_guard<std::mutex> lock(host->workerMutex_);
-      host->work_.push_back(std::move(item));
-    }
-    host->workerCV_.notify_one();
-    return LV2_WORKER_SUCCESS;
-  }
-
-  static LV2_Worker_Status respondWork(LV2_Worker_Respond_Handle handle,
-                                       uint32_t size, const void* data) {
-    auto* host = static_cast<StandaloneHost*>(handle);
-    WorkResponse response;
-    response.data.resize(size);
-    std::memcpy(response.data.data(), data, size);
-    std::lock_guard<std::mutex> lock(host->responseMutex_);
-    host->responses_.push_back(std::move(response));
-    return LV2_WORKER_SUCCESS;
-  }
-
-  void workerLoop() {
-    for (;;) {
-      WorkItem item;
-      {
-        std::unique_lock<std::mutex> lock(workerMutex_);
-        workerCV_.wait(lock, [this] { return workerStopping_ || !work_.empty(); });
-        if (workerStopping_ && work_.empty()) return;
-        item = std::move(work_.front());
-        work_.pop_front();
-      }
-      NAMRig::Plugin::work(plugin_.get(), respondWork, this,
-                           static_cast<uint32_t>(item.data.size()), item.data.data());
-    }
-  }
-
-  void applyWorkerResponses() noexcept {
-    if (!responseMutex_.try_lock()) return;
-    std::deque<WorkResponse> local;
-    local.swap(responses_);
-    responseMutex_.unlock();
-    for (const auto& response : local)
-      NAMRig::Plugin::workResponse(plugin_.get(),
-                                   static_cast<uint32_t>(response.data.size()),
-                                   response.data.data());
   }
 
   static void uiWrite(LV2UI_Controller controller, uint32_t port, uint32_t size,
@@ -1267,7 +1186,7 @@ class StandaloneHost {
       }
     }
 
-    applyWorkerResponses();
+    worker_.applyResponses();
     buildControlSequence();
     resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
     plugin_->process(frames, cabinetDeadline);
@@ -1803,7 +1722,6 @@ class StandaloneHost {
   std::unordered_map<std::string, LV2_URID> urids_;
   LV2_URID atomSequence_ = 0, eventTransfer_ = 0, atomInt_ = 0, maxBlockLength_ = 0;
   LV2_URID_Map mapFeature_{};
-  LV2_Worker_Schedule scheduleFeature_{};
   LV2_Log_Log logFeature_{};
   LV2UI_Resize resizeFeature_{};
   LV2_Feature mapLV2Feature_{}, scheduleLV2Feature_{}, logLV2Feature_{}, optionsLV2Feature_{};
@@ -1811,13 +1729,7 @@ class StandaloneHost {
   int32_t maxFramesOption_ = kMaxFrames;
   std::array<LV2_Options_Option, 2> options_{};
 
-  std::thread worker_;
-  std::mutex workerMutex_;
-  std::condition_variable workerCV_;
-  std::deque<WorkItem> work_;
-  bool workerStopping_ = false;
-  std::mutex responseMutex_;
-  std::deque<WorkResponse> responses_;
+  NAMRig::StandaloneWorker worker_;
 };
 
 static NSString* compactDeviceTitle(const std::string& rawName) {

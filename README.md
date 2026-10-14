@@ -101,6 +101,13 @@ are built ad hoc by `run_all.sh`:
 Direct C++ DSP harness compiler failures fail the suite and show diagnostics rather
 than silently skipping coverage. Accelerate-only harnesses run on macOS.
 
+Shared-host regression checks are also included: `verify_standalone_worker.cpp`
+covers FIFO byte copying, response contention and shutdown ownership;
+`verify_standalone_controls.cpp` verifies flat/segmented port binding;
+`verify_rig_control_metadata.cpp` checks TTL symbol parity, platform defaults
+and Windows preset round trips. `test_win32_audio_stop.py` exercises delayed
+WASAPI callback shutdown with fake platform APIs on a native C++ toolchain.
+
 Note: `tests/test_a2_fast_ring_copy.py` currently FAILS. That is a real lost
 optimization in the `NeuralAudio` submodule, not a stale assertion — see the
 test's docstring.

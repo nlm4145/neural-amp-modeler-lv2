@@ -10,6 +10,7 @@ header = (ROOT / "src/nam_rig_plugin.h").read_text()
 ttl = (ROOT / "resources/neural_amp_modeler_rig.ttl.in").read_text()
 ui_ttl = (ROOT / "resources/neural_amp_modeler_rig_ui.ttl.in").read_text()
 presets = (ROOT / "src/rig_presets.mm").read_text()
+metadata = (ROOT / "src/rig_control_metadata.h").read_text()
 presets_header = (ROOT / "src/rig_presets.h").read_text()
 state = (ROOT / "src/rig_ui_state.h").read_text()
 
@@ -110,11 +111,18 @@ assert "units:unit units:pc" in blocks[81]
 # The shared rack mapping includes enable; type/character use only the controls map.
 assert '#include "power_tube_controls.h"' in presets
 mapping = body(presets, "static NSDictionary<NSNumber*, NSString*>* portToSymbolMap(")
-assert "i < NAMRig::kRackCount" in mapping
-assert "symbols[@(NAMRig::kRackControlFirstPort + i)]" in mapping
-assert "stringWithUTF8String:NAMRig::kRackControlSymbols[i]" in mapping
-assert 'symbols[@(NAMRig::kPowerTubeTypePort)] = @"power_tube_type";' in mapping
-assert 'symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";' in mapping
+assert '#include "rig_control_metadata.h"' in presets
+assert "NAMRig::forEachRigControlSymbol(" in mapping
+assert "symbols[@(port)] = [NSString stringWithUTF8String:symbol];" in mapping
+enumeration = body(metadata, "inline void forEachRigControlSymbol(")
+assert "i < kRackCount" in enumeration
+assert "visit(kRackControlFirstPort + i, kRackControlSymbols[i]);" in enumeration
+lookup = body(metadata, "inline const char* rigControlSymbol(")
+assert "port >= kRackControlFirstPort" in lookup
+assert "port < kRackControlFirstPort + kRackCount" in lookup
+assert "return kRackControlSymbols[port - kRackControlFirstPort];" in lookup
+assert '{kPowerTubeTypePort, "power_tube_type"},' in metadata
+assert '{kPowerTubeCharacterPort, "power_tube_character"},' in metadata
 inverse = body(presets, "static NSDictionary<NSString*, NSNumber*>* symbolToPortMap(")
 assert "inv[portToSymbolMap()[port]] = port;" in inverse
 for signature, receiver in (("+ (RigPreset*)defaultPreset", "p"),

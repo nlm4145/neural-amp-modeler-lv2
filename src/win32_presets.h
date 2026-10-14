@@ -6,13 +6,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include "win32_control_defaults.h"
+
 namespace NAMRigWin32 {
 
 struct StagePreset {
   std::string role;      // "pedal", "amp", "cab", "cab2"
   bool enabled = true;
   std::string path;
-  float oversample = 6.0f;     // port 20 or 21 (default 6 = True 8x)
+  float oversample = static_cast<float>(NAMRig::kOversampleTrue8); // port 20 or 21
   float transformer = 0.0f;    // port 30 (amp only)
   float irNormalization = 2.0f;// port 24 (cab only)
 };

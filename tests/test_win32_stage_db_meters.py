@@ -54,7 +54,7 @@ compiler = shutil.which("c++")
 assert compiler, "a C++ compiler is required for the meter-state checks"
 state = header.split("  struct MeterState {", 1)[1].split("  // Active dragging control", 1)[0]
 methods = view.split("void Win32UIView::setAudioLevels(", 1)[1].split("void Win32UIView::setStagePath(", 1)[0]
-transfer = "struct StandaloneMeter {" + standalone.split("struct StandaloneMeter {", 1)[1].split("struct WorkItem {", 1)[0]
+transfer = "struct StandaloneMeter {" + standalone.split("struct StandaloneMeter {", 1)[1].split("class StandaloneApp {", 1)[0]
 fixture = """
 #include <algorithm>
 #include <array>

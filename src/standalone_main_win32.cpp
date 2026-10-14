@@ -9,16 +9,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <fstream>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -37,6 +33,8 @@
 #include "cabinet_worker.h"
 #include "nam_rig_plugin.h"
 #include "rack_controls.h"
+#include "standalone_controls.h"
+#include "standalone_worker.h"
 #include "win32_audio.h"
 #include "win32_presets.h"
 #include "win32_ui_view.h"
@@ -132,22 +130,11 @@ struct StandaloneMeter {
   }
 };
 
-struct WorkItem {
-  std::vector<uint8_t> data;
-};
-
-struct WorkResponse {
-  std::vector<uint8_t> data;
-};
-
 class StandaloneApp {
  public:
   StandaloneApp() {
     mapFeature_.handle = &uridMap_;
     mapFeature_.map = StandaloneURIDMap::mapCallback;
-
-    scheduleFeature_.handle = this;
-    scheduleFeature_.schedule_work = scheduleWork;
 
     logFeature_.handle = this;
     logFeature_.printf = logPrintf;
@@ -155,62 +142,12 @@ class StandaloneApp {
 
     // Default control values
     controls_.fill(0.0f);
-    controls_[4] = 0.0f;        // input_level
-    controls_[5] = 0.0f;        // output_level
+    NAMRigWin32::forEachWin32ControlDefault(
+        [&](uint32_t port, float value) { controls_[port] = value; });
     controls_[6] = 1.0f;        // quality_scale
-    controls_[7] = 1.0f;        // pedal_enabled
-    controls_[8] = 1.0f;        // amp_enabled
-    controls_[9] = 1.0f;        // cab_enabled
     controls_[10] = 1.0f;       // auto_cab
-    controls_[11] = 0.0f;       // cab_auto_bypassed
-    controls_[12] = 0.0f;       // bass
-    controls_[13] = 0.0f;       // mid
-    controls_[14] = 0.0f;       // treble
-    controls_[15] = -80.0f;     // gate_threshold
-    controls_[16] = 0.0f;       // tuner_enable
     controls_[17] = -1.0f;      // tuner_note
-    controls_[18] = 0.0f;       // tuner_cents
     controls_[19] = 1.0f;       // legacy
-    controls_[20] = 6.0f;       // pedal_oversample (True 8x)
-    controls_[21] = 6.0f;       // amp_oversample (True 8x)
-    controls_[22] = 0.0f;       // amp_drive
-    controls_[23] = 150.0f;     // gate_release
-    controls_[24] = 2.0f;       // ir_normalization (Loudness)
-    controls_[25] = 0.0f;       // cab_level
-    controls_[26] = 0.0f;       // cab_low_cut
-    controls_[27] = 20000.0f;   // cab_high_cut
-    controls_[28] = 0.0f;       // compressor
-    controls_[29] = 0.0f;       // latency
-    controls_[30] = 0.0f;       // transformer_type
-    controls_[32] = 0.0f;       // stereo_width
-    controls_[33] = 0.0f;       // room
-    controls_[43] = 25.0f;      // speaker_drive
-    controls_[44] = 25.0f;      // speaker_compression
-    controls_[45] = 50.0f;      // speaker_thump
-    controls_[46] = 50.0f;      // speaker_resonance
-    controls_[47] = 0.0f;       // cab2_enabled
-    controls_[49] = 0.0f;       // cab2_delay
-    controls_[50] = 400.0f;     // delay_time
-    controls_[51] = 35.0f;      // delay_feedback
-    controls_[52] = 40.0f;      // delay_damping
-    controls_[53] = 0.0f;       // delay_mix
-    controls_[54] = 0.0f;       // reverb_mix
-    controls_[55] = 50.0f;      // reverb_decay
-    controls_[56] = 50.0f;      // reverb_size
-    controls_[57] = 50.0f;      // reverb_damping
-    controls_[58] = 10.0f;      // reverb_predelay
-    controls_[59] = 0.0f;       // cab2_polarity
-    controls_[80] = 0.0f;       // power_tube_type
-    controls_[81] = 0.0f;       // power_tube_character
-    controls_[82] = 0.0f;       // mid_push
-    controls_[179] = 0.0f;      // od_drive
-    controls_[180] = 50.0f;     // od_tone
-    controls_[181] = 0.0f;      // od_level
-
-    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
-      controls_[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
-    for (size_t i = 0; i < NAMRig::kRackCount; ++i)
-      controls_[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
   }
 
   ~StandaloneApp() {
@@ -245,7 +182,7 @@ class StandaloneApp {
     options_[1] = {};
 
     mapFeatureStruct_ = {LV2_URID__map, &mapFeature_};
-    scheduleFeatureStruct_ = {LV2_WORKER__schedule, &scheduleFeature_};
+    scheduleFeatureStruct_ = {LV2_WORKER__schedule, worker_.scheduleFeature()};
     logFeatureStruct_ = {LV2_LOG__log, &logFeature_};
     optionsFeatureStruct_ = {LV2_OPTIONS__options, options_.data()};
 
@@ -275,45 +212,16 @@ class StandaloneApp {
     plugin_->ports.audio_out = outputAudioL_.data();
     plugin_->ports.audio_out_r = outputAudioR_.data();
 
-    for (uint32_t p = 4; p <= 30; ++p) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) + p * sizeof(void*)) =
-          &controls_[p];
-    }
-    plugin_->ports.stereo_width = &controls_[32];
-    plugin_->ports.room = &controls_[33];
-    for (uint32_t p = 34; p <= 41; ++p) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) + p * sizeof(void*)) =
-          &controls_[p];
-    }
-    for (uint32_t p = 42; p <= 46; ++p) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) + p * sizeof(void*)) =
-          &controls_[p];
-    }
-    for (uint32_t p = 47; p <= 59; ++p) {
-      *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(&plugin_->ports) + p * sizeof(void*)) =
-          &controls_[p];
-    }
-    for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i) {
-      plugin_->ports.transformer_adjustments[i] =
-          &controls_[NAMRig::kTransformerControlFirstPort + i];
-    }
-    for (size_t i = 0; i < NAMRig::kRackCount; ++i) {
-      plugin_->ports.rack_enabled[i] =
-          &controls_[NAMRig::kRackControlFirstPort + i];
-    }
-    plugin_->ports.power_tube_type = &controls_[80];
-    plugin_->ports.power_tube_character = &controls_[81];
-    plugin_->ports.mid_push = &controls_[82];
-    plugin_->ports.od_drive = &controls_[179];
-    plugin_->ports.od_tone = &controls_[180];
-    plugin_->ports.od_level = &controls_[181];
+    pinEqControls_.fill(0.0f);
+    const std::span<float> controls(controls_);
+    NAMRig::bindStandaloneControls(plugin_->ports, {
+        {4, controls.subspan(4, 27)}, {32, controls.subspan(32, 51)},
+        {NAMRig::kPinEqFirstPort, pinEqControls_},
+        {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)}});
 
-    for (size_t i = 0; i < pinEqControls_.size(); ++i) {
-      pinEqControls_[i] = 0.0f;
-      plugin_->ports.pin_eq[i] = &pinEqControls_[i];
-    }
-
-    workerThread_ = std::thread([this] { workerLoop(); });
+    if (!worker_.start(plugin_.get(),
+                       {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
+      return false;
 
     // Create Main Window
     WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
@@ -383,12 +291,7 @@ class StandaloneApp {
 
   void stop() {
     audioEngine_.stop();
-    {
-      std::lock_guard<std::mutex> lock(workerMutex_);
-      workerStopping_ = true;
-    }
-    workerCV_.notify_one();
-    if (workerThread_.joinable()) workerThread_.join();
+    worker_.stop();
     saveSettings();
   }
 
@@ -480,21 +383,11 @@ class StandaloneApp {
     });
   }
 
-  void applyWorkerResponses() noexcept {
-    if (!responseMutex_.try_lock()) return;
-    std::deque<WorkResponse> local;
-    local.swap(responses_);
-    responseMutex_.unlock();
-    for (const auto& r : local) {
-      NAMRig::Plugin::workResponse(plugin_.get(), static_cast<uint32_t>(r.data.size()), r.data.data());
-    }
-  }
-
   void processAudioBlock(const float* inL, const float* inR, float* outL, float* outR, uint32_t frames) {
     (void)inR;
     uint32_t count = std::min(frames, kMaxFrames);
 
-    applyWorkerResponses();
+    worker_.applyResponses();
 
     // Prepare control sequence from UI messages
     auto* sequence = reinterpret_cast<LV2_Atom_Sequence*>(controlBuffer_.data());
@@ -576,47 +469,6 @@ class StandaloneApp {
           uiView_->setStagePath(static_cast<uint32_t>(stage), path);
         }
       }
-    }
-  }
-
-  static LV2_Worker_Status scheduleWork(LV2_Worker_Schedule_Handle handle,
-                                        uint32_t size, const void* data) {
-    auto* host = static_cast<StandaloneApp*>(handle);
-    if (!data || !size) return LV2_WORKER_ERR_UNKNOWN;
-    WorkItem item;
-    item.data.resize(size);
-    std::memcpy(item.data.data(), data, size);
-    {
-      std::lock_guard<std::mutex> lock(host->workerMutex_);
-      host->work_.push_back(std::move(item));
-    }
-    host->workerCV_.notify_one();
-    return LV2_WORKER_SUCCESS;
-  }
-
-  static LV2_Worker_Status respondWork(LV2_Worker_Respond_Handle handle,
-                                       uint32_t size, const void* data) {
-    auto* host = static_cast<StandaloneApp*>(handle);
-    WorkResponse response;
-    response.data.resize(size);
-    std::memcpy(response.data.data(), data, size);
-    std::lock_guard<std::mutex> lock(host->responseMutex_);
-    host->responses_.push_back(std::move(response));
-    return LV2_WORKER_SUCCESS;
-  }
-
-  void workerLoop() {
-    for (;;) {
-      WorkItem item;
-      {
-        std::unique_lock<std::mutex> lock(workerMutex_);
-        workerCV_.wait(lock, [this] { return workerStopping_ || !work_.empty(); });
-        if (workerStopping_ && work_.empty()) return;
-        item = std::move(work_.front());
-        work_.pop_front();
-      }
-      NAMRig::Plugin::work(plugin_.get(), respondWork, this,
-                           static_cast<uint32_t>(item.data.size()), item.data.data());
     }
   }
 
@@ -714,7 +566,6 @@ class StandaloneApp {
 
   StandaloneURIDMap uridMap_;
   LV2_URID_Map mapFeature_{};
-  LV2_Worker_Schedule scheduleFeature_{};
   LV2_Log_Log logFeature_{};
   LV2_Feature mapFeatureStruct_{};
   LV2_Feature scheduleFeatureStruct_{};
@@ -753,13 +604,7 @@ class StandaloneApp {
   StandaloneMeter preAmpDbMeter_{-120.0f};
   StandaloneMeter postAmpDbMeter_{-120.0f};
 
-  std::thread workerThread_;
-  std::mutex workerMutex_;
-  std::condition_variable workerCV_;
-  std::deque<WorkItem> work_;
-  std::mutex responseMutex_;
-  std::deque<WorkResponse> responses_;
-  bool workerStopping_ = false;
+  NAMRig::StandaloneWorker worker_;
 };
 
 } // namespace

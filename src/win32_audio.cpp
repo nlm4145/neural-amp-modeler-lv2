@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -300,7 +301,15 @@ void WindowsAudioEngine::stopWasapi() {
     SetEvent(wasapiStopEvent_);
   }
   if (wasapiThread_) {
-    WaitForSingleObject(wasapiThread_, 3000);
+    // Management-thread join: callbacks must finish before cleanup or worker drain.
+    const DWORD waitResult = WaitForSingleObject(wasapiThread_, INFINITE);
+    if (waitResult != WAIT_OBJECT_0) {
+      const DWORD error = waitResult == WAIT_FAILED ? GetLastError() : 0;
+      std::cerr << "WASAPI thread join failed: wait=" << waitResult
+                << ", error=" << error << std::endl;
+      // stop() is also called by destructors; returning or unwinding is unsafe.
+      std::terminate();
+    }
     CloseHandle(wasapiThread_);
     wasapiThread_ = NULL;
   }

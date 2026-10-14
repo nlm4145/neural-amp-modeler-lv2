@@ -144,7 +144,7 @@ assert re.search(
     r"port >= 4 &&\s*port < NAMRig::kRigControlPortCount",
     ui,
 ), "the UI must accept original controls, transformer trims, nine rack switches and Power/Tube controls"
-assert "for (uint32_t port = 47; port <= 59; ++port)" in standalone, (
+assert "NAMRig::bindStandaloneControls(plugin_->ports," in standalone and "{47, fxControls_}" in standalone, (
     "the standalone host must connect the new ports"
 )
 assert "std::array<float, 13> fxControls_{};" in standalone

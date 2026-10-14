@@ -18,6 +18,7 @@
 #include "pin_eq.h"
 #include "power_tube_controls.h"
 #include "rack_controls.h"
+#include "rig_control_metadata.h"
 #include "speaker_dynamics.h"
 
 using json = nlohmann::json;
@@ -72,73 +73,9 @@ std::string getCurrentISOTime() {
 } // namespace
 
 const char* PresetManager::portToSymbol(uint32_t port) {
-  switch (port) {
-    case 4: return "input_level";
-    case 5: return "output_level";
-    case 7: return "pedal_enabled";
-    case 8: return "amp_enabled";
-    case 9: return "cab_enabled";
-    case 12: return "bass";
-    case 13: return "mid";
-    case 14: return "treble";
-    case 15: return "gate_threshold";
-    case 20: return "pedal_oversample";
-    case 21: return "amp_oversample";
-    case 22: return "amp_drive";
-    case 23: return "gate_release";
-    case 24: return "ir_normalization";
-    case 25: return "cab_level";
-    case 26: return "cab_low_cut";
-    case 27: return "cab_high_cut";
-    case 28: return "compressor";
-    case 30: return "transformer_type";
-    case 32: return "stereo_width";
-    case 33: return "room";
-    case 34: return "presence";
-    case 35: return "depth";
-    case 36: return "sag";
-    case 37: return "bias";
-    case 38: return "negative_feedback";
-    case 39: return "bright";
-    case 40: return "input_eq";
-    case 41: return "master";
-    case 42: return "speaker_profile";
-    case 43: return "speaker_drive";
-    case 44: return "speaker_compression";
-    case 45: return "speaker_thump";
-    case 46: return "speaker_resonance";
-    case 47: return "cab2_enabled";
-    case 48: return "cab2_level";
-    case 49: return "cab2_delay";
-    case 50: return "delay_time";
-    case 51: return "delay_feedback";
-    case 52: return "delay_damping";
-    case 53: return "delay_mix";
-    case 54: return "reverb_mix";
-    case 55: return "reverb_decay";
-    case 56: return "reverb_size";
-    case 57: return "reverb_damping";
-    case 58: return "reverb_predelay";
-    case 59: return "cab2_polarity";
-    case 80: return "power_tube_type";
-    case 81: return "power_tube_character";
-    case 82: return "mid_push";
-    case 179: return "od_drive";
-    case 180: return "od_tone";
-    case 181: return "od_level";
-    default: break;
-  }
-  if (port >= NAMRig::kTransformerControlFirstPort &&
-      port < NAMRig::kTransformerControlFirstPort + NAMRig::kTransformerControlCount) {
-    size_t idx = port - NAMRig::kTransformerControlFirstPort;
-    return NAMRig::kTransformerControls[idx].symbol;
-  }
-  if (port >= NAMRig::kRackControlFirstPort &&
-      port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
-    size_t idx = port - NAMRig::kRackControlFirstPort;
-    return NAMRig::kRackControlSymbols[idx];
-  }
-  return nullptr;
+  // Windows presets have never persisted named pin controls; keep that coverage.
+  if (NAMRig::isPinEqPort(port)) return nullptr;
+  return NAMRig::rigControlSymbol(port);
 }
 
 int32_t PresetManager::symbolToPort(const std::string& symbol) {
@@ -164,65 +101,7 @@ RigPreset RigPreset::createDefault() {
     p.stages[s].irNormalization = 2.0f;
   }
 
-  p.controls[4] = 0.0f;       // input_level
-  p.controls[5] = 0.0f;       // output_level
-  p.controls[7] = 1.0f;       // pedal_enabled
-  p.controls[8] = 1.0f;       // amp_enabled
-  p.controls[9] = 1.0f;       // cab_enabled
-  p.controls[12] = 0.0f;      // bass
-  p.controls[13] = 0.0f;      // mid
-  p.controls[14] = 0.0f;      // treble
-  p.controls[15] = -80.0f;    // gate_threshold
-  p.controls[20] = static_cast<float>(NAMRig::kOversampleTrue8);
-  p.controls[21] = static_cast<float>(NAMRig::kOversampleTrue8);
-  p.controls[22] = 0.0f;      // amp_drive
-  p.controls[23] = 150.0f;    // gate_release
-  p.controls[24] = 2.0f;      // ir_normalization: Loudness
-  p.controls[25] = 0.0f;      // cab_level
-  p.controls[26] = 0.0f;      // cab_low_cut (0 = Off)
-  p.controls[27] = 20000.0f;  // cab_high_cut (20k = Off)
-  p.controls[28] = 0.0f;      // compressor
-  p.controls[30] = 0.0f;      // transformer_type (0 = Captured/Off)
-  p.controls[32] = 0.0f;      // stereo_width
-  p.controls[33] = 0.0f;      // room
-  p.controls[34] = 0.0f;      // presence
-  p.controls[35] = 0.0f;      // depth
-  p.controls[36] = 0.0f;      // sag
-  p.controls[37] = 0.0f;      // bias
-  p.controls[38] = 0.0f;      // negative_feedback
-  p.controls[39] = 0.0f;      // bright
-  p.controls[40] = 0.0f;      // input_eq
-  p.controls[41] = 0.0f;      // master
-  p.controls[42] = 0.0f;      // speaker_profile
-  p.controls[43] = 25.0f;     // speaker_drive
-  p.controls[44] = 25.0f;     // speaker_compression
-  p.controls[45] = 50.0f;     // speaker_thump
-  p.controls[46] = 50.0f;     // speaker_resonance
-  p.controls[47] = 0.0f;      // cab2_enabled
-  p.controls[48] = 0.0f;      // cab2_level
-  p.controls[49] = 0.0f;      // cab2_delay
-  p.controls[50] = 400.0f;    // delay_time
-  p.controls[51] = 35.0f;     // delay_feedback
-  p.controls[52] = 40.0f;     // delay_damping
-  p.controls[53] = 0.0f;      // delay_mix
-  p.controls[54] = 0.0f;      // reverb_mix
-  p.controls[55] = 50.0f;     // reverb_decay
-  p.controls[56] = 50.0f;     // reverb_size
-  p.controls[57] = 50.0f;     // reverb_damping
-  p.controls[58] = 10.0f;     // reverb_predelay
-  p.controls[59] = 0.0f;      // cab2_polarity
-
-  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
-    p.controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
-  for (size_t i = 0; i < NAMRig::kRackCount; ++i)
-    p.controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
-
-  p.controls[80] = 0.0f;      // power_tube_type
-  p.controls[81] = 0.0f;      // power_tube_character
-  p.controls[82] = 0.0f;      // mid_push
-  p.controls[179] = 0.0f;     // od_drive
-  p.controls[180] = 50.0f;    // od_tone
-  p.controls[181] = 0.0f;     // od_level
+  forEachWin32ControlDefault([&](uint32_t port, float value) { p.controls[port] = value; });
 
   return p;
 }

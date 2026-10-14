@@ -154,6 +154,24 @@ target_link_libraries(verify_polyphase_model PRIVATE NeuralAudio)
 add_executable(verify_control_work EXCLUDE_FROM_ALL ../tests/verify_control_work.cpp)
 target_include_directories(verify_control_work PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+find_package(Threads REQUIRED)
+add_executable(verify_standalone_worker EXCLUDE_FROM_ALL
+	../tests/verify_standalone_worker.cpp standalone_worker.cpp)
+target_include_directories(verify_standalone_worker PRIVATE ../deps/lv2/include ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(verify_standalone_worker PRIVATE Threads::Threads)
+
+add_executable(verify_standalone_controls EXCLUDE_FROM_ALL ../tests/verify_standalone_controls.cpp)
+target_include_directories(verify_standalone_controls PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+	../deps/lv2/include ../deps/NeuralAudio ../deps/NeuralAudio/deps/RTNeural/modules/json)
+
+add_executable(verify_rig_control_metadata EXCLUDE_FROM_ALL
+	../tests/verify_rig_control_metadata.cpp win32_presets.cpp)
+target_include_directories(verify_rig_control_metadata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+	../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies)
+if (WIN32)
+	target_link_libraries(verify_rig_control_metadata PRIVATE shell32)
+endif()
+
 if (NOT APPLE)
 	add_library(pffft STATIC
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/src/pffft.c
@@ -205,6 +223,7 @@ if (WIN32)
 	if (BUILD_AXE_FX_STANDALONE)
 		add_executable(axe_fx_standalone WIN32
 			standalone_main_win32.cpp
+			standalone_worker.cpp standalone_worker.h standalone_controls.h
 			win32_audio.h win32_audio.cpp
 			win32_asio.h
 			win32_ui_view.h win32_ui_view.cpp
@@ -227,7 +246,7 @@ if (WIN32)
 			../deps/NeuralAudio/deps/RTNeural/modules/json
 		)
 		target_link_libraries(axe_fx_standalone PRIVATE
-			NeuralAudio pffft
+			NeuralAudio pffft Threads::Threads
 			gdiplus gdi32 comctl32 comdlg32 shell32 ole32 oleaut32 uuid shlwapi winmm avrt
 		)
 		set_target_properties(axe_fx_standalone PROPERTIES
@@ -292,6 +311,7 @@ if (APPLE)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
 		add_executable(axe_fx_standalone MACOSX_BUNDLE
 			standalone_main.mm
+			standalone_worker.cpp standalone_worker.h standalone_controls.h
 			cabinet_worker.cpp cabinet_worker.h
 			nam_rig_plugin.cpp nam_rig_plugin.h
 			dsp_accel.cpp dsp_accel.h
@@ -307,7 +327,7 @@ if (APPLE)
 			PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 		target_include_directories(axe_fx_standalone PRIVATE
 			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
-		target_link_libraries(axe_fx_standalone PRIVATE NeuralAudio
+		target_link_libraries(axe_fx_standalone PRIVATE NeuralAudio Threads::Threads
 			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
 			${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK}

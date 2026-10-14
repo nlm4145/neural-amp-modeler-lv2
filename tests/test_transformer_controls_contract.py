@@ -15,6 +15,7 @@ ui = (ROOT / "src/nam_rig_ui.mm").read_text()
 state = (ROOT / "src/rig_ui_state.h").read_text()
 standalone = (ROOT / "src/standalone_main.mm").read_text()
 presets = (ROOT / "src/rig_presets.mm").read_text()
+metadata = (ROOT / "src/rig_control_metadata.h").read_text()
 
 
 def body(source: str, signature: str, indent: str = "") -> str:
@@ -122,7 +123,8 @@ assert dsp.index(snapshot) < dsp.index("auto applyModel = [&]"), "trims must be 
 
 # Standalone writes must address the same neutral-initialized storage connected to DSP.
 assert "NAMRig::TransformerAdjustments transformerControls_ = NAMRig::kTransformerControlDefaults;" in standalone
-assert re.search(r"for \(size_t i = 0; i < transformerControls_\.size\(\); \+\+i\)\s*plugin_->ports\.transformer_adjustments\[i\] = &transformerControls_\[i\];", standalone)
+assert "NAMRig::bindStandaloneControls(plugin_->ports," in standalone
+assert "{NAMRig::kTransformerControlFirstPort, transformerControls_}" in standalone
 write = body(standalone, "static void uiWrite(", "  ")
 assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstPort &&\s*port < NAMRig::kTransformerControlFirstPort \+ NAMRig::kTransformerControlCount &&\s*size == sizeof\(float\)\) \{\s*host->transformerControls_\[port - NAMRig::kTransformerControlFirstPort\] =\s*\*static_cast<const float\*>\(buffer\);\s*return;", write)
 assert "write(controller, port, sizeof(value), 0, &value);" in body(state, "void sendControl(", "  ")
@@ -196,9 +198,16 @@ for signature in ("- (void)resetAllKnobs:", "- (void)transformerChanged:", "- (v
 
 # Rig presets persist both numeric ports and named symbols, including legacy defaults.
 mapping = body(presets, "static NSDictionary<NSNumber*, NSString*>* portToSymbolMap(")
-assert "i < NAMRig::kTransformerControlCount" in mapping
-assert "symbols[@(NAMRig::kTransformerControlFirstPort + i)]" in mapping
-assert "stringWithUTF8String:NAMRig::kTransformerControls[i].symbol" in mapping
+assert '#include "rig_control_metadata.h"' in presets
+assert "NAMRig::forEachRigControlSymbol(" in mapping
+assert "symbols[@(port)] = [NSString stringWithUTF8String:symbol];" in mapping
+enumeration = body(metadata, "inline void forEachRigControlSymbol(")
+assert "i < kTransformerControlCount" in enumeration
+assert "visit(kTransformerControlFirstPort + i, kTransformerControls[i].symbol);" in enumeration
+lookup = body(metadata, "inline const char* rigControlSymbol(")
+assert "port >= kTransformerControlFirstPort" in lookup
+assert "port < kTransformerControlFirstPort + kTransformerControlCount" in lookup
+assert "return kTransformerControls[port - kTransformerControlFirstPort].symbol;" in lookup
 for signature, receiver in (("+ (RigPreset*)defaultPreset", "p"), ("+ (nullable RigPreset*)loadFromFile:", "preset")):
     section = body(presets, signature)
     neutral = f"{receiver}->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];"

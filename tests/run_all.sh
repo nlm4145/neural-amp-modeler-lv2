@@ -38,6 +38,17 @@ run_cpp() {
   fi
 }
 
+echo "== tests/verify_standalone_worker.cpp =="
+run_cpp c++17 /tmp/verify_standalone_worker -pthread -Isrc -Ideps/lv2/include \
+  src/standalone_worker.cpp tests/verify_standalone_worker.cpp
+echo "== tests/verify_standalone_controls.cpp =="
+run_cpp c++20 /tmp/verify_standalone_controls -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+  -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_standalone_controls.cpp
+echo "== tests/verify_rig_control_metadata.cpp =="
+run_cpp c++17 /tmp/verify_rig_control_metadata -Isrc \
+  -Ideps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies \
+  tests/verify_rig_control_metadata.cpp src/win32_presets.cpp -- resources/neural_amp_modeler_rig.ttl.in
+
 echo "== tests/verify_noise_gate.cpp =="
 run_cpp c++17 /tmp/verify_noise_gate -Isrc tests/verify_noise_gate.cpp
 echo "== tests/verify_compressor.cpp =="

@@ -8,6 +8,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 presets_h = (ROOT / "src/rig_presets.h").read_text()
 presets_mm = (ROOT / "src/rig_presets.mm").read_text()
+metadata = (ROOT / "src/rig_control_metadata.h").read_text()
+tube_controls = (ROOT / "src/power_tube_controls.h").read_text()
+ttl = (ROOT / "resources/neural_amp_modeler_rig.ttl.in").read_text()
 ui_state_h = (ROOT / "src/rig_ui_state.h").read_text()
 ui_mm = (ROOT / "src/nam_rig_ui.mm").read_text()
 knobs_h = (ROOT / "src/rig_knobs.h").read_text()
@@ -25,6 +28,26 @@ assert "discoverModelsForStagePath" in presets_mm, "discoverModelsForStagePath m
 assert "setStageModels" in presets_mm, "applyToState must update available stage models"
 
 # 2. Verify all knob ports are registered in the preset map
+assert '#include "rig_control_metadata.h"' in presets_mm
+mapping = presets_mm.split("static NSDictionary<NSNumber*, NSString*>* portToSymbolMap(", 1)[1].split(
+    "static NSDictionary<NSString*, NSNumber*>* symbolToPortMap(", 1)[0]
+assert "NAMRig::forEachRigControlSymbol(" in mapping
+assert "symbols[@(port)] = [NSString stringWithUTF8String:symbol];" in mapping
+port_constants = dict(re.findall(r"uint32_t (k\w+) = (\d+);", tube_controls))
+static_table = re.search(r"kRigStaticControlSymbols\[\]\s*=\s*\{(.*?)\n\};", metadata, re.S)
+assert static_table, "shared static symbol table must exist"
+static_pairs = [(int(port_constants.get(port, port)), symbol) for port, symbol in re.findall(
+    r'\{(\d+|k\w+), "([^\"]+)"\}', static_table.group(1))]
+static_symbols = dict(static_pairs)
+assert len(static_symbols) == len(static_pairs), "no duplicate static ports"
+ttl_symbols = {int(port): symbol for port, symbol in re.findall(
+    r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^\"]+)"', ttl)}
+excluded_ports = {0, 1, 2, 3, 6, 10, 11, 16, 17, 18, 19, 29, 31}
+family_ports = set(range(60, 80)) | set(range(83, 179))
+assert static_symbols == {port: symbol for port, symbol in ttl_symbols.items()
+                          if port not in excluded_ports | family_ports}, (
+    "shared static ports and symbols must exactly match shipped preset coverage and TTL"
+)
 assert "kRigKnobCount = 42" in knobs_h
 expected_ports = [
     15, 23, 4, 28, 22, 12, 13, 14, 25, 26, 27, 5, 32, 33,
@@ -32,22 +55,22 @@ expected_ports = [
     48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58
 ]
 for p in expected_ports:
-    assert f"@{p}:" in presets_mm, f"Port {p} must be mapped in portToSymbolMap()"
-assert 'symbols[@(NAMRig::kPowerTubeCharacterPort)] = @"power_tube_character";' in presets_mm
+    assert p in static_symbols, f"Port {p} must be mapped in shared metadata"
+assert static_symbols[81] == "power_tube_character"
 expected_ports.append(81)
-assert 'symbols[@(NAMRig::kMidPushPort)] = @"mid_push";' in presets_mm
+assert static_symbols[82] == "mid_push"
 for port, sym in (("kOverdriveDrivePort", "od_drive"), ("kOverdriveTonePort", "od_tone"),
                   ("kOverdriveLevelPort", "od_level")):
-    assert f'symbols[@(NAMRig::{port})] = @"{sym}";' in presets_mm
+    assert static_symbols[int(port_constants[port])] == sym
 expected_ports.append(82)
 
 # 3. Verify stage powers, modes, and profiles are mapped
 for p in [7, 8, 9, 20, 21, 24, 30, 42, 47, 59]:
-    assert f"@{p}:" in presets_mm, f"Mode/power/profile port {p} must be mapped in portToSymbolMap()"
+    assert p in static_symbols, f"Mode/power/profile port {p} must be mapped in shared metadata"
 
 # Signed alignment remains the existing knob; polarity is an appended toggle.
-assert '@49: @"cab2_delay"' in presets_mm
-assert '@59: @"cab2_polarity"' in presets_mm
+assert static_symbols[49] == "cab2_delay"
+assert static_symbols[59] == "cab2_polarity"
 defaults = presets_mm.split("+ (RigPreset*)defaultPreset", 1)[1].split("+ (nullable RigPreset*)loadFromFile:", 1)[0]
 loading = presets_mm.split("+ (nullable RigPreset*)loadFromFile:", 1)[1].split("- (BOOL)saveToFile:", 1)[0]
 saving = presets_mm.split("- (BOOL)saveToFile:", 1)[1].split("+ (RigPreset*)captureFromState:", 1)[0]

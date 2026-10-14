@@ -45,6 +45,7 @@ for index, symbol in enumerate(symbols, 71):
     assert len(re.findall(rf'lv2:symbol "{symbol}"\s*;\s*ui:notifyType atom:Float', ui_ttl)) == 1
 
 assert "rackControls_ = NAMRig::kRackControlDefaults;" in standalone
-assert "plugin_->ports.rack_enabled[i] = &rackControls_[i];" in standalone
+assert "NAMRig::bindStandaloneControls(plugin_->ports," in standalone
+assert "{NAMRig::kRackControlFirstPort, rackControls_}" in standalone
 assert re.search(r"port >= NAMRig::kRackControlFirstPort &&\s*port < NAMRig::kRackControlFirstPort \+ NAMRig::kRackCount", standalone)
 print("  PASS  old rack indices 71..78 preserved; Power/Tube appends at 79, default ON and optional")
