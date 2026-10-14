@@ -223,13 +223,19 @@ class PinEq {
       for (auto& st : bands_) { st.clearHistory(); st.dirty = true; }
       rate_ = rate;
     }
+    // Targets stay fixed throughout this call, including every smoothing chunk.
+    std::array<double, kPinEqBandCount> targetLogFreq, targetLogQ;
+    for (size_t b = 0; b < kPinEqBandCount; ++b) {
+      targetLogFreq[b] = std::log(clampFreq(targets[b].freq));
+      targetLogQ[b] = std::log(targets[b].q);
+    }
     if (!primed_) {
       for (size_t b = 0; b < kPinEqBandCount; ++b) {
         auto& st = bands_[b];
         st.shape = targets[b].shape;
         st.gainDb = st.shape == kPinOff ? 0.0 : targets[b].gainDb;
-        st.logFreq = std::log(clampFreq(targets[b].freq));
-        st.logQ = std::log(targets[b].q);
+        st.logFreq = targetLogFreq[b];
+        st.logQ = targetLogQ[b];
         st.dirty = true;
       }
       primed_ = true;
@@ -247,8 +253,8 @@ class PinEq {
           st.shape = t.shape;
           st.dirty = true;
         }
-        const double freqTarget = std::log(clampFreq(t.freq));
-        const double qTarget = std::log(t.q);
+        const double freqTarget = targetLogFreq[b];
+        const double qTarget = targetLogQ[b];
         if (st.active()) {
           st.dirty |= glideTo(st.logFreq, freqTarget, glide, 1.0e-5);
           st.dirty |= glideTo(st.logQ, qTarget, glide, 1.0e-5);

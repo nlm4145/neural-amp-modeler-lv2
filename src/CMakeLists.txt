@@ -128,6 +128,7 @@ set_target_properties(neural_amp_modeler_rig
 # and select the convolution path with -DNAM_MULTIFRAME_FORCE=0/4/8.
 add_executable(nam_bench EXCLUDE_FROM_ALL
 	../tools/bench_models.cpp
+	dsp_accel.cpp
 	oversample.cpp
 	oversample.h)
 target_include_directories(nam_bench PRIVATE
@@ -150,6 +151,9 @@ target_compile_definitions(verify_polyphase_model PRIVATE
 	NAM_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(verify_polyphase_model PRIVATE NeuralAudio)
 
+add_executable(verify_control_work EXCLUDE_FROM_ALL ../tests/verify_control_work.cpp)
+target_include_directories(verify_control_work PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 if (NOT APPLE)
 	add_library(pffft STATIC
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/src/pffft.c
@@ -161,6 +165,7 @@ if (NOT APPLE)
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include/pffft
 	)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE pffft)
+	target_link_libraries(nam_bench PRIVATE pffft)
 	target_include_directories(neural_amp_modeler_rig PUBLIC
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies
@@ -263,7 +268,7 @@ if (APPLE)
 		SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
 	)
 
-	add_library(neural_amp_modeler_rig_ui MODULE
+	set(RIG_UI_SOURCES
 		nam_rig_ui.mm
 		rig_theme.h rig_theme.mm
 		rig_widgets.h rig_widgets.mm
@@ -272,6 +277,7 @@ if (APPLE)
 		rig_tone_api.h rig_tone_api.mm
 		rig_tone_browser.h rig_tone_browser.mm
 		rig_ui_state.h)
+	add_library(neural_amp_modeler_rig_ui MODULE ${RIG_UI_SOURCES})
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
 	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
@@ -292,14 +298,7 @@ if (APPLE)
 			wav_ir.cpp wav_ir.h
 			oversample.cpp oversample.h oversample_modes.h
 			amp_advanced.h output_transformer.h speaker_dynamics.h space_fx.h
-			nam_rig_ui.mm
-			rig_theme.h rig_theme.mm
-			rig_widgets.h rig_widgets.mm
-			rig_knobs.h rig_knobs.cpp
-			rig_presets.h rig_presets.mm
-			rig_tone_api.h rig_tone_api.mm
-			rig_tone_browser.h rig_tone_browser.mm
-			rig_ui_state.h
+			${RIG_UI_SOURCES}
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.icns
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.png)
 		set_source_files_properties(

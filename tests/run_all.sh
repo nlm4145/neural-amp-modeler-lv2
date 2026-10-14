@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the full Python DSP-validator suite (pre-compile validation discipline).
+# Run the DSP harnesses and Python validators (pre-compile validation discipline).
 # Usage: ./tests/run_all.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,132 +19,77 @@ python3 tests/test_a2_fast_ring_copy.py || status=1
 # for broken Command Line Tools libc++ headers).
 CXX_EXTRA="${CXXFLAGS:-}"
 
-# Critical gate regressions must fail closed, including missing C++ toolchains.
+# C++ DSP harnesses fail closed, including missing toolchains. Arguments after
+# an optional -- go to the harness rather than the compiler.
+run_cpp() {
+  local standard="$1" binary="$2"
+  shift 2
+  local -a build_args=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    build_args+=("$1")
+    shift
+  done
+  if [ "$#" -gt 0 ]; then shift; fi
+  if clang++ -O2 "-std=$standard" $CXX_EXTRA "${build_args[@]}" -o "$binary"; then
+    "$binary" "$@" || status=1
+  else
+    echo "  (failed: C++ compiler unavailable or harness build failed)"
+    status=1
+  fi
+}
+
 echo "== tests/verify_noise_gate.cpp =="
-if command -v clang++ >/dev/null 2>&1 && \
-    clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_noise_gate.cpp \
-      -o /tmp/verify_noise_gate; then
-  /tmp/verify_noise_gate || status=1
+run_cpp c++17 /tmp/verify_noise_gate -Isrc tests/verify_noise_gate.cpp
+echo "== tests/verify_compressor.cpp =="
+run_cpp c++17 /tmp/verify_compressor -Isrc tests/verify_compressor.cpp
+echo "== tests/verify_output_transformer.cpp =="
+run_cpp c++17 /tmp/verify_output_transformer -Isrc tests/verify_output_transformer.cpp
+echo "== tests/verify_speaker_dynamics.cpp =="
+run_cpp c++17 /tmp/verify_speaker_dynamics -Isrc tests/verify_speaker_dynamics.cpp
+echo "== tests/verify_amp_advanced.cpp =="
+run_cpp c++17 /tmp/verify_amp_advanced -Isrc tests/verify_amp_advanced.cpp
+echo "== tests/verify_overdrive.cpp =="
+run_cpp c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
+echo "== tests/verify_pin_eq.cpp =="
+run_cpp c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
+echo "== tests/verify_control_work.cpp (control caching / smoothing equivalence) =="
+run_cpp c++17 /tmp/verify_control_work -Isrc tests/verify_control_work.cpp
+echo "== tests/verify_space_fx.cpp =="
+run_cpp c++17 /tmp/verify_space_fx -Isrc tests/verify_space_fx.cpp
+echo "== tests/verify_oversample_modes.cpp =="
+run_cpp c++17 /tmp/verify_os_modes -Isrc tests/verify_oversample_modes.cpp
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "== tests/verify_oversample_shared.cpp =="
+  run_cpp c++17 /tmp/verify_os_shared -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+    tests/verify_oversample_shared.cpp
+  echo "== tests/verify_oversample_cpp.cpp =="
+  run_cpp c++20 /tmp/verify_os -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+    tests/verify_oversample_cpp.cpp
 else
-  echo "  (failed: C++ compiler unavailable or noise gate harness build failed)"
-  status=1
+  echo "  (skipped: shared/C++ oversampling harnesses require macOS Accelerate)"
 fi
 
-# C++ oversampler verification (built ad hoc; skipped silently if clang++
-# is unavailable or the build fails).
-if command -v clang++ >/dev/null 2>&1; then
-  echo "== tests/verify_compressor.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_compressor.cpp \
-      -o /tmp/verify_compressor 2>/dev/null; then
-    /tmp/verify_compressor || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_output_transformer.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_output_transformer.cpp \
-      -o /tmp/verify_output_transformer 2>/dev/null; then
-    /tmp/verify_output_transformer || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_speaker_dynamics.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_speaker_dynamics.cpp \
-      -o /tmp/verify_speaker_dynamics 2>/dev/null; then
-    /tmp/verify_speaker_dynamics || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_amp_advanced.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_amp_advanced.cpp \
-      -o /tmp/verify_amp_advanced 2>/dev/null; then
-    /tmp/verify_amp_advanced || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_overdrive.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_overdrive.cpp \
-      -o /tmp/verify_overdrive 2>/dev/null; then
-    /tmp/verify_overdrive || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_pin_eq.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_pin_eq.cpp \
-      -o /tmp/verify_pin_eq 2>/dev/null; then
-    /tmp/verify_pin_eq || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_space_fx.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_space_fx.cpp \
-      -o /tmp/verify_space_fx 2>/dev/null; then
-    /tmp/verify_space_fx || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_oversample_modes.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc tests/verify_oversample_modes.cpp \
-      -o /tmp/verify_os_modes 2>/dev/null; then
-    /tmp/verify_os_modes || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_oversample_shared.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
-      tests/verify_oversample_shared.cpp -o /tmp/verify_os_shared 2>/dev/null; then
-    /tmp/verify_os_shared || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_oversample_cpp.cpp =="
-  if clang++ -O2 -std=c++20 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
-      tests/verify_oversample_cpp.cpp -o /tmp/verify_os 2>/dev/null; then
-    /tmp/verify_os || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
-  echo "== tests/verify_transition_fade.cpp =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA tests/verify_transition_fade.cpp \
-      -o /tmp/verify_transition_fade 2>/dev/null; then
-    /tmp/verify_transition_fade || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
+echo "== tests/verify_transition_fade.cpp =="
+run_cpp c++17 /tmp/verify_transition_fade tests/verify_transition_fade.cpp
+
+if [ "$(uname -s)" = "Darwin" ]; then
   echo "== tests/verify_oversample_batched.cpp (old vs batched vDSP_conv) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
-      tests/verify_oversample_batched.cpp -o /tmp/verify_osb 2>/dev/null; then
-    /tmp/verify_osb || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
+  run_cpp c++17 /tmp/verify_osb -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+    tests/verify_oversample_batched.cpp
   echo "== tests/verify_oversample_cascade.cpp (True 4x/8x per-level chains) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
-      tests/verify_oversample_cascade.cpp -o /tmp/verify_voc 2>/dev/null; then
-    /tmp/verify_voc || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
+  run_cpp c++17 /tmp/verify_voc -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+    tests/verify_oversample_cascade.cpp
   echo "== tests/verify_oversample_latency.cpp (True cascade pipeline delay) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
-      tests/verify_oversample_latency.cpp -o /tmp/verify_os_latency 2>/dev/null; then
-    /tmp/verify_os_latency || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
+  run_cpp c++17 /tmp/verify_os_latency -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+    tests/verify_oversample_latency.cpp
   echo "== tests/verify_wav_ir.cpp (partitioned-FFT cab IR vs direct conv) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate -Isrc -Ideps/pffft src/dsp_accel.cpp src/wav_ir.cpp \
-      tests/verify_wav_ir.cpp -o /tmp/verify_wav_ir 2>/dev/null; then
-    /tmp/verify_wav_ir /tmp || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
+  run_cpp c++17 /tmp/verify_wav_ir -framework Accelerate -Isrc -Ideps/pffft src/dsp_accel.cpp src/wav_ir.cpp \
+    tests/verify_wav_ir.cpp -- /tmp
   echo "== tests/verify_nsdf.cpp (vectorized tuner NSDF vs scalar) =="
-  if clang++ -O2 -std=c++17 $CXX_EXTRA -framework Accelerate \
-      tests/verify_nsdf.cpp -o /tmp/verify_nsdf 2>/dev/null; then
-    /tmp/verify_nsdf || status=1
-  else
-    echo "  (skipped: harness build failed)"
-  fi
+  run_cpp c++17 /tmp/verify_nsdf -framework Accelerate tests/verify_nsdf.cpp
+else
+  echo "  (skipped: batched/cascade/latency oversampling, WAV IR and NSDF harnesses require macOS Accelerate)"
 fi
 
 # End-to-end smoke test against the INSTALLED rig plugin. Plain C, so it
@@ -238,7 +183,7 @@ fi
 for t in tests/test_*.py; do
   # Already run above.
   case "$t" in
-    tests/test_max_quality_defaults.py|tests/test_a2_fast_ring_copy.py) continue ;;
+    tests/test_max_quality_defaults.py|tests/test_stage_db_meters.py|tests/test_a2_fast_ring_copy.py) continue ;;
   esac
   echo "== $t =="
   # `set -e` is active: a bare assignment from a failing command substitution

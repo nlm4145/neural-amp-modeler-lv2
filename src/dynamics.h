@@ -11,6 +11,8 @@ namespace NAMRig {
 class NoiseGate {
  public:
   void configure(double rate, float thresholdDb, float releaseMs) {
+    if (active_ && rate == configuredRate_ && thresholdDb == configuredThreshold_ &&
+        releaseMs == configuredRelease_) return;
     active_ = thresholdDb > -79.99f;
     if (!active_) {
       onset_ = tail_ = muteReference_ = 0.0f;
@@ -40,6 +42,9 @@ class NoiseGate {
     qualificationSamples_ = static_cast<uint32_t>(std::ceil(rate * 0.00008));
     onsetGapSamples_ = static_cast<uint32_t>(std::ceil(rate * 0.00015));
     muteQualificationSamples_ = static_cast<uint32_t>(std::ceil(rate * 0.003));
+    configuredRate_ = rate;
+    configuredThreshold_ = thresholdDb;
+    configuredRelease_ = releaseMs;
   }
 
   float process(float input) {
@@ -98,6 +103,8 @@ class NoiseGate {
   }
 
  private:
+  double configuredRate_ = 0.0;
+  float configuredThreshold_ = -80.0f, configuredRelease_ = 0.0f;
   bool active_ = false, open_ = true, muted_ = false;
   float onset_ = 0.0f, tail_ = 0.0f, muteReference_ = 0.0f, gain_ = 1.0f;
   float openLevel_ = 0.0f, closeLevel_ = 0.0f;

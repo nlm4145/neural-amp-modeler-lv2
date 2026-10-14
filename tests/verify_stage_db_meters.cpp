@@ -75,7 +75,7 @@ Controls defaults(int mode) {
   c[15] = -80;
   c[20] = c[21] = static_cast<float>(mode);
   c[23] = 150;
-  c[24] = 3;
+  c[24] = 1;
   c[27] = 20000;
   c[43] = c[44] = 25;
   c[45] = c[46] = 50;
@@ -386,8 +386,8 @@ void wavRouting(const LV2_Descriptor* d, int mode, const WavFixture& fixture) {
   const auto label = domain(mode) + " deferred WAV cab";
   wav.expect(Pre, db(amp->inputPeak), label + ": PRE equals actual amp input");
   wav.expect(Post, reference.readings[Post], label + ": POST agrees with no-cab reference");
-  // Original source taps (normalization=3) make this IR exactly a 1/8 gain.
-  check(std::fabs(db(wav.outputPeak) - db(reference.outputPeak) + 18.0618f + 9) < .1f && wav.finite,
+  // Peak normalization makes the gain-only impulse unity; the cab trim remains -9 dB.
+  check(std::fabs(db(wav.outputPeak) - db(reference.outputPeak) + 9) < .1f && wav.finite,
         label + ": WAV gain and cab trim affect output, not POST");
 }
 

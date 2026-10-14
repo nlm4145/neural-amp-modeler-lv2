@@ -84,6 +84,22 @@ are built ad hoc by `run_all.sh`:
   pre-delay with exact bypass.
 - `verify_wav_ir.cpp` — partitioned-FFT convolution vs direct reference,
   the 170 ms limit, and stereo-IR channel loading.
+- `verify_control_work.cpp` — gate configuration caching and Pin EQ target
+  hoisting: exact bypass, automation, resets, rate changes and unchanged
+  32-sample smoothing boundaries. Optional before/after comparison and
+  microbenchmarks use a snapshot of the original headers:
+
+  ```bash
+  cmake --build build --target verify_control_work
+  build/src/verify_control_work
+  # Snapshot src/dynamics.h and src/pin_eq.h from the revision being compared.
+  clang++ -O3 -std=c++17 -Isrc -DBASELINE_HEADERS=/absolute/snapshot/src \
+    tests/verify_control_work.cpp -o /tmp/verify_control_work_ab
+  /tmp/verify_control_work_ab --bench
+  ```
+
+Direct C++ DSP harness compiler failures fail the suite and show diagnostics rather
+than silently skipping coverage. Accelerate-only harnesses run on macOS.
 
 Note: `tests/test_a2_fast_ring_copy.py` currently FAILS. That is a real lost
 optimization in the `NeuralAudio` submodule, not a stale assertion — see the
