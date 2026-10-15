@@ -72,7 +72,10 @@ class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
       auto& job = jobs[i];
       job = {process, context, phaseCount * i / (helpers + 1),
              phaseCount * (i + 1) / (helpers + 1), false};
-      job.published = workers_[i].submit([](void* context) noexcept {
+      // The deadline only gates admission here. Several stages submit per
+      // callback with shrinking deadlines; a fixed helper constraint avoids a
+      // thread_policy_set kernel call on every submission.
+      job.published = workers_[i].submitFixedConstraint([](void* context) noexcept {
         auto& job = *static_cast<Job*>(context);
         job.process(job.context, job.begin, job.end);
       }, &job, deadline_);

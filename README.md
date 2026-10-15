@@ -158,27 +158,30 @@ To simultaneously build and install both the LV2 plugin (for hosts/DAWs like Ele
 ./build.sh
 ```
 
-In a terminal, the script opens a settings menu before building:
+In a terminal, the script asks for a processing mode before building:
 
 ```text
-Axe FX Build Settings
-Parallel models: ON
-Threaded NAM cabinets: OFF
-Smart bypass (single-model LV2 only): OFF
-Launch: auto
-1  Toggle parallel models (macOS standalone)
-2  Toggle threaded NAM cabinets (experimental, macOS standalone)
-3  Toggle smart bypass (single-model LV2 only, not the rig)
-4  Cycle launch: auto / standalone / element / none
-Enter or b: build and install    q: quit
+1  Parallel
+2  Serial (threaded cabs enabled)
+Choice:
 ```
 
-Processing choices are remembered in that build directory's CMake cache. The
-threading choices become installed-app defaults, including normal Finder/Dock
-launches; they do not depend on terminal environment variables. The initial
-defaults are parallel models ON, threaded cabinets OFF, and smart bypass OFF.
-The launch choice applies only to the current build. Audio-device settings,
-oversampling, models, and presets are not changed by the menu.
+- `1  Parallel`: multicore models ON, threaded NAM cabinets OFF. This is the
+  initial default and the recommended choice.
+- `2  Serial (threaded cabs enabled)`: multicore models OFF, threaded NAM
+  cabinets ON. Use it to compare the serial model path; the experimental Cab B
+  helper thread is enabled in this mode.
+- `q`: quit without building.
+
+The script then prints the settings it will use (processing mode, parallel
+models, threaded NAM cabinets, smart bypass, launch) and builds. Processing
+choices are remembered in that build directory's CMake cache. The threading
+choices become installed-app defaults, including normal Finder/Dock launches;
+they do not depend on terminal environment variables. Smart bypass and the
+launch choice are not part of the menu: set smart bypass with the
+`BUILD_SMART_BYPASS` variable and the launch with the command-line options
+below. Audio-device settings, oversampling, models, and presets are not changed
+by the menu.
 
 This single script:
 1. Configures CMake and compiles both the LV2 plugin bundle and the native macOS standalone app in parallel.
@@ -189,6 +192,7 @@ This single script:
 Options:
 - `./build.sh --no-menu` builds without prompting, reusing cached processing choices.
 - `./build.sh --menu` forces the menu, even with piped input.
+- `./build.sh --parallel` / `./build.sh --serial` select the processing mode without the menu.
 - `./build.sh --dry-run` previews settings and the configure command without building, installing, or saving changes.
 - `./build.sh --no-launch` — build and install without launching applications.
 - `./build.sh --element` — specifically launch/reopen Element.

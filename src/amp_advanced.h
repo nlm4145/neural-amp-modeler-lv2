@@ -204,7 +204,7 @@ class AmpAdvanced {
         const double k = beta * f0;
         double normalized, nonlinearY;
         if (Legacy || character == 0.0) {
-          const double headroom = 1.0 - sagDepth * supplyEnvelope_;
+          const double headroom = std::max(kMinHeadroom, 1.0 - sagDepth * supplyEnvelope_);
           const double bias = biasStatic - excursionDepth * supplyEnvelope_;
           const double biasOut = sat<true>(bias, kKnee);
           const double solved = solve<true>(kOpenLoopGain / headroom, k * headroom,
@@ -213,7 +213,8 @@ class AmpAdvanced {
           normalized = solved - biasOut;
           nonlinearY = headroom * normalized;
         } else {
-          const double headroom = tubeHeadroom * (1.0 - sagDepth * supplyEnvelope_);
+          const double headroom = tubeHeadroom *
+              std::max(kMinHeadroom, 1.0 - sagDepth * supplyEnvelope_);
           const double bias = biasSensitivity * (biasStatic - excursionDepth * supplyEnvelope_) +
                               asymmetry;
           const double biasOut = sat<false>(bias, knee);
@@ -237,6 +238,9 @@ class AmpAdvanced {
   static constexpr size_t kChunk = 32;
   static constexpr double kOpenLoopGain = 10.0;
   static constexpr double kKnee = 0.7;
+  // Sag and bias excursion lower the supply ceiling; the loop gain divides by
+  // it, so the ceiling keeps a floor instead of collapsing toward zero.
+  static constexpr double kMinHeadroom = 1.0e-3;
   static constexpr double kPi = 3.14159265358979323846;
   static constexpr double kQ = 0.7071067811865476;
   static constexpr double kMidPushMaxDb = 9.0;

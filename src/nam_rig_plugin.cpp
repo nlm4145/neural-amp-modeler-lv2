@@ -66,7 +66,34 @@ bool isFullRigModel(const char* path) {
          header.find("\"gear_type\":\"full_rig\"") != std::string::npos;
 }
 
+// The top-level "architecture" string of a .nam file, or empty when absent.
+std::string modelArchitecture(const char* path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) return {};
+  std::string header(65536, '\0');
+  file.read(header.data(), static_cast<std::streamsize>(header.size()));
+  header.resize(static_cast<size_t>(file.gcount()));
+  const size_t key = header.find("\"architecture\"");
+  if (key == std::string::npos) return {};
+  const size_t colon = header.find(':', key);
+  if (colon == std::string::npos) return {};
+  const size_t open = header.find('"', colon + 1);
+  if (open == std::string::npos) return {};
+  const size_t close = header.find('"', open + 1);
+  if (close == std::string::npos) return {};
+  return header.substr(open + 1, close - open - 1);
+}
+
+// NeuralAudio rate-adapts WaveNets (dilation scaling / polyphase) and the
+// WaveNet submodels inside an A2 container. Everything else runs at its own
+// rate regardless of the loader's external rate.
+bool rateAdaptable(const std::string& architecture) {
+  return architecture.empty() || architecture == "WaveNet" ||
+         architecture == "SlimmableContainer";
+}
+
 constexpr double kPi = 3.14159265358979323846;
+constexpr float kDualCabShelfHz = 200.0f;
 constexpr float kEqQ = 0.7071067811865476f;  // Q = 1/sqrt(2)
 
 // RBJ Audio EQ Cookbook — normalized (by a0) biquad coefficient setters.
@@ -230,7 +257,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   // Includes the user's 10 ms alignment range plus the short True-Nx
   // converter delay used by a parallel Cab A NAM model.
   cab2Align.initialize(rate, 20.0);
-  cabAlign.initialize(rate, 10.0);
+  cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
 
@@ -261,7 +288,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
     stageDcRate[st] = rate;
   }
   cab2Align.initialize(rate, 20.0);
-  cabAlign.initialize(rate, 10.0);
+  cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
   appliedBass = -999.0f;
@@ -274,7 +301,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   for (size_t i = 0; i < kStageCount; ++i) {
     if (!modelPaths[i].empty() && modelPaths[i].size() < MAX_FILE_NAME) {
       scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(),
-                        modelPaths[i].size(), stageOversample(i));
+                        modelPaths[i].size(), desiredStageMode(i));
     }
   }
 }
@@ -297,6 +324,7 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     }
     osScratch[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
     osScratch2[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
+    resetNativeStream(st);
   }
   osChain.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   const size_t post = static_cast<size_t>(std::max(1, size));
@@ -336,10 +364,10 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
 
   LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
                              message->oversampleMode, message->generation,
-                             {}, nullptr, nullptr, nullptr, false};
+                             {}, nullptr, nullptr, nullptr, false, 0.0f};
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
-  const int requestedMode = message->stage == Stage::Cab2 ? Plugin::kOsLegacy2
-      : Plugin::decodeOversample(static_cast<float>(message->oversampleMode));
+  const int requestedMode = Plugin::normalizeLoadMode(message->stage,
+                                                      message->oversampleMode);
 
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
@@ -401,6 +429,17 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
           response.model->SetMaxAudioBufferSize(kMaxOsFactor * rig->maxBufferSize);
           // Maximum-sound policy: always select the full A2/Slimmable tier.
           response.model->SetQualityScaleFactor(1.0f);
+          // A model NeuralAudio cannot rate-adapt would otherwise run at the
+          // domain rate with weights trained for its own rate. NONE keeps the
+          // unadapted reference behaviour on purpose.
+          const std::string architecture = modelArchitecture(message->path);
+          if (mode != Plugin::kOsNone && !rateAdaptable(architecture)) {
+            response.nativeRate = response.model->GetSampleRate();
+            lv2_log_note(&rig->logger,
+                         "Model '%s' (%s) is not rate-adaptable; it runs at its "
+                         "native %.0f Hz inside a resampled domain.\n",
+                         message->path, architecture.c_str(), response.nativeRate);
+          }
         }
         if (mode == Plugin::kOsNone)
           lv2_log_warning(&rig->logger,
@@ -416,7 +455,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       // NeuralAudio "oversampling" is dilation scaling: it only adapts the
       // model to the host rate when hostRate % modelRate == 0. Otherwise the
       // model runs at the wrong rate (detuned/wrong tone) — silently. Warn.
-      if (response.model) {
+      if (response.model && response.nativeRate <= 0.0f) {
         const int stageMode = requestedMode;
         const int pipelineFactor2 = Plugin::truePipelineFactor(stageMode,
                                                                 rig->sampleRate);
@@ -464,11 +503,10 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
   }
-  const int desiredMode = index == 0 ? rig->osRequested[0]
-                        : index == stageIndex(Stage::Cab2) ? Plugin::kOsLegacy2
-                                                           : rig->osRequested[1];
-  const int responseMode = index == stageIndex(Stage::Cab2) ? Plugin::kOsLegacy2
-      : Plugin::decodeOversample((float)message->oversampleMode);
+  rig->respondedGeneration[index] = message->generation;
+  const int desiredMode = rig->desiredStageMode(index);
+  const int responseMode = Plugin::normalizeLoadMode(message->stage,
+                                                     message->oversampleMode);
   if (responseMode != desiredMode) {
     // The mode changed while an initial/path load was in flight, before
     // reloadModelsForOversample() had an installed model to reschedule.
@@ -490,6 +528,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   pending.irRight = message->irRight;
   pending.oversampleMode = responseMode;
   pending.fullRig = message->fullRig;
+  pending.nativeRate = message->nativeRate;
   std::memcpy(pending.path, message->path, MAX_FILE_NAME);
   pending.ready = true;
 
@@ -576,7 +615,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     for (size_t i = 0; i < kStageCount; ++i) {
       if (propertyId == uris.stagePath[i]) {
         const Stage stage = static_cast<Stage>(i);
-        const int mode = stageOversample(i);
+        const int mode = desiredStageMode(i);
         scheduleModelLoad(stage, reinterpret_cast<const char*>(path + 1),
                           path->size - 1, mode);
         break;
@@ -916,6 +955,37 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
 
+  // A .nam Cab A shares the amp's True domain alone, but runs at the session
+  // rate next to Cab B. Engaging or dropping Cab B therefore reloads Cab A for
+  // the other domain; the swap lands through the usual fade.
+  {
+    const size_t cab = stageIndex(Stage::Cab);
+    const size_t cab2 = stageIndex(Stage::Cab2);
+    const bool parallelDesired = desiredEnabled[cab2] &&
+        (models[cab2] || irs[cab2] || pendingSwitches[cab2].ready);
+    if (!cabParallelLatched) {
+      cabParallelDesired = parallelDesired;
+      cabParallelLatched = true;
+    } else if (parallelDesired != cabParallelDesired) {
+      cabParallelDesired = parallelDesired;
+      const int mode = desiredStageMode(cab);
+      const auto& pending = pendingSwitches[cab];
+      if (pending.ready) {
+        // The pending switch is the newest request: re-domain a pending model,
+        // never revive a model that a pending unload or IR is replacing.
+        const size_t length = strnlen(pending.path, MAX_FILE_NAME);
+        if (pending.model && length > 0 && pending.oversampleMode != mode)
+          scheduleModelLoad(Stage::Cab, pending.path, length, mode);
+      } else if (loadGeneration[cab] == respondedGeneration[cab] && models[cab] &&
+                 !irs[cab] && osApplied[cab] != mode && !modelPaths[cab].empty() &&
+                 modelPaths[cab].size() < MAX_FILE_NAME) {
+        // No load is in flight (one in flight re-domains itself in
+        // workResponse), so re-create the installed model for the new domain.
+        scheduleModelLoad(Stage::Cab, modelPaths[cab].c_str(), modelPaths[cab].size(), mode);
+      }
+    }
+  }
+
   // An enable toggle switches a (possibly high-gain) stage in or out mid
   // waveform — a click. Latch the toggles through the same equal-power fade
   // as a model swap: fade out, apply at the zero crossing, fade back in.
@@ -1006,8 +1076,16 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // committed cab path without changing the host-visible profile selection.
   int desiredSpeaker = SpeakerDynamics::clampProfile(
       static_cast<int>(*ports.speaker_profile + 0.5f));
-  if (desiredSpeaker == SpeakerDynamics::kAuto)
+  if (desiredSpeaker == SpeakerDynamics::kAuto) {
+    // Cab A names the profile; Cab B takes over when Cab A is absent or when
+    // Cab A's file name matches no profile family.
+    const bool cabAActive = appliedEnabled[2] && (models[2] || irs[2]);
+    const bool cabBActive = appliedEnabled[3] && (models[3] || irs[3]) &&
+                            !modelPaths[3].empty();
     desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[2].c_str());
+    if (cabBActive && (!cabAActive || desiredSpeaker == SpeakerDynamics::kResistive))
+      desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
+  }
   if (!speakerLatched) {
     speakerRequested = speakerApplied = desiredSpeaker;
     speakerLatched = true;
@@ -1054,8 +1132,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     const uint64_t state = (enabled[st] ? 1u : 0u)
                          | (models[st] ? 2u : 0u)
                          | (irs[st] ? 4u : 0u)
-                         | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3);
-    topology |= state << (st * 8);
+                         | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3)
+                         | ((uint64_t)nativeDecimation(st) << 8);
+    topology |= state << (st * 16);
   }
   if (topology != osTopologySignature) {
     osTopologySignature = topology;
@@ -1063,6 +1142,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       for (auto& up : stageUp) up.reset();
     for (auto& stageDown : osDown)
       for (auto& down : stageDown) down.reset();
+    for (size_t st = 0; st < kStageCount; ++st) resetNativeStream(st);
   }
 
   // ---- Stage processing with per-stage oversample domains ----
@@ -1204,6 +1284,25 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         continue;
       }
 
+      // Non-adaptable models (LSTM, ...) run at their own rate: decimate the
+      // session stream, process, interpolate back. Same rate = plain base path.
+      const int decimation = nativeDecimation(st);
+      if (decimation > 0) {
+        if (decimation > 1) {
+          n = runNativeDomain(st, chain, n, decimation,
+                              [&](float* domain, uint32_t m, double rate) {
+                                applyModel(st, models[st], domain, m, rate);
+                              });
+          if (off == 0) latencyFrames += nativeLatencyFrames(decimation);
+        } else {
+          applyModel(st, models[st], chain, n, sampleRate);
+        }
+        modelProcessed = true;
+        if (st == 2) cabProcessed = true;
+        ++st;
+        continue;
+      }
+
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
         applyModel(st, models[st], chain, n, sampleRate);
@@ -1218,6 +1317,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       size_t next = st + 1;
       while (next < kSerialStageCount && enabled[next] && models[next] &&
              !(next == 2 && (irs[2] || parallelCabs)) &&
+             nativeDecimation(next) == 0 &&
              truePipelineFactor(osApplied[next], sampleRate) == f) {
         group[groupCount++] = next++;
       }
@@ -1236,12 +1336,15 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     }
     std::memcpy(io, chain, sliceLen * sizeof(float));
   }
-  // A parallel Cab A NAM model keeps the True-Nx domain it was loaded for.
-  // Its independent converter therefore adds one more cascade; Cab B is
-  // delayed by the same amount below so both branches remain aligned.
-  if (parallelCabs && enabled[2] && models[2] && !irs[2]) {
-    const int cabFactor = truePipelineFactor(osApplied[2], sampleRate);
-    if (cabFactor > 1) latencyFrames += cascadeLatencyFrames(cabFactor);
+  // Parallel cabinets normally share the session-rate domain and add nothing.
+  // While a Cab A reload for that domain is still in flight it keeps its own
+  // True cascade, and a native-rate cabinet model keeps its resampling
+  // domain; the longer branch is reported and the other branch is delayed to
+  // match it in processPostChain.
+  if (parallelCabs) {
+    uint32_t extraA = 0, extraB = 0;
+    parallelCabExtras(extraA, extraB);
+    latencyFrames += std::max(extraA, extraB);
   }
   if (ports.latency)
     *ports.latency = static_cast<float>(latencyFrames);
@@ -1343,6 +1446,35 @@ uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
   return static_cast<uint32_t>(back);
 }
 
+void Plugin::processCabB(float* samples, uint32_t count) noexcept {
+  constexpr size_t kCabB = stageIndex(Stage::Cab2);
+  const int decimation = nativeDecimation(kCabB);
+  if (decimation > 1)
+    runNativeDomain(kCabB, samples, count, decimation,
+                    [this](float* domain, uint32_t m, double rate) noexcept {
+                      runModel(kCabB, models[kCabB], domain, m, rate);
+                    });
+  else
+    runModel(kCabB, models[kCabB], samples, count, sampleRate);
+}
+
+void Plugin::parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcept {
+  extraA = extraB = 0;
+  if (appliedEnabled[2] && models[2] && !irs[2]) {
+    const int decimation = nativeDecimation(2);
+    if (decimation > 1) {
+      extraA = nativeLatencyFrames(decimation);
+    } else {
+      const int factor = truePipelineFactor(osApplied[2], sampleRate);
+      if (factor > 1) extraA = cascadeLatencyFrames(factor);
+    }
+  }
+  if (models[3] && !irs[3]) {
+    const int decimation = nativeDecimation(3);
+    if (decimation > 1) extraB = nativeLatencyFrames(decimation);
+  }
+}
+
 // Everything after the serial NAM chain: the parallel cabinet pair, the cab
 // trim and cuts, DC removal, post EQ, output trim, the click-safe transition
 // fade, and the stereo effects. Runs in maxBufferSize slices on internal
@@ -1400,20 +1532,21 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
 
     struct CabJob {
       Plugin* plugin;
-      NeuralAudio::NeuralModel* model;
       float* samples;
       uint32_t count;
-      double rate;
-    } job{this, models[3], cabBL.data(), n, sampleRate};
+    } job{this, cabBL.data(), n};
     bool cabBDispatched = false;
     if (cabinetWorker && parallelCabs && enabled[2] && models[2] && !irs[2] &&
         models[3] && !irs[3]) {
       std::memcpy(job.samples, preCab.data(), n * sizeof(float));
       cabBDispatched = cabinetWorker->submit([](void* context) noexcept {
         auto& j = *static_cast<CabJob*>(context);
-        j.plugin->runModel(3, j.model, j.samples, j.count, j.rate);
+        j.plugin->processCabB(j.samples, j.count);
       }, &job, cabinetDeadlineTicks);
     }
+
+    uint32_t extraA = 0, extraB = 0;
+    parallelCabExtras(extraA, extraB);
 
     if (enabled[2]) {
       if (irs[2]) {
@@ -1425,8 +1558,16 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         irs[2]->process(L, n, norm);
         cabProcessed = true;
       } else if (models[2] && parallelCabs) {
+        // Steady state is the session rate. A True domain only persists while
+        // the session-rate reload is in flight; native-rate models resample.
+        const int decimation = nativeDecimation(2);
         const int factor = truePipelineFactor(osApplied[2], sampleRate);
-        if (factor > 1) processTrueCab(2, L, n, factor);
+        if (decimation > 1)
+          runNativeDomain(2, L, n, decimation,
+                          [this](float* domain, uint32_t m, double rate) noexcept {
+                            runModel(2, models[2], domain, m, rate);
+                          });
+        else if (factor > 1) processTrueCab(2, L, n, factor);
         else runModel(2, models[2], L, n, sampleRate);
         cabProcessed = true;
       }
@@ -1441,9 +1582,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
     }
     if (haveA && parallelCabs) {
-      // Delay either capture without subtracting Cab A's converter latency
-      // from B's compensation. Zero-delay calls maintain history for sign flips.
-      cabAlign.process(L, R, n, std::max(-alignmentMs, 0.0f));
+      // Delay either capture without subtracting its own converter latency
+      // from the other branch's compensation. Zero-delay calls maintain
+      // history for sign flips.
+      const float cabADomainDelayMs = extraB > extraA
+          ? static_cast<float>(1000.0 * (extraB - extraA) / sampleRate) : 0.0f;
+      cabAlign.process(L, R, n, std::max(-alignmentMs, 0.0f) + cabADomainDelayMs);
       cabAlignActive = true;
     } else if (cabAlignActive) {
       cabAlign.reset();
@@ -1466,14 +1610,11 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         // Always finish the published job before touching B, switching models,
         // or leaving this slice. A timeout cannot safely retry recurrent DSP.
         if (cabBDispatched) cabinetWorker->wait();
-        else runModel(3, models[3], BL, n, sampleRate);
+        else processCabB(BL, n);
         std::memcpy(BR, BL, n * sizeof(float));
       }
-      const int cabFactor = haveA && models[2] && !irs[2]
-          ? truePipelineFactor(osApplied[2], sampleRate) : 1;
-      const float domainDelayMs = cabFactor > 1
-          ? static_cast<float>(1000.0 * cascadeLatencyFrames(cabFactor) / sampleRate)
-          : 0.0f;
+      const float domainDelayMs = haveA && extraA > extraB
+          ? static_cast<float>(1000.0 * (extraA - extraB) / sampleRate) : 0.0f;
       cab2Align.process(BL, BR, n,
                         std::max(alignmentMs, 0.0f) + domainDelayMs);
       cab2AlignActive = true;
@@ -1490,8 +1631,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       cabProcessed = true;
     }
 
-    // Width: side gain of each stereo cabinet pair, then the spread between
-    // cabinet A (left) and cabinet B (right). Zero keeps exact dual mono.
+    // Width: the equal-power spread between cabinet A (left) and cabinet B
+    // (right). Each cabinet keeps its own stereo image at every setting; zero
+    // sums both cabinets to the same dual-mono blend Spatial OFF uses.
     if (!spatialOn) {
       // Cabinet routing remains active, without mono collapse or width panning.
       if (haveA && haveB) {
@@ -1504,43 +1646,65 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         std::memcpy(L, cabBL.data(), n * sizeof(float));
         std::memcpy(R, cabBR.data(), n * sizeof(float));
       }
-    } else if (haveA || haveB || smoothedWidth != 0.0f || widthTarget != 0.0f) {
+    } else {
       const float* BL = cabBL.data();
       const float* BR = cabBR.data();
       for (uint32_t i = 0; i < n; ++i) {
         smoothedWidth += (widthTarget - smoothedWidth) * glide10;
         if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
-        const float w = smoothedWidth;
-        float outL = L[i];
-        float outR = R[i];
-        float aL = 0.0f, aR = 0.0f;
-        float bL = 0.0f, bR = 0.0f;
-        if (haveA) {
-          const float midA = 0.5f * (L[i] + R[i]);
-          const float sideA = 0.5f * (L[i] - R[i]) * w;
-          aL = midA + sideA;
-          aR = midA - sideA;
-          outL = aL;
-          outR = aR;
-        }
-        if (haveB) {
-          const float midB = 0.5f * (BL[i] + BR[i]);
-          const float sideB = 0.5f * (BL[i] - BR[i]) * w;
-          bL = midB + sideB;
-          bR = midB - sideB;
-          outL = bL;
-          outR = bR;
-        }
         if (haveA && haveB) {
-          const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - w);
+          const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - smoothedWidth);
           const float gainNear = std::cos(theta);
           const float gainFar = std::sin(theta);
-          outL = aL * gainNear + bL * gainFar;
-          outR = aR * gainFar + bR * gainNear;
+          const float outL = L[i] * gainNear + BL[i] * gainFar;
+          const float outR = R[i] * gainFar + BR[i] * gainNear;
+          L[i] = outL;
+          R[i] = outR;
+        } else if (haveB) {
+          L[i] = BL[i];
+          R[i] = BR[i];
         }
-        L[i] = outL;
-        R[i] = outR;
       }
+    }
+
+    // Two cabinets are coherent in the lows, so the equal-power blend adds
+    // 20*log10(cos + sin) dB there (+3 dB at zero Width, 0 dB hard-panned).
+    // Take it back with a low shelf scaled by the level balance; a muted or
+    // polarity-inverted Cab B has no coherent sum to compensate.
+    if (haveA && haveB) {
+      const float theta = spatialOn
+          ? static_cast<float>(kPi) * 0.25f * (1.0f - smoothedWidth)
+          : static_cast<float>(kPi) * 0.25f;
+      const float coherent = std::max(1.0f, std::cos(theta) + std::sin(theta));
+      const float gainA = consoleOn ? smoothedCabLevel : 1.0f;
+      const float gainB = consoleOn
+          ? smoothedCab2Level * std::max(0.0f, smoothedCab2Polarity) : 1.0f;
+      const float balance = gainA + gainB > 1.0e-6f
+          ? 2.0f * std::min(gainA, gainB) / (gainA + gainB) : 0.0f;
+      const float shelfTarget = -20.0f * std::log10(coherent) * balance;
+      for (uint32_t start = 0; start < n; start += kEqChunk) {
+        const uint32_t m = std::min<uint32_t>(kEqChunk, n - start);
+        glideValue(smoothedDualCabShelfDb, shelfTarget, chunkGlide, 0.005f);
+        if (smoothedDualCabShelfDb != appliedDualCabShelfDb) {
+          if (smoothedDualCabShelfDb != 0.0f) {
+            setLowShelf(dualCabShelf, smoothedDualCabShelfDb, kDualCabShelfHz, sampleRate);
+            copyCoefficients(dualCabShelfR, dualCabShelf);
+          } else {
+            dualCabShelf.reset();
+            dualCabShelfR.reset();
+          }
+          appliedDualCabShelfDb = smoothedDualCabShelfDb;
+        }
+        if (smoothedDualCabShelfDb == 0.0f) continue;
+        for (uint32_t i = start; i < start + m; ++i) {
+          L[i] = dualCabShelf.process(L[i]);
+          R[i] = dualCabShelfR.process(R[i]);
+        }
+      }
+    } else {
+      dualCabShelf.reset();
+      dualCabShelfR.reset();
+      smoothedDualCabShelfDb = appliedDualCabShelfDb = 0.0f;
     }
 
     if (cabProcessed && consoleOn) {
@@ -1739,6 +1903,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
 
   if (commitRequested) {
     commitPendingSwitches();
+    // The output is silent at the commit, so the blend shelf restarts from a
+    // clean history regardless of what each branch carried into the fade.
+    dualCabShelf.reset();
+    dualCabShelfR.reset();
     for (size_t st = 0; st < kStageCount; ++st)
       appliedEnabled[st] = desiredEnabled[st];
     if (rackTransitionActive && appliedRacks != requestedRacks) {
@@ -1823,11 +1991,13 @@ void Plugin::commitPendingSwitches() {
     if (index == stageIndex(Stage::Amp)) ampIsFullRig = pending.fullRig;
     modelPaths[index] = pending.path;
     osApplied[index] = pending.oversampleMode;
+    stageNativeRate[index] = models[index] ? pending.nativeRate : 0.0f;
     assert(modelPaths[index].capacity() >= MAX_FILE_NAME + 1);
     notifyPending[index] = true;
     pending.ready = false;
     for (auto& up : osUp[index]) up.reset();
     for (auto& down : osDown[index]) down.reset();
+    resetNativeStream(index);
     schedule->schedule_work(schedule->handle, sizeof(old), &old);
   }
   osTopologySignature = ~uint64_t{0};
@@ -1839,7 +2009,7 @@ void Plugin::reloadModelsForOversample() {
   for (size_t i = 0; i < kSerialStageCount; ++i) {
     if (models[i] && !modelPaths[i].empty()) {
       const size_t len = modelPaths[i].size();
-      const int mode = i == 0 ? osRequested[0] : osRequested[1];
+      const int mode = desiredStageMode(i);
       if (len < MAX_FILE_NAME)
         scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(), len, mode);
     }
@@ -1861,7 +2031,7 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
     pending.ready = false;
   }
   LV2LoadModelMsg message{kWorkTypeLoad, stage,
-                          stage == Stage::Cab2 ? kOsLegacy2 : decodeOversample((float)mode),
+                          normalizeLoadMode(stage, mode),
                           ++loadGeneration[index], {}};
   std::memcpy(message.path, path, length);
   message.path[length] = '\0';
@@ -1954,7 +2124,7 @@ LV2_State_Status Plugin::restore(LV2_Handle instance,
     if (length < MAX_FILE_NAME) {
       const Stage stage = static_cast<Stage>(i);
       rig->scheduleModelLoad(stage, absolutePath, length,
-                             rig->stageOversample(i));
+                             rig->desiredStageMode(i));
       rig->modelPaths[i] = absolutePath;
     }
     if (freePath) freePath->free_path(freePath->handle, absolutePath);

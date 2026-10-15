@@ -57,6 +57,11 @@ class CabinetWorker {
   // Once published, wait has no timeout or serial fallback.
   bool submit(void (*process)(void*) noexcept, void* context,
               uint64_t deadlineTicks = 0) noexcept;
+  // Same admission rules, but the deadline only gates admission: the helper
+  // keeps a fixed half-period constraint, so a caller that submits several
+  // times per callback with shrinking deadlines makes no policy call per job.
+  bool submitFixedConstraint(void (*process)(void*) noexcept, void* context,
+                             uint64_t deadlineTicks) noexcept;
   void wait() noexcept;
 
  private:
@@ -67,6 +72,8 @@ class CabinetWorker {
                 "The control flags must be lock-free");
 
   void run(uint32_t periodTicks) noexcept;
+  bool publish(void (*process)(void*) noexcept, void* context,
+               uint64_t deadlineTicks, bool deadlineConstraint) noexcept;
 
   std::thread thread_;
 #if defined(__APPLE__)

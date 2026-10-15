@@ -131,6 +131,18 @@ void CabinetWorker::stop() noexcept {
 
 bool CabinetWorker::submit(void (*process)(void*) noexcept,
                            void* context, uint64_t deadlineTicks) noexcept {
+  return publish(process, context, deadlineTicks, true);
+}
+
+bool CabinetWorker::submitFixedConstraint(void (*process)(void*) noexcept,
+                                          void* context,
+                                          uint64_t deadlineTicks) noexcept {
+  return publish(process, context, deadlineTicks, false);
+}
+
+bool CabinetWorker::publish(void (*process)(void*) noexcept,
+                            void* context, uint64_t deadlineTicks,
+                            bool deadlineConstraint) noexcept {
   if (!started_ || stopping_.load(std::memory_order_acquire)) return false;
   const auto group = static_cast<os_workgroup_t>(group_);
   if (group && os_workgroup_testcancel(group)) {
@@ -142,14 +154,17 @@ bool CabinetWorker::submit(void (*process)(void*) noexcept,
     return false;
   std::fenv_t environment;
   if (std::fegetenv(&environment) != 0) return false;
-  uint32_t constraint = periodTicks_;
+  uint32_t constraint = deadlineConstraint ? periodTicks_
+                                           : std::max<uint32_t>(1, computationTicks_);
   if (deadlineTicks != 0) {
     const uint64_t now = mach_absolute_time();
     if (deadlineTicks <= now || deadlineTicks - now < minimumWindowTicks_)
       return false;
-    constraint = static_cast<uint32_t>(
-        std::min<uint64_t>(periodTicks_, deadlineTicks - now));
-    if (constraint < minimumWindowTicks_) return false;
+    if (deadlineConstraint) {
+      constraint = static_cast<uint32_t>(
+          std::min<uint64_t>(periodTicks_, deadlineTicks - now));
+      if (constraint < minimumWindowTicks_) return false;
+    }
   }
   if (constraint != policyConstraint_) {
     thread_time_constraint_policy_data_t policy{};
@@ -311,6 +326,18 @@ void CabinetWorker::stop() noexcept {
 
 bool CabinetWorker::submit(void (*process)(void*) noexcept,
                            void* context, uint64_t deadlineTicks) noexcept {
+  return publish(process, context, deadlineTicks, true);
+}
+
+bool CabinetWorker::submitFixedConstraint(void (*process)(void*) noexcept,
+                                          void* context,
+                                          uint64_t deadlineTicks) noexcept {
+  return publish(process, context, deadlineTicks, false);
+}
+
+bool CabinetWorker::publish(void (*process)(void*) noexcept,
+                            void* context, uint64_t deadlineTicks,
+                            bool /*deadlineConstraint*/) noexcept {
   if (!started_ || stopping_.load(std::memory_order_acquire)) return false;
   if (!process || state_.load(std::memory_order_acquire) != JobState::Idle)
     return false;

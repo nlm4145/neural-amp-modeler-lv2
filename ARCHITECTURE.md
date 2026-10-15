@@ -59,10 +59,10 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 29 | `latency` | out | frames, `lv2:latency` for host PDC (True cascade delay: 2x=23, 4x=35, 8x=41 per group; 0 at base rate) |
 | 30 | `transformer_type` | in | Amp output-transformer profile (0..12): Captured/Off, Modern, US Vintage, UK Vintage, Small Iron, Tight Metal, Extended Range, Thrash Bite, Doom Iron, Studio Linear, Tweed Bloom, Class-A Chime, Bass Iron |
 | 31 | `output_r` | audio out | Right channel of the cabinet mix |
-| 32 | `stereo_width` | in | 0–100%; side gain of each stereo cab pair and the pan spread between Cab A (left) and Cab B (right); 0 = exact dual mono |
+| 32 | `stereo_width` | in | 0–100%; equal-power pan spread between Cab A (left) and Cab B (right). Each cabinet keeps its own stereo image at every setting; 0 = both cabinets summed to the same dual-mono blend Spatial OFF uses |
 | 33 | `room` | in | 0–100%; diffused, damped early reflections from the plate reverb's input stage, 0 = off |
 | 34–41 | `presence`/`depth`/`sag`/`bias`/`negative_feedback`/`bright`/`input_eq`/`master` | in | Optional advanced amp shaping; all neutral by default and independent of ports 12–14 post EQ |
-| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto matches whole tokens of the cab file name. |
+| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto matches whole tokens of the Cab A file name and falls back to Cab B's name when Cab A is absent or matches no family. |
 | 47 | `cab2_enabled` | in | toggle; Cab B runs parallel to Cab A from the same post-amp tap (default off) |
 | 48 | `cab2_level` | in | dB trim on Cab B |
 | 49 | `cab2_delay` | in | -10 to +10 ms alignment; negative delays Cab A, positive delays Cab B, 0 adds no user delay (default 0) |
@@ -171,7 +171,17 @@ load's quiet-signal response) on the same axes.
 It multiplies WaveNet dilations by `hostRate/modelRate` at LOAD time. There
 is no resampler. Consequences:
 
-- Only `architecture == "WaveNet"` models are rate-adapted; **LSTM models never are**.
+- Only `architecture == "WaveNet"` models (and the WaveNet submodels of an A2
+  `SlimmableContainer`) are rate-adapted; **LSTM models never are**. The rig
+  therefore runs every other architecture at its native rate: `work()` records
+  the model's own rate (`LV2SwitchModelMsg::nativeRate`) and `process()` wraps
+  the stage in DOWN(session/native) → model → UP on the stage's own converter
+  bank (`Plugin::runNativeDomain`). The converters emit a count that jitters
+  around the block size on odd block sizes, so a small output queue turns the
+  pass into an exact, block-size-independent delay (47 frames at 2:1, 141 at
+  4:1, 329 at 8:1) that is added to `lv2:latency`; the first frames after a
+  converter reset are silence. Mode NONE keeps the unadapted reference
+  behaviour.
 - Only works when `hostRate % modelRate == 0`; otherwise the model silently
   runs at the wrong rate (detuned). `modelRate` defaults to 48000 if absent.
 - Changing host rate requires reloading every model
@@ -271,12 +281,20 @@ Related DSP-chain guarantees:
 - Cabinets: a stereo WAV IR loads both channels (`WavIR::load(..., channel)`);
   the IR limit is 170 ms (`WavIR::kMaxSeconds`). Cab B takes the same post-amp
   tap as Cab A, then alignment/polarity, level, and equal-power spread by Width.
-  While Cab B is active a `.nam` Cab A leaves the amp's shared True group but
-  retains an independent True domain matching the rate it was loaded for; Cab B
-  is delayed by that converter latency. This pipeline compensation is unchanged:
-  signed user alignment additionally delays A for negative values or B for
-  positive values (up to 10 ms), with no added user delay at 0. All
-  post-chain processing
+  While Cab B is engaged (enabled with a model or IR loaded or pending) a
+  `.nam` Cab A is reloaded for the session rate (`desiredStageMode` returns
+  `kOsLegacy2`), so both cabinets run in one base-rate domain with no second
+  converter cascade and no extra latency; dropping Cab B reloads Cab A back
+  into the amp's shared True group. Only while that reload is in flight does
+  Cab A keep its previous True domain, and a native-rate cabinet model keeps
+  its resampling domain: `parallelCabExtras` reports the longer branch on
+  `lv2:latency` and delays the shorter branch to match. Signed user alignment
+  additionally delays A for negative values or B for positive values (up to
+  10 ms), with no added user delay at 0. With both cabinets active, a 200 Hz
+  low shelf of −20·log10(cos θ + sin θ) dB, scaled by the A/B level balance,
+  removes the coherent low-frequency build-up of the equal-power blend
+  (−3 dB at Width 0, 0 dB hard-panned, 0 dB when either cab is muted or Cab B
+  is polarity-inverted). All post-chain processing
   (cabs, trims, EQ, fade, effects) runs in maxBufferSize slices on internal
   stereo buffers; the two output ports may alias.
 
@@ -341,7 +359,17 @@ DSP-side persistence hooks — they are dead code in this host.
 NeuralAudio's oversampling multiplies WaveNet dilations by
 `hostRate/modelRate` at LOAD time. There is no resampler. Consequences:
 
-- Only `architecture == "WaveNet"` models are rate-adapted; **LSTM models never are**.
+- Only `architecture == "WaveNet"` models (and the WaveNet submodels of an A2
+  `SlimmableContainer`) are rate-adapted; **LSTM models never are**. The rig
+  therefore runs every other architecture at its native rate: `work()` records
+  the model's own rate (`LV2SwitchModelMsg::nativeRate`) and `process()` wraps
+  the stage in DOWN(session/native) → model → UP on the stage's own converter
+  bank (`Plugin::runNativeDomain`). The converters emit a count that jitters
+  around the block size on odd block sizes, so a small output queue turns the
+  pass into an exact, block-size-independent delay (47 frames at 2:1, 141 at
+  4:1, 329 at 8:1) that is added to `lv2:latency`; the first frames after a
+  converter reset are silence. Mode NONE keeps the unadapted reference
+  behaviour.
 - Only works when `hostRate % modelRate == 0`; otherwise the model silently
   runs at the wrong rate (detuned). `modelRate` defaults to 48000 if absent.
 - Changing host rate requires reloading every model

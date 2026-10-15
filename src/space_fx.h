@@ -7,6 +7,36 @@
 
 namespace NAMRig {
 
+// 8-tap Hamming-windowed sinc kernels for fractional delays, tabulated at
+// kSteps fractional positions and normalized to unity DC gain. Built once at
+// load time so the audio thread never evaluates sin/cos per sample.
+struct Sinc8Table {
+  static constexpr int kTaps = 8;
+  static constexpr int kFirstTap = -3;
+  static constexpr int kSteps = 256;
+  float weights[kSteps + 1][kTaps];
+  Sinc8Table() {
+    constexpr double kPi = 3.14159265358979323846;
+    for (int step = 0; step <= kSteps; ++step) {
+      const double frac = static_cast<double>(step) / kSteps;
+      const double sinPiFrac = std::sin(kPi * frac);
+      double norm = 0.0;
+      for (int t = 0; t < kTaps; ++t) {
+        const int k = kFirstTap + t;
+        const double x = static_cast<double>(k) - frac;
+        const double sign = ((k & 1) == 0) ? -1.0 : 1.0;
+        const double s = std::fabs(x) < 1.0e-9 ? 1.0 : sign * sinPiFrac / (kPi * x);
+        const double w = 0.54 + 0.46 * std::cos(kPi * x / 4.0);
+        weights[step][t] = static_cast<float>(s * w);
+        norm += s * w;
+      }
+      const float scale = norm != 0.0 ? static_cast<float>(1.0 / norm) : 1.0f;
+      for (int t = 0; t < kTaps; ++t) weights[step][t] *= scale;
+    }
+  }
+};
+inline const Sinc8Table kSinc8Table;
+
 // Circular delay line with integer, 4-point cubic, and 8-tap sinc interpolated reads.
 // Delay values are clamped to the allocated length so a stale control value can
 // never read outside the buffer.
@@ -33,8 +63,9 @@ class DelayLine {
     const size_t n = buffer_.size();
     return buffer_[(write_ + n - 1 - delay) % n];
   }
-  // 4-point Catmull-Rom cubic interpolation (C1 continuous, flat passband,
-  // prevents high-frequency loss on fractional delays in reverb/echo).
+  // 4-point Catmull-Rom cubic interpolation (C1 continuous). At a half-sample
+  // offset it is about -1 dB at a quarter of the sample rate, against -3 dB
+  // for linear interpolation; good enough for reverb and echo taps.
   float readFrac(double delay) const {
     delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
     const size_t whole = static_cast<size_t>(delay);
@@ -64,8 +95,9 @@ class DelayLine {
   }
 
   // 8-tap windowed-sinc interpolation for high-precision cabinet alignment.
-  // Preserves full audio bandwidth (<0.05 dB ripple up to 24 kHz at 96k)
-  // with linear phase across fractional delays.
+  // Preserves the audio band (about 0.06 dB ripple up to 24 kHz at 96 kHz)
+  // with linear phase across fractional delays. Kernels come from
+  // kSinc8Table, blended linearly between its tabulated fractions.
   float readSinc8(double delay) const {
     delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
     const size_t whole = static_cast<size_t>(delay);
@@ -80,22 +112,17 @@ class DelayLine {
       return readFrac(delay);
     }
 
-    constexpr double kPi = 3.14159265358979323846;
-    const double sinPiFrac = std::sin(kPi * static_cast<double>(frac));
+    const float position = frac * Sinc8Table::kSteps;
+    const int row = std::min(static_cast<int>(position), Sinc8Table::kSteps - 1);
+    const float blend = position - static_cast<float>(row);
+    const float* lower = kSinc8Table.weights[row];
+    const float* upper = kSinc8Table.weights[row + 1];
     float sum = 0.0f;
-    float norm = 0.0f;
-
-    for (int k = -3; k <= 4; ++k) {
-      const double x = static_cast<double>(k) - static_cast<double>(frac);
-      const double sign = ((k & 1) == 0) ? -1.0 : 1.0;
-      const double s = (std::fabs(x) < 1.0e-9) ? 1.0 : (sign * sinPiFrac / (kPi * x));
-      const double d = x / 4.0;
-      const double w = 0.54 + 0.46 * std::cos(kPi * d);
-      const float weight = static_cast<float>(s * w);
-      norm += weight;
-      sum += weight * read(static_cast<size_t>(static_cast<int>(whole) + k));
+    for (int t = 0; t < Sinc8Table::kTaps; ++t) {
+      const float weight = lower[t] + (upper[t] - lower[t]) * blend;
+      sum += weight * read(whole + static_cast<size_t>(Sinc8Table::kFirstTap + t));
     }
-    return norm != 0.0f ? (sum / norm) : read(whole);
+    return sum;
   }
 
  private:

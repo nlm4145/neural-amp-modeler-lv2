@@ -3,6 +3,8 @@
 
 Cab B is a fourth stage that runs PARALLEL to Cab A from the same post-amp
 tap, so it is never part of the serial chain and never joins a True-Nx domain.
+While it is engaged, a .nam Cab A is reloaded for the session rate so both
+cabinets share one domain. Non-WaveNet models run at their native rate.
 The delay and reverb sit after the click-safe transition fade so a model swap
 cannot cut their tails.
 """
@@ -78,33 +80,56 @@ assert "for (size_t i = 0; i < kSerialStageCount; ++i)" in dsp, (
     "the oversample reload must not try to re-create Cab B for a True domain"
 )
 
-# Both cabinets take the SAME post-amp tap. A .nam Cab A leaves the amp's
-# shared True group but retains its own correctly configured True domain.
+# Both cabinets take the SAME post-amp tap. While Cab B is engaged a .nam Cab A
+# leaves the amp's shared True group and is reloaded for the session rate, so
+# both cabinets share one base-rate domain with no second converter cascade.
 assert "std::memcpy(preCab.data(), L, n * sizeof(float));" in dsp
 assert "const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);" in dsp, (
     "a .nam Cab A must defer out of the True chain when Cab B is active"
 )
-assert "processTrueCab(2, L, n, factor)" in dsp, (
-    "a parallel Cab A NAM model must stay in the True domain it was loaded for"
+assert "if (stage == stageIndex(Stage::Cab) && cabParallelDesired) return kOsLegacy2;" in header, (
+    "a parallel Cab A must load for the session rate, like Cab B"
 )
-assert "latencyFrames += cascadeLatencyFrames(cabFactor);" in dsp, (
-    "the independent Cab A converter must be reported to the host"
+assert "scheduleModelLoad(Stage::Cab, modelPaths[cab].c_str(), modelPaths[cab].size(), mode);" in dsp, (
+    "engaging or dropping Cab B must re-create the installed Cab A model for its new domain"
+)
+assert "processTrueCab(2, L, n, factor)" in dsp, (
+    "a parallel Cab A keeps its previous True domain only while its session-rate reload is in flight"
+)
+assert "parallelCabExtras(extraA, extraB);" in dsp and "latencyFrames += std::max(extraA, extraB);" in dsp, (
+    "the longer parallel cabinet branch must be reported to the host"
+)
+# Models NeuralAudio cannot rate-adapt (anything but a WaveNet) run at their
+# own rate inside a DOWN -> model -> UP domain instead of the oversampled one.
+assert "float nativeRate;" in header and "float nativeRate = 0.0f;" in header
+assert "uint32_t runNativeDomain(size_t stage, float* samples, uint32_t count," in header
+assert "nativeLatencyFrames(decimation)" in dsp, "native-rate holdback must reach lv2:latency"
+assert 'architecture == "WaveNet"' in dsp and 'architecture == "SlimmableContainer"' in dsp, (
+    "only WaveNets and A2 containers may stay in the oversampled domain"
+)
+assert "void Plugin::processCabB(float* samples, uint32_t count) noexcept" in dsp, (
+    "Cab B must share the native-rate path with the serial stages"
 )
 assert "portValue(ports.cab2_delay, 0.0f)" in dsp, "signed alignment must retain a null-safe neutral default"
 b_alignment = re.search(r"cab2Align\.process\(BL, BR, n,\s*(.*?)\);", dsp, re.S)
 assert b_alignment, "Cab B must keep its stereo alignment delay"
-assert "domainDelayMs" in b_alignment.group(1), "Cab B must retain the parallel Cab A converter compensation"
+assert "domainDelayMs" in b_alignment.group(1), "Cab B must retain compensation for a longer Cab A branch"
 positive_delay = re.search(r"std::max\(\s*(\w+)\s*,\s*0\.0f\s*\)", b_alignment.group(1))
 assert positive_delay, "only positive signed alignment may be added to Cab B compensation"
 signed_control = positive_delay.group(1)
-assert re.search(rf"\w+\.process\(L, R, n,\s*std::max\(-{signed_control},\s*0\.0f\)\)", dsp), (
-    "the same signed alignment's negative half must delay both Cab A channels"
-)
+assert re.search(
+    rf"\w+\.process\(L, R, n,\s*std::max\(-{signed_control},\s*0\.0f\)\s*\+\s*cabADomainDelayMs\)", dsp
+), "the same signed alignment's negative half must delay both Cab A channels, plus any longer Cab B branch"
 assert "portValue(ports.cab2_polarity, 0.0f)" in dsp, "unconnected polarity must default to normal"
 assert "smoothedCab2Level += (cab2LevelTarget - smoothedCab2Level) * glide10;" in dsp
-assert "if (haveA && haveB)" in dsp and "outL = bL;" in dsp, (
+assert "if (haveA && haveB)" in dsp and "} else if (haveB) {" in dsp and "L[i] = BL[i];" in dsp, (
     "Cab B alone must replace the dry Cab A branch instead of mixing with it"
 )
+# Two coherent cabinets add up to +3 dB in the lows under the equal-power blend.
+assert "kDualCabShelfHz = 200.0f" in dsp and "setLowShelf(dualCabShelf, smoothedDualCabShelfDb, kDualCabShelfHz, sampleRate);" in dsp, (
+    "the dual-cab blend must compensate its coherent low-frequency build-up"
+)
+assert "std::log10(coherent) * balance" in dsp, "the compensation must follow the pan law and the A/B level balance"
 
 # Stereo WAV impulse responses load both channels into a second convolver.
 assert "WavIR* irRight;" in header and "std::array<WavIR*, kStageCount> irsRight{};" in header

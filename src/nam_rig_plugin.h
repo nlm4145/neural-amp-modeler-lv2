@@ -76,6 +76,9 @@ struct LV2SwitchModelMsg {
   WavIR* ir;
   WavIR* irRight;
   bool fullRig;
+  // > 0: the model cannot be rate-adapted (not a WaveNet) and must run at
+  // this sample rate through a DOWN -> model -> UP native-rate domain.
+  float nativeRate;
 };
 
 struct LV2FreeModelMsg {
@@ -440,6 +443,26 @@ private:
   // through a newly-selected rate domain during an asynchronous reload.
   std::array<int, 2> osRequested = {kOsTrue8, kOsTrue8};
   std::array<uint64_t, kStageCount> loadGeneration{};
+  // Generation of the last response that was not stale; equal to
+  // loadGeneration when no load is in flight for the stage.
+  std::array<uint64_t, kStageCount> respondedGeneration{};
+  // Native-rate stages: NeuralAudio only rate-adapts WaveNets, so any other
+  // architecture (LSTM, ...) runs at its own rate via DOWN -> model -> UP.
+  // 0 = the stage's model follows its oversample domain as usual.
+  std::array<float, kStageCount> stageNativeRate{};
+  // Native-rate output streaming state (see runNativeDomain).
+  std::array<std::array<float, 16>, kStageCount> nativeQueue{};
+  std::array<size_t, kStageCount> nativeQueued{};
+  std::array<uint32_t, kStageCount> nativePadding{};
+  std::array<bool, kStageCount> nativePrimed{};
+  // Cab B engaged or about to be: a .nam Cab A then loads for the session
+  // rate so both cabinets share one base-rate domain with no extra cascade.
+  bool cabParallelDesired = false;
+  bool cabParallelLatched = false;
+  // Two coherent cabinets add up to +3 dB in the lows under the equal-power
+  // blend; this shelf takes that back while both are active.
+  Biquad dualCabShelf, dualCabShelfR;
+  float smoothedDualCabShelfDb = 0.0f, appliedDualCabShelfDb = 0.0f;
 
   struct PendingSwitch {
     NeuralAudio::NeuralModel* model = nullptr;
@@ -447,6 +470,7 @@ private:
     WavIR* irRight = nullptr;
     int oversampleMode = kOsTrue8;
     bool fullRig = false;
+    float nativeRate = 0.0f;
     bool ready = false;
     char path[MAX_FILE_NAME] = {};
   };
@@ -491,6 +515,102 @@ private:
                                     : ports.amp_oversample;
     if (!port) return kOsTrue8;     // unconnected host port: the TTL default
     return decodeOversample(*port);
+  }
+
+  // Load/response modes travel as raw ints. Ports never carry kOsLegacy2 (the
+  // decoder maps legacy values to True 2x), so that value is reserved for
+  // the internal "session rate" request of Cab B and of a parallel Cab A.
+  static int normalizeLoadMode(Stage stage, int mode) {
+    if (stage == Stage::Cab2) return kOsLegacy2;
+    if (stage == Stage::Cab && mode == kOsLegacy2) return kOsLegacy2;
+    return decodeOversample(static_cast<float>(mode));
+  }
+
+  // The mode a stage's model should be loaded for right now. A .nam Cab A
+  // leaves the amp's True domain and loads for the session rate while Cab B
+  // is engaged, so both cabinets run in the same domain.
+  int desiredStageMode(size_t stage) const {
+    if (stage == stageIndex(Stage::Cab) && cabParallelDesired) return kOsLegacy2;
+    return stageOversample(stage);
+  }
+
+  // Session rate over the model's native rate when the stage must run at its
+  // native rate: 1 = same rate, 2/4/8 = decimation cascade levels, 0 = the
+  // stage follows its oversample domain. Unsupported ratios fall back to 1.
+  int nativeDecimation(size_t stage) const {
+    const double native = stageNativeRate[stage];
+    if (native <= 0.0 || sampleRate <= 0.0) return 0;
+    const double ratio = sampleRate / native;
+    for (int decimation : {1, 2, 4, 8})
+      if (std::fabs(ratio - decimation) < 1.0e-3) return decimation;
+    return 1;
+  }
+
+  // Fixed holdback of a DOWN -> UP native-rate cascade in session frames: the
+  // largest cumulative deficit of the converters at any block parity, measured
+  // impulse-through. The output queue below turns that into an exact delay.
+  static uint32_t nativeLatencyFrames(int decimation) {
+    return decimation == 2 ? 47u : decimation == 4 ? 141u : decimation == 8 ? 329u : 0u;
+  }
+
+  // DOWN(decimation) -> body(domain, count, nativeRate) -> UP(decimation) on
+  // this stage's converter bank, always writing exactly count frames: the
+  // holdback first as silence, then the stream. The cascade emits a count that
+  // jitters by up to (decimation - 1) around count on odd block sizes, so a
+  // small queue carries the surplus into the next block.
+  template <class Body>
+  uint32_t runNativeDomain(size_t stage, float* samples, uint32_t count,
+                           int decimation, Body&& body) noexcept {
+    const size_t levels = cascadeLevels(decimation);
+    float* bufs[2] = {osScratch[stage].data(), osScratch2[stage].data()};
+    if (!nativePrimed[stage]) {
+      nativePadding[stage] = nativeLatencyFrames(decimation);
+      nativeQueued[stage] = 0;
+      nativePrimed[stage] = true;
+    }
+    size_t n = osDown[stage][0].process(samples, count, bufs[0]);
+    for (size_t c = 1; c < levels && n > 0; ++c)
+      n = osDown[stage][c].process(bufs[(c - 1) % 2], n, bufs[c % 2]);
+    float* produced = bufs[(levels - 1) % 2];
+    size_t back = 0;
+    if (n > 0) {
+      body(produced, static_cast<uint32_t>(n), sampleRate / decimation);
+      back = n;
+      for (size_t c = levels; c-- > 0;) {
+        float* out = produced == bufs[0] ? bufs[1] : bufs[0];
+        back = osUp[stage][c].process(produced, back, out);
+        produced = out;
+      }
+    }
+    auto& queue = nativeQueue[stage];
+    size_t& queued = nativeQueued[stage];
+    const uint32_t pad = std::min(nativePadding[stage], count);
+    std::fill(samples, samples + pad, 0.0f);
+    nativePadding[stage] -= pad;
+    size_t written = pad;
+    const size_t fromQueue = std::min<size_t>(queued, count - written);
+    std::copy(queue.begin(), queue.begin() + fromQueue, samples + written);
+    std::copy(queue.begin() + fromQueue, queue.begin() + queued, queue.begin());
+    queued -= fromQueue;
+    written += fromQueue;
+    const size_t fromProduced = std::min<size_t>(back, count - written);
+    std::copy(produced, produced + fromProduced, samples + written);
+    written += fromProduced;
+    const size_t surplus = std::min(back - fromProduced, queue.size() - queued);
+    std::copy(produced + fromProduced, produced + fromProduced + surplus,
+              queue.begin() + queued);
+    queued += surplus;
+    if (written < count) {
+      const float fill = written > 0 ? samples[written - 1] : 0.0f;
+      std::fill(samples + written, samples + count, fill);
+    }
+    return count;
+  }
+
+  void resetNativeStream(size_t stage) noexcept {
+    nativePrimed[stage] = false;
+    nativeQueued[stage] = 0;
+    nativePadding[stage] = 0;
   }
 
   // TRUE modes target an ABSOLUTE domain rate pinned to the user's session
@@ -554,6 +674,11 @@ private:
                 size_t count, double domainRate) noexcept;
   uint32_t processTrueCab(size_t stage, float* samples, uint32_t count,
                           int factor) noexcept;
+  // Cab B's .nam model at the session rate or in its native-rate domain.
+  void processCabB(float* samples, uint32_t count) noexcept;
+  // Extra pipeline frames of each parallel cabinet branch beyond the serial
+  // chain (Cab A's own True cascade or native domain, Cab B's native domain).
+  void parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcept;
   bool cab2AlignActive = false;
   bool cabAlignActive = false;
   static constexpr size_t stageIndex(Stage stage) {

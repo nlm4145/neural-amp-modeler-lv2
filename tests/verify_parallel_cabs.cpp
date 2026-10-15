@@ -113,6 +113,32 @@ struct TempWavs {
   }
 };
 
+// The rig's RBJ low shelf (nam_rig_plugin.cpp setLowShelf) as the dual-cab
+// blend applies it: 200 Hz, -20*log10(cos(pi/4) + sin(pi/4)) dB at Width 0
+// with both cabinets at equal level.
+void dualCabShelf(NAMRig::Biquad& f, double sampleRate) {
+  const float theta = 3.14159265358979323846f * 0.25f;
+  const float coherent = std::max(1.0f, std::cos(theta) + std::sin(theta));
+  const float gainDb = -20.0f * std::log10(coherent);
+  const float kEqQ = 0.7071067811865476f;
+  const double A = std::pow(10.0, gainDb / 40.0);
+  const double w0 = 2.0 * 3.14159265358979323846 * 200.0f / sampleRate;
+  const double c = std::cos(w0), s = std::sin(w0);
+  const double alpha = s / (2.0 * kEqQ);
+  const double sqA = 2.0 * std::sqrt(A) * alpha;
+  const double b0 = A * ((A + 1) - (A - 1) * c + sqA);
+  const double b1 = 2.0 * A * ((A - 1) - (A + 1) * c);
+  const double b2 = A * ((A + 1) - (A - 1) * c - sqA);
+  const double a0 = (A + 1) + (A - 1) * c + sqA;
+  const double a1 = -2.0 * ((A - 1) + (A + 1) * c);
+  const double a2 = (A + 1) + (A - 1) * c - sqA;
+  f.b0 = static_cast<float>(b0 / a0);
+  f.b1 = static_cast<float>(b1 / a0);
+  f.b2 = static_cast<float>(b2 / a0);
+  f.a1 = static_cast<float>(a1 / a0);
+  f.a2 = static_cast<float>(a2 / a0);
+}
+
 bool sameEnvironment(const std::fenv_t& a, const std::fenv_t& b,
                      bool includeFlags = true) {
 #if defined(__arm64__)
@@ -289,10 +315,13 @@ struct Host {
       std::memcpy(&work.load, data, size);
       const size_t stage = static_cast<size_t>(work.load.stage);
       check(stage < NAMRig::kStageCount, "load stage in range");
+      // Cab B always loads for the session rate (1); a .nam Cab A does too
+      // while Cab B is engaged. Pedal/amp only ever load none/True modes.
       check(stage == 3 ? work.load.oversampleMode == 1
-                       : std::find(kModes.begin(), kModes.end(),
+                       : (stage == 2 && work.load.oversampleMode == 1) ||
+                         std::find(kModes.begin(), kModes.end(),
                                    work.load.oversampleMode) != kModes.end(),
-            "Cab2 schedules legacy 1; serial stages schedule none/True modes");
+            "Cab2 and a parallel Cab A schedule the session rate; serial stages schedule none/True modes");
       ++host.loads[stage];
     } else {
       check(work.type == NAMRig::kWorkTypeFree && size == sizeof(work.free),
@@ -622,7 +651,10 @@ struct Pair {
       check(serial.plugin.models[index] != parallel.plugin.models[index],
             "instances own separate real model graphs");
   }
-  void steady(bool cabA, bool cabB, bool dispatch, int factor) {
+  // nativeA/nativeB describe the cabinet models: 0 = rate-adaptable WaveNet,
+  // 1 = non-adaptable model at the session rate, 2/4/8 = non-adaptable model
+  // decimated into its native-rate domain.
+  void steady(bool cabA, bool cabB, bool dispatch, int factor, int nativeA = 0, int nativeB = 0) {
     sweep(2); // Both 5 ms transition phases finish, including at 96 kHz.
     const auto a = parallel.calls[2], b = parallel.calls[3];
     const uint64_t framesBefore = checkedFrames;
@@ -630,20 +662,37 @@ struct Pair {
     const uint64_t frames = checkedFrames - framesBefore;
     const bool namA = cabA && parallel.plugin.models[2];
     const bool namB = cabB && parallel.plugin.models[3];
-    check(parallel.calls[2].frames - a.frames == (namA ? frames * factor : 0),
-          "Cab A processes exactly its amp-following True domain");
-    check(parallel.calls[3].frames - b.frames == (namB ? frames : 0),
-          "Cab B processes exactly base-rate frames, never True oversampled");
+    // A decimated domain emits floor-divided counts; a block boundary may move
+    // one sample between measurement windows.
+    const auto nativeFrames = [&](uint64_t processed, int native) {
+      const uint64_t expected = frames / static_cast<uint64_t>(native);
+      return processed + 1 >= expected && processed <= expected + 1;
+    };
+    const uint64_t framesA = parallel.calls[2].frames - a.frames;
+    if (!namA) check(framesA == 0, "a bypassed or WAV Cab A runs no graph");
+    else if (nativeA >= 2) check(nativeFrames(framesA, nativeA), "a native-rate Cab A processes its decimated frames");
+    else if (nativeA == 1 || cabB) check(framesA == frames, "a parallel or non-adaptable Cab A processes exactly session-rate frames");
+    else check(framesA == frames * factor, "a lone Cab A processes exactly its amp-following True domain");
+    const uint64_t framesB = parallel.calls[3].frames - b.frames;
+    if (!namB) check(framesB == 0, "a bypassed or WAV Cab B runs no graph");
+    else if (nativeB >= 2) check(nativeFrames(framesB, nativeB), "a native-rate Cab B processes its decimated frames");
+    else check(framesB == frames, "Cab B processes exactly session-rate frames, never True oversampled");
     const uint64_t dispatched = parallel.calls[3].worker - b.worker;
-    uint64_t slices = 0;
-    for (uint32_t count : kCounts)
+    const uint64_t callerB = parallel.calls[3].caller - b.caller;
+    uint64_t slices = 0, singles = 0;
+    for (uint32_t count : kCounts) {
       slices += (count + parallel.maxBlock - 1) / parallel.maxBlock;
-    check(dispatch ? dispatched == slices && parallel.calls[3].caller == b.caller
-                   : dispatched == 0,
+      if (count % parallel.maxBlock == 1) ++singles;
+    }
+    // A one-frame slice may emit no decimated sample, so a native-rate Cab B
+    // graph is not entered on every slice; every slice still dispatches.
+    const auto perSlice = [&](uint64_t calls) {
+      return nativeB >= 2 ? calls <= slices && calls + singles >= slices : calls == slices;
+    };
+    check(dispatch ? perSlice(dispatched) && callerB == 0 : dispatched == 0,
           "one worker call per dual-NAM slice; bypass/fallback remains serial");
     if (namB && !dispatch)
-      check(parallel.calls[3].caller - b.caller == slices,
-            "serial Cab B fallback processes exactly once per base-rate slice");
+      check(perSlice(callerB), "serial Cab B fallback processes once per session-rate slice");
     workerCalls += dispatched;
     check(energy > 0.0, "comparison exercises nonzero output");
   }
@@ -664,6 +713,12 @@ int pipelineFactor(int mode, double rate) {
   const double wanted = 96000.0 * (1 << (mode - 3)) / rate;
   return wanted < 1.5 ? 1 : wanted < 3.0 ? 2 : wanted < 6.0 ? 4 : wanted < 12.0 ? 8 : 16;
 }
+
+// The 48 kHz LSTM fixture cannot be rate-adapted: it runs at the session rate
+// at 48 kHz and inside a 2:1 decimated native-rate domain at 96 kHz.
+int nativeDecimation(double rate) { return rate == 96000.0 ? 2 : 1; }
+// Fixed holdback of that DOWN -> UP domain in session frames.
+float nativeHold(double rate) { return rate == 96000.0 ? 47.0f : 0.0f; }
 
 void verifyMulticoreModels(const std::string& standard, const std::string& a2,
                            const std::string& lstm) {
@@ -719,10 +774,12 @@ void verifyMulticoreModels(const std::string& standard, const std::string& a2,
       check(pair.sweep(3) > 0.0, "raw multicore comparison exercises nonzero output");
       verifyGraph(Stage::Pedal, standard, phases);
       verifyGraph(Stage::Amp, a2, phases);
-      verifyGraph(Stage::Cab, standard, phases);
+      // A parallel Cab A is reloaded for the session rate: two native phases
+      // for a 48 kHz model at 96 kHz, like Cab B.
+      verifyGraph(Stage::Cab, standard, dual ? 2 : phases);
       verifyGraph(Stage::Cab2, a2, 2);
-      check(pair.serial.controls[29] == (dual ? 2 : 1) * latency(mode),
-            "grouped pedal/amp/Cab A or independent dual Cab A latency is exact");
+      check(pair.serial.controls[29] == latency(mode),
+            "grouped pedal/amp/Cab A or session-rate dual Cab A latency is exact");
     }
     check(pair.serial.loads[3] == cabBLoads + (mode == 0 ? 1 : 0),
           "serial-stage mode changes never reload the base-rate Cab B graph");
@@ -738,32 +795,34 @@ void verifyMulticoreModels(const std::string& standard, const std::string& a2,
       pair.sweep(3);
       verifyGraph(Stage::Pedal, standard,
                   modes[0] == 0 ? 1 : 2 * pipelineFactor(modes[0], 96000.0));
-      for (Stage stage : {Stage::Amp, Stage::Cab})
-        verifyGraph(stage, stage == Stage::Amp ? a2 : standard,
-                    2 * pipelineFactor(modes[1], 96000.0));
-      check(pair.serial.controls[29] == latency(modes[0]) +
-                (dual ? 2 : 1) * latency(modes[1]),
+      verifyGraph(Stage::Amp, a2, 2 * pipelineFactor(modes[1], 96000.0));
+      verifyGraph(Stage::Cab, standard, dual ? 2 : 2 * pipelineFactor(modes[1], 96000.0));
+      check(pair.serial.controls[29] == latency(modes[0]) + latency(modes[1]),
             "differing True domains retain exact summed converter latency");
     }
   }
 
   testSection = "96 kHz multicore bypass topology and model swaps";
   pair.set(20, 6); pair.set(21, 6);
+  // One True8 group remains in every case: pedal+amp with a session-rate dual
+  // Cab A, the remaining serial stage(s) under a bypass, or pedal+amp+Cab A
+  // once Cab B is dropped.
   for (size_t port : {7u, 8u, 9u, 47u}) {
     pair.set(port, 0);
     pair.sweep(3);
-    check(pair.serial.controls[29] == (port == 7 || port == 8 ? 82.0f : 41.0f),
+    check(pair.serial.controls[29] == 41.0f,
           "pedal/amp/cab bypass switches preserve exact True8 topology latency");
     pair.set(port, 1);
     pair.sweep(3);
-    check(pair.serial.controls[29] == 82.0f, "dual NAM topology restored after bypass");
+    check(pair.serial.controls[29] == 41.0f, "dual NAM topology restored after bypass");
   }
   for (const auto& path : {a2, standard, lstm, standard}) {
     pair.paths({{Stage::Pedal, path}, {Stage::Amp, path},
                 {Stage::Cab, path}, {Stage::Cab2, path}});
     check(pair.sweep(3) > 0.0, "swapped raw models produce nonzero exact output");
     for (Stage stage : {Stage::Pedal, Stage::Amp, Stage::Cab, Stage::Cab2})
-      verifyGraph(stage, path, path == lstm ? 1 : stage == Stage::Cab2 ? 2 : 16);
+      verifyGraph(stage, path, path == lstm ? 1
+                              : stage == Stage::Cab2 || stage == Stage::Cab ? 2 : 16);
   }
   executor.pool.stop();
   pair.sweep(); // Attached but stopped pool falls back without resetting graphs.
@@ -792,6 +851,9 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
         "query deadline Mach timebase");
   const uint64_t futureWindow = UINT64_C(60000000000) * timebase.denom / timebase.numer;
 
+  // The LSTM amp and Cab B run at their native rate: at the session rate at
+  // 48 kHz, inside 2:1 decimated domains at 96 kHz.
+  const int native = nativeDecimation(rate);
   for (int mode : kModes) {
     const int factor = pipelineFactor(mode, rate);
     testSection = std::to_string(static_cast<int>(rate)) + " Hz mode " + std::to_string(mode);
@@ -801,12 +863,17 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
     pair.set(9, 1); pair.set(47, 1);
     pair.set(25, 0); pair.set(48, 0); pair.set(32, 0); pair.set(49, 0);
     pair.set(53, 0); pair.set(54, 0); pair.set(33, 0); pair.set(59, 0);
-    pair.steady(true, true, true, factor);
+    pair.steady(true, true, true, factor, 0, native);
     check(pair.serial.loads[3] == cabBLoads, "amp True changes never reload Cab B");
     const int latency = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41
                       : factor == 16 ? 44 : 0;
-    check(pair.serial.controls[29] == 2.0f * latency,
-          "latency includes shared pedal/amp and independent True Cab A cascades");
+    // Pedal True cascade + the LSTM amp's native domain (mode NONE keeps the
+    // unadapted reference path instead) + the longer parallel branch (the LSTM
+    // Cab B's native domain; the WaveNet Cab A adds nothing).
+    const float expectedLatency = static_cast<float>(latency) +
+        (mode == 0 ? 0.0f : nativeHold(rate)) + nativeHold(rate);
+    check(pair.serial.controls[29] == expectedLatency,
+          "latency sums the pedal cascade, the native amp domain and the longer cabinet branch");
 
     for (bool future : {false, true}) {
       for (uint32_t count : kCounts) {
@@ -816,41 +883,49 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
         pair.run(count, false, true, future ? now + futureWindow : now - 1);
         const auto& after = pair.parallel.calls[3];
         const uint64_t slices = (count + kBlockLength - 1) / kBlockLength;
-        check(after.frames - before.frames == count,
-              "deadline branch processes Cab B base-rate frames exactly once");
-        check(after.worker - before.worker == (future ? slices : 0) &&
-                  after.caller - before.caller == (future ? 0 : slices),
+        const uint64_t singles = count % kBlockLength == 1 ? 1 : 0;
+        const uint64_t framesB = after.frames - before.frames;
+        const uint64_t expectedB = count / static_cast<uint64_t>(native);
+        check(native == 1 ? framesB == count
+                          : framesB + 1 >= expectedB && framesB <= expectedB + 1,
+              "deadline branch processes Cab B's own-rate frames exactly once");
+        const uint64_t worker = after.worker - before.worker;
+        const uint64_t caller = after.caller - before.caller;
+        const auto perSlice = [&](uint64_t calls) {
+          return native == 1 ? calls == slices : calls <= slices && calls + singles >= slices;
+        };
+        check(future ? perSlice(worker) && caller == 0 : worker == 0 && perSlice(caller),
               "expired deadline forces caller fallback; future deadline dispatches every slice");
-        workerCalls += after.worker - before.worker;
+        workerCalls += worker;
       }
     }
 
     pair.set(32, 100); pair.set(49, 7.25f);
     pair.set(25, -6); pair.set(48, -3);
-    pair.steady(true, true, true, factor);
+    pair.steady(true, true, true, factor, 0, native);
     check(std::memcmp(pair.serial.left.data(), pair.serial.right.data(),
                       kCounts.back() * sizeof(float)) != 0,
           "width/alignment exercise distinct stereo output");
     for (float alignment : {-10.0f, -7.25f, 0.0f, 10.0f}) {
       for (float polarity : {1.0f, 0.0f}) {
         pair.set(49, alignment); pair.set(59, polarity);
-        pair.steady(true, true, true, factor);
-        check(pair.serial.controls[29] == 2.0f * latency,
+        pair.steady(true, true, true, factor, 0, native);
+        check(pair.serial.controls[29] == expectedLatency,
               "signed user alignment/polarity do not change reported pipeline latency");
       }
     }
     for (auto trims : {std::array<float, 2>{-24, -3}, {-6, -24}, {-24, -24}}) {
       pair.set(25, trims[0]); pair.set(48, trims[1]);
-      pair.steady(true, true, true, factor);
+      pair.steady(true, true, true, factor, 0, native);
     }
     pair.set(25, 0); pair.set(48, 0);
     pair.set(9, 0);
-    pair.steady(false, true, false, factor);
+    pair.steady(false, true, false, factor, 0, native);
     pair.set(9, 1); pair.set(47, 0);
-    pair.steady(true, false, false, factor);
+    pair.steady(true, false, false, factor, 0, native);
     pair.set(47, 1);
-    pair.steady(true, true, true, factor);
-    std::printf("PASS: %.0f Hz Cab A mode %d (effective %dx), Cab B base rate; counts 1/17/64/127/128/256/513; expired/future deadlines, dual/A-only/B-only, width, align, mute trims\n",
+    pair.steady(true, true, true, factor, 0, native);
+    std::printf("PASS: %.0f Hz Cab A mode %d (effective %dx alone, session rate beside Cab B), native-rate LSTM Cab B; counts 1/17/64/127/128/256/513; expired/future deadlines, dual/A-only/B-only, width, align, mute trims\n",
                 rate, mode, factor);
   }
 
@@ -865,13 +940,13 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
 
   testSection = "stopped executor fallback and buffer reconfiguration";
   pair.worker.stop();
-  pair.steady(true, true, false, pipelineFactor(6, rate));
+  pair.steady(true, true, false, pipelineFactor(6, rate), 0, native);
   check(pair.worker.start(nullptr, kBlockLength / rate), "restart stopped executor");
   for (int block : {64, 128}) {
     pair.serial.plugin.setMaxBufferSize(block);
     pair.parallel.plugin.setMaxBufferSize(block);
     pair.serial.maxBlock = pair.parallel.maxBlock = block;
-    pair.steady(true, true, true, pipelineFactor(6, rate));
+    pair.steady(true, true, true, pipelineFactor(6, rate), 0, native);
   }
 
   testSection = "in-flight Cab B swaps and stale-generation disposal";
@@ -886,18 +961,18 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
   check(pair.serial.loads[3] == beforeSwap + 2, "stale Cab2 response frees, never reschedules");
   pair.paths({{Stage::Cab, lstm}, {Stage::Cab2, wave}});
   pair.run(256);
-  pair.steady(true, true, true, pipelineFactor(6, rate));
+  pair.steady(true, true, true, pipelineFactor(6, rate), native, 0);
   pair.installed(Stage::Cab, lstm);
   pair.installed(Stage::Cab2, wave);
 
   testSection = "Cab unload/reload and mode change with initial load in flight";
   pair.paths({{Stage::Cab2, ""}});
   pair.run(513);
-  pair.steady(true, false, false, pipelineFactor(6, rate));
+  pair.steady(true, false, false, pipelineFactor(6, rate), native, 0);
   pair.installed(Stage::Cab2, "");
   pair.paths({{Stage::Cab2, wave}, {Stage::Cab, ""}});
   pair.run(128);
-  pair.steady(false, true, false, pipelineFactor(6, rate));
+  pair.steady(false, true, false, pipelineFactor(6, rate), native, 0);
   pair.installed(Stage::Cab, "");
   const uint64_t beforeLoad = pair.serial.loads[2];
   pair.paths({{Stage::Cab, lstm}});
@@ -905,10 +980,12 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
   pair.set(20, 4); pair.set(21, 4);
   pair.run(64, false, false);
   pair.drain();
-  pair.steady(true, true, true, pipelineFactor(4, rate));
+  pair.steady(true, true, true, pipelineFactor(4, rate), native, 0);
   pair.installed(Stage::Cab, lstm);
-  check(pair.serial.loads[2] == beforeLoad + 2,
-        "in-flight Cab A is reloaded exactly once for the latest amp domain");
+  // The in-flight load already targets the session rate beside Cab B, so the
+  // amp domain change must not reschedule it.
+  check(pair.serial.loads[2] == beforeLoad + 1,
+        "in-flight parallel Cab A load is not reloaded for an amp domain change");
 
   testSection = "sample-rate reload and worker restart";
   for (double newRate : {rate == 48000.0 ? 96000.0 : 48000.0, rate}) {
@@ -919,7 +996,7 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
             "sample-rate reconfiguration reloads each installed path once");
     pair.installed(Stage::Cab, lstm);
     pair.installed(Stage::Cab2, wave);
-    pair.steady(true, true, true, pipelineFactor(4, newRate));
+    pair.steady(true, true, true, pipelineFactor(4, newRate), nativeDecimation(newRate), 0);
   }
   std::printf("PASS: %.0f Hz worker fallback/restart, 64/128 buffer sizing, swaps, stale responses, unloads, in-flight True change, rate reloads\n", rate);
 
@@ -961,18 +1038,21 @@ void verifyWavFallback(double rate, const std::string& wave, const std::string& 
       const Stage irStage = irAtA ? Stage::Cab : Stage::Cab2;
       const Stage namStage = irAtA ? Stage::Cab2 : Stage::Cab;
       const std::string& namPath = irAtA ? lstm : wave;
+      // The LSTM Cab B keeps its native rate; the WaveNet Cab A runs at the
+      // session rate beside a WAV Cab B.
+      const int nativeB = irAtA ? nativeDecimation(rate) : 0;
       pair.paths({{irStage, path}, {namStage, namPath}});
       pair.run(17);
-      pair.steady(true, true, false, pipelineFactor(6, rate));
+      pair.steady(true, true, false, pipelineFactor(6, rate), 0, nativeB);
       pair.installed(irStage, path, channels);
       pair.installed(namStage, namPath);
-      check(std::memcmp(pair.serial.left.data(), pair.serial.right.data(),
-                        kCounts.back() * sizeof(float)) == 0,
-            "zero width collapses mixed WAV/NAM cabs to exact dual mono");
+      check((std::memcmp(pair.serial.left.data(), pair.serial.right.data(),
+                         kCounts.back() * sizeof(float)) == 0) == (channels == 1),
+            "zero width keeps each cabinet's image: mono fixtures stay dual mono, a stereo IR stays stereo");
 
       pair.set(32, 100);
       pair.set(irAtA ? 47 : 9, 0); // Isolate the IR's own channel behavior.
-      pair.steady(irAtA, !irAtA, false, pipelineFactor(6, rate));
+      pair.steady(irAtA, !irAtA, false, pipelineFactor(6, rate), 0, nativeB);
       check((std::memcmp(pair.serial.left.data(), pair.serial.right.data(),
                          kCounts.back() * sizeof(float)) != 0) == (channels == 2),
             "isolated mono IR stays dual mono; stereo IR preserves distinct channels");
@@ -985,11 +1065,11 @@ void verifyWavFallback(double rate, const std::string& wave, const std::string& 
         check(leftEnergy > 0.0 && rightEnergy > 0.0, "both IR output channels are audible");
       }
       pair.set(irAtA ? 47 : 9, 1);
-      pair.steady(true, true, false, pipelineFactor(6, rate));
+      pair.steady(true, true, false, pipelineFactor(6, rate), 0, nativeB);
       for (float alignment : {-10.0f, -3.5f, 0.0f, 7.25f, 10.0f}) {
         for (float polarity : {1.0f, 0.0f}) {
           pair.set(49, alignment); pair.set(59, polarity);
-          pair.steady(true, true, false, pipelineFactor(6, rate));
+          pair.steady(true, true, false, pipelineFactor(6, rate), 0, nativeB);
         }
       }
 
@@ -997,12 +1077,12 @@ void verifyWavFallback(double rate, const std::string& wave, const std::string& 
       const uint64_t loads = pair.serial.loads[index];
       pair.paths({{irStage, ""}});
       pair.run(256);
-      pair.steady(!irAtA, irAtA, false, pipelineFactor(6, rate));
+      pair.steady(!irAtA, irAtA, false, pipelineFactor(6, rate), 0, nativeB);
       pair.installed(irStage, "");
       pair.installed(namStage, namPath);
       pair.paths({{irStage, path}});
       pair.run(513);
-      pair.steady(true, true, false, pipelineFactor(6, rate));
+      pair.steady(true, true, false, pipelineFactor(6, rate), 0, nativeB);
       pair.installed(irStage, path, channels);
       check(pair.serial.loads[index] == loads + 2,
             "WAV unload/reload each schedule exactly once, including Cab2");
@@ -1041,6 +1121,13 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
       for (Pair* pair : {&reference, &normal, &inverted, &optional}) pair->run(128, true);
     double referenceEnergy = 0.0, normalEnergy = 0.0, cancelledEnergy = 0.0;
     double amplificationError = 0.0;
+    // Two matching cabinets are fully coherent, so the equal-power blend is
+    // sqrt(2) times one cabinet through the rig's 200 Hz low shelf of
+    // -20*log10(cos(pi/4) + sin(pi/4)) dB, which the silent settle has
+    // already glided to its target with a clean filter history.
+    NAMRig::Biquad shelfL, shelfR;
+    dualCabShelf(shelfL, rate);
+    dualCabShelf(shelfR, rate);
     for (uint32_t count : kCounts) {
       referenceEnergy += reference.run(count);
       normalEnergy += normal.run(count);
@@ -1053,15 +1140,16 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
         for (bool right : {false, true}) {
           const float a = right ? reference.serial.right[i] : reference.serial.left[i];
           const float b = right ? normal.serial.right[i] : normal.serial.left[i];
-          const double error = b - std::sqrt(2.0) * a;
+          const float expected = (right ? shelfR : shelfL).process(std::sqrt(2.0f) * a);
+          const double error = b - expected;
           amplificationError += error * error;
         }
       }
     }
-    check(referenceEnergy > 1.0e-4 && normalEnergy > referenceEnergy * 1.9,
-          "matching normal WAVs produce audible equal-power amplified output, not empty buffers");
-    check(amplificationError < referenceEnergy * 1.0e-10,
-          "normal width-zero dual cabs equal sqrt(2) times the isolated Cab A reference");
+    check(referenceEnergy > 1.0e-4 && normalEnergy > referenceEnergy * 1.1,
+          "matching normal WAVs produce audible amplified output, not empty buffers");
+    check(amplificationError < referenceEnergy * 1.0e-8,
+          "normal width-zero dual cabs equal the shelved sqrt(2) times the isolated Cab A reference");
     check(cancelledEnergy < referenceEnergy * 1.0e-10,
           "matching WAVs at width zero cancel after Cab B polarity settles");
   }
@@ -1156,24 +1244,23 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
     pair.sweep(3, true);
     pair.installed(Stage::Cab, cabA, trueCab ? 0 : 1);
     pair.installed(Stage::Cab2, fixtures.mono, 1);
+    // Beside Cab B the identity .nam Cab A runs at the session rate in every
+    // amp mode, so neither branch carries converter compensation (C = 0).
     for (int mode : kModes) {
       if (!trueCab && mode != 0) continue;
       pair.set(21, static_cast<float>(mode));
-      const int factor = trueCab ? pipelineFactor(mode, rate) : 1;
-      const size_t compensation = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41
-                                : factor == 16 ? 44 : 0;
       for (float alignment : {-10.0f, -3.5f, 0.0f, 3.5f, 10.0f}) {
         testSection = "real impulse alignment " + std::to_string(alignment) +
-                      " ms, C=" + std::to_string(compensation) + " at " + std::to_string(rate);
+                      " ms, mode " + std::to_string(mode) + " at " + std::to_string(rate);
         pair.set(49, alignment);
         const auto peaks = impulsePeaks(pair);
         const size_t extra = static_cast<size_t>(std::llround(rate * std::fabs(alignment) * 0.001));
-        check(peaks[0] == compensation + (alignment < 0 ? extra : 0),
-              "negative alignment delays Cab A by -d in addition to its actual converter latency");
-        check(peaks[1] == compensation + (alignment > 0 ? extra : 0),
-              "Cab B always retains C compensation, adding only positive user alignment");
-        check(pair.serial.controls[29] == compensation,
-              "host latency continues reporting the converter C, not signed user alignment");
+        check(peaks[0] == (alignment < 0 ? extra : 0),
+              "negative alignment delays Cab A by exactly -d; a session-rate Cab A adds no converter latency");
+        check(peaks[1] == (alignment > 0 ? extra : 0),
+              "Cab B adds only positive user alignment; a session-rate Cab A needs no compensation");
+        check(pair.serial.controls[29] == 0.0f,
+              "host latency reports no converter delay for two session-rate cabinets");
       }
     }
   }
@@ -1210,7 +1297,7 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
     const auto back = impulsePeaks(pair);
     check(back == dual, "re-enabling both cabinets restores signed alignment without stale history");
   }
-  std::printf("PASS: %.0f Hz WAV cancellation/amplification, optional polarity, stereo smooth switching, signed impulse timing including real True C=23/35/41/44, A/B-only and dry behavior\n", rate);
+  std::printf("PASS: %.0f Hz WAV cancellation/shelved amplification, optional polarity, stereo smooth switching, signed impulse timing with a session-rate .nam Cab A, A/B-only and dry behavior\n", rate);
 }
 
 void benchmark(const std::string& wave, const std::string& lstm) {

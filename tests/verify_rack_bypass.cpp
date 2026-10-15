@@ -45,6 +45,32 @@ void require(bool ok, const char* label) {
 }
 constexpr size_t port(Rack rack) { return kRackControlFirstPort + static_cast<size_t>(rack); }
 
+// The rig's RBJ low shelf (nam_rig_plugin.cpp setLowShelf): the dual-cab blend
+// applies it at 200 Hz with -20*log10(cos(pi/4) + sin(pi/4)) dB while both
+// cabinets are active, so the coherent low-frequency sum stays at unity.
+void dualCabShelf(Biquad& f, double sampleRate) {
+  const float theta = 3.14159265358979323846f * 0.25f;
+  const float coherent = std::max(1.0f, std::cos(theta) + std::sin(theta));
+  const float gainDb = -20.0f * std::log10(coherent);
+  const float kEqQ = 0.7071067811865476f;
+  const double A = std::pow(10.0, gainDb / 40.0);
+  const double w0 = 2.0 * 3.14159265358979323846 * 200.0f / sampleRate;
+  const double c = std::cos(w0), s = std::sin(w0);
+  const double alpha = s / (2.0 * kEqQ);
+  const double sqA = 2.0 * std::sqrt(A) * alpha;
+  const double b0 = A * ((A + 1) - (A - 1) * c + sqA);
+  const double b1 = 2.0 * A * ((A - 1) - (A + 1) * c);
+  const double b2 = A * ((A + 1) - (A - 1) * c - sqA);
+  const double a0 = (A + 1) + (A - 1) * c + sqA;
+  const double a1 = -2.0 * ((A - 1) + (A + 1) * c);
+  const double a2 = (A + 1) + (A - 1) * c - sqA;
+  f.b0 = static_cast<float>(b0 / a0);
+  f.b1 = static_cast<float>(b1 / a0);
+  f.b2 = static_cast<float>(b2 / a0);
+  f.a1 = static_cast<float>(a1 / a0);
+  f.a2 = static_cast<float>(a2 / a0);
+}
+
 class Identity final : public NeuralAudio::NeuralModel {
  public:
   float GetRecommendedInputDBAdjustment() override { return 0; }
@@ -778,17 +804,26 @@ void verify(const LV2_Descriptor* d) {
   c[32] = 100; c[33] = 80;
   Host widthIgnored(d, 48000, c, &fixtures);
   bool stereoMix = true;
-  double stereo = 0;
-  for (int block = 0; block < 200; ++block) {
+  double stereo = 0, shelfError = 0, shelfEnergy = 0;
+  Biquad shelfL, shelfR;
+  dualCabShelf(shelfL, 48000);
+  dualCabShelf(shelfR, 48000);
+  for (int block = 0; block < 400; ++block) {
     a.run(); b.run(); pair.run(); widthIgnored.run();
     stereoMix &= pair.difference(widthIgnored) == 0;
     for (size_t i = 0; i < kBlock; ++i) {
-      stereoMix &= std::fabs(pair.left[i] - (a.left[i] + b.left[i]) * std::sqrt(.5f)) < 2e-6f;
-      stereoMix &= std::fabs(pair.right[i] - (a.right[i] + b.right[i]) * std::sqrt(.5f)) < 2e-6f;
+      // The plugin's shelf glides in over the first blocks; compare once settled.
+      const float refL = shelfL.process((a.left[i] + b.left[i]) * std::sqrt(.5f));
+      const float refR = shelfR.process((a.right[i] + b.right[i]) * std::sqrt(.5f));
+      if (block >= 200) {
+        shelfError += std::pow(pair.left[i] - refL, 2.0) + std::pow(pair.right[i] - refR, 2.0);
+        shelfEnergy += std::pow(refL, 2.0) + std::pow(refR, 2.0);
+      }
       stereo += std::fabs(a.left[i] - a.right[i]);
     }
   }
-  check(stereoMix && stereo > 1, "Spatial OFF preserves WAV L/R and equal-power dual-cab channels independently of Width/Room");
+  check(stereoMix && stereo > 1 && shelfEnergy > 1e-3 && shelfError < shelfEnergy * 1e-8,
+        "Spatial OFF preserves WAV L/R and the shelved equal-power dual-cab blend independently of Width/Room");
 
   for (float alignment : {-10.0f, 10.0f}) {
     Controls aligned = defaults(0);

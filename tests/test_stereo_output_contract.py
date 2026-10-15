@@ -2,9 +2,9 @@
 """Guard the rig's append-only stereo output and cabinet width contract.
 
 Width is no longer a right-channel Haas delay (that comb-filtered in mono and
-pulled the image right). It is now the side gain of each stereo cabinet pair
-plus an equal-power pan spread between Cab A and Cab B, so 0% still collapses
-to exact dual mono and 100% stays mono-safe.
+pulled the image right). It is the equal-power pan spread between Cab A and
+Cab B. Each cabinet keeps its own stereo image at every setting; 0% sums both
+cabinets to the same dual-mono blend Spatial OFF uses and 100% stays mono-safe.
 """
 from pathlib import Path
 import re
@@ -35,13 +35,16 @@ assert "std::memcpy(ports.audio_out + off, L, n * sizeof(float));" in dsp
 assert "std::memcpy(ports.audio_out_r + off, R, n * sizeof(float));" in dsp
 assert "std::vector<float> postL, postR" in header, "post chain needs its own stereo scratch"
 
-# Width: mid/side on each cab pair, then an equal-power spread between cabs.
-assert "const float sideA = 0.5f * (L[i] - R[i]) * w;" in dsp, (
-    "Width must scale the side component, not delay a channel"
+# Width: an equal-power spread between cabs that keeps each pair's own image.
+assert "sideA" not in dsp and "sideB" not in dsp, (
+    "Width must not scale a cabinet's side component; stereo IRs keep their image"
 )
-assert "const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - w);" in dsp, (
+assert "const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - smoothedWidth);" in dsp, (
     "Cab A/Cab B spread must be an equal-power pan"
 )
+assert "const float outL = L[i] * gainNear + BL[i] * gainFar;" in dsp and (
+    "const float outR = R[i] * gainFar + BR[i] * gainNear;" in dsp
+), "the pan must feed each cabinet's own left/right channels into the spread"
 assert "smoothedWidth += (widthTarget - smoothedWidth) * glide10;" in dsp, (
     "Width must glide, not step per block"
 )
