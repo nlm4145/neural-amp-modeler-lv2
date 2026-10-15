@@ -19,6 +19,13 @@
 
 namespace NAMRigWin32 {
 
+// Fixed view size: the original console plus a paged band for the appended racks.
+inline constexpr int kViewWidth = 1180;
+inline constexpr int kViewHeight = 1070;
+inline constexpr int kPageCount = 5;
+inline constexpr int kPageTabsY = 782;
+inline constexpr int kPageAreaY = 815;
+
 enum class ControlType {
   Knob,
   Toggle,
@@ -44,6 +51,7 @@ struct UIControl {
   bool isDragging = false;
   int dragStartY = 0;
   float dragStartValue = 0.0f;
+  int page = 0;   // 0 = always visible, 1..kPageCount = lower band page
 };
 
 class Win32UIView {
@@ -51,7 +59,7 @@ class Win32UIView {
   Win32UIView();
   ~Win32UIView();
 
-  HWND create(HWND parent, int x = 0, int y = 0, int width = 1180, int height = 780);
+  HWND create(HWND parent, int x = 0, int y = 0, int width = kViewWidth, int height = kViewHeight);
   void destroy();
 
   HWND hwnd() const { return hwnd_; }
@@ -91,14 +99,23 @@ class Win32UIView {
   void showPresetMenu(int screenX, int screenY);
   void showSlotPresetMenu(const std::string& slotKey, int screenX, int screenY);
   void browseForFile(uint32_t stage, bool isWav);
+  bool controlVisible(const UIControl& c) const { return c.page == 0 || c.page == currentPage_; }
+  void cycleDropdown(UIControl& c, int direction);
+  void switchScene(int scene);
+  void setPage(int page);
 
   HWND hwnd_ = NULL;
   ULONG_PTR gdiplusToken_ = 0;
   std::unordered_map<uint32_t, UIControl> controls_;
   std::vector<uint32_t> controlOrder_;
 
-  // File paths for stages: 0=Pedal, 1=Amp, 2=Cab A, 3=Cab B
-  std::array<std::string, 4> stagePaths_;
+  // File paths for stages: 0=Pedal, 1=Amp, 2=Cab A, 3=Cab B, 4=Amp B, 5=Cab C, 6=Cab D
+  std::array<std::string, NAMRig::kRigStageCount> stagePaths_;
+  int currentPage_ = 1;
+  // Scenes: eight complete control snapshots; the live controls are the active scene.
+  std::array<std::unordered_map<uint32_t, float>, NAMRig::kSceneCount> sceneControls_{};
+  int currentScene_ = 0;
+  bool applyingScene_ = false;
 
   // Tuner & meter state
   float tunerNote_ = -1.0f;

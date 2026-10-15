@@ -232,6 +232,15 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.stagePath[1] = map->map(map->handle, NAM_RIG_AMP_URI);
   uris.stagePath[2] = map->map(map->handle, NAM_RIG_CAB_URI);
   uris.stagePath[3] = map->map(map->handle, NAM_RIG_CAB2_URI);
+  uris.stagePath[4] = map->map(map->handle, NAM_RIG_AMP2_URI);
+  uris.stagePath[5] = map->map(map->handle, NAM_RIG_CAB3_URI);
+  uris.stagePath[6] = map->map(map->handle, NAM_RIG_CAB4_URI);
+  uris.midiEvent = map->map(map->handle, LV2_MIDI__MidiEvent);
+  uris.scene = map->map(map->handle, NAM_RIG_SCENE_URI);
+  uris.looperState = map->map(map->handle, NAM_RIG_LOOPER_STATE_URI);
+  uris.looperPosition = map->map(map->handle, NAM_RIG_LOOPER_POSITION_URI);
+  uris.expr1 = map->map(map->handle, NAM_RIG_EXPR1_URI);
+  uris.expr2 = map->map(map->handle, NAM_RIG_EXPR2_URI);
   uris.atomFloat = map->map(map->handle, LV2_ATOM__Float);
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
@@ -260,6 +269,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
+  initializeFxRacks(rate);
 
   if (options)
     optionsSet(this, options);
@@ -291,6 +301,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
+  initializeFxRacks(rate);
   appliedBass = -999.0f;
   appliedMid = -999.0f;
   appliedTreble = -999.0f;
@@ -333,6 +344,29 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   preCab.assign(post, 0.0f);
   cabBL.assign(post, 0.0f);
   cabBR.assign(post, 0.0f);
+  cabCL.assign(post, 0.0f);
+  cabCR.assign(post, 0.0f);
+  cabDL.assign(post, 0.0f);
+  cabDR.assign(post, 0.0f);
+  morphScratch.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
+}
+
+void Plugin::initializeFxRacks(double rate) noexcept {
+  wahFilter.initialize(rate);
+  drivePedal.reset();
+  guitarSynth.initialize(rate);
+  pitchPre.initialize(rate);
+  pitchPost.initialize(rate);
+  multibandComp.initialize(rate);
+  modulationFx.initialize(rate);
+  springReverb.initialize(rate);
+  // 30 s of stereo loop, capped so very high session rates do not balloon memory.
+  looper.initialize(rate, std::min(30.0, 30.0 * 96000.0 / std::max(1.0, rate)));
+  for (auto& mic : micModels) mic.initialize(rate);
+  modifiers.initialize(rate);
+  smoothedMorph = 0.0f;
+  looperState = 0;
+  looperPortSeen = -1.0f;
 }
 
 LV2_Worker_Status Plugin::work(LV2_Handle instance,
@@ -371,8 +405,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
 
   try {
     if (length > 0 && length < MAX_FILE_NAME) {
-      if ((message->stage == Stage::Cab || message->stage == Stage::Cab2) &&
-          endsWithWav(message->path)) {
+      if (isCabStage(message->stage) && endsWithWav(message->path)) {
         const unsigned channels = WavIR::channelCount(message->path);
         if (channels >= 2) {
           auto left = WavIR::load(message->path, rig->sampleRate,
@@ -386,6 +419,9 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
           response.ir = WavIR::load(message->path, rig->sampleRate,
                                     rig->maxBufferSize).release();
         }
+      } else if (message->stage == Stage::Cab3 || message->stage == Stage::Cab4) {
+        lv2_log_error(&rig->logger,
+                      "Cab C/D accept WAV impulse responses only: '%s'\n", message->path);
       } else {
         // The stage's oversample mode decides the loader external rate.
         // NONE (0): 48000 — dilation is a no-op for common-rate models.
@@ -590,7 +626,36 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     // (NeuralAudio's DEFAULT_QUALITY_SCALE of 1.0 = full quality at all times).
   }
 
+  parseControlEvents();
+  refreshModulationTargets();
+
+  // Modifiers move controls at a 64-frame cadence: the block is cut into
+  // sub-blocks and every DSP read of a targeted control sees the modulated
+  // value through the redirected port pointer.
+  const float* inputBase = ports.audio_in;
+  float* outputBase = ports.audio_out;
+  float* outputRightBase = ports.audio_out_r;
+  const uint32_t step = modulationActive ? 64u : std::max(1u, sampleCount);
+  for (uint32_t off = 0; off < sampleCount; off += step) {
+    const uint32_t n = std::min(step, sampleCount - off);
+    ports.audio_in = inputBase + off;
+    ports.audio_out = outputBase + off;
+    ports.audio_out_r = outputRightBase + off;
+    if (modulationActive) updateModulation(n);
+    processBlock(n);
+  }
+  ports.audio_in = inputBase;
+  ports.audio_out = outputBase;
+  ports.audio_out_r = outputRightBase;
+  publishPerformanceState();
+}
+
+void Plugin::parseControlEvents() noexcept {
   LV2_ATOM_SEQUENCE_FOREACH(ports.control, event) {
+    if (event->body.type == uris.midiEvent) {
+      handleMidi(reinterpret_cast<const uint8_t*>(&event->body + 1), event->body.size);
+      continue;
+    }
     if (event->body.type != uris.atomObject)
       continue;
     const auto* object = reinterpret_cast<const LV2_Atom_Object*>(&event->body);
@@ -622,7 +687,166 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       }
     }
   }
+}
 
+void Plugin::handleMidi(const uint8_t* bytes, uint32_t size) noexcept {
+  if (!bytes || size < 2) return;
+  const uint8_t status = bytes[0] & 0xF0u;
+  const int channel = (bytes[0] & 0x0Fu) + 1;
+  const int wanted = fxEnumValue(kMidiChannelPort);
+  if (wanted != 0 && channel != wanted) return;
+  if (status == 0xC0u) {
+    const int program = bytes[1] & 0x7Fu;
+    if (program < kSceneCount) sceneRequested = static_cast<float>(program);
+    return;
+  }
+  if (status != 0xB0u || size < 3) return;
+  const int cc = bytes[1] & 0x7Fu;
+  const int value = bytes[2] & 0x7Fu;
+  const float unit = static_cast<float>(value) / 127.0f;
+  if (cc == fxEnumValue(kExpr1CcPort)) {
+    exprMidi[0] = unit;
+    exprFromMidi[0] = true;
+  }
+  if (cc == fxEnumValue(kExpr2CcPort)) {
+    exprMidi[1] = unit;
+    exprFromMidi[1] = true;
+  }
+  if (cc == fxEnumValue(kLooperCcPort)) stepLooperFromMidi(value);
+}
+
+void Plugin::stepLooperFromMidi(int value) noexcept {
+  if (value == 0) {
+    looperState = Looper::kStop;
+    return;
+  }
+  if (value < 64) return;
+  switch (looperState) {
+    case Looper::kStop: looperState = looper.hasLoop() ? Looper::kPlay : Looper::kRecord; break;
+    case Looper::kRecord: looperState = Looper::kPlay; break;
+    case Looper::kPlay: looperState = Looper::kOverdub; break;
+    default: looperState = Looper::kPlay; break;
+  }
+}
+
+void Plugin::publishControlFloat(LV2_URID property, float value) noexcept {
+  LV2_Atom_Forge_Frame frame;
+  lv2_atom_forge_frame_time(&forge, 0);
+  lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+  lv2_atom_forge_key(&forge, uris.patchProperty);
+  lv2_atom_forge_urid(&forge, property);
+  lv2_atom_forge_key(&forge, uris.patchValue);
+  lv2_atom_forge_float(&forge, value);
+  lv2_atom_forge_pop(&forge, &frame);
+}
+
+void Plugin::publishPerformanceState() noexcept {
+  if (sceneRequested >= 0.0f) {
+    publishControlFloat(uris.scene, sceneRequested);
+    sceneRequested = -1.0f;
+  }
+  for (size_t i = 0; i < 2; ++i) {
+    const float value = exprFromMidi[i] ? exprMidi[i] * 100.0f
+        : fxValue(i == 0 ? kExpr1ValuePort : kExpr2ValuePort);
+    if (std::fabs(value - exprSent[i]) >= 0.5f) {
+      exprSent[i] = value;
+      publishControlFloat(i == 0 ? uris.expr1 : uris.expr2, value);
+    }
+  }
+  const int effective = static_cast<int>(looper.state());
+  if (effective != looperSentState) {
+    looperSentState = effective;
+    publishControlFloat(uris.looperState, static_cast<float>(effective));
+  }
+  const float position = looper.positionFraction();
+  if (std::fabs(position - looperSentPosition) >= 0.01f ||
+      (position == 0.0f && looperSentPosition != 0.0f)) {
+    looperSentPosition = position;
+    publishControlFloat(uris.looperPosition, position);
+  }
+}
+
+// Expression pedals: host automation drives the value port until MIDI arrives
+// on the assigned CC; a later change of the port hands control back.
+float Plugin::expressionValue(size_t index) noexcept {
+  const uint32_t port = index == 0 ? kExpr1ValuePort : kExpr2ValuePort;
+  const float raw = fxValue(port);
+  if (exprPortSeen[index] < 0.0f) exprPortSeen[index] = raw;
+  if (std::fabs(raw - exprPortSeen[index]) > 1.0e-4f) {
+    exprPortSeen[index] = raw;
+    exprFromMidi[index] = false;
+  }
+  return exprFromMidi[index] ? exprMidi[index] : std::clamp(raw * 0.01f, 0.0f, 1.0f);
+}
+
+void Plugin::refreshModulationTargets() noexcept {
+  float** raw = reinterpret_cast<float**>(&ports);
+  std::array<bool, kPortCount> wanted{};
+  modulationActive = false;
+  for (size_t slot = 0; slot < kModifierCount; ++slot) {
+    const uint32_t base = modifierPort(slot, 0);
+    const int targetIndex = std::clamp(fxEnumValue(base), 0, static_cast<int>(kModTargetCount) - 1);
+    const int source = std::clamp(fxEnumValue(base + 1), 0, static_cast<int>(kModSourceCount) - 1);
+    modRates[slot] = fxValue(base + 2);
+    modDepths[slot] = std::clamp(fxValue(base + 3), -100.0f, 100.0f) * 0.01f;
+    modSources[slot] = source;
+    const uint32_t port = kModTargets[targetIndex].port;
+    const bool live = targetIndex > 0 && source != ModifierEngine::kOff &&
+        port >= 4 && port < kPortCount && modDepths[slot] != 0.0f;
+    modTargets[slot] = live ? targetIndex : 0;
+    if (!live) continue;
+    wanted[port] = true;
+    modulationActive = true;
+  }
+  for (uint32_t port = 4; port < kPortCount; ++port) {
+    if (wanted[port]) {
+      // A host may reconnect the port at any time: pick up the new buffer.
+      if (raw[port] != &modulatedValue[port]) hostControlPort[port] = raw[port];
+      if (!hostControlPort[port]) { wanted[port] = false; continue; }
+      modulatedValue[port] = *hostControlPort[port];
+      raw[port] = &modulatedValue[port];
+      modulationRedirected[port] = true;
+    } else if (modulationRedirected[port]) {
+      if (raw[port] == &modulatedValue[port]) raw[port] = hostControlPort[port];
+      modulationRedirected[port] = false;
+      hostControlPort[port] = nullptr;
+    }
+  }
+}
+
+void Plugin::restoreModulatedPorts() noexcept {
+  float** raw = reinterpret_cast<float**>(&ports);
+  for (uint32_t port = 4; port < kPortCount; ++port) {
+    if (!modulationRedirected[port]) continue;
+    if (raw[port] == &modulatedValue[port]) raw[port] = hostControlPort[port];
+    modulationRedirected[port] = false;
+    hostControlPort[port] = nullptr;
+  }
+  modulationActive = false;
+}
+
+void Plugin::updateModulation(uint32_t count) noexcept {
+  float peak = 0.0f;
+  for (uint32_t i = 0; i < count; ++i) peak = std::max(peak, std::fabs(ports.audio_in[i]));
+  modifiers.advance(count, peak, expressionValue(0), expressionValue(1), modRates, modSources);
+  // Start every redirected control from the host's current value, then add
+  // each live modifier's offset so two slots on one target sum.
+  for (uint32_t port = 4; port < kPortCount; ++port)
+    if (modulationRedirected[port] && hostControlPort[port])
+      modulatedValue[port] = *hostControlPort[port];
+  for (size_t slot = 0; slot < kModifierCount; ++slot) {
+    const int targetIndex = modTargets[slot];
+    if (targetIndex <= 0) continue;
+    const ModTarget& target = kModTargets[targetIndex];
+    if (!modulationRedirected[target.port]) continue;
+    const float range = target.maximum - target.minimum;
+    const float offset = modDepths[slot] * range * modifiers.value(slot, modSources[slot]);
+    modulatedValue[target.port] = std::clamp(modulatedValue[target.port] + offset,
+                                             target.minimum, target.maximum);
+  }
+}
+
+void Plugin::processBlock(uint32_t sampleCount) noexcept {
   // ---- Input level meter (raw input, before any processing) ----
   // Peak over the block, converted to dBFS, smoothed with a fast-attack /
   // slow-decay ballistics so the meter reads like hardware. Published as a
@@ -942,6 +1166,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     }
   }
 
+  processPreFx(ports.audio_out, sampleCount);
+
   // Auto-cab bypass DISABLED (user decision, 2026-08-29): the user manages
   // cab on/off themselves with the ON button, so the cab now always follows
   // cab_enabled — full-rig amp captures no longer silently disconnect the
@@ -951,7 +1177,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       *ports.pedal_enabled >= 0.5f,
       *ports.amp_enabled >= 0.5f,
       *ports.cab_enabled >= 0.5f,
-      portValue(ports.cab2_enabled, 0.0f) >= 0.5f};
+      portValue(ports.cab2_enabled, 0.0f) >= 0.5f,
+      *ports.amp_enabled >= 0.5f,
+      fxValue(kCab3EnabledPort) >= 0.5f,
+      fxValue(kCab4EnabledPort) >= 0.5f};
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
 
@@ -961,8 +1190,12 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   {
     const size_t cab = stageIndex(Stage::Cab);
     const size_t cab2 = stageIndex(Stage::Cab2);
-    const bool parallelDesired = desiredEnabled[cab2] &&
-        (models[cab2] || irs[cab2] || pendingSwitches[cab2].ready);
+    const auto cabEngaged = [&](size_t index) {
+      return desiredEnabled[index] &&
+          (models[index] || irs[index] || pendingSwitches[index].ready);
+    };
+    const bool parallelDesired = cabEngaged(cab2) ||
+        cabEngaged(stageIndex(Stage::Cab3)) || cabEngaged(stageIndex(Stage::Cab4));
     if (!cabParallelLatched) {
       cabParallelDesired = parallelDesired;
       cabParallelLatched = true;
@@ -1012,6 +1245,13 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     racksLatched = true;
   }
   const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
+  for (size_t i = 0; i < kFxRackCount; ++i)
+    requestedFxRacks[i] = fxValue(kFxRackFirstPort + static_cast<uint32_t>(i)) >= 0.5f;
+  if (!fxRacksLatched) {
+    appliedFxRacks = requestedFxRacks;
+    fxRacksLatched = true;
+  }
+  const int reverbTypeRequested = fxEnumValue(kReverbTypePort);
 
   const float tubeSelection = portValue(ports.power_tube_type, 0.0f);
   const int desiredTube = std::isfinite(tubeSelection)
@@ -1101,7 +1341,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   }
 
   // Do not change wet-tail routing halfway through an existing model fade.
-  if (requestedRacks != appliedRacks && transitionPhase == TransitionPhase::Steady) {
+  if ((requestedRacks != appliedRacks || requestedFxRacks != appliedFxRacks ||
+       reverbTypeRequested != reverbTypeApplied) &&
+      transitionPhase == TransitionPhase::Steady) {
     rackTransitionActive = true;
     startTransitionFadeOut();
   }
@@ -1127,14 +1369,14 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // If bypass, model presence, cab type, or an applied factor changes, a
   // group may acquire a different owner bank; reset all histories instead of
   // reusing stale samples from the last time that bank happened to run.
-  uint64_t topology = 0;
+  uint64_t topology = kTopologyHashSeed;
   for (size_t st = 0; st < kStageCount; ++st) {
     const uint64_t state = (enabled[st] ? 1u : 0u)
                          | (models[st] ? 2u : 0u)
                          | (irs[st] ? 4u : 0u)
                          | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3)
                          | ((uint64_t)nativeDecimation(st) << 8);
-    topology |= state << (st * 16);
+    topology = (topology ^ (state + 1)) * 1099511628211ull;
   }
   if (topology != osTopologySignature) {
     osTopologySignature = topology;
@@ -1153,6 +1395,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // AMP's TRUE factor. With a second cabinet engaged, Cab A uses an independent
   // True domain from the shared post-amp tap and Cab B is delayed to match it.
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const bool extraCabs = (enabled[5] && irs[5]) || (enabled[6] && irs[6]);
+  const bool anyParallelCab = parallelCabs || extraCabs;
   const PinBands sculptPinBands = pinBands(PinEqPane::Sculpt);
   const PinBands transformerPinBands = pinBands(PinEqPane::Transformer);
   const PinBands speakerPinBands = pinBands(PinEqPane::Speaker);
@@ -1163,10 +1407,20 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
       // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
-      if (rackOn(Rack::Sculpt))
-        overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
+      // od_type selects the Screamer (overdrive.h) or one of the DrivePedal
+      // circuits; the other one is kept in exact bypass.
+      if (rackOn(Rack::Sculpt)) {
+        const int driveType = fxEnumValue(kOdTypePort);
+        const float driveAmount = portValue(ports.od_drive, 0.0f);
+        overdrive.process(samples, count, domainRate,
+                          driveType == DrivePedal::kScreamer ? driveAmount : 0.0f,
                           portValue(ports.od_tone, Overdrive::kToneDefault),
                           portValue(ports.od_level, 0.0f));
+        drivePedal.process(samples, count, domainRate, driveType,
+                           driveType == DrivePedal::kScreamer ? 0.0f : driveAmount,
+                           portValue(ports.od_tone, Overdrive::kToneDefault),
+                           portValue(ports.od_level, 0.0f));
+      }
       const float target = dbToLinear(*ports.amp_drive);
       const float coeff = 1.0f - std::exp(-1.0f /
           static_cast<float>(std::max(1.0, domainRate) * 0.010));
@@ -1186,7 +1440,11 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         if (a > blockPreAmpPeak) blockPreAmpPeak = a;
       }
     }
-    runModel(stage, model, samples, count, domainRate);
+    if (stage == stageIndex(Stage::Amp)) {
+      runMorphedAmp(samples, count, domainRate);
+    } else {
+      runModel(stage, model, samples, count, domainRate);
+    }
     if (stage == stageIndex(Stage::Amp)) {
       const bool powerOn = rackOn(Rack::Power);
       const int tubeProfile = rackOn(Rack::PowerTube) ? tubeApplied : PowerTube::kCaptured;
@@ -1278,7 +1536,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         ampMetersCapturedThisSlice = true;
       }
 
-      const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);
+      const bool deferredCab = st == 2 && (irs[2] != nullptr || anyParallelCab);
       if (!enabled[st] || !models[st] || deferredCab) {
         ++st;
         continue;
@@ -1316,7 +1574,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       size_t groupCount = 1;
       size_t next = st + 1;
       while (next < kSerialStageCount && enabled[next] && models[next] &&
-             !(next == 2 && (irs[2] || parallelCabs)) &&
+             !(next == 2 && (irs[2] || anyParallelCab)) &&
              nativeDecimation(next) == 0 &&
              truePipelineFactor(osApplied[next], sampleRate) == f) {
         group[groupCount++] = next++;
@@ -1393,6 +1651,168 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       lv2_atom_forge_pop(&forge, &frame);
     }
   }
+}
+
+// Pre-amp mono effects at the session rate, after the gate and compressor and
+// before the pedal capture: wah/filter, the pre-amp pitch shifter and the synth.
+void Plugin::processPreFx(float* samples, uint32_t count) noexcept {
+  if (fxRackOn(FxRack::Wah)) {
+    wahFilter.process(samples, count, fxEnumValue(kWahModePort), fxValue(kWahPositionPort),
+                      fxValue(kWahResonancePort), fxValue(kWahSensitivityPort));
+  } else {
+    wahFilter.reset();
+  }
+  const bool pitchPrePosition = fxEnumValue(kPitchPostPort) == 0;
+  if (fxRackOn(FxRack::Pitch) && pitchPrePosition) {
+    pitchPre.process(samples, nullptr, count, fxEnumValue(kPitchModePort),
+                     fxValue(kPitchShiftPort), fxValue(kPitchShift2Port),
+                     fxValue(kPitchDetunePort), fxValue(kPitchMixPort),
+                     std::clamp(fxValue(kPitchWhammyPort) * 0.01f, 0.0f, 1.0f));
+  } else {
+    pitchPre.reset();
+  }
+  if (fxRackOn(FxRack::Synth)) {
+    guitarSynth.process(samples, count, fxEnumValue(kSynthWavePort),
+                        fxValue(kSynthMixPort), fxValue(kSynthFilterPort));
+  } else {
+    guitarSynth.reset();
+  }
+}
+
+// Stereo effects after the cabinets and the output trim: multiband
+// compression, modulation, the post-cab pitch shifter, delay, the selected
+// reverb, and finally the looper so it captures the finished sound.
+void Plugin::processPostFx(float* left, float* right, uint32_t count) noexcept {
+  const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
+  if (fxRackOn(FxRack::Multiband)) {
+    multibandComp.process(left, right, count, fxValue(kMbcLowXoverPort),
+                          fxValue(kMbcHighXoverPort), fxValue(kMbcLowPort),
+                          fxValue(kMbcMidPort), fxValue(kMbcHighPort));
+  } else {
+    multibandComp.reset();
+  }
+  if (fxRackOn(FxRack::ModFx)) {
+    const int type = fxEnumValue(kModFxTypePort);
+    float feedback = fxValue(kModFxFeedbackPort);
+    // Rotary reads this control as horn/drum balance; keep some horn at 0.
+    if (type == ModulationFx::kRotary) feedback = 25.0f + 0.75f * std::clamp(feedback, 0.0f, 100.0f);
+    modulationFx.process(left, right, count, type, fxValue(kModFxRatePort),
+                         fxValue(kModFxDepthPort), feedback, fxValue(kModFxMixPort));
+  } else {
+    modulationFx.reset();
+  }
+  if (fxRackOn(FxRack::Pitch) && fxEnumValue(kPitchPostPort) == 1) {
+    pitchPost.process(left, right, count, fxEnumValue(kPitchModePort),
+                      fxValue(kPitchShiftPort), fxValue(kPitchShift2Port),
+                      fxValue(kPitchDetunePort), fxValue(kPitchMixPort),
+                      std::clamp(fxValue(kPitchWhammyPort) * 0.01f, 0.0f, 1.0f));
+  } else {
+    pitchPost.reset();
+  }
+  if (rackOn(Rack::Delay))
+    delayFx.process(left, right, count, portValue(ports.delay_time, 400.0f),
+                    portValue(ports.delay_feedback, 35.0f),
+                    portValue(ports.delay_damping, 40.0f),
+                    portValue(ports.delay_mix, 0.0f));
+  const bool spatialOn = rackOn(Rack::Spatial);
+  const bool reverbOn = rackOn(Rack::Reverb);
+  const bool spring = reverbTypeApplied == 1;
+  reverbFx.process(left, right, count, *ports.room, portValue(ports.reverb_mix, 0.0f),
+                   portValue(ports.reverb_decay, 50.0f),
+                   portValue(ports.reverb_size, 50.0f),
+                   portValue(ports.reverb_damping, 50.0f),
+                   portValue(ports.reverb_predelay, 10.0f),
+                   spatialOn, reverbOn && !spring, reverbTypeApplied == 2);
+  if (reverbOn && spring) {
+    springReverb.process(left, right, count, portValue(ports.reverb_mix, 0.0f),
+                         portValue(ports.reverb_decay, 50.0f),
+                         portValue(ports.reverb_size, 50.0f),
+                         portValue(ports.reverb_damping, 50.0f),
+                         portValue(ports.reverb_predelay, 10.0f));
+  } else {
+    springReverb.reset();
+  }
+  if (fxRackOn(FxRack::Looper)) {
+    // The port is the UI's request; MIDI steps the state directly. Either
+    // change wins over the previous one.
+    const float portState = fxValue(kLooperStatePort);
+    if (looperPortSeen < 0.0f) looperPortSeen = portState;
+    if (std::fabs(portState - looperPortSeen) > 1.0e-3f) {
+      looperPortSeen = portState;
+      looperState = std::clamp(static_cast<int>(portState + 0.5f), 0,
+                               static_cast<int>(Looper::kStateCount) - 1);
+    }
+    looper.process(left, right, count, looperState, fxValue(kLooperLevelPort));
+    looperState = static_cast<int>(looper.state());
+  } else if (looper.hasLoop() || looper.state() != Looper::kStop) {
+    looper.reset();
+    looperState = Looper::kStop;
+  }
+}
+
+// A WAV-only parallel cabinet (Cab C or Cab D): IR, mic model, level and pan,
+// summed onto the running stereo cab mix.
+void Plugin::processExtraCab(size_t stage, float* left, float* right, uint32_t count,
+                             int norm, bool consoleOn, bool micOn, float* mixL,
+                             float* mixR) noexcept {
+  const bool stereo = irsRight[stage] != nullptr;
+  if (stereo) {
+    std::memcpy(right, left, count * sizeof(float));
+    irsRight[stage]->process(right, count, norm);
+  }
+  irs[stage]->process(left, count, norm);
+  const size_t mic = stage == 5 ? 4 : 6;
+  const uint32_t distancePort = stage == 5 ? kCab3MicDistancePort : kCab4MicDistancePort;
+  const float micDistance = micOn ? fxValue(distancePort) : 0.0f;
+  const float micPosition = micOn ? fxValue(distancePort + 1) : 0.0f;
+  micModels[mic].process(left, count, micDistance, micPosition);
+  if (stereo) micModels[mic + 1].process(right, count, micDistance, micPosition);
+  else { micModels[mic + 1].reset(); std::memcpy(right, left, count * sizeof(float)); }
+
+  const size_t slot = stage - 5;
+  const uint32_t levelPort = stage == 5 ? kCab3LevelPort : kCab4LevelPort;
+  const float rawDb = consoleOn ? fxValue(levelPort) : 0.0f;
+  const float levelTarget = rawDb <= -23.95f ? 0.0f : dbToLinear(rawDb);
+  const float panTarget = consoleOn ? std::clamp(fxValue(levelPort + 1), -100.0f, 100.0f) * 0.01f : 0.0f;
+  const float glide = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate * 0.010));
+  float& level = smoothedExtraCabLevel[slot];
+  float& pan = smoothedExtraCabPan[slot];
+  for (uint32_t i = 0; i < count; ++i) {
+    level += (levelTarget - level) * glide;
+    pan += (panTarget - pan) * glide;
+    // Equal-power pan of each channel toward the chosen side.
+    const float theta = static_cast<float>(kPi) * 0.25f * (1.0f + pan);
+    const float toLeft = std::cos(theta) * static_cast<float>(M_SQRT2);
+    const float toRight = std::sin(theta) * static_cast<float>(M_SQRT2);
+    mixL[i] += left[i] * level * toLeft;
+    mixR[i] += right[i] * level * toRight;
+  }
+}
+
+// Amp A always runs; Amp B runs on a copy of the same pre-model signal inside
+// the same domain whenever a morph is audible, and the two outputs crossfade.
+void Plugin::runMorphedAmp(float* samples, size_t count, double domainRate) noexcept {
+  constexpr size_t kAmp = stageIndex(Stage::Amp);
+  constexpr size_t kAmpB = stageIndex(Stage::AmpB);
+  const float morphTarget = std::clamp(fxValue(kAmpMorphPort), 0.0f, 100.0f) * 0.01f;
+  const bool partnerReady = models[kAmpB] && appliedEnabled[kAmpB] &&
+      stageNativeRate[kAmpB] <= 0.0f && osApplied[kAmpB] == osApplied[kAmp] &&
+      morphScratch.size() >= count;
+  const float target = partnerReady ? morphTarget : 0.0f;
+  if (target <= 0.0f && smoothedMorph <= 1.0e-4f) {
+    smoothedMorph = 0.0f;
+    runModel(kAmp, models[kAmp], samples, count, domainRate);
+    return;
+  }
+  std::memcpy(morphScratch.data(), samples, count * sizeof(float));
+  runModel(kAmp, models[kAmp], samples, count, domainRate);
+  runModel(kAmpB, models[kAmpB], morphScratch.data(), count, domainRate);
+  const float coeff = 1.0f - std::exp(-1.0f / static_cast<float>(std::max(1.0, domainRate) * 0.020));
+  for (size_t i = 0; i < count; ++i) {
+    smoothedMorph += (target - smoothedMorph) * coeff;
+    samples[i] += (morphScratch[i] - samples[i]) * smoothedMorph;
+  }
+  if (target <= 0.0f && smoothedMorph < 1.0e-4f) smoothedMorph = 0.0f;
 }
 
 void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
@@ -1491,8 +1911,11 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
   const bool consoleOn = rackOn(Rack::CabConsole);
   const bool spatialOn = rackOn(Rack::Spatial);
-  const bool reverbOn = rackOn(Rack::Reverb);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const bool cabCActive = enabled[5] && irs[5];
+  const bool cabDActive = enabled[6] && irs[6];
+  const bool anyParallelCab = parallelCabs || cabCActive || cabDActive;
+  const bool micOn = fxRackOn(FxRack::Mic);
   const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
   const int norm = decodeIrNormalization(*ports.ir_normalization);
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
@@ -1528,7 +1951,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     bool cabProcessed = cabInChain;
     bool haveA = cabInChain;
     bool stereoA = false;
-    if (parallelCabs) std::memcpy(preCab.data(), L, n * sizeof(float));
+    if (anyParallelCab) std::memcpy(preCab.data(), L, n * sizeof(float));
 
     struct CabJob {
       Plugin* plugin;
@@ -1557,7 +1980,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         }
         irs[2]->process(L, n, norm);
         cabProcessed = true;
-      } else if (models[2] && parallelCabs) {
+      } else if (models[2] && anyParallelCab) {
         // Steady state is the session rate. A True domain only persists while
         // the session-rate reload is in flight; native-rate models resample.
         const int decimation = nativeDecimation(2);
@@ -1574,6 +1997,17 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       haveA = cabProcessed;
     }
     if (!stereoA) std::memcpy(R, L, n * sizeof(float));
+    if (haveA) {
+      // Virtual microphone after the Cab A IR; 0/0 is an exact bypass.
+      const float micDistance = micOn ? fxValue(kCabMicDistancePort) : 0.0f;
+      const float micPosition = micOn ? fxValue(kCabMicPositionPort) : 0.0f;
+      micModels[0].process(L, n, micDistance, micPosition);
+      if (stereoA) micModels[1].process(R, n, micDistance, micPosition);
+      else { micModels[1].reset(); std::memcpy(R, L, n * sizeof(float)); }
+    } else {
+      micModels[0].reset();
+      micModels[1].reset();
+    }
     if (haveA && consoleOn) {
       for (uint32_t i = 0; i < n; ++i) {
         smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;
@@ -1613,6 +2047,14 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         else processCabB(BL, n);
         std::memcpy(BR, BL, n * sizeof(float));
       }
+      {
+        const bool stereoB = irs[3] && irsRight[3];
+        const float micDistance = micOn ? fxValue(kCab2MicDistancePort) : 0.0f;
+        const float micPosition = micOn ? fxValue(kCab2MicPositionPort) : 0.0f;
+        micModels[2].process(BL, n, micDistance, micPosition);
+        if (stereoB) micModels[3].process(BR, n, micDistance, micPosition);
+        else { micModels[3].reset(); std::memcpy(BR, BL, n * sizeof(float)); }
+      }
       const float domainDelayMs = haveA && extraA > extraB
           ? static_cast<float>(1000.0 * (extraA - extraB) / sampleRate) : 0.0f;
       cab2Align.process(BL, BR, n,
@@ -1629,6 +2071,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
       haveB = true;
       cabProcessed = true;
+    } else {
+      micModels[2].reset();
+      micModels[3].reset();
     }
 
     // Width: the equal-power spread between cabinet A (left) and cabinet B
@@ -1705,6 +2150,33 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       dualCabShelf.reset();
       dualCabShelfR.reset();
       smoothedDualCabShelfDb = appliedDualCabShelfDb = 0.0f;
+    }
+
+    // Cab C and Cab D: WAV IRs from the same post-amp tap, each with its own
+    // mic model, level and pan, summed onto the A/B blend.
+    if (cabCActive) {
+      std::memcpy(cabCL.data(), preCab.data(), n * sizeof(float));
+      processExtraCab(5, cabCL.data(), cabCR.data(), n, norm, consoleOn, micOn, L, R);
+      cabProcessed = true;
+    } else {
+      micModels[4].reset();
+      micModels[5].reset();
+    }
+    if (cabDActive) {
+      std::memcpy(cabDL.data(), preCab.data(), n * sizeof(float));
+      processExtraCab(6, cabDL.data(), cabDR.data(), n, norm, consoleOn, micOn, L, R);
+      cabProcessed = true;
+    } else {
+      micModels[6].reset();
+      micModels[7].reset();
+    }
+    if (!haveA && !haveB && (cabCActive || cabDActive)) {
+      // Nothing else carried the signal: the extra cabinets alone form the
+      // cab mix, so the dry pre-cab copy must not leak through.
+      std::memcpy(L, cabCActive ? cabCL.data() : cabDL.data(), n * sizeof(float));
+      std::memcpy(R, cabCActive ? cabCR.data() : cabDR.data(), n * sizeof(float));
+      if (cabCActive && cabDActive)
+        for (uint32_t i = 0; i < n; ++i) { L[i] += cabDL[i]; R[i] += cabDR[i]; }
     }
 
     if (cabProcessed && consoleOn) {
@@ -1813,19 +2285,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     }
     smoothedOutputLevel = gain;
 
-    const auto processEffects = [&] {
-      if (rackOn(Rack::Delay))
-        delayFx.process(L, R, n, portValue(ports.delay_time, 400.0f),
-                        portValue(ports.delay_feedback, 35.0f),
-                        portValue(ports.delay_damping, 40.0f),
-                        portValue(ports.delay_mix, 0.0f));
-      reverbFx.process(L, R, n, *ports.room, portValue(ports.reverb_mix, 0.0f),
-                       portValue(ports.reverb_decay, 50.0f),
-                       portValue(ports.reverb_size, 50.0f),
-                       portValue(ports.reverb_damping, 50.0f),
-                       portValue(ports.reverb_predelay, 10.0f),
-                       spatialOn, reverbOn);
-    };
+    const auto processEffects = [&] { processPostFx(L, R, n); };
     // Rack switches fade the wet output too; model switches retain FX tails.
     if (rackTransitionActive) processEffects();
 
@@ -1923,7 +2383,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       if (changed(Rack::Transformer)) { outputTransformer.reset(); transformerPins.reset(); }
       if (changed(Rack::Speaker)) { speakerDynamics.reset(); speakerPins.reset(); }
       if (changed(Rack::Delay)) delayFx.reset();
-      if (changed(Rack::Reverb)) reverbFx.resetPlate();
+      if (changed(Rack::Reverb)) { reverbFx.resetPlate(); springReverb.reset(); }
       if (changed(Rack::Spatial)) reverbFx.resetRoom();
       if (changed(Rack::Spatial)) smoothedWidth = widthTarget;
       if (changed(Rack::CabConsole)) {
@@ -1941,6 +2401,27 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         appliedLowCut = appliedHighCut = -1.0f;
       }
       appliedRacks = requestedRacks;
+    }
+    if (rackTransitionActive && appliedFxRacks != requestedFxRacks) {
+      const auto changedFx = [&](FxRack rack) {
+        const size_t i = static_cast<size_t>(rack);
+        return appliedFxRacks[i] != requestedFxRacks[i];
+      };
+      if (changedFx(FxRack::Wah)) wahFilter.reset();
+      if (changedFx(FxRack::Synth)) guitarSynth.reset();
+      if (changedFx(FxRack::Pitch)) { pitchPre.reset(); pitchPost.reset(); }
+      if (changedFx(FxRack::Multiband)) multibandComp.reset();
+      if (changedFx(FxRack::ModFx)) modulationFx.reset();
+      if (changedFx(FxRack::Mic)) for (auto& mic : micModels) mic.reset();
+      appliedFxRacks = requestedFxRacks;
+    }
+    if (rackTransitionActive) {
+      const int reverbTypeRequested = fxEnumValue(kReverbTypePort);
+      if (reverbTypeRequested != reverbTypeApplied) {
+        reverbTypeApplied = reverbTypeRequested;
+        reverbFx.resetPlate();
+        springReverb.reset();
+      }
     }
     if (transformerApplied != transformerRequested) {
       transformerApplied = transformerRequested;
@@ -2006,7 +2487,8 @@ void Plugin::commitPendingSwitches() {
 void Plugin::reloadModelsForOversample() {
   // Re-send every loaded model path through the worker so the models are
   // re-created with the loader external rate matching the new domain.
-  for (size_t i = 0; i < kSerialStageCount; ++i) {
+  for (size_t i = 0; i < kStageCount; ++i) {
+    if (!stageFollowsOversample(i)) continue;
     if (models[i] && !modelPaths[i].empty()) {
       const size_t len = modelPaths[i].size();
       const int mode = desiredStageMode(i);

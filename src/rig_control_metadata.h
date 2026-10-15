@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 
+#include "fx_controls.h"
 #include "pin_eq.h"
 #include "rack_controls.h"
 #include "transformer_controls.h"
@@ -90,6 +91,7 @@ inline const char* rigControlSymbol(uint32_t port) {
     }();
     return symbols[port - kPinEqFirstPort].c_str();
   }
+  if (isFxControlPort(port)) return fxControl(port).symbol;
   return nullptr;
 }
 
@@ -103,6 +105,8 @@ inline void forEachRigControlSymbol(Visit&& visit) {
     visit(kRackControlFirstPort + i, kRackControlSymbols[i]);
   for (uint32_t i = 0; i < kPinEqPortCount; ++i)
     visit(kPinEqFirstPort + i, rigControlSymbol(kPinEqFirstPort + i));
+  for (uint32_t i = 0; i < kFxControlCount; ++i)
+    visit(kFxControlFirstPort + i, kFxControls[i].symbol);
 }
 
 } // namespace NAMRig

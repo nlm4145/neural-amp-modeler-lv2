@@ -29,6 +29,17 @@ The best source of models is [Tone3000](https://www.tone3000.com/).
 
 For more information on model type support and performance, see the [NeuralAudio](https://github.com/mikeoliphant/NeuralAudio) repository, which is where the model handling code lives.
 
+## Rig racks beyond the captures
+
+The rig plugin adds, after the amp/cab core: wah and filters, six drive
+circuits, a guitar synth, a pitch shifter/harmonizer/whammy, chorus/flanger/
+phaser/tremolo/vibrato/rotary, a three-band compressor, plate/spring/hall
+reverb, a 30 s looper, a second amp capture with a morph crossfade, four
+parallel cabinet IRs with virtual mic distance/position, eight scenes per
+preset, four modifiers (LFO, envelope, sequencer, expression pedals) and MIDI
+input (Program Change selects scenes; CCs feed the expression pedals and the
+looper). See `ARCHITECTURE.md` for the port map and the chain order.
+
 ## Input Calibration
 
 The expected input level to the plugin is 12dBu. For models that include input level information, they will be calibrated against this level. If you know the input level of your audio interface, you should adjust the input level relative to the expected 12dBu to provide the appropriate signal level to the model.

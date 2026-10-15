@@ -2,6 +2,7 @@
 @prefix doap:  <http://usefulinc.com/ns/doap#> .
 @prefix foaf:  <http://xmlns.com/foaf/0.1/> .
 @prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
+@prefix midi:  <http://lv2plug.in/ns/ext/midi#> .
 @prefix opts:  <http://lv2plug.in/ns/ext/options#> .
 @prefix patch: <http://lv2plug.in/ns/ext/patch#> .
 @prefix pprops: <http://lv2plug.in/ns/ext/port-props#> .
@@ -19,6 +20,12 @@
 	a lv2:Parameter ; rdfs:label "Cab Model" ; rdfs:range atom:Path .
 <@NAM_RIG_LV2_ID@-cab2-model>
 	a lv2:Parameter ; rdfs:label "Cab B Model" ; rdfs:range atom:Path .
+<@NAM_RIG_LV2_ID@-amp2-model>
+	a lv2:Parameter ; rdfs:label "Amp B Model (Morph)" ; rdfs:range atom:Path .
+<@NAM_RIG_LV2_ID@-cab3-model>
+	a lv2:Parameter ; rdfs:label "Cab C IR" ; rdfs:range atom:Path .
+<@NAM_RIG_LV2_ID@-cab4-model>
+	a lv2:Parameter ; rdfs:label "Cab D IR" ; rdfs:range atom:Path .
 
 <@NAM_RIG_LV2_ID@-transformer-ratio>
 	a units:Unit ; rdfs:label "Ratio" ; units:symbol "x" ; units:render "%f x" .
@@ -36,11 +43,14 @@
 		<@NAM_RIG_LV2_ID@-pedal-model>,
 		<@NAM_RIG_LV2_ID@-amp-model>,
 		<@NAM_RIG_LV2_ID@-cab-model>,
-		<@NAM_RIG_LV2_ID@-cab2-model> ;
+		<@NAM_RIG_LV2_ID@-cab2-model>,
+		<@NAM_RIG_LV2_ID@-amp2-model>,
+		<@NAM_RIG_LV2_ID@-cab3-model>,
+		<@NAM_RIG_LV2_ID@-cab4-model> ;
 
 	lv2:port [
 		a atom:AtomPort, lv2:InputPort ; atom:bufferType atom:Sequence ;
-		atom:supports patch:Message ; lv2:designation lv2:control ;
+		atom:supports patch:Message, midi:MidiEvent ; lv2:designation lv2:control ;
 		lv2:index 0 ; lv2:symbol "control" ; lv2:name "Control"
 	], [
 		a atom:AtomPort, lv2:OutputPort ; atom:bufferType atom:Sequence ;
@@ -1026,4 +1036,693 @@
 					lv2:default 0.0 ; lv2:minimum -12.0 ; lv2:maximum 12.0 ; units:unit units:db ;
 					lv2:portProperty lv2:connectionOptional ;
 					rdfs:comment "Overdrive output level into the amp. Applies while Drive is above zero."
-				] .
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 182 ;
+					lv2:symbol "scene" ; lv2:name "Scene" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 7 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Scene 1" ],
+						[ rdfs:value 1.0 ; rdfs:label "Scene 2" ],
+						[ rdfs:value 2.0 ; rdfs:label "Scene 3" ],
+						[ rdfs:value 3.0 ; rdfs:label "Scene 4" ],
+						[ rdfs:value 4.0 ; rdfs:label "Scene 5" ],
+						[ rdfs:value 5.0 ; rdfs:label "Scene 6" ],
+						[ rdfs:value 6.0 ; rdfs:label "Scene 7" ],
+						[ rdfs:value 7.0 ; rdfs:label "Scene 8" ] ;
+					rdfs:comment "Active scene (1-8). Each scene is a complete snapshot of every control; the UI recalls it. MIDI Program Change 0-7 selects a scene."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 183 ;
+					lv2:symbol "midi_channel" ; lv2:name "MIDI Channel" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 16 ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "MIDI channel the rig listens on. 0 = omni."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 184 ;
+					lv2:symbol "expr1_cc" ; lv2:name "Expression 1 CC" ;
+					lv2:default 11 ; lv2:minimum 0 ; lv2:maximum 127 ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "MIDI continuous controller number for expression pedal 1."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 185 ;
+					lv2:symbol "expr2_cc" ; lv2:name "Expression 2 CC" ;
+					lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 127 ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "MIDI continuous controller number for expression pedal 2."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 186 ;
+					lv2:symbol "expr1_value" ; lv2:name "Expression 1" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Expression pedal 1 position. Host automation sets it; incoming MIDI on the assigned CC overrides it."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 187 ;
+					lv2:symbol "expr2_value" ; lv2:name "Expression 2" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Expression pedal 2 position. Host automation sets it; incoming MIDI on the assigned CC overrides it."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 188 ;
+					lv2:symbol "mod1_target" ; lv2:name "Modifier 1 Target" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 39 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Input Level" ],
+						[ rdfs:value 2.0 ; rdfs:label "Output Level" ],
+						[ rdfs:value 3.0 ; rdfs:label "Amp Drive" ],
+						[ rdfs:value 4.0 ; rdfs:label "Master" ],
+						[ rdfs:value 5.0 ; rdfs:label "Presence" ],
+						[ rdfs:value 6.0 ; rdfs:label "Depth" ],
+						[ rdfs:value 7.0 ; rdfs:label "Sag" ],
+						[ rdfs:value 8.0 ; rdfs:label "Bass" ],
+						[ rdfs:value 9.0 ; rdfs:label "Mid" ],
+						[ rdfs:value 10.0 ; rdfs:label "Treble" ],
+						[ rdfs:value 11.0 ; rdfs:label "Gate Threshold" ],
+						[ rdfs:value 12.0 ; rdfs:label "Compressor" ],
+						[ rdfs:value 13.0 ; rdfs:label "Cab A Level" ],
+						[ rdfs:value 14.0 ; rdfs:label "Cab B Level" ],
+						[ rdfs:value 15.0 ; rdfs:label "Width" ],
+						[ rdfs:value 16.0 ; rdfs:label "Room" ],
+						[ rdfs:value 17.0 ; rdfs:label "Delay Time" ],
+						[ rdfs:value 18.0 ; rdfs:label "Delay Feedback" ],
+						[ rdfs:value 19.0 ; rdfs:label "Delay Mix" ],
+						[ rdfs:value 20.0 ; rdfs:label "Reverb Mix" ],
+						[ rdfs:value 21.0 ; rdfs:label "Reverb Decay" ],
+						[ rdfs:value 22.0 ; rdfs:label "OD Drive" ],
+						[ rdfs:value 23.0 ; rdfs:label "OD Level" ],
+						[ rdfs:value 24.0 ; rdfs:label "Mid Push" ],
+						[ rdfs:value 25.0 ; rdfs:label "Wah Position" ],
+						[ rdfs:value 26.0 ; rdfs:label "Mod Rate" ],
+						[ rdfs:value 27.0 ; rdfs:label "Mod Depth" ],
+						[ rdfs:value 28.0 ; rdfs:label "Mod Mix" ],
+						[ rdfs:value 29.0 ; rdfs:label "Whammy" ],
+						[ rdfs:value 30.0 ; rdfs:label "Pitch Mix" ],
+						[ rdfs:value 31.0 ; rdfs:label "Pitch Shift" ],
+						[ rdfs:value 32.0 ; rdfs:label "Amp Morph" ],
+						[ rdfs:value 33.0 ; rdfs:label "Synth Mix" ],
+						[ rdfs:value 34.0 ; rdfs:label "Synth Filter" ],
+						[ rdfs:value 35.0 ; rdfs:label "Looper Level" ],
+						[ rdfs:value 36.0 ; rdfs:label "Multiband Low" ],
+						[ rdfs:value 37.0 ; rdfs:label "Multiband High" ],
+						[ rdfs:value 38.0 ; rdfs:label "Mic A Distance" ],
+						[ rdfs:value 39.0 ; rdfs:label "Mic B Distance" ] ;
+					rdfs:comment "Parameter driven by modifier 1. Off disconnects the modifier."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 189 ;
+					lv2:symbol "mod1_source" ; lv2:name "Modifier 1 Source" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 11 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "LFO Sine" ],
+						[ rdfs:value 2.0 ; rdfs:label "LFO Triangle" ],
+						[ rdfs:value 3.0 ; rdfs:label "LFO Square" ],
+						[ rdfs:value 4.0 ; rdfs:label "LFO Saw Up" ],
+						[ rdfs:value 5.0 ; rdfs:label "LFO Saw Down" ],
+						[ rdfs:value 6.0 ; rdfs:label "LFO Random" ],
+						[ rdfs:value 7.0 ; rdfs:label "Envelope" ],
+						[ rdfs:value 8.0 ; rdfs:label "Sequencer 4" ],
+						[ rdfs:value 9.0 ; rdfs:label "Sequencer 8" ],
+						[ rdfs:value 10.0 ; rdfs:label "Expression 1" ],
+						[ rdfs:value 11.0 ; rdfs:label "Expression 2" ] ;
+					rdfs:comment "Control source: an LFO shape, the input envelope, a step sequencer or an expression pedal."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 190 ;
+					lv2:symbol "mod1_rate" ; lv2:name "Modifier 1 Rate" ;
+					lv2:default 1 ; lv2:minimum 0.05 ; lv2:maximum 20 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "LFO or sequencer rate in Hz."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 191 ;
+					lv2:symbol "mod1_depth" ; lv2:name "Modifier 1 Depth" ;
+					lv2:default 0 ; lv2:minimum -100 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "How far the source moves the target across its range. Negative inverts the motion."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 192 ;
+					lv2:symbol "mod2_target" ; lv2:name "Modifier 2 Target" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 39 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Input Level" ],
+						[ rdfs:value 2.0 ; rdfs:label "Output Level" ],
+						[ rdfs:value 3.0 ; rdfs:label "Amp Drive" ],
+						[ rdfs:value 4.0 ; rdfs:label "Master" ],
+						[ rdfs:value 5.0 ; rdfs:label "Presence" ],
+						[ rdfs:value 6.0 ; rdfs:label "Depth" ],
+						[ rdfs:value 7.0 ; rdfs:label "Sag" ],
+						[ rdfs:value 8.0 ; rdfs:label "Bass" ],
+						[ rdfs:value 9.0 ; rdfs:label "Mid" ],
+						[ rdfs:value 10.0 ; rdfs:label "Treble" ],
+						[ rdfs:value 11.0 ; rdfs:label "Gate Threshold" ],
+						[ rdfs:value 12.0 ; rdfs:label "Compressor" ],
+						[ rdfs:value 13.0 ; rdfs:label "Cab A Level" ],
+						[ rdfs:value 14.0 ; rdfs:label "Cab B Level" ],
+						[ rdfs:value 15.0 ; rdfs:label "Width" ],
+						[ rdfs:value 16.0 ; rdfs:label "Room" ],
+						[ rdfs:value 17.0 ; rdfs:label "Delay Time" ],
+						[ rdfs:value 18.0 ; rdfs:label "Delay Feedback" ],
+						[ rdfs:value 19.0 ; rdfs:label "Delay Mix" ],
+						[ rdfs:value 20.0 ; rdfs:label "Reverb Mix" ],
+						[ rdfs:value 21.0 ; rdfs:label "Reverb Decay" ],
+						[ rdfs:value 22.0 ; rdfs:label "OD Drive" ],
+						[ rdfs:value 23.0 ; rdfs:label "OD Level" ],
+						[ rdfs:value 24.0 ; rdfs:label "Mid Push" ],
+						[ rdfs:value 25.0 ; rdfs:label "Wah Position" ],
+						[ rdfs:value 26.0 ; rdfs:label "Mod Rate" ],
+						[ rdfs:value 27.0 ; rdfs:label "Mod Depth" ],
+						[ rdfs:value 28.0 ; rdfs:label "Mod Mix" ],
+						[ rdfs:value 29.0 ; rdfs:label "Whammy" ],
+						[ rdfs:value 30.0 ; rdfs:label "Pitch Mix" ],
+						[ rdfs:value 31.0 ; rdfs:label "Pitch Shift" ],
+						[ rdfs:value 32.0 ; rdfs:label "Amp Morph" ],
+						[ rdfs:value 33.0 ; rdfs:label "Synth Mix" ],
+						[ rdfs:value 34.0 ; rdfs:label "Synth Filter" ],
+						[ rdfs:value 35.0 ; rdfs:label "Looper Level" ],
+						[ rdfs:value 36.0 ; rdfs:label "Multiband Low" ],
+						[ rdfs:value 37.0 ; rdfs:label "Multiband High" ],
+						[ rdfs:value 38.0 ; rdfs:label "Mic A Distance" ],
+						[ rdfs:value 39.0 ; rdfs:label "Mic B Distance" ] ;
+					rdfs:comment "Parameter driven by modifier 2. Off disconnects the modifier."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 193 ;
+					lv2:symbol "mod2_source" ; lv2:name "Modifier 2 Source" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 11 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "LFO Sine" ],
+						[ rdfs:value 2.0 ; rdfs:label "LFO Triangle" ],
+						[ rdfs:value 3.0 ; rdfs:label "LFO Square" ],
+						[ rdfs:value 4.0 ; rdfs:label "LFO Saw Up" ],
+						[ rdfs:value 5.0 ; rdfs:label "LFO Saw Down" ],
+						[ rdfs:value 6.0 ; rdfs:label "LFO Random" ],
+						[ rdfs:value 7.0 ; rdfs:label "Envelope" ],
+						[ rdfs:value 8.0 ; rdfs:label "Sequencer 4" ],
+						[ rdfs:value 9.0 ; rdfs:label "Sequencer 8" ],
+						[ rdfs:value 10.0 ; rdfs:label "Expression 1" ],
+						[ rdfs:value 11.0 ; rdfs:label "Expression 2" ] ;
+					rdfs:comment "Control source: an LFO shape, the input envelope, a step sequencer or an expression pedal."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 194 ;
+					lv2:symbol "mod2_rate" ; lv2:name "Modifier 2 Rate" ;
+					lv2:default 1 ; lv2:minimum 0.05 ; lv2:maximum 20 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "LFO or sequencer rate in Hz."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 195 ;
+					lv2:symbol "mod2_depth" ; lv2:name "Modifier 2 Depth" ;
+					lv2:default 0 ; lv2:minimum -100 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "How far the source moves the target across its range. Negative inverts the motion."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 196 ;
+					lv2:symbol "mod3_target" ; lv2:name "Modifier 3 Target" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 39 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Input Level" ],
+						[ rdfs:value 2.0 ; rdfs:label "Output Level" ],
+						[ rdfs:value 3.0 ; rdfs:label "Amp Drive" ],
+						[ rdfs:value 4.0 ; rdfs:label "Master" ],
+						[ rdfs:value 5.0 ; rdfs:label "Presence" ],
+						[ rdfs:value 6.0 ; rdfs:label "Depth" ],
+						[ rdfs:value 7.0 ; rdfs:label "Sag" ],
+						[ rdfs:value 8.0 ; rdfs:label "Bass" ],
+						[ rdfs:value 9.0 ; rdfs:label "Mid" ],
+						[ rdfs:value 10.0 ; rdfs:label "Treble" ],
+						[ rdfs:value 11.0 ; rdfs:label "Gate Threshold" ],
+						[ rdfs:value 12.0 ; rdfs:label "Compressor" ],
+						[ rdfs:value 13.0 ; rdfs:label "Cab A Level" ],
+						[ rdfs:value 14.0 ; rdfs:label "Cab B Level" ],
+						[ rdfs:value 15.0 ; rdfs:label "Width" ],
+						[ rdfs:value 16.0 ; rdfs:label "Room" ],
+						[ rdfs:value 17.0 ; rdfs:label "Delay Time" ],
+						[ rdfs:value 18.0 ; rdfs:label "Delay Feedback" ],
+						[ rdfs:value 19.0 ; rdfs:label "Delay Mix" ],
+						[ rdfs:value 20.0 ; rdfs:label "Reverb Mix" ],
+						[ rdfs:value 21.0 ; rdfs:label "Reverb Decay" ],
+						[ rdfs:value 22.0 ; rdfs:label "OD Drive" ],
+						[ rdfs:value 23.0 ; rdfs:label "OD Level" ],
+						[ rdfs:value 24.0 ; rdfs:label "Mid Push" ],
+						[ rdfs:value 25.0 ; rdfs:label "Wah Position" ],
+						[ rdfs:value 26.0 ; rdfs:label "Mod Rate" ],
+						[ rdfs:value 27.0 ; rdfs:label "Mod Depth" ],
+						[ rdfs:value 28.0 ; rdfs:label "Mod Mix" ],
+						[ rdfs:value 29.0 ; rdfs:label "Whammy" ],
+						[ rdfs:value 30.0 ; rdfs:label "Pitch Mix" ],
+						[ rdfs:value 31.0 ; rdfs:label "Pitch Shift" ],
+						[ rdfs:value 32.0 ; rdfs:label "Amp Morph" ],
+						[ rdfs:value 33.0 ; rdfs:label "Synth Mix" ],
+						[ rdfs:value 34.0 ; rdfs:label "Synth Filter" ],
+						[ rdfs:value 35.0 ; rdfs:label "Looper Level" ],
+						[ rdfs:value 36.0 ; rdfs:label "Multiband Low" ],
+						[ rdfs:value 37.0 ; rdfs:label "Multiband High" ],
+						[ rdfs:value 38.0 ; rdfs:label "Mic A Distance" ],
+						[ rdfs:value 39.0 ; rdfs:label "Mic B Distance" ] ;
+					rdfs:comment "Parameter driven by modifier 3. Off disconnects the modifier."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 197 ;
+					lv2:symbol "mod3_source" ; lv2:name "Modifier 3 Source" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 11 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "LFO Sine" ],
+						[ rdfs:value 2.0 ; rdfs:label "LFO Triangle" ],
+						[ rdfs:value 3.0 ; rdfs:label "LFO Square" ],
+						[ rdfs:value 4.0 ; rdfs:label "LFO Saw Up" ],
+						[ rdfs:value 5.0 ; rdfs:label "LFO Saw Down" ],
+						[ rdfs:value 6.0 ; rdfs:label "LFO Random" ],
+						[ rdfs:value 7.0 ; rdfs:label "Envelope" ],
+						[ rdfs:value 8.0 ; rdfs:label "Sequencer 4" ],
+						[ rdfs:value 9.0 ; rdfs:label "Sequencer 8" ],
+						[ rdfs:value 10.0 ; rdfs:label "Expression 1" ],
+						[ rdfs:value 11.0 ; rdfs:label "Expression 2" ] ;
+					rdfs:comment "Control source: an LFO shape, the input envelope, a step sequencer or an expression pedal."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 198 ;
+					lv2:symbol "mod3_rate" ; lv2:name "Modifier 3 Rate" ;
+					lv2:default 1 ; lv2:minimum 0.05 ; lv2:maximum 20 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "LFO or sequencer rate in Hz."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 199 ;
+					lv2:symbol "mod3_depth" ; lv2:name "Modifier 3 Depth" ;
+					lv2:default 0 ; lv2:minimum -100 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "How far the source moves the target across its range. Negative inverts the motion."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 200 ;
+					lv2:symbol "mod4_target" ; lv2:name "Modifier 4 Target" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 39 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Input Level" ],
+						[ rdfs:value 2.0 ; rdfs:label "Output Level" ],
+						[ rdfs:value 3.0 ; rdfs:label "Amp Drive" ],
+						[ rdfs:value 4.0 ; rdfs:label "Master" ],
+						[ rdfs:value 5.0 ; rdfs:label "Presence" ],
+						[ rdfs:value 6.0 ; rdfs:label "Depth" ],
+						[ rdfs:value 7.0 ; rdfs:label "Sag" ],
+						[ rdfs:value 8.0 ; rdfs:label "Bass" ],
+						[ rdfs:value 9.0 ; rdfs:label "Mid" ],
+						[ rdfs:value 10.0 ; rdfs:label "Treble" ],
+						[ rdfs:value 11.0 ; rdfs:label "Gate Threshold" ],
+						[ rdfs:value 12.0 ; rdfs:label "Compressor" ],
+						[ rdfs:value 13.0 ; rdfs:label "Cab A Level" ],
+						[ rdfs:value 14.0 ; rdfs:label "Cab B Level" ],
+						[ rdfs:value 15.0 ; rdfs:label "Width" ],
+						[ rdfs:value 16.0 ; rdfs:label "Room" ],
+						[ rdfs:value 17.0 ; rdfs:label "Delay Time" ],
+						[ rdfs:value 18.0 ; rdfs:label "Delay Feedback" ],
+						[ rdfs:value 19.0 ; rdfs:label "Delay Mix" ],
+						[ rdfs:value 20.0 ; rdfs:label "Reverb Mix" ],
+						[ rdfs:value 21.0 ; rdfs:label "Reverb Decay" ],
+						[ rdfs:value 22.0 ; rdfs:label "OD Drive" ],
+						[ rdfs:value 23.0 ; rdfs:label "OD Level" ],
+						[ rdfs:value 24.0 ; rdfs:label "Mid Push" ],
+						[ rdfs:value 25.0 ; rdfs:label "Wah Position" ],
+						[ rdfs:value 26.0 ; rdfs:label "Mod Rate" ],
+						[ rdfs:value 27.0 ; rdfs:label "Mod Depth" ],
+						[ rdfs:value 28.0 ; rdfs:label "Mod Mix" ],
+						[ rdfs:value 29.0 ; rdfs:label "Whammy" ],
+						[ rdfs:value 30.0 ; rdfs:label "Pitch Mix" ],
+						[ rdfs:value 31.0 ; rdfs:label "Pitch Shift" ],
+						[ rdfs:value 32.0 ; rdfs:label "Amp Morph" ],
+						[ rdfs:value 33.0 ; rdfs:label "Synth Mix" ],
+						[ rdfs:value 34.0 ; rdfs:label "Synth Filter" ],
+						[ rdfs:value 35.0 ; rdfs:label "Looper Level" ],
+						[ rdfs:value 36.0 ; rdfs:label "Multiband Low" ],
+						[ rdfs:value 37.0 ; rdfs:label "Multiband High" ],
+						[ rdfs:value 38.0 ; rdfs:label "Mic A Distance" ],
+						[ rdfs:value 39.0 ; rdfs:label "Mic B Distance" ] ;
+					rdfs:comment "Parameter driven by modifier 4. Off disconnects the modifier."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 201 ;
+					lv2:symbol "mod4_source" ; lv2:name "Modifier 4 Source" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 11 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "LFO Sine" ],
+						[ rdfs:value 2.0 ; rdfs:label "LFO Triangle" ],
+						[ rdfs:value 3.0 ; rdfs:label "LFO Square" ],
+						[ rdfs:value 4.0 ; rdfs:label "LFO Saw Up" ],
+						[ rdfs:value 5.0 ; rdfs:label "LFO Saw Down" ],
+						[ rdfs:value 6.0 ; rdfs:label "LFO Random" ],
+						[ rdfs:value 7.0 ; rdfs:label "Envelope" ],
+						[ rdfs:value 8.0 ; rdfs:label "Sequencer 4" ],
+						[ rdfs:value 9.0 ; rdfs:label "Sequencer 8" ],
+						[ rdfs:value 10.0 ; rdfs:label "Expression 1" ],
+						[ rdfs:value 11.0 ; rdfs:label "Expression 2" ] ;
+					rdfs:comment "Control source: an LFO shape, the input envelope, a step sequencer or an expression pedal."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 202 ;
+					lv2:symbol "mod4_rate" ; lv2:name "Modifier 4 Rate" ;
+					lv2:default 1 ; lv2:minimum 0.05 ; lv2:maximum 20 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "LFO or sequencer rate in Hz."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 203 ;
+					lv2:symbol "mod4_depth" ; lv2:name "Modifier 4 Depth" ;
+					lv2:default 0 ; lv2:minimum -100 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "How far the source moves the target across its range. Negative inverts the motion."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 204 ;
+					lv2:symbol "wah_enabled" ; lv2:name "Wah / Filter On" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Wah / filter rack before the pedal and amp captures."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 205 ;
+					lv2:symbol "mod_fx_enabled" ; lv2:name "Modulation On" ;
+					lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Stereo modulation rack after the cabinets."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 206 ;
+					lv2:symbol "pitch_enabled" ; lv2:name "Pitch On" ;
+					lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Pitch shifter / harmonizer rack."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 207 ;
+					lv2:symbol "mbc_enabled" ; lv2:name "Multiband Comp On" ;
+					lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Three-band compressor after the cabinets."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 208 ;
+					lv2:symbol "synth_enabled" ; lv2:name "Synth On" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Monophonic guitar synth mixed in before the amp."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 209 ;
+					lv2:symbol "looper_enabled" ; lv2:name "Looper On" ;
+					lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Stereo looper at the end of the chain."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 210 ;
+					lv2:symbol "mic_enabled" ; lv2:name "Mic Models On" ;
+					lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Per-cabinet microphone distance and position models."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 211 ;
+					lv2:symbol "wah_mode" ; lv2:name "Wah Mode" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 4 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Wah" ],
+						[ rdfs:value 1.0 ; rdfs:label "Auto Wah" ],
+						[ rdfs:value 2.0 ; rdfs:label "Low Pass" ],
+						[ rdfs:value 3.0 ; rdfs:label "Band Pass" ],
+						[ rdfs:value 4.0 ; rdfs:label "High Pass" ] ;
+					rdfs:comment "Wah: classic resonant sweep. Auto Wah: the input envelope moves the sweep. Low/Band/High Pass: a resonant state-variable filter."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 212 ;
+					lv2:symbol "wah_position" ; lv2:name "Wah Position" ;
+					lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Sweep position (heel to toe). Assign an expression pedal through a modifier for a real wah."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 213 ;
+					lv2:symbol "wah_resonance" ; lv2:name "Wah Resonance" ;
+					lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Peak sharpness of the wah or filter."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 214 ;
+					lv2:symbol "wah_sensitivity" ; lv2:name "Auto Wah Sensitivity" ;
+					lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "How far picking dynamics open the auto wah."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 215 ;
+					lv2:symbol "od_type" ; lv2:name "Overdrive Type" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 5 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Screamer" ],
+						[ rdfs:value 1.0 ; rdfs:label "Blues" ],
+						[ rdfs:value 2.0 ; rdfs:label "Distortion" ],
+						[ rdfs:value 3.0 ; rdfs:label "Fuzz" ],
+						[ rdfs:value 4.0 ; rdfs:label "Treble Boost" ],
+						[ rdfs:value 5.0 ; rdfs:label "Clean Boost" ] ;
+					rdfs:comment "Drive pedal circuit in front of the amp: Screamer (TS), Blues, Distortion (RAT), Fuzz, Treble Boost or Clean Boost. Drive, Tone and Level apply to every type."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 216 ;
+					lv2:symbol "reverb_type" ; lv2:name "Reverb Type" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Plate" ],
+						[ rdfs:value 1.0 ; rdfs:label "Spring" ],
+						[ rdfs:value 2.0 ; rdfs:label "Hall" ] ;
+					rdfs:comment "Reverb algorithm: EMT plate, dispersive spring tank or a larger hall."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 217 ;
+					lv2:symbol "mbc_low_xover" ; lv2:name "Multiband Low Crossover" ;
+					lv2:default 150 ; lv2:minimum 60 ; lv2:maximum 500 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "Crossover between the low and mid bands."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 218 ;
+					lv2:symbol "mbc_high_xover" ; lv2:name "Multiband High Crossover" ;
+					lv2:default 2500 ; lv2:minimum 1000 ; lv2:maximum 8000 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "Crossover between the mid and high bands."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 219 ;
+					lv2:symbol "mbc_low" ; lv2:name "Multiband Low" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "One-knob compression of the low band. 0 = off."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 220 ;
+					lv2:symbol "mbc_mid" ; lv2:name "Multiband Mid" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "One-knob compression of the mid band. 0 = off."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 221 ;
+					lv2:symbol "mbc_high" ; lv2:name "Multiband High" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "One-knob compression of the high band. 0 = off."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 222 ;
+					lv2:symbol "mod_fx_type" ; lv2:name "Modulation Type" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 5 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Chorus" ],
+						[ rdfs:value 1.0 ; rdfs:label "Flanger" ],
+						[ rdfs:value 2.0 ; rdfs:label "Phaser" ],
+						[ rdfs:value 3.0 ; rdfs:label "Tremolo" ],
+						[ rdfs:value 4.0 ; rdfs:label "Vibrato" ],
+						[ rdfs:value 5.0 ; rdfs:label "Rotary" ] ;
+					rdfs:comment "Chorus, Flanger, Phaser, Tremolo, Vibrato or Rotary speaker."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 223 ;
+					lv2:symbol "mod_fx_rate" ; lv2:name "Modulation Rate" ;
+					lv2:default 0.8 ; lv2:minimum 0.05 ; lv2:maximum 10 ; units:unit units:hz ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic ;
+					rdfs:comment "LFO speed. Rotary: horn speed, the drum follows slower."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 224 ;
+					lv2:symbol "mod_fx_depth" ; lv2:name "Modulation Depth" ;
+					lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Sweep or intensity."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 225 ;
+					lv2:symbol "mod_fx_feedback" ; lv2:name "Modulation Feedback" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Flanger/Phaser regeneration. Tremolo: stereo phase offset. Rotary: horn/drum balance."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 226 ;
+					lv2:symbol "mod_fx_mix" ; lv2:name "Modulation Mix" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Wet/dry blend. 0 = exact bypass."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 227 ;
+					lv2:symbol "pitch_mode" ; lv2:name "Pitch Mode" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 3 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Shift" ],
+						[ rdfs:value 1.0 ; rdfs:label "Detune" ],
+						[ rdfs:value 2.0 ; rdfs:label "Harmony" ],
+						[ rdfs:value 3.0 ; rdfs:label "Whammy" ] ;
+					rdfs:comment "Shift: crossfade to the shifted voice. Detune: adds +/- cents voices. Harmony: adds two interval voices. Whammy: the shift follows the Whammy control."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 228 ;
+					lv2:symbol "pitch_shift" ; lv2:name "Pitch Shift" ;
+					lv2:default 0 ; lv2:minimum -24 ; lv2:maximum 24 ; units:unit units:semitone12TET ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Voice 1 interval in semitones (Whammy: the interval at full pedal)."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 229 ;
+					lv2:symbol "pitch_shift2" ; lv2:name "Pitch Shift 2" ;
+					lv2:default 0 ; lv2:minimum -24 ; lv2:maximum 24 ; units:unit units:semitone12TET ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Voice 2 interval in semitones (Harmony mode)."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 230 ;
+					lv2:symbol "pitch_detune" ; lv2:name "Pitch Detune" ;
+					lv2:default 0 ; lv2:minimum -50 ; lv2:maximum 50 ; units:unit units:cent ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Fine detune in cents added to the voices."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 231 ;
+					lv2:symbol "pitch_mix" ; lv2:name "Pitch Mix" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Shifted voice level. 0 = exact bypass."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 232 ;
+					lv2:symbol "pitch_post" ; lv2:name "Pitch Position" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Pre-Amp" ],
+						[ rdfs:value 1.0 ; rdfs:label "Post-Cab" ] ;
+					rdfs:comment "Pre-Amp runs the shifter in mono into the pedal and amp; Post-Cab runs it in stereo after the cabinets."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 233 ;
+					lv2:symbol "pitch_whammy" ; lv2:name "Whammy" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Whammy pedal position. Assign an expression pedal through a modifier."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 234 ;
+					lv2:symbol "looper_state" ; lv2:name "Looper State" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 3 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Stop" ],
+						[ rdfs:value 1.0 ; rdfs:label "Record" ],
+						[ rdfs:value 2.0 ; rdfs:label "Play" ],
+						[ rdfs:value 3.0 ; rdfs:label "Overdub" ] ;
+					rdfs:comment "Stop, Record, Play or Overdub. The looper CC cycles Record, Play and Overdub."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 235 ;
+					lv2:symbol "looper_level" ; lv2:name "Looper Level" ;
+					lv2:default 0 ; lv2:minimum -24 ; lv2:maximum 6 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Loop playback level."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 236 ;
+					lv2:symbol "synth_wave" ; lv2:name "Synth Wave" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 4 ;
+					lv2:portProperty lv2:connectionOptional, lv2:enumeration, lv2:integer ;
+					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Off" ],
+						[ rdfs:value 1.0 ; rdfs:label "Sine" ],
+						[ rdfs:value 2.0 ; rdfs:label "Square" ],
+						[ rdfs:value 3.0 ; rdfs:label "Saw" ],
+						[ rdfs:value 4.0 ; rdfs:label "Sub Octave" ] ;
+					rdfs:comment "Oscillator shape tracking the input pitch. Off = exact bypass."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 237 ;
+					lv2:symbol "synth_mix" ; lv2:name "Synth Mix" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Synth level added to the guitar before the amp."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 238 ;
+					lv2:symbol "synth_filter" ; lv2:name "Synth Filter" ;
+					lv2:default 60 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Resonant low-pass cutoff on the synth voice."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 239 ;
+					lv2:symbol "amp_morph" ; lv2:name "Amp Morph" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Blend between the Amp capture (0) and the Amp B capture (100). Both run inside the same oversampled domain. 0 is exact Amp A."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 240 ;
+					lv2:symbol "cab3_enabled" ; lv2:name "Cab C On" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Third cabinet IR, parallel to Cab A and B (WAV impulse responses only)."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 241 ;
+					lv2:symbol "cab3_level" ; lv2:name "Cab C Level" ;
+					lv2:default 0 ; lv2:minimum -24 ; lv2:maximum 24 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Cab C trim. -24 dB mutes it."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 242 ;
+					lv2:symbol "cab3_pan" ; lv2:name "Cab C Pan" ;
+					lv2:default 0 ; lv2:minimum -100 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Cab C stereo position."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 243 ;
+					lv2:symbol "cab4_enabled" ; lv2:name "Cab D On" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+					lv2:portProperty lv2:connectionOptional, lv2:toggled, lv2:integer ;
+					rdfs:comment "Fourth cabinet IR, parallel to the others (WAV impulse responses only)."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 244 ;
+					lv2:symbol "cab4_level" ; lv2:name "Cab D Level" ;
+					lv2:default 0 ; lv2:minimum -24 ; lv2:maximum 24 ; units:unit units:db ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Cab D trim. -24 dB mutes it."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 245 ;
+					lv2:symbol "cab4_pan" ; lv2:name "Cab D Pan" ;
+					lv2:default 0 ; lv2:minimum -100 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Cab D stereo position."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 246 ;
+					lv2:symbol "cab_mic_distance" ; lv2:name "Cab A Mic Distance" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic distance after the Cab A IR: 0 on the grille (exact bypass with Position 0), 100 about one metre back."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 247 ;
+					lv2:symbol "cab_mic_position" ; lv2:name "Cab A Mic Position" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic position: 0 dust cap (bright), 100 cone edge (dark)."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 248 ;
+					lv2:symbol "cab2_mic_distance" ; lv2:name "Cab B Mic Distance" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic distance after the Cab B IR."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 249 ;
+					lv2:symbol "cab2_mic_position" ; lv2:name "Cab B Mic Position" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic position after the Cab B IR."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 250 ;
+					lv2:symbol "cab3_mic_distance" ; lv2:name "Cab C Mic Distance" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic distance after the Cab C IR."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 251 ;
+					lv2:symbol "cab3_mic_position" ; lv2:name "Cab C Mic Position" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic position after the Cab C IR."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 252 ;
+					lv2:symbol "cab4_mic_distance" ; lv2:name "Cab D Mic Distance" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic distance after the Cab D IR."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 253 ;
+					lv2:symbol "cab4_mic_position" ; lv2:name "Cab D Mic Position" ;
+					lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Virtual mic position after the Cab D IR."
+	], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 254 ;
+					lv2:symbol "looper_cc" ; lv2:name "Looper CC" ;
+					lv2:default 80 ; lv2:minimum 0 ; lv2:maximum 127 ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "MIDI CC that steps the looper: Stop/Play -> Record -> Play -> Overdub -> Play. A value of 0 stops."
+	] .

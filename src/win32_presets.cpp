@@ -91,10 +91,9 @@ RigPreset RigPreset::createDefault() {
   p.name = "Default Rig";
   p.speakerProfile = 0.0f;
 
-  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
-  for (size_t s = 0; s < 4; ++s) {
-    p.stages[s].role = roles[s];
-    p.stages[s].enabled = (s < 3);
+  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
+    p.stages[s].role = NAMRig::kRigStageRoles[s];
+    p.stages[s].enabled = NAMRig::kRigStageEnabledDefaults[s];
     p.stages[s].path.clear();
     p.stages[s].oversample = static_cast<float>(NAMRig::kOversampleTrue8);
     p.stages[s].transformer = 0.0f;
@@ -241,10 +240,9 @@ bool RigPreset::loadFromFile(const std::string& path) {
     speakerProfile = root["speaker_profile"].get<float>();
   }
 
-  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
-  for (size_t s = 0; s < 4; ++s) {
-    stages[s].role = roles[s];
-    stages[s].enabled = (s < 3);
+  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
+    stages[s].role = NAMRig::kRigStageRoles[s];
+    stages[s].enabled = NAMRig::kRigStageEnabledDefaults[s];
     stages[s].path.clear();
     stages[s].oversample = static_cast<float>(NAMRig::kOversampleTrue8);
     stages[s].transformer = 0.0f;
@@ -253,7 +251,7 @@ bool RigPreset::loadFromFile(const std::string& path) {
 
   if (root.contains("stages") && root["stages"].is_array()) {
     const auto& arr = root["stages"];
-    for (size_t s = 0; s < std::min(arr.size(), (size_t)4); ++s) {
+    for (size_t s = 0; s < std::min(arr.size(), NAMRig::kRigStageCount); ++s) {
       const auto& st = arr[s];
       if (!st.is_object()) continue;
       if (st.contains("enabled") && st["enabled"].is_boolean()) stages[s].enabled = st["enabled"].get<bool>();
@@ -285,6 +283,26 @@ bool RigPreset::loadFromFile(const std::string& path) {
     }
   }
 
+  for (auto& sc : scenes) sc.clear();
+  scene = 0;
+  if (root.contains("scene") && root["scene"].is_number_integer())
+    scene = std::clamp(root["scene"].get<int>(), 0, static_cast<int>(NAMRig::kSceneCount) - 1);
+  if (root.contains("scenes") && root["scenes"].is_array()) {
+    const auto& arr = root["scenes"];
+    for (size_t i = 0; i < std::min(arr.size(), static_cast<size_t>(NAMRig::kSceneCount)); ++i) {
+      if (!arr[i].is_object()) continue;
+      for (auto& el : arr[i].items()) {
+        try {
+          uint32_t port = static_cast<uint32_t>(std::stoul(el.key()));
+          if (el.value().is_number()) scenes[i][port] = el.value().get<float>();
+        } catch (...) {}
+      }
+    }
+  }
+  // Presets saved before scenes existed start every scene from the main controls.
+  for (auto& sc : scenes)
+    if (sc.empty()) sc = controls;
+
   slotPresets.clear();
   if (root.contains("slot_presets") && root["slot_presets"].is_object()) {
     for (auto& el : root["slot_presets"].items()) {
@@ -305,7 +323,7 @@ bool RigPreset::saveToFile(const std::string& path) const {
   root["speaker_profile"] = speakerProfile;
 
   json stagesArr = json::array();
-  for (size_t s = 0; s < 4; ++s) {
+  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
     json st = json::object();
     st["role"] = stages[s].role;
     st["enabled"] = stages[s].enabled;
@@ -336,6 +354,14 @@ bool RigPreset::saveToFile(const std::string& path) const {
   }
   root["ports"] = portsObj;
   root["params"] = paramsObj;
+  root["scene"] = scene;
+  json scenesArr = json::array();
+  for (const auto& sc : scenes) {
+    json obj = json::object();
+    for (const auto& pair : sc) obj[std::to_string(pair.first)] = pair.second;
+    scenesArr.push_back(obj);
+  }
+  root["scenes"] = scenesArr;
 
   std::ofstream f(path);
   if (!f.is_open()) return false;
@@ -471,6 +497,20 @@ std::vector<std::string> PresetManager::getSlotFactoryPresets(const std::string&
     return {"Captured Clean", "6L6 Warmth (25%)", "6L6 Saturated (50%)", "EL34 Punch (35%)", "EL34 High-Gain (65%)"};
   } else if (slotKey == "sculpt") {
     return {"Flat Bypass", "TS Tight Boost", "Midrange Push", "Fat Lead"};
+  } else if (slotKey == "wah") {
+    return {"Cry Wah", "Auto Funk", "LP Filter", "BP Sweep", "HP Thin"};
+  } else if (slotKey == "mod_fx") {
+    return {"Chorus Lush", "Flange Jet", "Phase 90", "Trem Vintage", "Rotary Fast"};
+  } else if (slotKey == "pitch") {
+    return {"Octave Down", "Detune Wide", "Harmony 3rd/5th", "Whammy +2 Oct", "Octave Up"};
+  } else if (slotKey == "mbc") {
+    return {"Gentle Glue", "Tight Lows", "Bright Control", "Heavy Squash"};
+  } else if (slotKey == "synth") {
+    return {"Sub Bass", "Square Lead", "Saw Pad", "Sine Double"};
+  } else if (slotKey == "mic") {
+    return {"On Grille", "Classic 57", "Roomy Blend", "Dark Edge"};
+  } else if (slotKey == "looper") {
+    return {"Unity", "-6 dB Bed", "-12 dB Bed"};
   }
   return {"Default"};
 }

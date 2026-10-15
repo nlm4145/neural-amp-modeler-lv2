@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <AudioUnit/AudioUnit.h>
 #import <CoreAudio/CoreAudio.h>
+#import <CoreMIDI/CoreMIDI.h>
 #include <os/workgroup.h>
 #include <mach/mach_time.h>
 
@@ -9,6 +10,7 @@
 #include <lv2/buf-size/buf-size.h>
 #include <lv2/core/lv2.h>
 #include <lv2/log/log.h>
+#include <lv2/midi/midi.h>
 #include <lv2/options/options.h>
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
@@ -546,6 +548,7 @@ class StandaloneHost {
 
     atomSequence_ = map(LV2_ATOM__Sequence);
     eventTransfer_ = map(LV2_ATOM__eventTransfer);
+    midiEvent_ = map(LV2_MIDI__MidiEvent);
     atomInt_ = map(LV2_ATOM__Int);
     maxBlockLength_ = map(LV2_BUF_SIZE__maxBlockLength);
 
@@ -581,7 +584,8 @@ class StandaloneHost {
         {NAMRig::kPowerTubeTypePort, tubeControls_},
         {NAMRig::kMidPushPort, {&midPushControl_, 1}},
         {NAMRig::kPinEqFirstPort, pinEqControls_},
-        {NAMRig::kOverdriveDrivePort, overdriveControls_}});
+        {NAMRig::kOverdriveDrivePort, overdriveControls_},
+        {NAMRig::kFxControlFirstPort, appendedControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -600,6 +604,7 @@ class StandaloneHost {
     if (!uiHandle_) return fail(error, @"The native rig UI could not be created.");
 
     if (!startAudio(error)) return false;
+    startMidi();
     observeDisplaySleep();
     uiTimer_ = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
                                                 target:[NSBlockOperation blockOperationWithBlock:^{
@@ -642,6 +647,7 @@ class StandaloneHost {
     [uiTimer_ invalidate];
     uiTimer_ = nil;
     stopObservingDisplaySleep();
+    stopMidi();
     stopAudioUnits();
     if (uiDescriptor_ && uiHandle_) {
       uiDescriptor_->cleanup(uiHandle_);
@@ -902,6 +908,10 @@ class StandaloneHost {
       host->pinEqControls_[port - NAMRig::kPinEqFirstPort] = *static_cast<const float*>(buffer);
       return;
     }
+    if (format == 0 && NAMRig::isFxControlPort(port) && size == sizeof(float)) {
+      host->appendedControls_[port - NAMRig::kFxControlFirstPort] = *static_cast<const float*>(buffer);
+      return;
+    }
     if (port == 0 && format == host->eventTransfer_)
       host->uiToAudio_.push(size, format, buffer);
   }
@@ -941,17 +951,75 @@ class StandaloneHost {
     auto* sequence = reinterpret_cast<LV2_Atom_Sequence*>(controlBuffer_.data());
     size_t used = sizeof(LV2_Atom_Sequence);
     FixedMessage message;
-    while (uiToAudio_.pop(message)) {
-      const size_t eventSize = sizeof(int64_t) + message.size;
-      const size_t padded = lv2_atom_pad_size(static_cast<uint32_t>(eventSize));
-      if (used + padded > controlBuffer_.size()) break;
-      auto* event = reinterpret_cast<LV2_Atom_Event*>(controlBuffer_.data() + used);
-      event->time.frames = 0;
-      std::memcpy(&event->body, message.bytes.data(), message.size);
-      if (padded > eventSize)
-        std::memset(reinterpret_cast<uint8_t*>(event) + eventSize, 0, padded - eventSize);
-      used += padded;
-      sequence->atom.size += static_cast<uint32_t>(padded);
+    const auto append = [&](MessageRing& ring) {
+      while (ring.pop(message)) {
+        const size_t eventSize = sizeof(int64_t) + message.size;
+        const size_t padded = lv2_atom_pad_size(static_cast<uint32_t>(eventSize));
+        if (used + padded > controlBuffer_.size()) return;
+        auto* event = reinterpret_cast<LV2_Atom_Event*>(controlBuffer_.data() + used);
+        event->time.frames = 0;
+        std::memcpy(&event->body, message.bytes.data(), message.size);
+        if (padded > eventSize)
+          std::memset(reinterpret_cast<uint8_t*>(event) + eventSize, 0, padded - eventSize);
+        used += padded;
+        sequence->atom.size += static_cast<uint32_t>(padded);
+      }
+    };
+    append(uiToAudio_);
+    append(midiToAudio_);
+  }
+
+  // ---- MIDI input: every CoreMIDI source feeds the plugin's control port ----
+  // The receive block runs on CoreMIDI's thread and is the only producer of
+  // midiToAudio_; the audio callback drains it into the atom sequence.
+  void startMidi() {
+    if (midiClient_) return;
+    __block StandaloneHost* host = this;
+    MIDIClientCreateWithBlock(CFSTR("Axe FX"), &midiClient_, ^(const MIDINotification* message) {
+      if (message && (message->messageID == kMIDIMsgObjectAdded ||
+                      message->messageID == kMIDIMsgSetupChanged))
+        host->connectMidiSources();
+    });
+    if (!midiClient_) return;
+    MIDIInputPortCreateWithProtocol(midiClient_, CFSTR("Axe FX In"), kMIDIProtocol_1_0, &midiInPort_,
+        ^(const MIDIEventList* list, void* __nullable) {
+          host->receiveMidi(list);
+        });
+    connectMidiSources();
+  }
+
+  void connectMidiSources() {
+    if (!midiInPort_) return;
+    const ItemCount count = MIDIGetNumberOfSources();
+    for (ItemCount i = 0; i < count; ++i) {
+      MIDIEndpointRef source = MIDIGetSource(i);
+      if (source) MIDIPortConnectSource(midiInPort_, source, nullptr);
+    }
+  }
+
+  void stopMidi() {
+    if (midiInPort_) { MIDIPortDispose(midiInPort_); midiInPort_ = 0; }
+    if (midiClient_) { MIDIClientDispose(midiClient_); midiClient_ = 0; }
+  }
+
+  void receiveMidi(const MIDIEventList* list) noexcept {
+    if (!list) return;
+    const MIDIEventPacket* packet = &list->packet[0];
+    for (UInt32 p = 0; p < list->numPackets; ++p) {
+      for (UInt32 w = 0; w < packet->wordCount; ++w) {
+        const UInt32 word = packet->words[w];
+        // MIDI 1.0 channel-voice messages travel as one 32-bit UMP word.
+        if ((word >> 28) != 0x2u) continue;
+        struct { LV2_Atom atom; uint8_t bytes[4]; } event{};
+        event.atom.type = midiEvent_;
+        event.bytes[0] = static_cast<uint8_t>((word >> 16) & 0xFFu);
+        event.bytes[1] = static_cast<uint8_t>((word >> 8) & 0xFFu);
+        event.bytes[2] = static_cast<uint8_t>(word & 0xFFu);
+        const uint8_t status = event.bytes[0] & 0xF0u;
+        event.atom.size = (status == 0xC0u || status == 0xD0u) ? 2u : 3u;
+        midiToAudio_.push(static_cast<uint32_t>(sizeof(LV2_Atom) + event.atom.size), eventTransfer_, &event);
+      }
+      packet = MIDIEventPacketNext(packet);
     }
   }
 
@@ -1736,15 +1804,20 @@ class StandaloneHost {
   float midPushControl_ = 0.0f;
   std::array<float, 3> overdriveControls_ = {0.0f, NAMRig::Overdrive::kToneDefault, 0.0f};
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
+  std::array<float, NAMRig::kFxControlCount> appendedControls_ = NAMRig::fxControlDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};
   MessageRing uiToAudio_;
   MessageRing audioToUI_;
+  MessageRing midiToAudio_;
+  MIDIClientRef midiClient_ = 0;
+  MIDIPortRef midiInPort_ = 0;
 
   std::mutex uriMutex_;
   std::deque<std::string> uris_;
   std::unordered_map<std::string, LV2_URID> urids_;
   LV2_URID atomSequence_ = 0, eventTransfer_ = 0, atomInt_ = 0, maxBlockLength_ = 0;
+  LV2_URID midiEvent_ = 0;
   LV2_URID_Map mapFeature_{};
   LV2_Log_Log logFeature_{};
   LV2UI_Resize resizeFeature_{};

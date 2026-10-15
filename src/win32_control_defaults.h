@@ -33,6 +33,8 @@ inline void forEachWin32ControlDefault(Set&& set) {
     set(NAMRig::kTransformerControlFirstPort + i, NAMRig::kTransformerControls[i].defaultValue);
   for (uint32_t i = 0; i < NAMRig::kRackCount; ++i)
     set(NAMRig::kRackControlFirstPort + i, NAMRig::kRackControlDefaults[i]);
+  for (uint32_t i = 0; i < NAMRig::kFxControlCount; ++i)
+    set(NAMRig::kFxControlFirstPort + i, NAMRig::kFxControls[i].defaultValue);
 }
 
 } // namespace NAMRigWin32

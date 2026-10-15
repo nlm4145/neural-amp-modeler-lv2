@@ -16,7 +16,18 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/amp_advanced.h` | Pre-amp Bright/Input EQ and the virtual power stage: a negative-feedback loop solved exactly per sample, with Presence/Depth in the feedback path, Sag as supply headroom, Bias plus envelope-driven bias excursion, Master as drive |
 | `src/output_transformer.h` | Optional post-power-stage/pre-cab output-transformer profiles: bandwidth, flux-domain core saturation (leaky integrator → saturator → inverse), asymmetry, voicing, high leakage resonance |
 | `src/speaker_dynamics.h` | Speaker impedance curve (low resonance + rising voice-coil inductance, both scaled down by Negative Feedback), Thump, excursion compression (lowers the resonance Q), low-band-only Speaker Drive |
-| `src/space_fx.h` | `AlignDelay` (cabinet alignment), `StereoDelay` (damped, soft-limited feedback), `PlateReverb` (Dattorro tank + diffused early-reflection cluster for Room) |
+| `src/space_fx.h` | `AlignDelay` (cabinet alignment), `StereoDelay` (damped, soft-limited feedback), `PlateReverb` (Dattorro tank + diffused early-reflection cluster for Room; `hall` stretches the tank) |
+| `src/fx_controls.h` | Appended port table (182–254): symbols, names, ranges, defaults, enum labels and comments shared by the TTL generator, DSP, hosts, presets and both UIs; `FxRack` enables; modifier targets; stage roles |
+| `src/modifiers.h` | `ModifierEngine`: LFO shapes, input envelope, two step sequencers and the expression pedals as block-rate control sources |
+| `src/wah_filter.h` | Wah / auto wah / SVF low-, band-, high-pass before the pedal capture |
+| `src/drive_pedal.h` | Blues, Distortion (RAT), Fuzz, Treble Boost and Clean Boost circuits sharing the Sculpt Drive/Tone/Level knobs (`od_type`); the Screamer stays in `overdrive.h` |
+| `src/synth_fx.h` | Monophonic pitch-tracked guitar synth mixed in before the amp |
+| `src/pitch_fx.h` | Dual-grain pitch shifter: Shift, Detune, Harmony (two voices), Whammy; pre-amp mono or post-cab stereo |
+| `src/modulation_fx.h` | Chorus, Flanger, Phaser, Tremolo, Vibrato, Rotary (stereo, post-cab) |
+| `src/multiband_comp.h` | Three-band Linkwitz–Riley compressor with the one-knob curve per band |
+| `src/spring_reverb.h` | Dispersive spring tank selected by `reverb_type` (Plate / Spring / Hall) |
+| `src/looper.h` | 30 s stereo looper at the end of the chain (Stop/Record/Play/Overdub, MIDI CC stepping) |
+| `src/mic_model.h` | Virtual mic distance/position after every cabinet IR (exact bypass at 0/0) |
 | `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
@@ -80,8 +91,51 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 180 | `od_tone` | in | 0-100%, default 50%; overdrive treble roll-off (1st-order, 700 Hz–8.4 kHz); only while Drive > 0 |
 | 181 | `od_level` | in | -12..+12 dB, default 0; overdrive output trim; only while Drive > 0 |
 
-Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
-is never part of the serial chain or a True domain; it loads at the session rate.
+| 182 | `scene` | in | Active scene 0–7. The UI owns scenes (eight complete control snapshots per preset); the DSP forwards MIDI Program Change 0–7 as `#rig-scene` patch:Set and the UI writes this port |
+| 183–187 | `midi_channel`/`expr1_cc`/`expr2_cc`/`expr1_value`/`expr2_value` | in | MIDI channel (0 omni), expression CC numbers, expression positions (host automation; MIDI CC on the assigned number overrides until the port changes) |
+| 188–203 | `mod{1..4}_{target,source,rate,depth}` | in | Modifiers (`src/modifiers.h`). Target is an index into `kModTargets`; the DSP redirects that port's pointer to a modulated shadow value and processes in 64-frame sub-blocks while any modifier is live. LFO shapes sweep ±range/2 around the knob; envelope/sequencer/expression add up to +range × depth |
+| 204–210 | `{wah,mod_fx,pitch,mbc,synth,looper,mic}_enabled` | in | `FxRack` enables (defaults 0,1,1,1,0,1,1); switched through the same 5 ms rack fade |
+| 211–214 | `wah_mode`/`wah_position`/`wah_resonance`/`wah_sensitivity` | in | Wah / filter rack, mono at the session rate after the compressor |
+| 215 | `od_type` | in | Drive circuit for the Sculpt Drive/Tone/Level knobs: Screamer (overdrive.h) or a `DrivePedal` type, in the amp's True domain |
+| 216 | `reverb_type` | in | Plate / Spring / Hall; changes latch through the rack fade |
+| 217–221 | `mbc_low_xover`/`mbc_high_xover`/`mbc_low`/`mbc_mid`/`mbc_high` | in | Multiband compressor after the cabinets; all amounts 0 = exact bypass |
+| 222–226 | `mod_fx_type`/`mod_fx_rate`/`mod_fx_depth`/`mod_fx_feedback`/`mod_fx_mix` | in | Modulation; mix 0 = exact bypass. Rotary reads feedback as horn/drum balance (25 % horn at 0) |
+| 227–233 | `pitch_mode`/`pitch_shift`/`pitch_shift2`/`pitch_detune`/`pitch_mix`/`pitch_post`/`pitch_whammy` | in | Pitch shifter; mix 0 = exact bypass; 30 ms wet-path delay at 48 kHz, not reported on `lv2:latency` |
+| 234–235 | `looper_state`/`looper_level` | in | Looper request (Stop/Record/Play/Overdub) and playback level; the DSP publishes the effective state (`#rig-looper-state`) and position (`#rig-looper-position`) |
+| 236–238 | `synth_wave`/`synth_mix`/`synth_filter` | in | Guitar synth; Off or mix 0 = exact bypass |
+| 239 | `amp_morph` | in | Crossfade from the Amp capture (0) to Amp B (100). Amp B runs on a copy of the pre-model signal in the same domain whenever the morph is audible; 0 is exact Amp A |
+| 240–245 | `cab3_enabled`/`cab3_level`/`cab3_pan`/`cab4_enabled`/`cab4_level`/`cab4_pan` | in | Cab C / Cab D: WAV IRs from the post-amp tap, summed onto the A/B blend with equal-power pan |
+| 246–253 | `cab{,2,3,4}_mic_{distance,position}` | in | Mic models per cabinet (`src/mic_model.h`); 0/0 = exact bypass |
+| 254 | `looper_cc` | in | MIDI CC that steps the looper (value 0 stops) |
+
+Path parameters: `…#rig-{pedal,amp,cab,cab2,amp2,cab3,cab4}-model` (Stage 0..6).
+Stages 3, 5 and 6 (Cab B, C, D) are never part of the serial chain or a True
+domain; they load at the session rate, and Cab C/D accept WAV IRs only. Stage 4
+(Amp B) follows the amp's oversample mode and is processed inside the amp's
+group by `runMorphedAmp`. The `control` atom port also accepts `midi:MidiEvent`.
+
+### Performance control
+
+- `process()` is a wrapper: it parses the atom/MIDI events once, then runs
+  `processBlock()` on 64-frame sub-blocks while a modifier is live (otherwise
+  one block). Targeted control ports are redirected to `modulatedValue[]`; a
+  host reconnecting a port is detected and re-captured each block.
+- MIDI: Program Change → `#rig-scene`; CC `expr1_cc`/`expr2_cc` → expression
+  sources (and `#rig-expr1/2` notifications); CC `looper_cc` → looper step.
+  Both standalone hosts open every MIDI input (CoreMIDI / winmm) and inject
+  the bytes as `MidiEvent` atoms into the control sequence.
+- Scenes: the UI keeps eight control maps per preset (`scenes` + `scene` in
+  the preset JSON). Switching stores the live controls into the old scene and
+  sends the new scene's values; presets saved before scenes seed every scene
+  from the main controls.
+
+### Chain order with the appended racks
+
+Gate → Input → Compressor → **Wah/Filter → Pitch (pre) → Synth** → Pedal →
+[amp domain: Drive (Screamer or `od_type` circuit) → Amp Drive → Sculpt →
+Amp A ⇄ **Amp B morph** → Power → Transformer → Speaker] → cabinets (A, B,
+**C, D**, each → **mic model**) → cuts/pins → EQ → Output → **Multiband →
+Modulation → Pitch (post)** → Delay → **Plate/Spring/Hall** → **Looper**.
 
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.

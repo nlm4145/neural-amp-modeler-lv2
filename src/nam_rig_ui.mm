@@ -20,6 +20,11 @@
 #define NAM_RIG_PRE_AMP_DB_URI NAM_RIG_URI "-pre-amp-db"
 #define NAM_RIG_POST_AMP_DB_URI NAM_RIG_URI "-post-amp-db"
 #define NAM_RIG_OUTPUT_DB_URI NAM_RIG_URI "-output-db"
+#define NAM_RIG_SCENE_URI NAM_RIG_URI "-scene"
+#define NAM_RIG_LOOPER_STATE_URI NAM_RIG_URI "-looper-state"
+#define NAM_RIG_LOOPER_POSITION_URI NAM_RIG_URI "-looper-position"
+#define NAM_RIG_EXPR1_URI NAM_RIG_URI "-expr1"
+#define NAM_RIG_EXPR2_URI NAM_RIG_URI "-expr2"
 
 #include <array>
 #include <cmath>
@@ -34,13 +39,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "fx_controls.h"
+
 constexpr const char* kRigURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig";
 constexpr const char* kRigUIURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-ui";
-constexpr std::array<const char*, 4> kPathURIs{
+constexpr std::array<const char*, NAMRig::kRigStageCount> kPathURIs{
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model",
-    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab2-model"};
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab2-model",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp2-model",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab3-model",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab4-model"};
 
 static NSArray<NSString*>* oversampleDescriptions() {
   static NSArray<NSString*>* descriptions = @[
@@ -61,13 +71,23 @@ static NSString* popupTooltip(NSString* purpose, NSPopUpButton* popup) {
 }
 
 static NSString* stageName(NSInteger stage) {
-  return stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
+  switch (stage) {
+    case 0: return @"pedal";
+    case 1: return @"amp";
+    case 4: return @"Amp B";
+    case 5: return @"Cab C";
+    case 6: return @"Cab D";
+    default: return @"cabinet";
+  }
 }
 
 #import "rig_theme.h"
 #import "rig_widgets.h"
 #include "overdrive.h"
+#include "modifiers.h"
 #include "rig_knobs.h"
+#include <cstring>
+#include <vector>
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
 #import "rig_tone_browser.h"
@@ -127,6 +147,19 @@ static NSString* stageName(NSInteger stage) {
 - (void)deleteSlotPreset:(NSMenuItem*)sender;
 - (void)propagateSlotPresetToAll:(NSMenuItem*)sender;
 - (void)markPresetModified;
+- (void)fxPopupChanged:(NSPopUpButton*)sender;
+- (void)sceneClicked:(NSButton*)sender;
+- (void)looperStateClicked:(NSButton*)sender;
+- (void)applyWahPreset:(NSButton*)sender;
+- (void)applyModFxPreset:(NSButton*)sender;
+- (void)applyPitchPreset:(NSButton*)sender;
+- (void)applyMbcPreset:(NSButton*)sender;
+- (void)applySynthPreset:(NSButton*)sender;
+- (void)applyMicPreset:(NSButton*)sender;
+- (void)applyControlPreset:(NSButton*)sender;
+- (void)applyLooperPreset:(NSButton*)sender;
+- (void)applyMorphPreset:(NSButton*)sender;
+- (void)applyCabExtraPreset:(NSButton*)sender;
 @end
 @implementation NAMRigUIController
 - (void)switchTab:(NSButton*)sender {
@@ -150,20 +183,188 @@ static NSString* stageName(NSInteger stage) {
     else _state->restoreOutputAfterTuner();
   }
 }
+- (void)applyFxPresetValues:(const std::vector<std::pair<uint32_t, float>>&)values {
+  if (!_state) return;
+  for (const auto& [port, value] : values) {
+    _state->sendControl(port, value);
+    _state->updateControl(port, value);
+  }
+  [self markPresetModified];
+}
+
+- (void)fxPopupChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  const uint32_t port = (uint32_t)sender.tag;
+  if (!NAMRig::isFxControlPort(port)) return;
+  const float value = (float)sender.indexOfSelectedItem;
+  _state->sendControl(port, value);
+  _state->updateControl(port, value);
+  [self markPresetModified];
+}
+
+- (void)sceneClicked:(NSButton*)sender {
+  if (!_state) return;
+  _state->switchToScene((int)sender.tag, true);
+}
+
+- (void)looperStateClicked:(NSButton*)sender {
+  if (!_state) return;
+  const float value = (float)std::clamp<NSInteger>(sender.tag, 0, 3);
+  _state->sendControl(NAMRig::kLooperStatePort, value);
+  _state->updateControl(NAMRig::kLooperStatePort, value);
+}
+
+- (void)applyWahPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kWahModePort, 0}, {kWahPositionPort, 45}, {kWahResonancePort, 60}, {kWahSensitivityPort, 50}},
+    {{kWahModePort, 1}, {kWahPositionPort, 20}, {kWahResonancePort, 55}, {kWahSensitivityPort, 80}},
+    {{kWahModePort, 2}, {kWahPositionPort, 65}, {kWahResonancePort, 35}, {kWahSensitivityPort, 50}},
+    {{kWahModePort, 3}, {kWahPositionPort, 50}, {kWahResonancePort, 50}, {kWahSensitivityPort, 50}},
+    {{kWahModePort, 4}, {kWahPositionPort, 30}, {kWahResonancePort, 25}, {kWahSensitivityPort, 50}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyModFxPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kModFxTypePort, 0}, {kModFxRatePort, 0.6f}, {kModFxDepthPort, 55}, {kModFxFeedbackPort, 0}, {kModFxMixPort, 40}},
+    {{kModFxTypePort, 1}, {kModFxRatePort, 0.25f}, {kModFxDepthPort, 70}, {kModFxFeedbackPort, 60}, {kModFxMixPort, 50}},
+    {{kModFxTypePort, 2}, {kModFxRatePort, 0.5f}, {kModFxDepthPort, 65}, {kModFxFeedbackPort, 30}, {kModFxMixPort, 50}},
+    {{kModFxTypePort, 3}, {kModFxRatePort, 5.0f}, {kModFxDepthPort, 60}, {kModFxFeedbackPort, 0}, {kModFxMixPort, 100}},
+    {{kModFxTypePort, 5}, {kModFxRatePort, 6.5f}, {kModFxDepthPort, 70}, {kModFxFeedbackPort, 50}, {kModFxMixPort, 100}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyPitchPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kPitchModePort, 0}, {kPitchShiftPort, -12}, {kPitchShift2Port, 0}, {kPitchDetunePort, 0}, {kPitchMixPort, 100}, {kPitchPostPort, 0}, {kPitchWhammyPort, 0}},
+    {{kPitchModePort, 1}, {kPitchShiftPort, 0}, {kPitchShift2Port, 0}, {kPitchDetunePort, 12}, {kPitchMixPort, 60}, {kPitchPostPort, 1}, {kPitchWhammyPort, 0}},
+    {{kPitchModePort, 2}, {kPitchShiftPort, 4}, {kPitchShift2Port, 7}, {kPitchDetunePort, 0}, {kPitchMixPort, 70}, {kPitchPostPort, 1}, {kPitchWhammyPort, 0}},
+    {{kPitchModePort, 3}, {kPitchShiftPort, 24}, {kPitchShift2Port, 0}, {kPitchDetunePort, 0}, {kPitchMixPort, 100}, {kPitchPostPort, 0}, {kPitchWhammyPort, 0}},
+    {{kPitchModePort, 0}, {kPitchShiftPort, 12}, {kPitchShift2Port, 0}, {kPitchDetunePort, 0}, {kPitchMixPort, 100}, {kPitchPostPort, 0}, {kPitchWhammyPort, 0}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyMbcPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kMbcLowXoverPort, 150}, {kMbcHighXoverPort, 2500}, {kMbcLowPort, 25}, {kMbcMidPort, 20}, {kMbcHighPort, 20}},
+    {{kMbcLowXoverPort, 180}, {kMbcHighXoverPort, 2500}, {kMbcLowPort, 60}, {kMbcMidPort, 0}, {kMbcHighPort, 0}},
+    {{kMbcLowXoverPort, 150}, {kMbcHighXoverPort, 3500}, {kMbcLowPort, 0}, {kMbcMidPort, 0}, {kMbcHighPort, 55}},
+    {{kMbcLowXoverPort, 120}, {kMbcHighXoverPort, 2000}, {kMbcLowPort, 80}, {kMbcMidPort, 70}, {kMbcHighPort, 70}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applySynthPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kSynthWavePort, 4}, {kSynthMixPort, 60}, {kSynthFilterPort, 35}},
+    {{kSynthWavePort, 2}, {kSynthMixPort, 70}, {kSynthFilterPort, 55}},
+    {{kSynthWavePort, 3}, {kSynthMixPort, 50}, {kSynthFilterPort, 70}},
+    {{kSynthWavePort, 1}, {kSynthMixPort, 40}, {kSynthFilterPort, 60}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyMicPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kCabMicDistancePort, 0}, {kCabMicPositionPort, 0}, {kCab2MicDistancePort, 0}, {kCab2MicPositionPort, 0},
+     {kCab3MicDistancePort, 0}, {kCab3MicPositionPort, 0}, {kCab4MicDistancePort, 0}, {kCab4MicPositionPort, 0}},
+    {{kCabMicDistancePort, 10}, {kCabMicPositionPort, 25}, {kCab2MicDistancePort, 10}, {kCab2MicPositionPort, 25},
+     {kCab3MicDistancePort, 10}, {kCab3MicPositionPort, 25}, {kCab4MicDistancePort, 10}, {kCab4MicPositionPort, 25}},
+    {{kCabMicDistancePort, 15}, {kCabMicPositionPort, 20}, {kCab2MicDistancePort, 70}, {kCab2MicPositionPort, 40},
+     {kCab3MicDistancePort, 70}, {kCab3MicPositionPort, 40}, {kCab4MicDistancePort, 70}, {kCab4MicPositionPort, 40}},
+    {{kCabMicDistancePort, 30}, {kCabMicPositionPort, 85}, {kCab2MicDistancePort, 30}, {kCab2MicPositionPort, 85},
+     {kCab3MicDistancePort, 30}, {kCab3MicPositionPort, 85}, {kCab4MicDistancePort, 30}, {kCab4MicPositionPort, 85}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyControlPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  // Modifier slot 1 drives the common pedal targets; the others are cleared.
+  std::vector<std::pair<uint32_t, float>> values;
+  for (size_t slot = 0; slot < kModifierCount; ++slot) {
+    values.push_back({modifierPort(slot, 0), 0});
+    values.push_back({modifierPort(slot, 1), 0});
+    values.push_back({modifierPort(slot, 2), 1});
+    values.push_back({modifierPort(slot, 3), 0});
+  }
+  auto target = [](const char* label) -> float {
+    for (uint8_t i = 0; i < kModTargetCount; ++i)
+      if (!std::strcmp(kModTargetLabels[i], label)) return static_cast<float>(i);
+    return 0.0f;
+  };
+  switch (sender.tag) {
+    case 0:
+      values.push_back({kMod1TargetPort, target("Wah Position")});
+      values.push_back({kMod1SourcePort, ModifierEngine::kExpression1});
+      values.push_back({kMod1DepthPort, 100});
+      values.push_back({kWahEnabledPort, 1});
+      break;
+    case 1:
+      values.push_back({kMod1TargetPort, target("Whammy")});
+      values.push_back({kMod1SourcePort, ModifierEngine::kExpression1});
+      values.push_back({kMod1DepthPort, 100});
+      values.push_back({kPitchModePort, 3});
+      break;
+    case 2:
+      values.push_back({kMod1TargetPort, target("Amp Morph")});
+      values.push_back({kMod1SourcePort, ModifierEngine::kEnvelope});
+      values.push_back({kMod1DepthPort, 100});
+      break;
+    case 3:
+      values.push_back({kMod1TargetPort, target("Delay Mix")});
+      values.push_back({kMod1SourcePort, ModifierEngine::kLfoSine});
+      values.push_back({kMod1RatePort, 0.2f});
+      values.push_back({kMod1DepthPort, 40});
+      break;
+    default: break;
+  }
+  [self applyFxPresetValues:values];
+}
+
+- (void)applyLooperPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kLooperLevelPort, 0}}, {{kLooperLevelPort, -6}}, {{kLooperLevelPort, -12}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyMorphPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kAmpMorphPort, 0}}, {{kAmpMorphPort, 50}}, {{kAmpMorphPort, 100}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
+- (void)applyCabExtraPreset:(NSButton*)sender {
+  using namespace NAMRig;
+  const std::vector<std::vector<std::pair<uint32_t, float>>> presets = {
+    {{kCab3EnabledPort, 0}, {kCab4EnabledPort, 0}, {kCab3LevelPort, 0}, {kCab3PanPort, 0}, {kCab4LevelPort, 0}, {kCab4PanPort, 0}},
+    {{kCab3EnabledPort, 1}, {kCab4EnabledPort, 1}, {kCab3LevelPort, -3}, {kCab3PanPort, -70}, {kCab4LevelPort, -3}, {kCab4PanPort, 70}},
+    {{kCab3EnabledPort, 1}, {kCab4EnabledPort, 1}, {kCab3LevelPort, -6}, {kCab3PanPort, 0}, {kCab4LevelPort, -6}, {kCab4PanPort, 0}}};
+  if (sender.tag >= 0 && sender.tag < (NSInteger)presets.size()) [self applyFxPresetValues:presets[(size_t)sender.tag]];
+}
+
 - (void)markPresetModified {
   if (!_state) return;
   _state->markModified();
 }
 - (void)chooseModel:(NSButton*)sender {
-  if (!_state || sender.tag < 0 || sender.tag > 3) return;
+  if (!_state || sender.tag < 0 || sender.tag >= (NSInteger)NAMRig::kRigStageCount) return;
   NSOpenPanel* panel = [NSOpenPanel openPanel];
-  panel.title = [NSString stringWithFormat:@"Choose %@ NAM Model",
-                 @[@"a Pedal", @"an Amp", @"a Cab", @"a Cab B"][(NSUInteger)sender.tag]];
+  panel.title = [NSString stringWithFormat:@"Choose %@",
+                 @[@"a Pedal NAM Model", @"an Amp NAM Model", @"a Cab Model or IR", @"a Cab B Model or IR",
+                   @"an Amp B NAM Model", @"a Cab C WAV IR", @"a Cab D WAV IR"][(NSUInteger)sender.tag]];
   panel.prompt = @"Load Model";
   panel.canChooseFiles = YES;
   panel.canChooseDirectories = NO;
   panel.allowsMultipleSelection = NO;
-  panel.allowedFileTypes = sender.tag >= 2
+  panel.allowedFileTypes = sender.tag >= 5
+      ? @[@"wav"]
+      : (sender.tag == 2 || sender.tag == 3)
       ? @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel", @"wav"]
       : @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel"];
   if ([panel runModal] == NSModalResponseOK) {
@@ -184,19 +385,20 @@ static NSString* stageName(NSInteger stage) {
 - (void)clearModel:(id)sender {
   if (!_state) return;
   NSInteger tag = [sender respondsToSelector:@selector(tag)] ? [sender tag] : 0;
-  if (tag < 0 || tag > 3) return;
+  if (tag < 0 || tag >= (NSInteger)NAMRig::kRigStageCount) return;
   size_t stage = (size_t)tag;
   _state->setStageModels(stage, @[]);
   _state->sendPath(stage, "");
   if (stage <= 2) {
     _state->setStageThumb(stage, nil, 0, nil);  // revert to placeholder
   }
-  if (stage == 3) {
-    if (_state->powerButtons[3] && _state->powerButtons[3].state == NSControlStateValueOn) {
-      _state->powerButtons[3].state = NSControlStateValueOff;
-      _state->sendControl(47, 0.0f);
-      _state->updateControl(47, 0.0f);
-    }
+  const uint32_t enablePort = stage == 3 ? 47u : stage == 5 ? NAMRig::kCab3EnabledPort
+                            : stage == 6 ? NAMRig::kCab4EnabledPort : 0u;
+  if (enablePort && _state->powerButtons[stage] &&
+      _state->powerButtons[stage].state == NSControlStateValueOn) {
+    _state->powerButtons[stage].state = NSControlStateValueOff;
+    _state->sendControl(enablePort, 0.0f);
+    _state->updateControl(enablePort, 0.0f);
   }
   [self markPresetModified];
 }
@@ -677,16 +879,19 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)applyReverbPreset:(NSButton*)sender {
   if (!_state) return;
-  struct ReverbPreset { float mix, decay, size, damp, pre; };
+  struct ReverbPreset { float mix, decay, size, damp, pre, type; };
   const ReverbPreset presets[] = {
-    {30.0f, 50.0f, 60.0f, 40.0f, 15.0f}, // EMT 140
-    {35.0f, 40.0f, 45.0f, 65.0f, 20.0f}, // WARM PLATE
-    {25.0f, 70.0f, 80.0f, 80.0f, 30.0f}, // DARK TANK
-    {40.0f, 85.0f, 95.0f, 15.0f, 5.0f},  // SHIMMER
-    {20.0f, 20.0f, 30.0f, 45.0f, 8.0f}   // TIGHT ROOM
+    {30.0f, 50.0f, 60.0f, 40.0f, 15.0f, 0.0f}, // EMT 140
+    {35.0f, 40.0f, 45.0f, 65.0f, 20.0f, 0.0f}, // WARM PLATE
+    {25.0f, 70.0f, 80.0f, 80.0f, 30.0f, 0.0f}, // DARK TANK
+    {40.0f, 85.0f, 95.0f, 15.0f, 5.0f, 0.0f},  // SHIMMER
+    {20.0f, 20.0f, 30.0f, 45.0f, 8.0f, 0.0f},  // TIGHT ROOM
+    {30.0f, 55.0f, 50.0f, 50.0f, 0.0f, 1.0f},  // SPRING TANK
+    {35.0f, 65.0f, 70.0f, 45.0f, 25.0f, 2.0f}  // CONCERT HALL
   };
-  if (sender.tag >= 0 && sender.tag < 5) {
+  if (sender.tag >= 0 && sender.tag < 7) {
     const auto& p = presets[sender.tag];
+    _state->sendControl(NAMRig::kReverbTypePort, p.type); _state->updateControl(NAMRig::kReverbTypePort, p.type);
     _state->sendControl(54, p.mix); _state->updateControl(54, p.mix);
     _state->sendControl(55, p.decay); _state->updateControl(55, p.decay);
     _state->sendControl(56, p.size); _state->updateControl(56, p.size);
@@ -737,16 +942,19 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)applySculptPreset:(NSButton*)sender {
   if (!_state) return;
-  struct SculptPreset { float bright, inputEq, midPush, odDrive, odTone, odLevel; };
+  struct SculptPreset { float bright, inputEq, midPush, odDrive, odTone, odLevel, odType; };
   const SculptPreset presets[] = {
-    {6.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f},    // LEAD BOOST
-    {3.0f, 75.0f, 0.0f, 0.0f, 50.0f, 0.0f},   // TIGHT CHUG
-    {0.0f, 60.0f, 70.0f, 0.0f, 50.0f, 0.0f},  // OD PUSH
-    {0.0f, 30.0f, 0.0f, 20.0f, 55.0f, 6.0f},  // TS9 DRIVE
-    {0.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f}     // FLAT
+    {6.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f, 0.0f},    // LEAD BOOST
+    {3.0f, 75.0f, 0.0f, 0.0f, 50.0f, 0.0f, 0.0f},   // TIGHT CHUG
+    {0.0f, 60.0f, 70.0f, 0.0f, 50.0f, 0.0f, 0.0f},  // OD PUSH
+    {0.0f, 30.0f, 0.0f, 20.0f, 55.0f, 6.0f, 0.0f},  // TS9 DRIVE
+    {0.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f, 0.0f},    // FLAT
+    {0.0f, 20.0f, 0.0f, 60.0f, 45.0f, 0.0f, 2.0f},  // RAT DIST
+    {0.0f, 0.0f, 0.0f, 75.0f, 40.0f, -3.0f, 3.0f}   // FUZZ FACE
   };
-  if (sender.tag >= 0 && sender.tag < 5) {
+  if (sender.tag >= 0 && sender.tag < 7) {
     const auto& p = presets[sender.tag];
+    _state->sendControl(NAMRig::kOdTypePort, p.odType); _state->updateControl(NAMRig::kOdTypePort, p.odType);
     _state->sendControl(39, p.bright); _state->updateControl(39, p.bright);
     _state->sendControl(40, p.inputEq); _state->updateControl(40, p.inputEq);
     _state->sendControl(NAMRig::kMidPushPort, p.midPush);
@@ -2088,6 +2296,13 @@ static NSPopUpButton* addSlotPresetDropdown(
     spec[@"enabledPort"] = enabledPort;
     break;
   }
+  for (size_t i = 0; i < NAMRig::kFxRackCount; ++i) {
+    if (![slotKey isEqualToString:[NSString stringWithUTF8String:NAMRig::kFxRackSlotKeys[i]]]) continue;
+    NSNumber* enabledPort = @(NAMRig::kFxRackFirstPort + i);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
+    break;
+  }
   [state->deckSlotSpecs addObject:spec];
   state->rebuildSlotPresetMenu(slotIdx);
 
@@ -2098,6 +2313,562 @@ static NSPopUpButton* addSlotPresetDropdown(
   }
   [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
   return popup;
+}
+
+static RigPanel* addFxRackSection(NSView* parent, NSString* title, NSString* subtitle,
+                                  NSColor* titleColor, RigUIState* state, NAMRig::FxRack rackID,
+                                  NSTextField* __strong* titleOut = nullptr) {
+  RigPanel* rack = addPanel(parent, NSZeroRect);
+  rack.translatesAutoresizingMaskIntoConstraints = NO;
+
+  NSView* hView = [[NSView alloc] initWithFrame:NSZeroRect];
+  hView.translatesAutoresizingMaskIntoConstraints = NO;
+  [rack addSubview:hView];
+  [[hView.topAnchor constraintEqualToAnchor:rack.topAnchor constant:10] setActive:YES];
+  [[hView.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+  [[hView.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+  [[hView.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+  NSTextField* tLabel = addLabel(hView, title, NSZeroRect,
+                                 [NSFont systemFontOfSize:11 weight:NSFontWeightBold],
+                                 titleColor, NSTextAlignmentLeft);
+  rigApplyTracking(tLabel, 1.1);
+  tLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  [[tLabel.leadingAnchor constraintEqualToAnchor:hView.leadingAnchor] setActive:YES];
+  [[tLabel.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
+  if (titleOut) *titleOut = tLabel;
+
+  if (rackID != NAMRig::FxRack::Count) {
+    const size_t index = static_cast<size_t>(rackID);
+    const uint32_t port = NAMRig::fxRackPort(rackID);
+    RigButton* button = rigButton(hView, @"ON", state->uiController,
+                                  @selector(controlChanged:), NSZeroRect);
+    button.tag = port;
+    button.buttonType = NSButtonTypeToggle;
+    button.check = YES;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.accessibilityLabel = [title stringByAppendingString:@" ON/OFF"];
+    button.toolTip = [NSString stringWithFormat:
+        @"%@. %@. OFF bypasses this rack without changing its settings; controls remain editable.",
+        title, subtitle];
+    [[button.trailingAnchor constraintEqualToAnchor:hView.trailingAnchor] setActive:YES];
+    [[button.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
+    [[button.widthAnchor constraintEqualToConstant:60] setActive:YES];
+    [[button.heightAnchor constraintEqualToConstant:22] setActive:YES];
+    tLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [tLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [[tLabel.trailingAnchor constraintLessThanOrEqualToAnchor:button.leadingAnchor constant:-10] setActive:YES];
+    state->fxRackButtons[index] = button;
+    state->updateControl(port, state->fxRackControls[index]);
+  } else if (subtitle.length) {
+    NSTextField* sLabel = addLabel(hView, subtitle, NSZeroRect,
+                                   [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                                   rigDimText(), NSTextAlignmentRight);
+    rigApplyTracking(sLabel, 0.6);
+    sLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [[sLabel.trailingAnchor constraintEqualToAnchor:hView.trailingAnchor] setActive:YES];
+    [[sLabel.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
+    [[sLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:tLabel.trailingAnchor constant:8] setActive:YES];
+  }
+
+  NSBox* sep = [[NSBox alloc] initWithFrame:NSZeroRect];
+  sep.boxType = NSBoxSeparator;
+  sep.translatesAutoresizingMaskIntoConstraints = NO;
+  [rack addSubview:sep];
+  [[sep.topAnchor constraintEqualToAnchor:hView.bottomAnchor constant:6] setActive:YES];
+  [[sep.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+  [[sep.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+  [[sep.heightAnchor constraintEqualToConstant:1] setActive:YES];
+  return rack;
+}
+
+// Enumerated appended control as a popup. Index = port value.
+static NSPopUpButton* addFxPopup(NSView* parent, RigUIState* state, uint32_t port) {
+  const NAMRig::FxControl& c = NAMRig::fxControl(port);
+  NSPopUpButton* popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  for (uint8_t i = 0; c.labels && i < c.labelCount; ++i)
+    [popup addItemWithTitle:[NSString stringWithUTF8String:c.labels[i]]];
+  popup.controlSize = NSControlSizeSmall;
+  popup.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium];
+  popup.tag = (NSInteger)port;
+  popup.target = state->uiController;
+  popup.action = @selector(fxPopupChanged:);
+  popup.toolTip = [NSString stringWithFormat:@"%s. %s", c.name, c.comment];
+  popup.translatesAutoresizingMaskIntoConstraints = NO;
+  popup.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+  [popup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                  forOrientation:NSLayoutConstraintOrientationHorizontal];
+  const NSInteger current = (NSInteger)(state->fxControlValue(port) + 0.5f);
+  if (current >= 0 && current < (NSInteger)popup.itemArray.count) [popup selectItemAtIndex:current];
+  state->fxPopups[port - NAMRig::kFxControlFirstPort] = popup;
+  if ([parent isKindOfClass:[NSStackView class]]) [(NSStackView*)parent addArrangedSubview:popup];
+  else [parent addSubview:popup];
+  [[popup.heightAnchor constraintEqualToConstant:22] setActive:YES];
+  return popup;
+}
+
+static NSStackView* addKnobRow(RigPanel* rack, NSView* above, CGFloat gap, RigUIState* state,
+                               const std::vector<size_t>& knobs,
+                               const std::array<double, kRigKnobCount>& mins,
+                               const std::array<double, kRigKnobCount>& maxes,
+                               NSArray<NSString*>* knobNames, NSArray<NSString*>* knobDescriptions) {
+  NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  kr.distribution = NSStackViewDistributionFillEqually;
+  kr.spacing = 6.0;
+  kr.translatesAutoresizingMaskIntoConstraints = NO;
+  [rack addSubview:kr];
+  if (above) [[kr.topAnchor constraintEqualToAnchor:above.bottomAnchor constant:gap] setActive:YES];
+  else [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+  [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+  [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+  [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+  for (size_t idx : knobs)
+    [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+  return kr;
+}
+
+// Description card with a horizontal chip row, pinned below `above` to the rack bottom.
+static NSStackView* addRackCard(RigPanel* rack, NSView* above, NSString* description,
+                                NSView* __strong* cardOut = nullptr) {
+  NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+  card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+  card.layer.borderWidth = 1.0;
+  card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+  [rack addSubview:card];
+  [[card.topAnchor constraintEqualToAnchor:above.bottomAnchor constant:10] setActive:YES];
+  [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+  [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+  [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+  NSTextField* desc = addLabel(card, description, NSZeroRect,
+                               [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                               rigDimText(), NSTextAlignmentLeft);
+  desc.translatesAutoresizingMaskIntoConstraints = NO;
+  [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+  [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+  [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+  NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  chips.distribution = NSStackViewDistributionFillEqually;
+  chips.spacing = 6.0;
+  chips.translatesAutoresizingMaskIntoConstraints = NO;
+  [card addSubview:chips];
+  [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+  [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+  [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+  [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+  if (cardOut) *cardOut = card;
+  return chips;
+}
+
+// Model/IR selector row for the appended stages: picker, browse, clear and an
+// optional enable toggle stored as the stage's power button.
+static NSView* addStagePickerRow(RigPanel* rack, NSView* above, CGFloat gap, RigUIState* state,
+                                 size_t stage, uint32_t enablePort, NSString* browseTip) {
+  NSPopUpButton* picker = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  state->modelPickers[stage] = picker;
+  picker.translatesAutoresizingMaskIntoConstraints = NO;
+  picker.controlSize = NSControlSizeSmall;
+  picker.tag = (NSInteger)stage;
+  picker.target = state->uiController;
+  picker.action = @selector(stageModelChanged:);
+  [picker addItemWithTitle:RigUIState::stageEmptyTitle(stage)];
+  [picker itemAtIndex:0].toolTip = RigUIState::modelPickerTooltip(stage, nil);
+  picker.toolTip = RigUIState::modelPickerTooltip(stage, nil);
+  picker.enabled = NO;
+  picker.cell.lineBreakMode = NSLineBreakByTruncatingTail;
+  [picker setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [picker setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [rack addSubview:picker];
+  if (above) [[picker.topAnchor constraintEqualToAnchor:above.bottomAnchor constant:gap] setActive:YES];
+  else [[picker.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+  [[picker.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+  [[picker.heightAnchor constraintEqualToConstant:23] setActive:YES];
+
+  RigButton* browse = rigButton(rack, @"…", state->uiController, @selector(chooseModel:), NSZeroRect);
+  browse.tag = (NSInteger)stage;
+  browse.toolTip = browseTip;
+  browse.translatesAutoresizingMaskIntoConstraints = NO;
+  [[browse.leadingAnchor constraintEqualToAnchor:picker.trailingAnchor constant:4] setActive:YES];
+  [[browse.centerYAnchor constraintEqualToAnchor:picker.centerYAnchor] setActive:YES];
+  [[browse.widthAnchor constraintEqualToConstant:26] setActive:YES];
+  [[browse.heightAnchor constraintEqualToConstant:23] setActive:YES];
+
+  RigButton* clear = rigButton(rack, @"✕", state->uiController, @selector(clearModel:), NSZeroRect);
+  clear.tag = (NSInteger)stage;
+  clear.toolTip = @"Remove this selection.";
+  clear.translatesAutoresizingMaskIntoConstraints = NO;
+  [[clear.leadingAnchor constraintEqualToAnchor:browse.trailingAnchor constant:4] setActive:YES];
+  [[clear.centerYAnchor constraintEqualToAnchor:picker.centerYAnchor] setActive:YES];
+  [[clear.widthAnchor constraintEqualToConstant:26] setActive:YES];
+  [[clear.heightAnchor constraintEqualToConstant:23] setActive:YES];
+
+  if (enablePort) {
+    RigButton* on = rigButton(rack, @"ON", state->uiController, @selector(controlChanged:), NSZeroRect);
+    on.tag = (NSInteger)enablePort;
+    on.buttonType = NSButtonTypeToggle;
+    on.check = YES;
+    on.state = NSControlStateValueOff;
+    on.toolTip = @"Enable this cabinet. Changes use a short click-free fade.";
+    on.translatesAutoresizingMaskIntoConstraints = NO;
+    state->powerButtons[stage] = on;
+    [[on.leadingAnchor constraintEqualToAnchor:clear.trailingAnchor constant:4] setActive:YES];
+    [[on.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[on.centerYAnchor constraintEqualToAnchor:picker.centerYAnchor] setActive:YES];
+    [[on.widthAnchor constraintEqualToConstant:52] setActive:YES];
+    [[on.heightAnchor constraintEqualToConstant:23] setActive:YES];
+  } else {
+    [[clear.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+  }
+  return picker;
+}
+
+static NSStackView* addPaneRow(NSView* pane) {
+  NSStackView* row = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row.distribution = NSStackViewDistributionFillProportionally;
+  row.spacing = 14.0;
+  row.translatesAutoresizingMaskIntoConstraints = NO;
+  [pane addSubview:row];
+  [[row.topAnchor constraintEqualToAnchor:pane.topAnchor] setActive:YES];
+  [[row.bottomAnchor constraintEqualToAnchor:pane.bottomAnchor] setActive:YES];
+  [[row.leadingAnchor constraintEqualToAnchor:pane.leadingAnchor] setActive:YES];
+  [[row.trailingAnchor constraintEqualToAnchor:pane.trailingAnchor] setActive:YES];
+  return row;
+}
+
+// Panes 4..6: wah/modulation/pitch/synth, scenes/modifiers/looper, and
+// capture morph / Cabs C & D / mic models / multiband.
+static void addExtendedDeckPanes(RigUIState* state, NSArray<NSView*>* panes,
+                                 const std::array<double, kRigKnobCount>& mins,
+                                 const std::array<double, kRigKnobCount>& maxes,
+                                 NSArray<NSString*>* knobNames,
+                                 NSArray<NSString*>* knobDescriptions) {
+  using namespace NAMRig;
+  NSColor* violetColor = [NSColor colorWithSRGBRed:0.80 green:0.60 blue:1.00 alpha:1.0];
+  NSColor* goldColor = [NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:1.0];
+  NSColor* emeraldColor = [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0];
+  NSColor* cyanColor = [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:1.0];
+  auto fxPorts = [](std::initializer_list<uint32_t> ports) {
+    NSMutableArray<NSNumber*>* list = [NSMutableArray array];
+    for (uint32_t p : ports) [list addObject:@(p)];
+    return list;
+  };
+
+  // ==========================================
+  // PANE 4: WAH, MODULATION, PITCH & SYNTH
+  // ==========================================
+  NSStackView* row4 = addPaneRow(panes[4]);
+  {
+    NSTextField* title = nil;
+    RigPanel* rack = addFxRackSection(row4, @"WAH", @"SWEEP, AUTO WAH & FILTERS", violetColor, state, FxRack::Wah, &title);
+    state->wahTitleLabel = title;
+    [row4 addArrangedSubview:rack];
+    NSPopUpButton* mode = addFxPopup(rack, state, kWahModePort);
+    [[mode.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[mode.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[mode.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    NSStackView* kr = addKnobRow(rack, mode, 8, state, {55, 56, 57}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Resonant wah before the pedal and amp captures. Assign Expression 1 to Position in the Modifiers rack for a pedal-driven wah; Auto Wah follows your picking.");
+    addSlotPresetDropdown(chips, state, @"wah", @"Wah / Filter",
+                          fxPorts({kWahModePort, kWahPositionPort, kWahResonancePort, kWahSensitivityPort}),
+                          @[@"CRY WAH", @"AUTO FUNK", @"LP FILTER", @"BP SWEEP", @"HP THIN"],
+                          @selector(applyWahPreset:));
+  }
+  {
+    NSTextField* title = nil;
+    RigPanel* rack = addFxRackSection(row4, @"CHORUS", @"CHORUS, FLANGER, PHASER, TREM, ROTARY", violetColor, state, FxRack::ModFx, &title);
+    state->modFxTitleLabel = title;
+    [row4 addArrangedSubview:rack];
+    NSPopUpButton* type = addFxPopup(rack, state, kModFxTypePort);
+    [[type.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[type.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[type.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    NSStackView* kr = addKnobRow(rack, type, 8, state, {63, 64, 65, 66}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Stereo modulation after the cabinets. Feedback is regeneration for Flanger/Phaser, stereo phase for Tremolo and horn/drum balance for Rotary. Mix 0 is exact bypass.");
+    addSlotPresetDropdown(chips, state, @"mod_fx", @"Modulation",
+                          fxPorts({kModFxTypePort, kModFxRatePort, kModFxDepthPort, kModFxFeedbackPort, kModFxMixPort}),
+                          @[@"CHORUS LUSH", @"FLANGE JET", @"PHASE 90", @"TREM VINTAGE", @"ROTARY FAST"],
+                          @selector(applyModFxPreset:));
+  }
+  {
+    NSTextField* title = nil;
+    RigPanel* rack = addFxRackSection(row4, @"PITCH · SHIFT", @"SHIFT, DETUNE, HARMONY & WHAMMY", cyanColor, state, FxRack::Pitch, &title);
+    state->pitchTitleLabel = title;
+    [row4 addArrangedSubview:rack];
+    NSStackView* popups = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    popups.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    popups.distribution = NSStackViewDistributionFillEqually;
+    popups.spacing = 6.0;
+    popups.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:popups];
+    [[popups.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[popups.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[popups.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[popups.heightAnchor constraintEqualToConstant:22] setActive:YES];
+    addFxPopup(popups, state, kPitchModePort);
+    addFxPopup(popups, state, kPitchPostPort);
+    NSStackView* kr = addKnobRow(rack, popups, 8, state, {67, 68, 69, 70, 71}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Dual-grain pitch shifter. Pre-Amp runs in mono into the amp (whammy, octaves); Post-Cab runs in stereo. Whammy follows the Whammy knob, which a modifier can drive from a pedal.");
+    addSlotPresetDropdown(chips, state, @"pitch", @"Pitch",
+                          fxPorts({kPitchModePort, kPitchShiftPort, kPitchShift2Port, kPitchDetunePort, kPitchMixPort, kPitchPostPort, kPitchWhammyPort}),
+                          @[@"OCTAVE DOWN", @"DETUNE WIDE", @"HARMONY 3RD/5TH", @"WHAMMY +2 OCT", @"OCTAVE UP"],
+                          @selector(applyPitchPreset:));
+  }
+  {
+    RigPanel* rack = addFxRackSection(row4, @"GUITAR SYNTH", @"PITCH-TRACKED OSCILLATOR", cyanColor, state, FxRack::Synth);
+    [row4 addArrangedSubview:rack];
+    NSPopUpButton* wave = addFxPopup(rack, state, kSynthWavePort);
+    [[wave.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[wave.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[wave.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    NSStackView* kr = addKnobRow(rack, wave, 8, state, {73, 74}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Monophonic synth voice tracking the input pitch, mixed in before the amp. Play single notes for clean tracking.");
+    addSlotPresetDropdown(chips, state, @"synth", @"Guitar Synth",
+                          fxPorts({kSynthWavePort, kSynthMixPort, kSynthFilterPort}),
+                          @[@"SUB BASS", @"SQUARE LEAD", @"SAW PAD", @"SINE DOUBLE"],
+                          @selector(applySynthPreset:));
+  }
+
+  // ==========================================
+  // PANE 5: SCENES, MODIFIERS & LOOPER
+  // ==========================================
+  NSStackView* row5 = addPaneRow(panes[5]);
+  {
+    RigPanel* rack = addFxRackSection(row5, @"SCENES & MIDI", @"8 SNAPSHOTS · PROGRAM CHANGE · EXPRESSION", goldColor, state, FxRack::Count);
+    [row5 addArrangedSubview:rack];
+    NSStackView* scenes = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    scenes.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    scenes.distribution = NSStackViewDistributionFillEqually;
+    scenes.spacing = 4.0;
+    scenes.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:scenes];
+    [[scenes.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[scenes.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[scenes.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[scenes.heightAnchor constraintEqualToConstant:24] setActive:YES];
+    for (NSInteger i = 0; i < (NSInteger)kSceneCount; ++i) {
+      RigButton* b = rigButton(scenes, [NSString stringWithFormat:@"S%ld", (long)(i + 1)],
+                               state->uiController, @selector(sceneClicked:), NSZeroRect);
+      b.tag = i;
+      b.buttonType = NSButtonTypeToggle;
+      b.check = YES;
+      b.toolTip = [NSString stringWithFormat:
+          @"Scene %ld: a complete snapshot of every control. Edits stay in the active scene; saving the preset stores all eight. MIDI Program Change %ld selects it.",
+          (long)(i + 1), (long)i];
+      b.translatesAutoresizingMaskIntoConstraints = NO;
+      [scenes addArrangedSubview:b];
+      [[b.heightAnchor constraintEqualToConstant:24] setActive:YES];
+      state->sceneButtons[(size_t)i] = b;
+    }
+    state->refreshSceneButtons();
+    NSStackView* kr = addKnobRow(rack, scenes, 8, state, {42, 43, 44, 45, 46}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* live = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    live.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    live.distribution = NSStackViewDistributionFillEqually;
+    live.spacing = 6.0;
+    live.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:live];
+    [[live.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:2] setActive:YES];
+    [[live.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[live.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[live.heightAnchor constraintEqualToConstant:14] setActive:YES];
+    for (size_t i = 0; i < 2; ++i) {
+      NSTextField* l = addLabel(live, [NSString stringWithFormat:@"EXPR %zu LIVE: --", i + 1], NSZeroRect,
+                                [NSFont monospacedDigitSystemFontOfSize:9.0 weight:NSFontWeightMedium],
+                                rigDimText(), NSTextAlignmentCenter);
+      l.toolTip = @"Live expression pedal position as the DSP sees it (MIDI CC or host automation).";
+      l.translatesAutoresizingMaskIntoConstraints = NO;
+      [live addArrangedSubview:l];
+      state->exprLiveLabels[i] = l;
+    }
+    NSStackView* chips = addRackCard(rack, live,
+        @"MIDI arrives on the plugin's control port (standalone: every connected MIDI input). Program Change 0-7 selects a scene; the CC numbers feed Expression 1 and 2 into the Modifiers.");
+    NSMutableArray<NSNumber*>* controlPorts = fxPorts({kMidiChannelPort, kExpr1CcPort, kExpr2CcPort, kExpr1ValuePort, kExpr2ValuePort});
+    for (size_t slot = 0; slot < kModifierCount; ++slot)
+      for (uint32_t f = 0; f < kModifierPortStride; ++f) [controlPorts addObject:@(modifierPort(slot, f))];
+    addSlotPresetDropdown(chips, state, @"control", @"Scenes & Control",
+                          controlPorts,
+                          @[@"EXPR 1 → WAH", @"EXPR 1 → WHAMMY", @"ENVELOPE → MORPH", @"LFO → DELAY MIX", @"CLEAR MODIFIERS"],
+                          @selector(applyControlPreset:));
+  }
+  {
+    RigPanel* rack = addFxRackSection(row5, @"MODIFIERS", @"LFO · ENVELOPE · SEQUENCER · PEDALS", goldColor, state, FxRack::Count);
+    [row5 addArrangedSubview:rack];
+    NSView* previousRow = nil;
+    for (size_t rowIdx = 0; rowIdx < 2; ++rowIdx) {
+      NSStackView* grid = [[NSStackView alloc] initWithFrame:NSZeroRect];
+      grid.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+      grid.distribution = NSStackViewDistributionFillEqually;
+      grid.spacing = 10.0;
+      grid.translatesAutoresizingMaskIntoConstraints = NO;
+      [rack addSubview:grid];
+      if (previousRow) [[grid.topAnchor constraintEqualToAnchor:previousRow.bottomAnchor constant:6] setActive:YES];
+      else [[grid.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+      [[grid.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+      [[grid.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+      for (size_t col = 0; col < 2; ++col) {
+        const size_t slot = rowIdx * 2 + col;
+        NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
+        cell.translatesAutoresizingMaskIntoConstraints = NO;
+        [grid addArrangedSubview:cell];
+        NSTextField* label = addLabel(cell, [NSString stringWithFormat:@"MOD %zu", slot + 1], NSZeroRect,
+                                      [NSFont systemFontOfSize:9.5 weight:NSFontWeightBold],
+                                      goldColor, NSTextAlignmentLeft);
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [[label.topAnchor constraintEqualToAnchor:cell.topAnchor] setActive:YES];
+        [[label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:4] setActive:YES];
+        NSStackView* popups = [[NSStackView alloc] initWithFrame:NSZeroRect];
+        popups.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        popups.distribution = NSStackViewDistributionFillEqually;
+        popups.spacing = 4.0;
+        popups.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell addSubview:popups];
+        [[popups.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:2] setActive:YES];
+        [[popups.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor] setActive:YES];
+        [[popups.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor] setActive:YES];
+        [[popups.heightAnchor constraintEqualToConstant:22] setActive:YES];
+        addFxPopup(popups, state, modifierPort(slot, 0));
+        addFxPopup(popups, state, modifierPort(slot, 1));
+        NSStackView* knobs = [[NSStackView alloc] initWithFrame:NSZeroRect];
+        knobs.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        knobs.distribution = NSStackViewDistributionFillEqually;
+        knobs.spacing = 4.0;
+        knobs.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell addSubview:knobs];
+        [[knobs.topAnchor constraintEqualToAnchor:popups.bottomAnchor constant:2] setActive:YES];
+        [[knobs.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor] setActive:YES];
+        [[knobs.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor] setActive:YES];
+        [[knobs.heightAnchor constraintEqualToConstant:108] setActive:YES];
+        [[knobs.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor] setActive:YES];
+        [knobs addArrangedSubview:addDeckKnobCell(knobs, state, 47 + slot * 2, mins, maxes, knobNames, knobDescriptions)];
+        [knobs addArrangedSubview:addDeckKnobCell(knobs, state, 48 + slot * 2, mins, maxes, knobNames, knobDescriptions)];
+      }
+      previousRow = grid;
+    }
+    NSTextField* note = addLabel(rack,
+        @"Each modifier adds its source to one target. LFO shapes sweep around the knob; envelope, sequencer and pedals push it upward by Depth. Two modifiers on one target sum.",
+        NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular], rigDimText(), NSTextAlignmentLeft);
+    note.translatesAutoresizingMaskIntoConstraints = NO;
+    [[note.topAnchor constraintEqualToAnchor:previousRow.bottomAnchor constant:8] setActive:YES];
+    [[note.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[note.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[note.bottomAnchor constraintLessThanOrEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+  }
+  {
+    RigPanel* rack = addFxRackSection(row5, @"LOOPER", @"30 s STEREO · RECORD, PLAY, OVERDUB", emeraldColor, state, FxRack::Looper);
+    [row5 addArrangedSubview:rack];
+    NSStackView* buttons = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    buttons.distribution = NSStackViewDistributionFillEqually;
+    buttons.spacing = 4.0;
+    buttons.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:buttons];
+    [[buttons.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[buttons.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[buttons.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[buttons.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    NSArray<NSString*>* titles = @[@"STOP", @"REC", @"PLAY", @"DUB"];
+    NSArray<NSString*>* tips = @[
+      @"Stop playback. The loop is kept; PLAY restarts it from the top.",
+      @"Record a new loop. From an empty looper this starts the loop; the loop length is set when you press PLAY or DUB.",
+      @"Play the loop.",
+      @"Overdub: layer new playing onto the running loop."];
+    for (NSInteger i = 0; i < 4; ++i) {
+      RigButton* b = rigButton(buttons, titles[(NSUInteger)i], state->uiController,
+                               @selector(looperStateClicked:), NSZeroRect);
+      b.tag = i;
+      b.buttonType = NSButtonTypeToggle;
+      b.check = YES;
+      b.toolTip = tips[(NSUInteger)i];
+      b.translatesAutoresizingMaskIntoConstraints = NO;
+      [buttons addArrangedSubview:b];
+      [[b.heightAnchor constraintEqualToConstant:26] setActive:YES];
+      state->looperButtons[(size_t)i] = b;
+    }
+    NSTextField* status = addLabel(rack, @"STOP · EMPTY OR HELD", NSZeroRect,
+                                   [NSFont monospacedDigitSystemFontOfSize:10.0 weight:NSFontWeightSemibold],
+                                   emeraldColor, NSTextAlignmentCenter);
+    status.translatesAutoresizingMaskIntoConstraints = NO;
+    status.toolTip = @"Looper state and position through the loop.";
+    [[status.topAnchor constraintEqualToAnchor:buttons.bottomAnchor constant:6] setActive:YES];
+    [[status.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
+    [[status.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    state->looperStatusLabel = status;
+    state->refreshLooperButtons();
+    NSStackView* kr = addKnobRow(rack, status, 6, state, {72, 88}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"The looper sits at the end of the chain and records the finished sound. The Looper CC steps Stop/Play → Record → Play → Overdub → Play from a footswitch.");
+    addSlotPresetDropdown(chips, state, @"looper", @"Looper",
+                          fxPorts({kLooperLevelPort, kLooperCcPort}),
+                          @[@"UNITY", @"-6 dB BED", @"-12 dB BED"],
+                          @selector(applyLooperPreset:));
+  }
+
+  // ==========================================
+  // PANE 6: CAPTURE MORPH, CABS C/D, MIC MODELS & MULTIBAND
+  // ==========================================
+  NSStackView* row6 = addPaneRow(panes[6]);
+  {
+    RigPanel* rack = addFxRackSection(row6, @"CAPTURE MORPH", @"AMP A ⇄ AMP B IN ONE DOMAIN", goldColor, state, FxRack::Count);
+    [row6 addArrangedSubview:rack];
+    NSView* picker = addStagePickerRow(rack, nil, 0, state, 4, 0,
+        @"Choose the Amp B capture from disk. Pick captures of the same amp at different gain or channel settings to morph between them.");
+    NSStackView* kr = addKnobRow(rack, picker, 8, state, {75}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Both captures run on the same pre-amp signal inside the amp's oversampled domain and crossfade by Morph. Drive Morph from a pedal or the envelope to get a continuously adjustable amp.");
+    addSlotPresetDropdown(chips, state, @"morph", @"Capture Morph",
+                          fxPorts({kAmpMorphPort}),
+                          @[@"AMP A", @"50 / 50", @"AMP B"],
+                          @selector(applyMorphPreset:));
+  }
+  {
+    RigPanel* rack = addFxRackSection(row6, @"CABS C & D", @"TWO MORE PARALLEL IRS", emeraldColor, state, FxRack::Count);
+    [row6 addArrangedSubview:rack];
+    NSView* pickerC = addStagePickerRow(rack, nil, 0, state, 5, kCab3EnabledPort,
+        @"Choose the Cab C WAV impulse response from disk.");
+    NSView* pickerD = addStagePickerRow(rack, pickerC, 6, state, 6, kCab4EnabledPort,
+        @"Choose the Cab D WAV impulse response from disk.");
+    NSStackView* kr = addKnobRow(rack, pickerD, 8, state, {76, 77, 78, 79}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Cab C and Cab D take the same post-amp tap as Cab A and B, each with its own mic model, level and pan, and sum onto the A/B blend. WAV impulse responses only.");
+    addSlotPresetDropdown(chips, state, @"cabs_cd", @"Cabs C & D",
+                          fxPorts({kCab3EnabledPort, kCab3LevelPort, kCab3PanPort, kCab4EnabledPort, kCab4LevelPort, kCab4PanPort}),
+                          @[@"C/D OFF", @"C LEFT · D RIGHT", @"C + D CENTER"],
+                          @selector(applyCabExtraPreset:));
+  }
+  {
+    RigPanel* rack = addFxRackSection(row6, @"MIC MODELS", @"DISTANCE & POSITION PER CABINET", emeraldColor, state, FxRack::Mic);
+    [row6 addArrangedSubview:rack];
+    NSStackView* kr1 = addKnobRow(rack, nil, 0, state, {80, 81, 82, 83}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* kr2 = addKnobRow(rack, kr1, 4, state, {84, 85, 86, 87}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr2,
+        @"Virtual microphone after each IR: Distance backs the mic off the grille (less proximity bass, less air, more delay); Position moves it from the dust cap toward the cone edge (darker). 0/0 is exact bypass.");
+    addSlotPresetDropdown(chips, state, @"mic", @"Mic Models",
+                          fxPorts({kCabMicDistancePort, kCabMicPositionPort, kCab2MicDistancePort, kCab2MicPositionPort,
+                                   kCab3MicDistancePort, kCab3MicPositionPort, kCab4MicDistancePort, kCab4MicPositionPort}),
+                          @[@"ON GRILLE", @"CLASSIC 57", @"ROOMY BLEND", @"DARK EDGE"],
+                          @selector(applyMicPreset:));
+  }
+  {
+    RigPanel* rack = addFxRackSection(row6, @"MULTIBAND COMP", @"3 BANDS · LINKWITZ-RILEY", violetColor, state, FxRack::Multiband);
+    [row6 addArrangedSubview:rack];
+    NSStackView* kr = addKnobRow(rack, nil, 0, state, {58, 59, 60, 61, 62}, mins, maxes, knobNames, knobDescriptions);
+    NSStackView* chips = addRackCard(rack, kr,
+        @"Three-band compressor after the cabinets with flat-summing crossovers. Each band has the one-knob curve of the input compressor. All three at 0 is exact bypass.");
+    addSlotPresetDropdown(chips, state, @"mbc", @"Multiband Comp",
+                          fxPorts({kMbcLowXoverPort, kMbcHighXoverPort, kMbcLowPort, kMbcMidPort, kMbcHighPort}),
+                          @[@"GENTLE GLUE", @"TIGHT LOWS", @"BRIGHT CONTROL", @"HEAVY SQUASH"],
+                          @selector(applyMbcPreset:));
+  }
+  state->refreshFxRackTitles();
 }
 
 static void addLowerStudioDeck(RigUIState* state,
@@ -2147,10 +2918,14 @@ static void addLowerStudioDeck(RigUIState* state,
     @"POST-FX STUDIO",
     @"POWER STAGE & IRON",
     @"CAB LAB & SPEAKER",
-    @"PRECISION TUNER"
+    @"PRECISION TUNER",
+    @"WAH · MOD · PITCH",
+    @"SCENES · MODS · LOOP",
+    @"MORPH · CABS C/D · MIC"
   ];
+  const NSInteger kDeckTabCount = (NSInteger)tabTitles.count;
   NSMutableArray<RigButton*>* tabBtns = [NSMutableArray array];
-  for (NSInteger i = 0; i < 4; ++i) {
+  for (NSInteger i = 0; i < kDeckTabCount; ++i) {
     RigButton* b = rigButton(tabStack, tabTitles[(NSUInteger)i],
                              state->uiController, @selector(switchDeckTab:),
                              NSZeroRect);
@@ -2159,7 +2934,7 @@ static void addLowerStudioDeck(RigUIState* state,
     b.check = YES;
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [tabStack addArrangedSubview:b];
-    [[b.widthAnchor constraintEqualToConstant:162] setActive:YES];
+    [[b.widthAnchor constraintEqualToConstant:140] setActive:YES];
     [[b.heightAnchor constraintEqualToConstant:26] setActive:YES];
     [tabBtns addObject:b];
   }
@@ -2185,9 +2960,8 @@ static void addLowerStudioDeck(RigUIState* state,
   [[deckContainer.trailingAnchor constraintEqualToAnchor:expansionSlot.trailingAnchor constant:-16] setActive:YES];
   [[deckContainer.bottomAnchor constraintEqualToAnchor:expansionSlot.bottomAnchor constant:-12] setActive:YES];
 
-  // Create 4 tab panes
   NSMutableArray<NSView*>* panes = [NSMutableArray array];
-  for (NSInteger i = 0; i < 4; ++i) {
+  for (NSInteger i = 0; i < kDeckTabCount; ++i) {
     NSView* p = [[NSView alloc] initWithFrame:NSZeroRect];
     p.translatesAutoresizingMaskIntoConstraints = NO;
     [deckContainer addSubview:p];
@@ -2341,9 +3115,12 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
-    NSArray<NSString*>* rvbPresetTitles = @[@"EMT 140", @"WARM PLATE", @"DARK TANK", @"SHIMMER", @"TIGHT ROOM"];
+    NSArray<NSString*>* rvbPresetTitles = @[@"EMT 140", @"WARM PLATE", @"DARK TANK", @"SHIMMER", @"TIGHT ROOM",
+                                            @"SPRING TANK", @"CONCERT HALL"];
     addSlotPresetDropdown(chips, state, @"reverb", @"Studio Plate Reverb",
-                          @[@54, @55, @56, @57, @58], rvbPresetTitles, @selector(applyReverbPreset:));
+                          @[@54, @55, @56, @57, @58, @(NAMRig::kReverbTypePort)], rvbPresetTitles,
+                          @selector(applyReverbPreset:));
+    addFxPopup(chips, state, NAMRig::kReverbTypePort);
 
     NAMReverbDecayVisualizer* rvbVis = [[NAMReverbDecayVisualizer alloc] initWithFrame:NSZeroRect];
     rvbVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2586,13 +3363,16 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"OD PUSH",
-                                               @"TS9 DRIVE", @"FLAT"];
+                                               @"TS9 DRIVE", @"FLAT", @"RAT DIST", @"FUZZ FACE"];
     addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp Tonal Sculpt",
                           [@[@39, @40, @(NAMRig::kMidPushPort), @(NAMRig::kOverdriveDrivePort),
-                             @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)]
+                             @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort),
+                             @(NAMRig::kOdTypePort)]
                               arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Sculpt)],
                           sculptPresetTitles,
                           @selector(applySculptPreset:));
+    NSPopUpButton* driveType = addFxPopup(chips, state, NAMRig::kOdTypePort);
+    [[driveType.widthAnchor constraintEqualToConstant:92] setActive:YES];
     NSArray<NSString*>* pageTitles = @[@"EQ", @"OD"];
     NSArray<NSString*>* pageTips = @[
       @"Show the EQ knobs: Bright, Input EQ and Mid Push.",
@@ -3396,6 +4176,8 @@ static void addLowerStudioDeck(RigUIState* state,
     [[info3.topAnchor constraintEqualToAnchor:info2.bottomAnchor constant:5] setActive:YES];
     [[info3.leadingAnchor constraintEqualToAnchor:infoCard.leadingAnchor constant:10] setActive:YES];
   }
+
+  addExtendedDeckPanes(state, panes, mins, maxes, knobNames, knobDescriptions);
 }
 
 LV2UI_Handle instantiate(const LV2UI_Descriptor*,
@@ -3447,6 +4229,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->preAmpDbURID = map->map(map->handle, NAM_RIG_PRE_AMP_DB_URI);
     state->postAmpDbURID = map->map(map->handle, NAM_RIG_POST_AMP_DB_URI);
     state->outputDbURID = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
+    state->sceneURID = map->map(map->handle, NAM_RIG_SCENE_URI);
+    state->looperStateURID = map->map(map->handle, NAM_RIG_LOOPER_STATE_URI);
+    state->looperPositionURID = map->map(map->handle, NAM_RIG_LOOPER_POSITION_URI);
+    state->expr1URID = map->map(map->handle, NAM_RIG_EXPR1_URI);
+    state->expr2URID = map->map(map->handle, NAM_RIG_EXPR2_URI);
     for (size_t i = 0; i < kPathURIs.size(); ++i) state->pathURIDs[i] = map->map(map->handle, kPathURIs[i]);
     lv2_atom_forge_init(&state->forge, map);
 
@@ -3766,7 +4553,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"CAB B LVL", @"ALIGN", @"DLY TIME", @"DLY FDBK",
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
-                                      @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL"];
+                                      @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
+                                      @"MIDI CH", @"EXPR1 CC", @"EXPR2 CC", @"EXPR 1", @"EXPR 2", @"M1 RATE", @"M1 DEPTH", @"M2 RATE", @"M2 DEPTH", @"M3 RATE", @"M3 DEPTH", @"M4 RATE", @"M4 DEPTH", @"POSITION", @"RESONANCE", @"SENSITIVITY", @"LOW X-OVER", @"HIGH X-OVER", @"LOW", @"MID", @"HIGH", @"RATE", @"DEPTH", @"FEEDBACK", @"MIX", @"SHIFT", @"SHIFT 2", @"DETUNE", @"MIX", @"WHAMMY", @"LOOP LVL", @"SYNTH MIX", @"FILTER", @"MORPH", @"CAB C LVL", @"CAB C PAN", @"CAB D LVL", @"CAB D PAN", @"A DIST", @"A POS", @"B DIST", @"B POS", @"C DIST", @"C POS", @"D DIST", @"D POS", @"LOOPER CC"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -3774,7 +4562,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
-                                       @"OFF", @"50%", @"+0.0 dB"];
+                                       @"OFF", @"50%", @"+0.0 dB",
+                                       @"OMNI", @"CC 11", @"CC 1", @"OFF", @"OFF", @"1.00 Hz", @"+0%", @"1.00 Hz", @"+0%", @"1.00 Hz", @"+0%", @"1.00 Hz", @"+0%", @"50%", @"50%", @"50%", @"150 Hz", @"2500 Hz", @"OFF", @"OFF", @"OFF", @"0.80 Hz", @"50%", @"OFF", @"OFF", @"+0 st", @"+0 st", @"+0 ct", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"60%", @"OFF", @"+0.0 dB", @"+0%", @"+0.0 dB", @"+0%", @"OFF", @"OFF", @"OFF", @"OFF", @"OFF", @"OFF", @"OFF", @"OFF", @"CC 80"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -3817,19 +4606,68 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Mid push (pre-amp). Overdrive-style midrange bell (750 Hz, up to +9 dB) before the NAM amp model, like a Tube Screamer or tight boost. Pair with Input EQ and a little Drive to stand in for a separate overdrive capture. 0% is exact bypass.",
       @"Overdrive drive (pre-amp, Tube Screamer-style). Clips only the mids above 720 Hz with a soft diode pair and mixes the clean signal back, so bass stays tight and pick attack survives. Sits in front of the amp like a pedal, ahead of Amp Drive. Low drive with Level up is the classic boost into a high-gain amp. 0% is exact bypass.",
       @"Overdrive tone. Treble roll-off after the clipper, from dark (700 Hz) to bright (8.4 kHz). Shown on the Sculpt graph. Only applies while OD Drive is on.",
-      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on."
+      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on.",
+      @"MIDI Channel. MIDI channel the rig listens on. 0 = omni.",
+      @"Expression 1 CC. MIDI continuous controller number for expression pedal 1.",
+      @"Expression 2 CC. MIDI continuous controller number for expression pedal 2.",
+      @"Expression 1. Expression pedal 1 position. Host automation sets it; incoming MIDI on the assigned CC overrides it.",
+      @"Expression 2. Expression pedal 2 position. Host automation sets it; incoming MIDI on the assigned CC overrides it.",
+      @"Modifier 1 Rate. LFO or sequencer rate in Hz.",
+      @"Modifier 1 Depth. How far the source moves the target across its range. Negative inverts the motion.",
+      @"Modifier 2 Rate. LFO or sequencer rate in Hz.",
+      @"Modifier 2 Depth. How far the source moves the target across its range. Negative inverts the motion.",
+      @"Modifier 3 Rate. LFO or sequencer rate in Hz.",
+      @"Modifier 3 Depth. How far the source moves the target across its range. Negative inverts the motion.",
+      @"Modifier 4 Rate. LFO or sequencer rate in Hz.",
+      @"Modifier 4 Depth. How far the source moves the target across its range. Negative inverts the motion.",
+      @"Wah Position. Sweep position (heel to toe). Assign an expression pedal through a modifier for a real wah.",
+      @"Wah Resonance. Peak sharpness of the wah or filter.",
+      @"Auto Wah Sensitivity. How far picking dynamics open the auto wah.",
+      @"Multiband Low Crossover. Crossover between the low and mid bands.",
+      @"Multiband High Crossover. Crossover between the mid and high bands.",
+      @"Multiband Low. One-knob compression of the low band. 0 = off.",
+      @"Multiband Mid. One-knob compression of the mid band. 0 = off.",
+      @"Multiband High. One-knob compression of the high band. 0 = off.",
+      @"Modulation Rate. LFO speed. Rotary: horn speed, the drum follows slower.",
+      @"Modulation Depth. Sweep or intensity.",
+      @"Modulation Feedback. Flanger/Phaser regeneration. Tremolo: stereo phase offset. Rotary: horn/drum balance.",
+      @"Modulation Mix. Wet/dry blend. 0 = exact bypass.",
+      @"Pitch Shift. Voice 1 interval in semitones (Whammy: the interval at full pedal).",
+      @"Pitch Shift 2. Voice 2 interval in semitones (Harmony mode).",
+      @"Pitch Detune. Fine detune in cents added to the voices.",
+      @"Pitch Mix. Shifted voice level. 0 = exact bypass.",
+      @"Whammy. Whammy pedal position. Assign an expression pedal through a modifier.",
+      @"Looper Level. Loop playback level.",
+      @"Synth Mix. Synth level added to the guitar before the amp.",
+      @"Synth Filter. Resonant low-pass cutoff on the synth voice.",
+      @"Amp Morph. Blend between the Amp capture (0) and the Amp B capture (100). Both run inside the same oversampled domain. 0 is exact Amp A.",
+      @"Cab C Level. Cab C trim. -24 dB mutes it.",
+      @"Cab C Pan. Cab C stereo position.",
+      @"Cab D Level. Cab D trim. -24 dB mutes it.",
+      @"Cab D Pan. Cab D stereo position.",
+      @"Cab A Mic Distance. Virtual mic distance after the Cab A IR: 0 on the grille (exact bypass with Position 0), 100 about one metre back.",
+      @"Cab A Mic Position. Virtual mic position: 0 dust cap (bright), 100 cone edge (dark).",
+      @"Cab B Mic Distance. Virtual mic distance after the Cab B IR.",
+      @"Cab B Mic Position. Virtual mic position after the Cab B IR.",
+      @"Cab C Mic Distance. Virtual mic distance after the Cab C IR.",
+      @"Cab C Mic Position. Virtual mic position after the Cab C IR.",
+      @"Cab D Mic Distance. Virtual mic distance after the Cab D IR.",
+      @"Cab D Mic Position. Virtual mic position after the Cab D IR.",
+      @"Looper CC. MIDI CC that steps the looper: Stop/Play -> Record -> Play -> Overdub -> Play. A value of 0 stops."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, -12.0};
+        0.0, 0.0, -12.0,
+        0, 0, 0, 0, 0, 0.05, -100, 0.05, -100, 0.05, -100, 0.05, -100, 0, 0, 0, 60, 1000, 0, 0, 0, 0.05, 0, 0, 0, -24, -24, -50, 0, 0, -24, 0, 0, 0, -24, -100, -24, -100, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        100.0, 100.0, 12.0};
+        100.0, 100.0, 12.0,
+        16, 127, 127, 100, 100, 20, 100, 20, 100, 20, 100, 20, 100, 100, 100, 100, 500, 8000, 100, 100, 100, 10, 100, 100, 100, 24, 24, 50, 100, 100, 6, 100, 100, 100, 24, 100, 24, 100, 100, 100, 100, 100, 100, 100, 100, 100, 127};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -4321,6 +5159,26 @@ void portEvent(LV2UI_Handle handle,
   // Tuner updates: patch:Set floats — note (MIDI number, -1 = none) and cents.
   if (value->type != state->atomFloat || value->size != sizeof(float)) return;
   const float v = *reinterpret_cast<const float*>(value + 1);
+  if (propertyId == state->sceneURID) {
+    state->switchToScene(static_cast<int>(v + 0.5f), true);
+    return;
+  }
+  if (propertyId == state->looperStateURID) {
+    state->sendControl(NAMRig::kLooperStatePort, v);
+    state->updateControl(NAMRig::kLooperStatePort, v);
+    return;
+  }
+  if (propertyId == state->looperPositionURID) {
+    state->looperPosition = v;
+    state->refreshLooperButtons();
+    return;
+  }
+  if (propertyId == state->expr1URID || propertyId == state->expr2URID) {
+    const size_t index = propertyId == state->expr1URID ? 0 : 1;
+    NSTextField* label = state->exprLiveLabels[index];
+    if (label) label.stringValue = [NSString stringWithFormat:@"EXPR %zu LIVE: %3.0f%%", index + 1, v];
+    return;
+  }
   if (propertyId == state->tunerNoteURID)
     state->lastTunerNote = v;
   else if (propertyId == state->tunerCentsURID)
