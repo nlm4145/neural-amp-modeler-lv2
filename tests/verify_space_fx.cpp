@@ -78,7 +78,10 @@ int main() {
     const float far = line.read(1'000'000);
     const float farFrac = line.readFrac(1.0e9);
     const float zero = line.readFrac(0.0);
-    check(std::isfinite(far) && std::isfinite(farFrac) && std::isfinite(zero),
+    const float farSinc = line.readSinc8(1.0e9);
+    const float zeroSinc = line.readSinc8(0.0);
+    check(std::isfinite(far) && std::isfinite(farFrac) && std::isfinite(zero) &&
+              std::isfinite(farSinc) && std::isfinite(zeroSinc),
           "DelayLine clamps out-of-range reads instead of reading past the end");
     check(line.capacity() == 64,
           "DelayLine reports the usable capacity it was allocated for");
@@ -110,6 +113,25 @@ int main() {
           "AlignDelay places the impulse at exactly the requested 5 ms");
     check(std::fabs(left[peak] - 1.0f) < 1.0e-5f,
           "AlignDelay preserves the impulse amplitude");
+  }
+  {
+    // AlignDelay fractional sinc interpolation must preserve high-frequency energy.
+    // At 96 kHz, a 20 kHz tone delayed by 5.5 samples (fractional f=0.5) must
+    // not suffer the ~2 dB treble roll-off of linear interpolation.
+    NAMRig::AlignDelay align;
+    align.initialize(rate, 10.0);
+    const float delayMs = static_cast<float>(5.5 / rate * 1000.0);
+    auto left = tone(8192, rate, 20000.0);
+    auto right = left;
+    const double inEnergy = energy(left, 512, 8192);
+    align.process(left.data(), right.data(), left.size(), delayMs);
+    const double outEnergy = energy(left, 512, 8192);
+    const double ratioDb = 10.0 * std::log10(outEnergy / inEnergy);
+    char label[128];
+    std::snprintf(label, sizeof(label),
+                  "AlignDelay 8-tap sinc preserves 20 kHz energy at f=0.5 (ratio: %+.3f dB)",
+                  ratioDb);
+    check(std::fabs(ratioDb) < 0.15, label);
   }
   {
     // A request beyond the allocation must clamp to the maximum, not wrap.

@@ -123,52 +123,42 @@ processing_mode() {
   if [[ "$PARALLEL_MODELS" == ON ]]; then echo "Parallel"; else echo "Serial"; fi
 }
 
+# Parallel: models run in parallel, cabinets unthreaded.
+# Serial: models run serially, threaded NAM cabinets enabled.
+set_processing_mode() {
+  case "$1" in
+    parallel) PARALLEL_MODELS=ON;  PARALLEL_CABS=OFF ;;
+    serial)   PARALLEL_MODELS=OFF; PARALLEL_CABS=ON ;;
+  esac
+}
+
+case "$PROCESSING_FLAG" in
+  ON) set_processing_mode parallel ;;
+  OFF) set_processing_mode serial ;;
+esac
+
 show_settings() {
   echo "Processing mode: $(processing_mode)"
+  echo "Parallel models: $PARALLEL_MODELS"
   echo "Threaded NAM cabinets: $PARALLEL_CABS"
   echo "Smart bypass (single-model LV2 only): $SMART_BYPASS"
   echo "Launch: $LAUNCH"
 }
 
-choose_processing_mode() {
-  local mode_choice
-  echo
-  echo "Processing mode (macOS standalone):"
-  echo "  p  Parallel"
-  echo "  s  Serial"
-  if ! read -r -p "Mode [current: $(processing_mode)]: " mode_choice; then
-    return
-  fi
-  case "$mode_choice" in
-    p|P|parallel|Parallel) PARALLEL_MODELS=ON ;;
-    s|S|serial|Serial) PARALLEL_MODELS=OFF ;;
-    "") ;;
-    *) echo "Invalid mode. Use p or s." ;;
-  esac
-}
-
 if [[ "$MENU" == on || ( "$MENU" == auto && -t 0 && -t 1 ) ]]; then
   while true; do
     echo
-    echo "Axe FX Build Settings"
-    show_settings
-    echo "1  Processing mode: Parallel / Serial (macOS standalone)"
-    echo "2  Toggle threaded NAM cabinets (experimental, macOS standalone)"
-    echo "3  Toggle smart bypass (single-model LV2 only, not the rig)"
-    echo "4  Cycle launch: auto / standalone / element / none"
-    echo "Enter or b: build and install    q: quit"
+    echo "1  Parallel"
+    echo "2  Serial (threaded cabs enabled)"
     if ! read -r -p "Choice: " choice; then
       echo "Build cancelled."
       exit 0
     fi
     case "$choice" in
-      1) choose_processing_mode ;;
-      2) if [[ "$PARALLEL_CABS" == ON ]]; then PARALLEL_CABS=OFF; else PARALLEL_CABS=ON; fi ;;
-      3) if [[ "$SMART_BYPASS" == ON ]]; then SMART_BYPASS=OFF; else SMART_BYPASS=ON; fi ;;
-      4) case "$LAUNCH" in auto) LAUNCH=standalone ;; standalone) LAUNCH=element ;; element) LAUNCH=none ;; none) LAUNCH=auto ;; esac ;;
-      ""|b|B) break ;;
+      1) set_processing_mode parallel; break ;;
+      2) set_processing_mode serial; break ;;
       q|Q) echo "Build cancelled."; exit 0 ;;
-      *) echo "Invalid choice. Use 1-4, Enter, b, or q." ;;
+      *) echo "Invalid choice. Use 1 or 2." ;;
     esac
   done
 fi

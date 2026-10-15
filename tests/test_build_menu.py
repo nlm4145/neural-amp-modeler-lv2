@@ -194,41 +194,13 @@ class BuildMenuTests(unittest.TestCase):
             "--no-menu", input_text="q\n", stdin_tty=True, stdout_tty=True
         ))
 
-    def test_forced_menu_accepts_enter_and_build_with_piped_input(self):
-        for selection in ("\n", "b\n"):
-            with self.subTest(selection=repr(selection)):
-                self.assert_settings(self.run_build("--menu", input_text=selection))
-
-    def test_each_processing_toggle(self):
+    def test_forced_menu_accepts_options(self):
         for selection, expected in (
-            ("1", {"models": "OFF"}),
-            ("2", {"cabs": "ON"}),
-            ("3", {"smart": "ON"}),
+            ("1\n", {"models": "ON", "cabs": "OFF"}),
+            ("2\n", {"models": "OFF", "cabs": "ON"}),
         ):
-            with self.subTest(selection=selection):
-                self.assert_settings(
-                    self.run_build("--menu", input_text=f"{selection}\nb\n"),
-                    **expected,
-                )
-
-    def test_all_processing_toggles(self):
-        self.assert_settings(
-            self.run_build("--menu", input_text="1\n2\n3\nb\n"),
-            models="OFF", cabs="ON", smart="ON",
-        )
-
-    def test_repeated_toggles_restore_defaults(self):
-        self.assert_settings(self.run_build(
-            "--menu", input_text="1\n1\n2\n2\n3\n3\nb\n"
-        ))
-
-    def test_launch_cycle(self):
-        for count, launch in enumerate(("auto", "standalone", "element", "none", "auto")):
-            with self.subTest(count=count):
-                self.assert_settings(
-                    self.run_build("--menu", input_text="4\n" * count + "b\n"),
-                    launch=launch,
-                )
+            with self.subTest(selection=repr(selection)):
+                self.assert_settings(self.run_build("--menu", input_text=selection), **expected)
 
     def test_existing_launch_flags_noninteractive(self):
         for flag, launch in (
@@ -240,20 +212,8 @@ class BuildMenuTests(unittest.TestCase):
                 self.assert_settings(self.run_build("--no-menu", flag), launch=launch)
                 self.assert_settings(self.run_build(flag), launch=launch)
 
-    def test_menu_uses_launch_flag_as_initial_selection(self):
-        for flag, launch in (
-            ("--standalone", "element"),
-            ("--element", "none"),
-            ("--no-launch", "auto"),
-        ):
-            with self.subTest(flag=flag):
-                self.assert_settings(
-                    self.run_build("--menu", flag, input_text="4\nb\n"),
-                    launch=launch,
-                )
-
     def test_quit_and_eof_never_choose_a_build(self):
-        for input_text in ("q\n", "", "1\n2\n3\n4\nq\n", "1\n2\n3\n4\n"):
+        for input_text in ("q\n", "", "0\nq\n"):
             with self.subTest(input_text=repr(input_text)):
                 self.assert_quit(self.run_build("--menu", input_text=input_text))
 
@@ -263,13 +223,13 @@ class BuildMenuTests(unittest.TestCase):
         output = result.stdout + result.stderr
         invalid = re.search(r"invalid", output, re.IGNORECASE)
         self.assertIsNotNone(invalid, output)
-        self.assertIn("parallel models", output[:invalid.start()].lower())
-        self.assertIn("parallel models", output[invalid.end():].lower())
+        self.assertIn("parallel", output[:invalid.start()].lower())
+        self.assertIn("serial", output[:invalid.start()].lower())
 
-    def test_invalid_menu_selection_does_not_change_settings(self):
+    def test_invalid_menu_selection_then_valid_choice(self):
         self.assert_settings(self.run_build(
-            "--menu", input_text="0\n5\nnot-a-selection\nb\n"
-        ))
+            "--menu", input_text="0\n5\n1\n"
+        ), models="ON", cabs="OFF")
 
     def test_unknown_flags_fail_without_a_build(self):
         for flag in ("--not-a-build-option", "--menu=ON"):
@@ -315,9 +275,10 @@ class BuildMenuTests(unittest.TestCase):
         )
         self.assert_settings(self.run_build("--no-menu"), smart="ON")
 
-    def test_menu_toggles_start_from_previous_cache_settings(self):
+    def test_menu_choice_with_previous_cache_settings(self):
         self.write_cache()
-        self.assert_settings(self.run_build("--menu", input_text="1\n2\n3\nb\n"))
+        self.assert_settings(self.run_build("--menu", input_text="1\n"), models="ON", cabs="OFF", smart="ON")
+        self.assert_settings(self.run_build("--menu", input_text="2\n"), models="OFF", cabs="ON", smart="ON")
 
     def test_environment_overrides_previous_cache_settings(self):
         self.write_cache()
@@ -329,12 +290,6 @@ class BuildMenuTests(unittest.TestCase):
                 self.assert_settings(
                     self.run_build("--no-menu", overrides={name: values[key]}), **values
                 )
-
-    def test_menu_toggles_start_from_environment_overrides(self):
-        self.assert_settings(self.run_build(
-            "--menu", input_text="1\n2\n3\nb\n",
-            overrides=dict(zip(SETTING_ENV, ("OFF", "ON", "ON"))),
-        ))
 
     def test_cache_is_parsed_not_sourced_or_rewritten(self):
         marker = self.directory / "cache was sourced"
