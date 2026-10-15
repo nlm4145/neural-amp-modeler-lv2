@@ -71,9 +71,7 @@ set(RIG_SOURCES nam_rig_lv2.cpp
 	amp_advanced.h
 	output_transformer.h
 	speaker_dynamics.h
-	space_fx.h
-	fx_controls.h modifiers.h modulation_fx.h pitch_fx.h wah_filter.h drive_pedal.h
-	synth_fx.h spring_reverb.h multiband_comp.h looper.h mic_model.h)
+	space_fx.h)
 
 add_library(neural_amp_modeler_rig SHARED ${RIG_SOURCES} ${NA_SOURCES})
 
@@ -323,7 +321,6 @@ if (APPLE)
 		option(AXE_FX_PARALLEL_CABS_DEFAULT "Enable macOS threaded NAM cabinets by default" OFF)
 		find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
-		find_library(COREMIDI_FRAMEWORK CoreMIDI REQUIRED)
 		add_executable(axe_fx_standalone MACOSX_BUNDLE
 			standalone_main.mm
 			standalone_worker.cpp standalone_worker.h standalone_controls.h
@@ -349,7 +346,7 @@ if (APPLE)
 			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
 			${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK}
-			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK} ${COREMIDI_FRAMEWORK})
+			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK})
 		target_compile_options(axe_fx_standalone PRIVATE -fobjc-arc -mmacosx-version-min=11.0)
 		target_link_options(axe_fx_standalone PRIVATE "-Wl,-platform_version,macos,11.0,14.5")
 		set_target_properties(axe_fx_standalone PROPERTIES

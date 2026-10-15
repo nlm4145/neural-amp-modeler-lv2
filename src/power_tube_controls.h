@@ -19,7 +19,7 @@ inline constexpr uint32_t kPinEqPortCount = 96;
 inline constexpr uint32_t kOverdriveDrivePort = 179;
 inline constexpr uint32_t kOverdriveTonePort = 180;
 inline constexpr uint32_t kOverdriveLevelPort = 181;
-inline constexpr uint32_t kRigControlPortCount = 255;
+inline constexpr uint32_t kRigControlPortCount = 182;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

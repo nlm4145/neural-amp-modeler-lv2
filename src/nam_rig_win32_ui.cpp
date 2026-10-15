@@ -130,7 +130,7 @@ static LV2UI_Handle instantiate(
   lv2_atom_forge_init(&ui->forge, map);
 
   ui->view = std::make_unique<NAMRigWin32::Win32UIView>();
-  HWND childHwnd = ui->view->create(parent, 0, 0, NAMRigWin32::kViewWidth, NAMRigWin32::kViewHeight);
+  HWND childHwnd = ui->view->create(parent, 0, 0, 1180, 780);
   if (!childHwnd) {
     delete ui;
     return nullptr;
@@ -145,7 +145,7 @@ static LV2UI_Handle instantiate(
   });
 
   if (ui->hostResize && ui->hostResize->ui_resize) {
-    ui->hostResize->ui_resize(ui->hostResize->handle, NAMRigWin32::kViewWidth, NAMRigWin32::kViewHeight);
+    ui->hostResize->ui_resize(ui->hostResize->handle, 1180, 780);
   }
 
   *widget = static_cast<LV2UI_Widget>(childHwnd);

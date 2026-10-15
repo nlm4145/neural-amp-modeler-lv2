@@ -28,8 +28,6 @@
 
 #include "rig_knobs.h"
 #include "rack_controls.h"
-#include "fx_controls.h"
-#include <unordered_map>
 #include "power_tube_controls.h"
 #include "oversample_modes.h"
 #include "ir_normalization.h"
@@ -72,7 +70,7 @@ struct RigUIState {
   LV2_URID patchSet = 0;
   LV2_URID patchProperty = 0;
   LV2_URID patchValue = 0;
-  std::array<LV2_URID, NAMRig::kRigStageCount> pathURIDs{};
+  std::array<LV2_URID, 4> pathURIDs{};
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
@@ -154,84 +152,6 @@ struct RigUIState {
 
   std::array<float, NAMRig::kRackCount> rackControls = NAMRig::kRackControlDefaults;
   std::array<__strong RigButton*, NAMRig::kRackCount> rackButtons{};
-  // Appended racks and controls (fx_controls.h). fxControls mirrors every
-  // appended port so presets and scenes can read values that have no knob.
-  std::array<float, NAMRig::kFxControlCount> fxControls = NAMRig::fxControlDefaults();
-  std::array<float, NAMRig::kFxRackCount> fxRackControls = NAMRig::kFxRackDefaults;
-  std::array<__strong RigButton*, NAMRig::kFxRackCount> fxRackButtons{};
-  std::array<__strong NSPopUpButton*, NAMRig::kFxControlCount> fxPopups{};
-  std::array<__strong RigButton*, 4> looperButtons{};
-  __strong NSTextField* modFxTitleLabel = nil;
-  __strong NSTextField* pitchTitleLabel = nil;
-  __strong NSTextField* wahTitleLabel = nil;
-  void refreshFxRackTitles() {
-    const int modType = static_cast<int>(fxControlValue(NAMRig::kModFxTypePort) + 0.5f);
-    const int pitchMode = static_cast<int>(fxControlValue(NAMRig::kPitchModePort) + 0.5f);
-    const int wahMode = static_cast<int>(fxControlValue(NAMRig::kWahModePort) + 0.5f);
-    if (modFxTitleLabel && modType >= 0 && modType < 6)
-      modFxTitleLabel.stringValue = [[NSString stringWithUTF8String:NAMRig::kModFxTypeLabels[modType]] uppercaseString];
-    if (pitchTitleLabel && pitchMode >= 0 && pitchMode < 4)
-      pitchTitleLabel.stringValue = [[NSString stringWithFormat:@"PITCH · %s", NAMRig::kPitchModeLabels[pitchMode]] uppercaseString];
-    if (wahTitleLabel && wahMode >= 0 && wahMode < 5)
-      wahTitleLabel.stringValue = [[NSString stringWithUTF8String:NAMRig::kWahModeLabels[wahMode]] uppercaseString];
-  }
-  __strong NSTextField* looperStatusLabel = nil;
-  float looperPosition = 0.0f;
-  std::array<__strong NSTextField*, 2> exprLiveLabels{};
-  LV2_URID sceneURID = 0, looperStateURID = 0, looperPositionURID = 0;
-  LV2_URID expr1URID = 0, expr2URID = 0;
-  // Scenes: eight complete control snapshots per preset. The live controls
-  // are the current scene; switching stores them and recalls the other set.
-  std::array<std::unordered_map<uint32_t, float>, NAMRig::kSceneCount> sceneControls{};
-  int currentScene = 0;
-  bool applyingScene = false;
-  std::array<__strong RigButton*, NAMRig::kSceneCount> sceneButtons{};
-  float fxControlValue(uint32_t port) const {
-    return NAMRig::isFxControlPort(port) ? fxControls[port - NAMRig::kFxControlFirstPort]
-                                         : 0.0f;
-  }
-  void refreshSceneButtons() {
-    auto alive = this->isAlive;
-    auto update = ^{
-      if (!alive || !*alive) return;
-      for (size_t i = 0; i < sceneButtons.size(); ++i) {
-        RigButton* b = sceneButtons[i];
-        if (!b) continue;
-        const bool active = static_cast<int>(i) == currentScene;
-        b.state = active ? NSControlStateValueOn : NSControlStateValueOff;
-        b.primary = active;
-        b.needsDisplay = YES;
-      }
-    };
-    if ([NSThread isMainThread]) update();
-    else dispatch_async(dispatch_get_main_queue(), update);
-  }
-  void refreshLooperButtons() {
-    auto alive = this->isAlive;
-    const int state = static_cast<int>(fxControlValue(NAMRig::kLooperStatePort) + 0.5f);
-    auto update = ^{
-      if (!alive || !*alive) return;
-      for (size_t i = 0; i < looperButtons.size(); ++i) {
-        RigButton* b = looperButtons[i];
-        if (!b) continue;
-        const bool active = static_cast<int>(i) == state;
-        b.state = active ? NSControlStateValueOn : NSControlStateValueOff;
-        b.primary = active;
-        b.needsDisplay = YES;
-      }
-      if (looperStatusLabel) {
-        NSString* name = state >= 0 && state < 4
-            ? [NSString stringWithUTF8String:NAMRig::kLooperStateLabels[state]] : @"";
-        looperStatusLabel.stringValue = state == 0 && looperPosition <= 0.0f
-            ? @"STOP · EMPTY OR HELD"
-            : [NSString stringWithFormat:@"%@ · %3.0f%%", name.uppercaseString, looperPosition * 100.0f];
-      }
-    };
-    if ([NSThread isMainThread]) update();
-    else dispatch_async(dispatch_get_main_queue(), update);
-  }
-  std::unordered_map<uint32_t, float> snapshotControls();
-  void switchToScene(int scene, bool sendPort);
 
   // Live hardware visualizers for the studio deck:
   __strong NAMDelayTapVisualizer* delayVisualizer = nil;
@@ -501,19 +421,19 @@ struct RigUIState {
   __weak NSView* parent = nil;
   __strong NAMRigUIController* uiController = nil;
   __strong ToneBrowserController* browserController = nil;
-  std::array<__strong NSTextField*, NAMRig::kRigStageCount> pathLabels{};
-  std::array<__strong NSButton*, NAMRig::kRigStageCount> powerButtons{};
+  std::array<__strong NSTextField*, 4> pathLabels{};
+  std::array<__strong NSButton*, 4> powerButtons{};
   std::array<__strong NSImageView*, 3> stageImages{};
   std::array<__strong RigPanel*, 3> stageCards{};
   std::array<__strong NSTextField*, 3> stageHeaderArchBadges{};
-  std::array<__strong NSTextField*, NAMRig::kRigStageCount> stageArchBadges{};
+  std::array<__strong NSTextField*, 4> stageArchBadges{};
   // auto-cab is always on — no toggle or status label needed
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
   std::array<__strong NSTextField*, kRigKnobCount> valueLabels{};
   // Editable knob value boxes: while the user is typing in one, host-driven
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
-  std::array<__strong NSPopUpButton*, NAMRig::kRigStageCount> modelPickers{};  // per-stage model selector
+  std::array<__strong NSPopUpButton*, 4> modelPickers{};  // per-stage model selector in each tile
   LV2UI_Resize* hostResize = nullptr;
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
@@ -1258,13 +1178,13 @@ struct RigUIState {
   // model paths (every selection is sent via sendPath). We write them to disk on
   // change and re-send them on every instantiate, so selections survive a
   // plugin-window recreation regardless of the host's LV2-State handling.
-  std::array<std::string, NAMRig::kRigStageCount> selectedPaths{};
-  std::array<std::string, NAMRig::kRigStageCount> selectedImageURLs{};   // thumbnail metadata (persisted)
-  std::array<long, NAMRig::kRigStageCount> selectedToneIds{};            // key into NAM Rig's artwork cache
+  std::array<std::string, 4> selectedPaths{};
+  std::array<std::string, 4> selectedImageURLs{};   // thumbnail metadata (persisted)
+  std::array<long, 4> selectedToneIds{};            // key into NAM Rig's artwork cache
   // Every model offered by the selected tone/pack.  Hosts such as Element may
   // tear down and recreate an LV2 UI when its window loses focus; keeping only
   // selectedPaths would then rebuild each popup with just its current item.
-  std::array<std::vector<std::string>, NAMRig::kRigStageCount> availableModelPaths{};
+  std::array<std::vector<std::string>, 4> availableModelPaths{};
   static std::string uiLegacyPersistFile() {
     const char* home = std::getenv("HOME");
     std::string dir = home ? std::string(home) : std::string(".");
@@ -1711,27 +1631,12 @@ struct RigUIState {
     else dispatch_async(dispatch_get_main_queue(), refresh);
   }
 
-  static NSString* stageEmptyTitle(size_t stage) {
-    switch (stage) {
-      case 3: return @"No Cab B loaded";
-      case 4: return @"No Amp B loaded";
-      case 5: return @"No Cab C IR loaded";
-      case 6: return @"No Cab D IR loaded";
-      default: return @"No model loaded";
-    }
-  }
   static NSString* modelPickerTooltip(size_t stage, NSString* path) {
     NSString* role = stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
     NSString* behavior = stage == 2
         ? @"Select the active cabinet NAM model or WAV impulse response."
         : stage == 3
         ? @"Select the second cabinet (Cab B) NAM model or WAV impulse response. It runs parallel to Cab A."
-        : stage == 4
-        ? @"Select the Amp B capture. The Morph knob blends from the Amp capture (0%) to this one (100%) inside the same oversampled domain."
-        : stage == 5
-        ? @"Select the Cab C WAV impulse response. It runs parallel to the other cabinets with its own mic model, level and pan."
-        : stage == 6
-        ? @"Select the Cab D WAV impulse response. It runs parallel to the other cabinets with its own mic model, level and pan."
         : [NSString stringWithFormat:@"Select the active %@ NAM model.", role];
     if (!path.length) {
       return [NSString stringWithFormat:@"%@ No model is currently loaded.", behavior];
@@ -1756,7 +1661,7 @@ struct RigUIState {
       }
       if (copy.empty()) {
         [picker removeAllItems];
-        [picker addItemWithTitle:stageEmptyTitle(stage)];
+        [picker addItemWithTitle:(stage == 3 ? @"No Cab B loaded" : @"No model loaded")];
         picker.itemArray.firstObject.enabled = NO;
         picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
         for (NSString* p in savedPaths) {
@@ -1825,7 +1730,7 @@ struct RigUIState {
         [[picker menu] addItem:item];
       }
       if (paths.count == 0) {
-        [picker addItemWithTitle:stageEmptyTitle(stage)];
+        [picker addItemWithTitle:(stage == 3 ? @"No Cab B loaded" : @"No model loaded")];
         picker.itemArray.firstObject.toolTip = modelPickerTooltip(stage, nil);
         picker.enabled = NO;
         picker.toolTip = modelPickerTooltip(stage, nil);
@@ -1999,71 +1904,6 @@ struct RigUIState {
 
   void updateControl(uint32_t port, float value) {
     auto alive = this->isAlive;
-    if (NAMRig::isFxControlPort(port)) {
-      const NAMRig::FxControl& c = NAMRig::fxControl(port);
-      const float v = std::isfinite(value) ? std::clamp(value, c.minimum, c.maximum)
-                                           : c.defaultValue;
-      fxControls[port - NAMRig::kFxControlFirstPort] = v;
-      if (port == NAMRig::kScenePort) {
-        const int scene = static_cast<int>(v + 0.5f);
-        if ([NSThread isMainThread]) switchToScene(scene, false);
-        else dispatch_async(dispatch_get_main_queue(), ^{
-          if (alive && *alive) switchToScene(scene, false);
-        });
-        return;
-      }
-      if (NAMRig::isFxRackPort(port)) {
-        const size_t index = port - NAMRig::kFxRackFirstPort;
-        fxRackControls[index] = v >= 0.5f ? 1.0f : 0.0f;
-        auto updateRack = ^{
-          if (!alive || !*alive) return;
-          RigButton* button = fxRackButtons[index];
-          if (!button) return;
-          const bool enabled = fxRackControls[index] >= 0.5f;
-          button.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
-          button.title = enabled ? @"ON" : @"OFF";
-          button.primary = enabled;
-          button.needsDisplay = YES;
-        };
-        if ([NSThread isMainThread]) updateRack();
-        else dispatch_async(dispatch_get_main_queue(), updateRack);
-        return;
-      }
-      if (port == NAMRig::kCab3EnabledPort || port == NAMRig::kCab4EnabledPort) {
-        const size_t slot = port == NAMRig::kCab3EnabledPort ? 5 : 6;
-        auto updatePower = ^{
-          if (!alive || !*alive) return;
-          if (!powerButtons[slot]) return;
-          powerButtons[slot].state = v >= 0.5f;
-          powerButtons[slot].needsDisplay = YES;
-        };
-        if ([NSThread isMainThread]) updatePower();
-        else dispatch_async(dispatch_get_main_queue(), updatePower);
-        return;
-      }
-      if (port == NAMRig::kLooperStatePort) {
-        refreshLooperButtons();
-        return;
-      }
-      if (c.kind == NAMRig::FxControlKind::Enum) {
-        const NSInteger idx = static_cast<NSInteger>(v + 0.5f);
-        auto updatePopup = ^{
-          if (!alive || !*alive) return;
-          NSPopUpButton* popup = fxPopups[port - NAMRig::kFxControlFirstPort];
-          if (popup && idx >= 0 && idx < (NSInteger)popup.itemArray.count) {
-            [popup selectItemAtIndex:idx];
-            popup.toolTip = popup.selectedItem.toolTip ?: popup.toolTip;
-          }
-          if (port == NAMRig::kModFxTypePort || port == NAMRig::kPitchModePort ||
-              port == NAMRig::kWahModePort)
-            refreshFxRackTitles();
-        };
-        if ([NSThread isMainThread]) updatePopup();
-        else dispatch_async(dispatch_get_main_queue(), updatePopup);
-        return;
-      }
-      value = v;
-    }
     if (port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
       const size_t index = port - NAMRig::kRackControlFirstPort;
@@ -2303,32 +2143,4 @@ struct RigUIState {
     else dispatch_async(dispatch_get_main_queue(), updateKnob);
   }
 };
-
-inline std::unordered_map<uint32_t, float> RigUIState::snapshotControls() {
-  RigPreset* snapshot = [RigPreset captureFromState:this name:@"scene"];
-  std::unordered_map<uint32_t, float> controls = [snapshot allControls];
-  controls.erase(NAMRig::kScenePort);
-  return controls;
-}
-
-inline void RigUIState::switchToScene(int scene, bool sendPort) {
-  if (scene < 0 || scene >= static_cast<int>(NAMRig::kSceneCount) || applyingScene) return;
-  std::unordered_map<uint32_t, float> live = snapshotControls();
-  sceneControls[static_cast<size_t>(currentScene)] = live;
-  if (scene != currentScene) {
-    auto& target = sceneControls[static_cast<size_t>(scene)];
-    if (target.empty()) target = live;
-    currentScene = scene;
-    applyingScene = true;
-    for (const auto& [port, v] : target) {
-      if (port == NAMRig::kScenePort || port < 4) continue;
-      sendControl(port, v);
-      updateControl(port, v);
-    }
-    applyingScene = false;
-  }
-  fxControls[NAMRig::kScenePort - NAMRig::kFxControlFirstPort] = static_cast<float>(scene);
-  if (sendPort) sendControl(NAMRig::kScenePort, static_cast<float>(scene));
-  refreshSceneButtons();
-}
 #endif

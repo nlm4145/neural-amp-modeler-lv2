@@ -13,7 +13,6 @@
 #include <lv2/core/lv2.h>
 #include <lv2/log/log.h>
 #include <lv2/log/logger.h>
-#include <lv2/midi/midi.h>
 #include <lv2/options/options.h>
 #include <lv2/patch/patch.h>
 #include <lv2/state/state.h>
@@ -30,17 +29,6 @@
 #include "space_fx.h"
 #include "speaker_dynamics.h"
 #include "rack_controls.h"
-#include "fx_controls.h"
-#include "modifiers.h"
-#include "modulation_fx.h"
-#include "pitch_fx.h"
-#include "wah_filter.h"
-#include "drive_pedal.h"
-#include "synth_fx.h"
-#include "spring_reverb.h"
-#include "multiband_comp.h"
-#include "looper.h"
-#include "mic_model.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -50,14 +38,6 @@
 #define NAM_RIG_AMP_URI NAM_RIG_URI "-amp-model"
 #define NAM_RIG_CAB_URI NAM_RIG_URI "-cab-model"
 #define NAM_RIG_CAB2_URI NAM_RIG_URI "-cab2-model"
-#define NAM_RIG_AMP2_URI NAM_RIG_URI "-amp2-model"
-#define NAM_RIG_CAB3_URI NAM_RIG_URI "-cab3-model"
-#define NAM_RIG_CAB4_URI NAM_RIG_URI "-cab4-model"
-#define NAM_RIG_SCENE_URI NAM_RIG_URI "-scene"
-#define NAM_RIG_LOOPER_STATE_URI NAM_RIG_URI "-looper-state"
-#define NAM_RIG_LOOPER_POSITION_URI NAM_RIG_URI "-looper-position"
-#define NAM_RIG_EXPR1_URI NAM_RIG_URI "-expr1"
-#define NAM_RIG_EXPR2_URI NAM_RIG_URI "-expr2"
 #define NAM_RIG_TUNER_NOTE_URI NAM_RIG_URI "-tuner-note"
 #define NAM_RIG_TUNER_CENTS_URI NAM_RIG_URI "-tuner-cents"
 #define NAM_RIG_INPUT_DB_URI NAM_RIG_URI "-input-db"
@@ -71,22 +51,10 @@ class CabinetWorker;
 class PolyphaseWorker;
 static constexpr unsigned int MAX_FILE_NAME = 1024;
 
-// Pedal, Amp and Cab form the serial chain. Cab2, Cab3 and Cab4 run parallel
-// to Cab from the same post-amp tap (Cab3/Cab4 accept WAV IRs only). AmpB is
-// the morph partner of Amp and runs inside the amp's domain.
-enum class Stage : uint32_t {
-  Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, AmpB = 4, Cab3 = 5, Cab4 = 6, Count = 7
-};
+enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 };
 static constexpr size_t kStageCount = static_cast<size_t>(Stage::Count);
-static_assert(kStageCount == kRigStageCount);
+// Pedal, Amp and Cab form the serial chain; Cab2 runs parallel to Cab.
 static constexpr size_t kSerialStageCount = 3;
-static constexpr bool isCabStage(Stage stage) {
-  return stage == Stage::Cab || stage == Stage::Cab2 || stage == Stage::Cab3 ||
-         stage == Stage::Cab4;
-}
-static constexpr bool isSessionRateCabStage(Stage stage) {
-  return stage == Stage::Cab2 || stage == Stage::Cab3 || stage == Stage::Cab4;
-}
 
 enum LV2WorkType : uint32_t { kWorkTypeLoad, kWorkTypeSwitch, kWorkTypeFree };
 
@@ -231,7 +199,6 @@ public:
     float* od_drive;             // in: port 179, Sculpt overdrive drive (0..100%, 0 = off)
     float* od_tone;              // in: port 180, Sculpt overdrive tone (0..100%)
     float* od_level;             // in: port 181, Sculpt overdrive level (dB)
-    std::array<float*, kFxControlCount> fx; // in: ports 182..254, see fx_controls.h
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -264,9 +231,7 @@ public:
   static_assert(kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount);
   static_assert(kOverdriveTonePort == kOverdriveDrivePort + 1);
   static_assert(kOverdriveLevelPort == kOverdriveTonePort + 1);
-  static_assert(offsetof(Ports, fx) == kFxControlFirstPort * sizeof(void*));
-  static_assert(kFxControlFirstPort == kOverdriveLevelPort + 1);
-  static_assert(kPortCount == kFxControlFirstPort + kFxControlCount);
+  static_assert(kPortCount == kOverdriveLevelPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -337,12 +302,6 @@ private:
     LV2_URID preAmpDb;
     LV2_URID postAmpDb;
     LV2_URID outputDb;
-    LV2_URID midiEvent;
-    LV2_URID scene;
-    LV2_URID looperState;
-    LV2_URID looperPosition;
-    LV2_URID expr1;
-    LV2_URID expr2;
   } uris{};
 
   LV2_Atom_Forge forge{};
@@ -393,74 +352,6 @@ private:
   int tubeApplied = PowerTube::kCaptured;
   bool tubeLatched = false;
   int32_t maxBufferSize = 512;
-
-  // ---- Appended racks (fx_controls.h) ----
-  float fxValue(uint32_t port) const noexcept {
-    return portValueOrDefault(ports.fx[port - kFxControlFirstPort], fxControlDefault(port));
-  }
-  static float portValueOrDefault(const float* port, float fallback) noexcept {
-    return port && std::isfinite(*port) ? *port : fallback;
-  }
-  int fxEnumValue(uint32_t port) const noexcept {
-    const FxControl& c = fxControl(port);
-    const float v = std::clamp(fxValue(port), c.minimum, c.maximum);
-    return static_cast<int>(v + 0.5f);
-  }
-  bool fxRackOn(FxRack rack) const noexcept { return appliedFxRacks[static_cast<size_t>(rack)]; }
-  std::array<bool, kFxRackCount> requestedFxRacks{}, appliedFxRacks{};
-  bool fxRacksLatched = false;
-  WahFilter wahFilter;
-  DrivePedal drivePedal;
-  GuitarSynth guitarSynth;
-  PitchShifter pitchPre, pitchPost;
-  MultibandCompressor multibandComp;
-  ModulationFx modulationFx;
-  SpringReverb springReverb;
-  Looper looper;
-  std::array<MicModel, 2 * 4> micModels;   // [cab * 2 + channel]
-  int reverbTypeApplied = 0;
-  int looperState = 0;
-  float looperPortSeen = -1.0f;
-  float looperSentPosition = -1.0f;
-  int looperSentState = -1;
-  // Amp B morph: the pre-model signal copy that Amp B processes in the same domain.
-  std::vector<float> morphScratch;
-  float smoothedMorph = 0.0f;
-  std::vector<float> cabCL, cabCR, cabDL, cabDR;
-  std::array<float, 4> smoothedExtraCabLevel{1.0f, 1.0f, 1.0f, 1.0f};
-  std::array<float, 2> smoothedExtraCabPan{0.0f, 0.0f};
-
-  // ---- Performance control ----
-  ModifierEngine modifiers;
-  std::array<float*, kPortCount> hostControlPort{};
-  std::array<float, kPortCount> modulatedValue{};
-  std::array<bool, kPortCount> modulationRedirected{};
-  std::array<int, kModifierCount> modSources{};
-  std::array<int, kModifierCount> modTargets{};
-  std::array<float, kModifierCount> modRates{};
-  std::array<float, kModifierCount> modDepths{};
-  bool modulationActive = false;
-  std::array<float, 2> exprMidi{};
-  std::array<bool, 2> exprFromMidi{};
-  std::array<float, 2> exprPortSeen{-1.0f, -1.0f};
-  std::array<float, 2> exprSent{-1.0f, -1.0f};
-  float sceneRequested = -1.0f;
-  void parseControlEvents() noexcept;
-  void handleMidi(const uint8_t* bytes, uint32_t size) noexcept;
-  void updateModulation(uint32_t count) noexcept;
-  void restoreModulatedPorts() noexcept;
-  void processBlock(uint32_t sampleCount) noexcept;
-  void processPreFx(float* samples, uint32_t count) noexcept;
-  void processPostFx(float* left, float* right, uint32_t count) noexcept;
-  void publishControlFloat(LV2_URID property, float value) noexcept;
-  void stepLooperFromMidi(int value) noexcept;
-  void initializeFxRacks(double rate) noexcept;
-  void runMorphedAmp(float* samples, size_t count, double domainRate) noexcept;
-  void publishPerformanceState() noexcept;
-  float expressionValue(size_t index) noexcept;
-  void refreshModulationTargets() noexcept;
-  void processExtraCab(size_t stage, float* left, float* right, uint32_t count, int norm,
-                       bool consoleOn, bool micOn, float* mixL, float* mixR) noexcept;
 
   // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).
   // Front end: 2-pole×2 lowpass then decimate to ~12 kHz (kills harmonics →
@@ -543,12 +434,10 @@ private:
   std::array<std::vector<float>, kStageCount> osScratch2;  // domain buffer B (ping-pong)
   std::vector<float> osChain;
   uint64_t osTopologySignature = ~uint64_t{0};
-  static constexpr uint64_t kTopologyHashSeed = 1469598103934665603ull;
 
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
-  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2,
-                                            kOsTrue8, kOsLegacy2, kOsLegacy2};
+  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2};
   // Latest port modes requested by the host. osApplied changes only when the
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
@@ -594,7 +483,7 @@ private:
   // fade-in path as a model swap, so flipping a stage on/off never puts a
   // waveform discontinuity on the output. appliedEnabled is what process()
   // actually runs; port changes only land at the fade's zero crossing.
-  std::array<bool, kStageCount> appliedEnabled{true, true, true, false, true, false, false};
+  std::array<bool, kStageCount> appliedEnabled{true, true, true, false};
   bool enabledLatched = false;
   std::array<bool, kRackCount> requestedRacks{}, appliedRacks{};
   bool racksLatched = false;
@@ -620,9 +509,8 @@ private:
 
   int stageOversample(size_t stage) const {
     // stage 0 = pedal, 1 = amp (2 = cab: follows amp in process()).
-    // Cab2/Cab3/Cab4 run parallel to the cab at the base rate (Legacy
-    // dilation); AmpB rides the amp's domain.
-    if (isSessionRateCabStage(static_cast<Stage>(stage))) return kOsLegacy2;
+    // Cab2 runs parallel to the cab at the base rate (Legacy dilation).
+    if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;
     const float* port = stage == 0 ? ports.pedal_oversample
                                     : ports.amp_oversample;
     if (!port) return kOsTrue8;     // unconnected host port: the TTL default
@@ -633,7 +521,7 @@ private:
   // decoder maps legacy values to True 2x), so that value is reserved for
   // the internal "session rate" request of Cab B and of a parallel Cab A.
   static int normalizeLoadMode(Stage stage, int mode) {
-    if (isSessionRateCabStage(stage)) return kOsLegacy2;
+    if (stage == Stage::Cab2) return kOsLegacy2;
     if (stage == Stage::Cab && mode == kOsLegacy2) return kOsLegacy2;
     return decodeOversample(static_cast<float>(mode));
   }
@@ -795,10 +683,6 @@ private:
   bool cabAlignActive = false;
   static constexpr size_t stageIndex(Stage stage) {
     return static_cast<size_t>(stage);
-  }
-  // Stages whose models must be re-created when an oversample mode changes.
-  static constexpr bool stageFollowsOversample(size_t stage) {
-    return stage < kSerialStageCount || stage == stageIndex(Stage::AmpB);
   }
 };
 } // namespace NAMRig

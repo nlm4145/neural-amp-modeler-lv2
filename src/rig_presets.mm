@@ -11,8 +11,6 @@
 #include "pin_eq.h"
 #include "power_tube_controls.h"
 #include "rack_controls.h"
-#include "fx_controls.h"
-#include <algorithm>
 #include "rig_control_metadata.h"
 #include "speaker_dynamics.h"
 #include "rig_ui_state.h"
@@ -114,9 +112,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 }
 
 @implementation RigPreset {
-  std::array<RigStagePreset, NAMRig::kRigStageCount> _stages;
-  std::array<std::unordered_map<uint32_t, float>, NAMRig::kSceneCount> _scenes;
-  int _scene;
+  std::array<RigStagePreset, 4> _stages;
   std::unordered_map<uint32_t, float> _controls;
 }
 
@@ -150,9 +146,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p.name = @"Default Rig";
   p.speakerProfile = 0.0f;
 
-  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
-    p->_stages[s].role = NAMRig::kRigStageRoles[s];
-    p->_stages[s].enabled = NAMRig::kRigStageEnabledDefaults[s];
+  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
+  for (size_t s = 0; s < 4; ++s) {
+    p->_stages[s].role = roles[s];
+    p->_stages[s].enabled = (s < 3);
     p->_stages[s].path.clear();
     p->_stages[s].imageURL.clear();
     p->_stages[s].toneId = 0;
@@ -165,9 +162,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     p->_controls[kRigKnobPorts[k]] = kRigKnobDefaults[k];
   }
-  for (uint32_t i = 0; i < NAMRig::kFxControlCount; ++i)
-    p->_controls[NAMRig::kFxControlFirstPort + i] = NAMRig::kFxControls[i].defaultValue;
-  p->_scene = 0;
 
   // Toggles & modes:
   p->_controls[7] = 1.0f;   // pedal_enabled
@@ -216,9 +210,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     preset.slotPresets = [NSMutableDictionary dictionary];
   }
 
-  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
-    preset->_stages[s].role = NAMRig::kRigStageRoles[s];
-    preset->_stages[s].enabled = NAMRig::kRigStageEnabledDefaults[s];
+  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
+  for (size_t s = 0; s < 4; ++s) {
+    preset->_stages[s].role = roles[s];
+    preset->_stages[s].enabled = (s < 3);
     preset->_stages[s].path.clear();
     preset->_stages[s].imageURL.clear();
     preset->_stages[s].toneId = 0;
@@ -230,11 +225,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   NSArray* stagesArray = root[@"stages"];
   if ([stagesArray isKindOfClass:[NSArray class]]) {
-    for (size_t s = 0; s < std::min((size_t)stagesArray.count, NAMRig::kRigStageCount); ++s) {
+    for (size_t s = 0; s < std::min((size_t)stagesArray.count, (size_t)4); ++s) {
       NSDictionary* st = stagesArray[s];
       if (![st isKindOfClass:[NSDictionary class]]) continue;
-      preset->_stages[s].enabled = st[@"enabled"] ? [st[@"enabled"] boolValue]
-                                                   : NAMRig::kRigStageEnabledDefaults[s];
+      preset->_stages[s].enabled = st[@"enabled"] ? [st[@"enabled"] boolValue] : (s < 3);
       if (st[@"path"]) preset->_stages[s].path = [st[@"path"] UTF8String];
       if (st[@"imageURL"]) preset->_stages[s].imageURL = [st[@"imageURL"] UTF8String];
       if (st[@"toneId"]) preset->_stages[s].toneId = [st[@"toneId"] longValue];
@@ -267,9 +261,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   // Presets saved before graph pins existed recall with no pins placed.
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
-  // Presets saved before the appended racks existed recall them at their defaults.
-  for (uint32_t i = 0; i < NAMRig::kFxControlCount; ++i)
-    preset->_controls[NAMRig::kFxControlFirstPort + i] = NAMRig::kFxControls[i].defaultValue;
   NSDictionary* portsDict = root[@"ports"];
   if ([portsDict isKindOfClass:[NSDictionary class]]) {
     for (NSString* key in portsDict) {
@@ -290,28 +281,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       }
     }
   }
-
-  // Scenes: eight full control snapshots; older presets seed every scene from
-  // the main controls so switching scenes keeps the sound.
-  preset->_scene = 0;
-  if (root[@"scene"]) preset->_scene = std::clamp((int)[root[@"scene"] integerValue], 0, (int)NAMRig::kSceneCount - 1);
-  for (auto& sc : preset->_scenes) sc.clear();
-  NSArray* scenesArray = root[@"scenes"];
-  if ([scenesArray isKindOfClass:[NSArray class]]) {
-    for (size_t i = 0; i < std::min((size_t)scenesArray.count, (size_t)NAMRig::kSceneCount); ++i) {
-      NSDictionary* sc = scenesArray[i];
-      if (![sc isKindOfClass:[NSDictionary class]]) continue;
-      for (NSString* key in sc) {
-        if (![key isKindOfClass:[NSString class]]) continue;
-        id v = sc[key];
-        if (![v respondsToSelector:@selector(floatValue)]) continue;
-        preset->_scenes[i][(uint32_t)[key longLongValue]] = [v floatValue];
-      }
-    }
-  }
-  for (auto& sc : preset->_scenes)
-    if (sc.empty()) sc = preset->_controls;
-  preset->_controls[NAMRig::kScenePort] = static_cast<float>(preset->_scene);
 
   // Controls win over the stale stage field in older Windows captures.
   const float savedNorm = preset->_controls.count(24) ? preset->_controls[24]
@@ -352,8 +321,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   root[@"created"] = [df stringFromDate:[NSDate date]];
   root[@"speaker_profile"] = @(self.speakerProfile);
 
-  NSMutableArray* stagesList = [NSMutableArray arrayWithCapacity:NAMRig::kRigStageCount];
-  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
+  NSMutableArray* stagesList = [NSMutableArray arrayWithCapacity:4];
+  for (size_t s = 0; s < 4; ++s) {
     NSMutableDictionary* st = [NSMutableDictionary dictionary];
     st[@"role"] = [NSString stringWithUTF8String:_stages[s].role.c_str()];
     st[@"enabled"] = @(_stages[s].enabled);
@@ -389,15 +358,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
   root[@"ports"] = portsDict;
   root[@"params"] = paramsDict;
-  root[@"scene"] = @(_scene);
-  NSMutableArray* scenesList = [NSMutableArray arrayWithCapacity:NAMRig::kSceneCount];
-  for (const auto& sc : _scenes) {
-    NSMutableDictionary* dict = [NSMutableDictionary dictionaryWithCapacity:sc.size()];
-    for (const auto& pair : sc)
-      dict[[NSString stringWithFormat:@"%u", pair.first]] = @(pair.second);
-    [scenesList addObject:dict];
-  }
-  root[@"scenes"] = scenesList;
 
   NSData* data = [NSJSONSerialization dataWithJSONObject:root options:NSJSONWritingPrettyPrinted error:error];
   if (!data) return NO;
@@ -411,8 +371,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   RigPreset* p = [[RigPreset alloc] init];
   p.name = name ?: @"Untitled";
 
-  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
-    p->_stages[s].role = NAMRig::kRigStageRoles[s];
+  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
+  for (size_t s = 0; s < 4; ++s) {
+    p->_stages[s].role = roles[s];
     p->_stages[s].path = state->selectedPaths[s];
     p->_stages[s].imageURL = state->selectedImageURLs[s];
     p->_stages[s].toneId = state->selectedToneIds[s];
@@ -427,10 +388,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     }
     if (state->powerButtons[s]) {
       p->_stages[s].enabled = (state->powerButtons[s].state == NSControlStateValueOn);
-    } else if (s == 4 && state->powerButtons[1]) {
-      p->_stages[s].enabled = (state->powerButtons[1].state == NSControlStateValueOn);
     } else {
-      p->_stages[s].enabled = NAMRig::kRigStageEnabledDefaults[s];
+      p->_stages[s].enabled = (s < 3);
     }
   }
 
@@ -459,13 +418,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kPowerTubeCharacterPort] = state->powerTubeCharacter;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = state->pinEqControls[i];
-  // Appended controls without a knob (racks, enumerations, toggles) come from the mirror.
-  for (uint32_t i = 0; i < NAMRig::kFxControlCount; ++i) {
-    const uint32_t port = NAMRig::kFxControlFirstPort + i;
-    bool knob = false;
-    for (size_t k = 0; k < kRigKnobCount && !knob; ++k) knob = kRigKnobPorts[k] == port;
-    if (!knob) p->_controls[port] = state->fxControls[i];
-  }
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -494,8 +446,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[8] = p->_stages[1].enabled ? 1.0f : 0.0f;
   p->_controls[9] = p->_stages[2].enabled ? 1.0f : 0.0f;
   p->_controls[47] = p->_stages[3].enabled ? 1.0f : 0.0f;
-  p->_controls[NAMRig::kCab3EnabledPort] = p->_stages[5].enabled ? 1.0f : 0.0f;
-  p->_controls[NAMRig::kCab4EnabledPort] = p->_stages[6].enabled ? 1.0f : 0.0f;
   p->_controls[59] = state->cab2PolarityInverted ? 1.0f : 0.0f;
   p->_controls[20] = p->_stages[0].oversample;
   p->_controls[21] = p->_stages[1].oversample;
@@ -514,16 +464,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     }
   }
 
-  // Scenes: the live controls are the active scene.
-  p->_scene = std::clamp(state->currentScene, 0, (int)NAMRig::kSceneCount - 1);
-  p->_scenes = state->sceneControls;
-  std::unordered_map<uint32_t, float> live = p->_controls;
-  live.erase(NAMRig::kScenePort);
-  p->_scenes[(size_t)p->_scene] = live;
-  for (auto& sc : p->_scenes)
-    if (sc.empty()) sc = live;
-  p->_controls[NAMRig::kScenePort] = static_cast<float>(p->_scene);
-
   return p;
 }
 
@@ -540,31 +480,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   state->updateControl(9, _stages[2].enabled ? 1.0f : 0.0f);
   state->sendControl(47, _stages[3].enabled ? 1.0f : 0.0f);
   state->updateControl(47, _stages[3].enabled ? 1.0f : 0.0f);
-  state->sendControl(NAMRig::kCab3EnabledPort, _stages[5].enabled ? 1.0f : 0.0f);
-  state->updateControl(NAMRig::kCab3EnabledPort, _stages[5].enabled ? 1.0f : 0.0f);
-  state->sendControl(NAMRig::kCab4EnabledPort, _stages[6].enabled ? 1.0f : 0.0f);
-  state->updateControl(NAMRig::kCab4EnabledPort, _stages[6].enabled ? 1.0f : 0.0f);
-  // Scenes are installed first so the knob/enum recall below lands in the right slot.
-  state->applyingScene = true;
-  state->sceneControls = _scenes;
-  state->currentScene = std::clamp(_scene, 0, (int)NAMRig::kSceneCount - 1);
-  state->applyingScene = false;
-  state->fxControls[NAMRig::kScenePort - NAMRig::kFxControlFirstPort] = static_cast<float>(state->currentScene);
-  state->sendControl(NAMRig::kScenePort, static_cast<float>(state->currentScene));
-  state->refreshSceneButtons();
-  // Appended racks, enumerations and toggles recall before the knobs; a
-  // missing value means the preset predates the control and takes its default.
-  for (uint32_t i = 0; i < NAMRig::kFxControlCount; ++i) {
-    const uint32_t port = NAMRig::kFxControlFirstPort + i;
-    if (port == NAMRig::kScenePort || port == NAMRig::kCab3EnabledPort || port == NAMRig::kCab4EnabledPort) continue;
-    bool knob = false;
-    for (size_t k = 0; k < kRigKnobCount && !knob; ++k) knob = kRigKnobPorts[k] == port;
-    if (knob) continue;
-    auto it = _controls.find(port);
-    const float value = it != _controls.end() ? it->second : NAMRig::kFxControls[i].defaultValue;
-    state->sendControl(port, value);
-    state->updateControl(port, value);
-  }
   // Always recall every rack toggle so legacy presets cannot leave stale bypasses.
   for (size_t i = 0; i < NAMRig::kRackCount; ++i) {
     const uint32_t port = NAMRig::kRackControlFirstPort + i;
@@ -624,7 +539,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   // 4. Models: populate available stage selections and load selected models
-  for (size_t s = 0; s < NAMRig::kRigStageCount; ++s) {
+  for (size_t s = 0; s < 4; ++s) {
     const std::string& path = _stages[s].path;
     const std::string& img = _stages[s].imageURL;
     const long toneId = _stages[s].toneId;

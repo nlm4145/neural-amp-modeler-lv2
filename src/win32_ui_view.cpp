@@ -121,38 +121,6 @@ std::string formatTubeType(float v) {
   }
 }
 
-std::string formatFxEnum(uint32_t port, float v) {
-  const NAMRig::FxControl& c = NAMRig::fxControl(port);
-  const int idx = static_cast<int>(std::max(c.minimum, std::min(c.maximum, v)) + 0.5f);
-  if (c.labels && idx >= 0 && idx < c.labelCount) return c.labels[idx];
-  return std::to_string(idx);
-}
-
-std::string formatFxValue(uint32_t port, float v) {
-  const NAMRig::FxControl& c = NAMRig::fxControl(port);
-  const std::string unit = c.unit;
-  char buf[48];
-  if (unit == "dB") {
-    if (c.minimum <= -24.0f && v <= -23.95f) return "OFF";
-    snprintf(buf, sizeof(buf), "%+.1f dB", v);
-  } else if (unit == "%") {
-    if (c.minimum == 0.0f && c.defaultValue == 0.0f && v < 0.5f) return "OFF";
-    snprintf(buf, sizeof(buf), c.minimum < 0.0f ? "%+.0f%%" : "%.0f%%", v);
-  } else if (unit == "Hz") {
-    snprintf(buf, sizeof(buf), v < 10.0f ? "%.2f Hz" : "%.0f Hz", v);
-  } else if (unit == "st") {
-    snprintf(buf, sizeof(buf), "%+.0f st", v);
-  } else if (unit == "ct") {
-    snprintf(buf, sizeof(buf), "%+.0f ct", v);
-  } else if (port == NAMRig::kMidiChannelPort) {
-    if (v < 0.5f) return "OMNI";
-    snprintf(buf, sizeof(buf), "%.0f", v);
-  } else {
-    snprintf(buf, sizeof(buf), "CC %.0f", v);
-  }
-  return buf;
-}
-
 std::string formatNormalization(float v) {
   return NAMRig::decodeIrNormalization(v) == 1 ? "Peak" : "Loudness";
 }
@@ -207,15 +175,6 @@ void Win32UIView::initLayout() {
     c.formatValue = fmt;
     controls_[port] = c;
     controlOrder_.push_back(port);
-  };
-  auto addPaged = [&](int page, uint32_t port, ControlType type, int x, int y, int w, int h,
-                      const std::string& label) {
-    const NAMRig::FxControl& c = NAMRig::fxControl(port);
-    std::function<std::string(float)> fmt;
-    if (type == ControlType::Dropdown) fmt = [port](float v) { return formatFxEnum(port, v); };
-    else if (type == ControlType::Knob) fmt = [port](float v) { return formatFxValue(port, v); };
-    addControl(port, type, x, y, w, h, label, c.minimum, c.maximum, c.defaultValue, c.unit, fmt);
-    controls_[port].page = page;
   };
 
   // Header Bar controls (y = 15..55)
@@ -288,82 +247,6 @@ void Win32UIView::initLayout() {
   addControl(57, ControlType::Knob, 750, 565, 55, 52, "DAMP", 0.0f, 100.0f, 50.0f, "%", formatPercent);
   addControl(58, ControlType::Knob, 815, 565, 55, 52, "PREDLY", 0.0f, 100.0f, 10.0f, "ms", formatMs);
   addControl(54, ControlType::Knob, 880, 565, 55, 52, "REV MIX", 0.0f, 100.0f, 0.0f, "%", formatPercent);
-
-  // Drive circuit and reverb algorithm selectors live beside their racks.
-  using namespace NAMRig;
-  addPaged(0, kOdTypePort, ControlType::Dropdown, 40, 310, 225, 24, "DRIVE");
-  addPaged(0, kReverbTypePort, ControlType::Dropdown, 960, 578, 190, 24, "REVERB");
-
-  // Page 1: scenes, MIDI, expression and the four modifiers.
-  addPaged(1, kScenePort, ControlType::Dropdown, 20, 822, 170, 24, "SCENE");
-  addPaged(1, kMidiChannelPort, ControlType::Knob, 200, 815, 55, 52, "MIDI CH");
-  addPaged(1, kExpr1CcPort, ControlType::Knob, 262, 815, 55, 52, "EXPR1 CC");
-  addPaged(1, kExpr2CcPort, ControlType::Knob, 324, 815, 55, 52, "EXPR2 CC");
-  addPaged(1, kExpr1ValuePort, ControlType::Knob, 386, 815, 55, 52, "EXPR 1");
-  addPaged(1, kExpr2ValuePort, ControlType::Knob, 448, 815, 55, 52, "EXPR 2");
-  addPaged(1, kLooperCcPort, ControlType::Knob, 510, 815, 55, 52, "LOOP CC");
-  for (uint32_t slot = 0; slot < kModifierCount; ++slot) {
-    const int baseX = 20 + static_cast<int>(slot) * 290;
-    const std::string n = std::to_string(slot + 1);
-    addPaged(1, modifierPort(slot, 0), ControlType::Dropdown, baseX, 890, 140, 24, "M" + n + " TARGET");
-    addPaged(1, modifierPort(slot, 1), ControlType::Dropdown, baseX + 145, 890, 135, 24, "SOURCE");
-    addPaged(1, modifierPort(slot, 2), ControlType::Knob, baseX + 50, 930, 55, 52, "RATE");
-    addPaged(1, modifierPort(slot, 3), ControlType::Knob, baseX + 150, 930, 55, 52, "DEPTH");
-  }
-
-  // Page 2: wah, modulation, pitch.
-  addPaged(2, kWahEnabledPort, ControlType::Toggle, 20, 822, 60, 24, "WAH");
-  addPaged(2, kWahModePort, ControlType::Dropdown, 85, 822, 200, 24, "MODE");
-  addPaged(2, kWahPositionPort, ControlType::Knob, 30, 870, 55, 52, "POSITION");
-  addPaged(2, kWahResonancePort, ControlType::Knob, 95, 870, 55, 52, "RESO");
-  addPaged(2, kWahSensitivityPort, ControlType::Knob, 160, 870, 55, 52, "SENS");
-  addPaged(2, kModFxEnabledPort, ControlType::Toggle, 320, 822, 60, 24, "MOD");
-  addPaged(2, kModFxTypePort, ControlType::Dropdown, 385, 822, 200, 24, "TYPE");
-  addPaged(2, kModFxRatePort, ControlType::Knob, 330, 870, 55, 52, "RATE");
-  addPaged(2, kModFxDepthPort, ControlType::Knob, 395, 870, 55, 52, "DEPTH");
-  addPaged(2, kModFxFeedbackPort, ControlType::Knob, 460, 870, 55, 52, "FDBK");
-  addPaged(2, kModFxMixPort, ControlType::Knob, 525, 870, 55, 52, "MIX");
-  addPaged(2, kPitchEnabledPort, ControlType::Toggle, 640, 822, 60, 24, "PITCH");
-  addPaged(2, kPitchModePort, ControlType::Dropdown, 705, 822, 150, 24, "MODE");
-  addPaged(2, kPitchPostPort, ControlType::Dropdown, 860, 822, 150, 24, "POS");
-  addPaged(2, kPitchShiftPort, ControlType::Knob, 650, 870, 55, 52, "SHIFT");
-  addPaged(2, kPitchShift2Port, ControlType::Knob, 715, 870, 55, 52, "SHIFT 2");
-  addPaged(2, kPitchDetunePort, ControlType::Knob, 780, 870, 55, 52, "DETUNE");
-  addPaged(2, kPitchMixPort, ControlType::Knob, 845, 870, 55, 52, "MIX");
-  addPaged(2, kPitchWhammyPort, ControlType::Knob, 910, 870, 55, 52, "WHAMMY");
-
-  // Page 3: multiband compressor, synth, looper.
-  addPaged(3, kMbcEnabledPort, ControlType::Toggle, 20, 822, 70, 24, "MULTI");
-  addPaged(3, kMbcLowXoverPort, ControlType::Knob, 30, 870, 55, 52, "LOW X");
-  addPaged(3, kMbcHighXoverPort, ControlType::Knob, 95, 870, 55, 52, "HIGH X");
-  addPaged(3, kMbcLowPort, ControlType::Knob, 160, 870, 55, 52, "LOW");
-  addPaged(3, kMbcMidPort, ControlType::Knob, 225, 870, 55, 52, "MID");
-  addPaged(3, kMbcHighPort, ControlType::Knob, 290, 870, 55, 52, "HIGH");
-  addPaged(3, kSynthEnabledPort, ControlType::Toggle, 400, 822, 70, 24, "SYNTH");
-  addPaged(3, kSynthWavePort, ControlType::Dropdown, 475, 822, 150, 24, "WAVE");
-  addPaged(3, kSynthMixPort, ControlType::Knob, 410, 870, 55, 52, "MIX");
-  addPaged(3, kSynthFilterPort, ControlType::Knob, 475, 870, 55, 52, "FILTER");
-  addPaged(3, kLooperEnabledPort, ControlType::Toggle, 680, 822, 70, 24, "LOOPER");
-  addPaged(3, kLooperStatePort, ControlType::Dropdown, 755, 822, 150, 24, "STATE");
-  addPaged(3, kLooperLevelPort, ControlType::Knob, 690, 870, 55, 52, "LEVEL");
-
-  // Page 4: Cabs C/D and the mic models.
-  addPaged(4, kCab3EnabledPort, ControlType::Toggle, 565, 840, 60, 24, "C ON");
-  addPaged(4, kCab4EnabledPort, ControlType::Toggle, 565, 880, 60, 24, "D ON");
-  addPaged(4, kCab3LevelPort, ControlType::Knob, 30, 925, 55, 52, "C LVL");
-  addPaged(4, kCab3PanPort, ControlType::Knob, 95, 925, 55, 52, "C PAN");
-  addPaged(4, kCab4LevelPort, ControlType::Knob, 160, 925, 55, 52, "D LVL");
-  addPaged(4, kCab4PanPort, ControlType::Knob, 225, 925, 55, 52, "D PAN");
-  addPaged(4, kMicEnabledPort, ControlType::Toggle, 660, 822, 60, 24, "MIC");
-  const uint32_t micPorts[8] = {kCabMicDistancePort, kCabMicPositionPort, kCab2MicDistancePort,
-                                kCab2MicPositionPort, kCab3MicDistancePort, kCab3MicPositionPort,
-                                kCab4MicDistancePort, kCab4MicPositionPort};
-  const char* micLabels[8] = {"A DIST", "A POS", "B DIST", "B POS", "C DIST", "C POS", "D DIST", "D POS"};
-  for (int i = 0; i < 8; ++i)
-    addPaged(4, micPorts[i], ControlType::Knob, 330 + i * 65, 925, 55, 52, micLabels[i]);
-
-  // Page 5: capture morph.
-  addPaged(5, kAmpMorphPort, ControlType::Knob, 600, 835, 60, 55, "MORPH");
 }
 
 HWND Win32UIView::create(HWND parent, int x, int y, int width, int height) {
@@ -513,8 +396,6 @@ void Win32UIView::setControlValue(uint32_t port, float value, bool notify) {
     if (notify && onControlChanged_) {
       onControlChanged_(port, it->second.currentValue);
     }
-    if (port == NAMRig::kScenePort)
-      switchScene(static_cast<int>(it->second.currentValue + 0.5f));
   }
 }
 
@@ -575,7 +456,7 @@ void Win32UIView::setMeterLevel(MeterStage stage, float db) {
 }
 
 void Win32UIView::setStagePath(uint32_t stage, const std::string& path) {
-  if (stage < stagePaths_.size()) {
+  if (stage < 4) {
     stagePaths_[stage] = path;
 #ifdef _WIN32
     if (hwnd_) {
@@ -807,62 +688,9 @@ void Win32UIView::paint(HDC hdc) {
       g.DrawString(L"X", -1, &labelFont, Gdiplus::PointF(x + w - 28.0f, y + 225.0f), &mutedBrush);
     }
 
-    // Lower band: page tabs and the active page's file rows.
-    {
-      g.DrawLine(&headerBorder, 0, kPageTabsY - 6, width, kPageTabsY - 6);
-      const wchar_t* pageTitles[kPageCount] = {L"SCENES & MODIFIERS", L"WAH · MOD · PITCH",
-                                               L"MULTIBAND · SYNTH · LOOPER", L"CABS C/D & MIC",
-                                               L"CAPTURE MORPH"};
-      for (int i = 0; i < kPageCount; ++i) {
-        Gdiplus::Rect tab(20 + i * 232, kPageTabsY, 224, 24);
-        const bool active = currentPage_ == i + 1;
-        Gdiplus::SolidBrush tabBrush(active ? kKnobRim : kCardBgColor);
-        g.FillRectangle(&tabBrush, tab);
-        g.DrawRectangle(&headerBorder, tab);
-        Gdiplus::RectF tr(tab.X + 6.0f, tab.Y + 5.0f, tab.Width - 12.0f, 16.0f);
-        Gdiplus::StringFormat sf;
-        sf.SetAlignment(Gdiplus::StringAlignmentCenter);
-        g.DrawString(pageTitles[i], -1, &labelFont, tr, &sf, active ? &brightBrush : &mutedBrush);
-      }
-      auto drawFileRow = [&](int x, int y, int w, const wchar_t* title, uint32_t stageIdx) {
-        g.DrawString(title, -1, &smallFont, Gdiplus::PointF(x + 0.0f, y + 0.0f), &orangeBrush);
-        Gdiplus::Rect fileBox(x, y + 18, w - 100, 24);
-        g.FillRectangle(&tunerBg, fileBox);
-        g.DrawRectangle(&headerBorder, fileBox);
-        std::string fname = getFileNameOnly(stagePaths_[stageIdx]);
-        int flen = MultiByteToWideChar(CP_UTF8, 0, fname.c_str(), -1, NULL, 0);
-        if (flen > 0) {
-          std::wstring wfn(flen, L'\0');
-          MultiByteToWideChar(CP_UTF8, 0, fname.c_str(), -1, &wfn[0], flen);
-          Gdiplus::RectF fnF(x + 4.0f, y + 23.0f, w - 110.0f, 18.0f);
-          g.DrawString(wfn.c_str(), -1, &labelFont, fnF, NULL, &mutedBrush);
-        }
-        Gdiplus::Rect loadBtn(x + w - 82, y + 18, 42, 24);
-        g.FillRectangle(&btnBg, loadBtn);
-        g.DrawRectangle(&headerBorder, loadBtn);
-        g.DrawString(L"Load", -1, &labelFont, Gdiplus::PointF(x + w - 74.0f, y + 23.0f), &brightBrush);
-        Gdiplus::Rect clearBtn(x + w - 36, y + 18, 26, 24);
-        g.FillRectangle(&btnBg, clearBtn);
-        g.DrawRectangle(&headerBorder, clearBtn);
-        g.DrawString(L"X", -1, &labelFont, Gdiplus::PointF(x + w - 28.0f, y + 23.0f), &mutedBrush);
-      };
-      if (currentPage_ == 4) {
-        drawFileRow(20, 822, 540, L"CAB C (WAV IR)", 5);
-        drawFileRow(20, 862, 540, L"CAB D (WAV IR)", 6);
-      } else if (currentPage_ == 5) {
-        drawFileRow(20, 822, 540, L"AMP B CAPTURE (MORPH PARTNER)", 4);
-        g.DrawString(L"Morph 0% is exact Amp A; 100% is Amp B. Both run inside the amp's oversampled domain.",
-                     -1, &smallFont, Gdiplus::PointF(20.0f, 900.0f), &mutedBrush);
-      } else if (currentPage_ == 1) {
-        g.DrawString(L"Program Change 0-7 selects a scene. Each modifier adds its source to one target.",
-                     -1, &smallFont, Gdiplus::PointF(20.0f, 1000.0f), &mutedBrush);
-      }
-    }
-
     // 3. Render all UI Controls
     for (uint32_t port : controlOrder_) {
       const auto& c = controls_[port];
-      if (!controlVisible(c)) continue;
       const RECT& r = c.rect;
 
       if (c.type == ControlType::Knob) {
@@ -1004,25 +832,8 @@ void Win32UIView::onMouseDown(int x, int y, bool isRight) {
   if (x >= 488 && x <= 530 && y >= 632 && y <= 656) { browseForFile(3, true); return; }
   if (x >= 534 && x <= 560 && y >= 632 && y <= 656) { setStagePath(3, ""); return; }
 
-  // Page tabs
-  if (y >= kPageTabsY && y <= kPageTabsY + 24) {
-    for (int i = 0; i < kPageCount; ++i)
-      if (x >= 20 + i * 232 && x <= 244 + i * 232) { setPage(i + 1); return; }
-  }
-  // Paged file rows: Load (x 478..520) / Clear (x 524..550) at the row's box height.
-  if (currentPage_ == 4) {
-    if (x >= 478 && x <= 520 && y >= 840 && y <= 864) { browseForFile(5, true); return; }
-    if (x >= 524 && x <= 550 && y >= 840 && y <= 864) { setStagePath(5, ""); return; }
-    if (x >= 478 && x <= 520 && y >= 880 && y <= 904) { browseForFile(6, true); return; }
-    if (x >= 524 && x <= 550 && y >= 880 && y <= 904) { setStagePath(6, ""); return; }
-  } else if (currentPage_ == 5) {
-    if (x >= 478 && x <= 520 && y >= 840 && y <= 864) { browseForFile(4, false); return; }
-    if (x >= 524 && x <= 550 && y >= 840 && y <= 864) { setStagePath(4, ""); return; }
-  }
-
   for (auto& pair : controls_) {
     auto& c = pair.second;
-    if (!controlVisible(c)) continue;
     if (x >= c.rect.left && x <= c.rect.right && y >= c.rect.top && y <= c.rect.bottom) {
       if (c.type == ControlType::Knob) {
         activeDragControl_ = &c;
@@ -1051,8 +862,6 @@ void Win32UIView::onMouseDown(int x, int y, bool isRight) {
         } else if (c.port == 24) {
           const float next = NAMRig::decodeIrNormalization(c.currentValue) == 1 ? 2.0f : 1.0f;
           setControlValue(c.port, next, true);
-        } else if (NAMRig::isFxControlPort(c.port)) {
-          cycleDropdown(c, isRight ? -1 : 1);
         }
         return;
       }
@@ -1060,42 +869,6 @@ void Win32UIView::onMouseDown(int x, int y, bool isRight) {
   }
 #else
   (void)x; (void)y; (void)isRight;
-#endif
-}
-
-void Win32UIView::cycleDropdown(UIControl& c, int direction) {
-  const NAMRig::FxControl& spec = NAMRig::fxControl(c.port);
-  const int count = spec.labels ? static_cast<int>(spec.labelCount)
-                                : static_cast<int>(spec.maximum - spec.minimum) + 1;
-  if (count <= 0) return;
-  int idx = static_cast<int>(c.currentValue - spec.minimum + 0.5f) + direction;
-  idx = ((idx % count) + count) % count;
-  setControlValue(c.port, spec.minimum + static_cast<float>(idx), true);
-}
-
-void Win32UIView::setPage(int page) {
-  if (page < 1 || page > kPageCount || page == currentPage_) return;
-  currentPage_ = page;
-#ifdef _WIN32
-  if (hwnd_) InvalidateRect(hwnd_, NULL, FALSE);
-#endif
-}
-
-void Win32UIView::switchScene(int scene) {
-  if (applyingScene_ || scene < 0 || scene >= static_cast<int>(NAMRig::kSceneCount)) return;
-  std::unordered_map<uint32_t, float> live;
-  for (const auto& pair : controls_)
-    if (pair.first != NAMRig::kScenePort) live[pair.first] = pair.second.currentValue;
-  sceneControls_[static_cast<size_t>(currentScene_)] = live;
-  if (scene == currentScene_) return;
-  auto& target = sceneControls_[static_cast<size_t>(scene)];
-  if (target.empty()) target = live;
-  currentScene_ = scene;
-  applyingScene_ = true;
-  for (const auto& pair : target) setControlValue(pair.first, pair.second, true);
-  applyingScene_ = false;
-#ifdef _WIN32
-  if (hwnd_) InvalidateRect(hwnd_, NULL, FALSE);
 #endif
 }
 
@@ -1136,16 +909,11 @@ void Win32UIView::onMouseWheel(short delta) {
 
   for (auto& pair : controls_) {
     auto& c = pair.second;
-    if (!controlVisible(c)) continue;
     if (pt.x >= c.rect.left && pt.x <= c.rect.right && pt.y >= c.rect.top && pt.y <= c.rect.bottom) {
       if (c.type == ControlType::Knob) {
         float step = (c.maxValue - c.minValue) * 0.02f;
         float newVal = c.currentValue + (delta > 0 ? step : -step);
         setControlValue(c.port, newVal, true);
-        return;
-      }
-      if (c.type == ControlType::Dropdown && NAMRig::isFxControlPort(c.port)) {
-        cycleDropdown(c, delta > 0 ? 1 : -1);
         return;
       }
     }
@@ -1155,7 +923,6 @@ void Win32UIView::onMouseWheel(short delta) {
 void Win32UIView::onDoubleClick(int x, int y) {
   for (auto& pair : controls_) {
     auto& c = pair.second;
-    if (!controlVisible(c)) continue;
     if (x >= c.rect.left && x <= c.rect.right && y >= c.rect.top && y <= c.rect.bottom) {
       if (c.type == ControlType::Knob) {
         setControlValue(c.port, c.defaultValue, true);
@@ -1293,16 +1060,10 @@ void Win32UIView::browseForFile(uint32_t stage, bool isWav) {
 
 void Win32UIView::applyPreset(const RigPreset& preset) {
   PresetManager::instance().setCurrentPresetName(preset.name);
-  // Scenes install first; the control recall below is the active scene.
-  applyingScene_ = true;
-  sceneControls_ = preset.scenes;
-  currentScene_ = std::max(0, std::min(static_cast<int>(NAMRig::kSceneCount) - 1, preset.scene));
   for (const auto& pair : preset.controls) {
     setControlValue(pair.first, pair.second, true);
   }
-  setControlValue(NAMRig::kScenePort, static_cast<float>(currentScene_), true);
-  applyingScene_ = false;
-  for (size_t s = 0; s < stagePaths_.size(); ++s) {
+  for (size_t s = 0; s < 4; ++s) {
     if (!preset.stages[s].path.empty()) {
       setStagePath(static_cast<uint32_t>(s), preset.stages[s].path);
     }
@@ -1318,21 +1079,11 @@ RigPreset Win32UIView::capturePreset(const std::string& name) const {
   for (const auto& pair : controls_) {
     p.controls[pair.first] = pair.second.currentValue;
   }
-  for (size_t s = 0; s < stagePaths_.size(); ++s) {
+  for (size_t s = 0; s < 4; ++s) {
     p.stages[s].path = stagePaths_[s];
-    p.stages[s].enabled = NAMRig::kRigStageEnabledDefaults[s];
+    p.stages[s].enabled = (s < 3);
   }
-  p.stages[3].enabled = getControlValue(47) >= 0.5f;
-  p.stages[5].enabled = getControlValue(NAMRig::kCab3EnabledPort) >= 0.5f;
-  p.stages[6].enabled = getControlValue(NAMRig::kCab4EnabledPort) >= 0.5f;
   p.stages[2].irNormalization = p.controls[24];
-  p.scene = currentScene_;
-  p.scenes = sceneControls_;
-  std::unordered_map<uint32_t, float> live = p.controls;
-  live.erase(NAMRig::kScenePort);
-  p.scenes[static_cast<size_t>(p.scene)] = live;
-  for (auto& sc : p.scenes)
-    if (sc.empty()) sc = live;
   return p;
 }
 

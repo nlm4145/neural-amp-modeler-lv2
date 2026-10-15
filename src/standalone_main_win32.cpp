@@ -1,5 +1,4 @@
 #include <windows.h>
-#include <mmsystem.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -26,7 +25,6 @@
 #include <lv2/buf-size/buf-size.h>
 #include <lv2/core/lv2.h>
 #include <lv2/log/log.h>
-#include <lv2/midi/midi.h>
 #include <lv2/options/options.h>
 #include <lv2/patch/patch.h>
 #include <lv2/urid/urid.h>
@@ -161,7 +159,6 @@ class StandaloneApp {
 
     atomSequence_ = uridMap_.map(LV2_ATOM__Sequence);
     eventTransfer_ = uridMap_.map(LV2_ATOM__eventTransfer);
-    midiEvent_ = uridMap_.map(LV2_MIDI__MidiEvent);
     atomInt_ = uridMap_.map(LV2_ATOM__Int);
     atomFloat_ = uridMap_.map(LV2_ATOM__Float);
     atomObject_ = uridMap_.map(LV2_ATOM__Object);
@@ -178,9 +175,6 @@ class StandaloneApp {
     pathURIDs_[1] = uridMap_.map(NAM_RIG_AMP_URI);
     pathURIDs_[2] = uridMap_.map(NAM_RIG_CAB_URI);
     pathURIDs_[3] = uridMap_.map(NAM_RIG_CAB2_URI);
-    pathURIDs_[4] = uridMap_.map(NAM_RIG_AMP2_URI);
-    pathURIDs_[5] = uridMap_.map(NAM_RIG_CAB3_URI);
-    pathURIDs_[6] = uridMap_.map(NAM_RIG_CAB4_URI);
 
     maxFramesOption_ = static_cast<int32_t>(kMaxFrames);
     options_[0] = {LV2_OPTIONS_INSTANCE, 0, maxBlockLength_, sizeof(maxFramesOption_),
@@ -223,9 +217,7 @@ class StandaloneApp {
     NAMRig::bindStandaloneControls(plugin_->ports, {
         {4, controls.subspan(4, 27)}, {32, controls.subspan(32, 51)},
         {NAMRig::kPinEqFirstPort, pinEqControls_},
-        {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)},
-        {NAMRig::kFxControlFirstPort,
-         controls.subspan(NAMRig::kFxControlFirstPort, NAMRig::kFxControlCount)}});
+        {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -260,7 +252,7 @@ class StandaloneApp {
     AppendMenuW(hPresetMenu, MF_STRING, 301, L"Open Presets Folder...");
     AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hPresetMenu, L"Presets");
 
-    RECT wr = {0, 0, NAMRigWin32::kViewWidth, NAMRigWin32::kViewHeight};
+    RECT wr = {0, 0, 1180, 780};
     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, TRUE);
 
     mainWindow_ = CreateWindowExW(
@@ -272,7 +264,7 @@ class StandaloneApp {
     if (!mainWindow_) return false;
 
     uiView_ = std::make_unique<NAMRigWin32::Win32UIView>();
-    uiView_->create(mainWindow_, 0, 0, NAMRigWin32::kViewWidth, NAMRigWin32::kViewHeight);
+    uiView_->create(mainWindow_, 0, 0, 1180, 780);
 
     uiView_->setOnControlChanged([this](uint32_t port, float value) {
       if (port < controls_.size()) {
@@ -285,51 +277,8 @@ class StandaloneApp {
     });
 
     startAudio();
-    startMidi();
     SetTimer(mainWindow_, kTimerId, 33, NULL);
     return true;
-  }
-
-  // ---- MIDI input: every winmm device feeds the plugin's control port ----
-  // MidiInProc runs on the driver's thread and is the only producer of
-  // midiToAudio_; processAudioBlock drains it into the atom sequence.
-  void startMidi() {
-    const UINT devices = midiInGetNumDevs();
-    for (UINT i = 0; i < devices; ++i) {
-      HMIDIIN handle = NULL;
-      if (midiInOpen(&handle, i, reinterpret_cast<DWORD_PTR>(&MidiInProc),
-                     reinterpret_cast<DWORD_PTR>(this), CALLBACK_FUNCTION) != MMSYSERR_NOERROR)
-        continue;
-      midiInStart(handle);
-      midiInputs_.push_back(handle);
-    }
-  }
-
-  void stopMidi() {
-    for (HMIDIIN handle : midiInputs_) {
-      midiInStop(handle);
-      midiInReset(handle);
-      midiInClose(handle);
-    }
-    midiInputs_.clear();
-  }
-
-  static void CALLBACK MidiInProc(HMIDIIN, UINT message, DWORD_PTR instance, DWORD_PTR param1,
-                                  DWORD_PTR) {
-    if (message != MIM_DATA) return;
-    auto* self = reinterpret_cast<StandaloneApp*>(instance);
-    if (!self) return;
-    const uint8_t status = static_cast<uint8_t>(param1 & 0xFFu);
-    if (status >= 0xF0u) return;
-    struct { LV2_Atom atom; uint8_t bytes[4]; } event{};
-    event.atom.type = self->midiEvent_;
-    event.bytes[0] = status;
-    event.bytes[1] = static_cast<uint8_t>((param1 >> 8) & 0x7Fu);
-    event.bytes[2] = static_cast<uint8_t>((param1 >> 16) & 0x7Fu);
-    const uint8_t kind = status & 0xF0u;
-    event.atom.size = (kind == 0xC0u || kind == 0xD0u) ? 2u : 3u;
-    self->midiToAudio_.push(static_cast<uint32_t>(sizeof(LV2_Atom) + event.atom.size),
-                            self->eventTransfer_, &event);
   }
 
   void run() {
@@ -341,7 +290,6 @@ class StandaloneApp {
   }
 
   void stop() {
-    stopMidi();
     audioEngine_.stop();
     worker_.stop();
     saveSettings();
@@ -446,22 +394,18 @@ class StandaloneApp {
     resetSequence(controlBuffer_, sizeof(LV2_Atom_Sequence_Body), true);
     size_t used = sizeof(LV2_Atom_Sequence);
     FixedMessage message;
-    const auto append = [&](MessageQueue& queue) {
-      while (queue.pop(message)) {
-        const size_t eventSize = sizeof(int64_t) + message.size;
-        const size_t padded = lv2_atom_pad_size(static_cast<uint32_t>(eventSize));
-        if (used + padded > controlBuffer_.size()) return;
-        auto* event = reinterpret_cast<LV2_Atom_Event*>(controlBuffer_.data() + used);
-        event->time.frames = 0;
-        std::memcpy(&event->body, message.bytes.data(), message.size);
-        if (padded > eventSize)
-          std::memset(reinterpret_cast<uint8_t*>(event) + eventSize, 0, padded - eventSize);
-        used += padded;
-        sequence->atom.size += static_cast<uint32_t>(padded);
-      }
-    };
-    append(uiToAudio_);
-    append(midiToAudio_);
+    while (uiToAudio_.pop(message)) {
+      const size_t eventSize = sizeof(int64_t) + message.size;
+      const size_t padded = lv2_atom_pad_size(static_cast<uint32_t>(eventSize));
+      if (used + padded > controlBuffer_.size()) break;
+      auto* event = reinterpret_cast<LV2_Atom_Event*>(controlBuffer_.data() + used);
+      event->time.frames = 0;
+      std::memcpy(&event->body, message.bytes.data(), message.size);
+      if (padded > eventSize)
+        std::memset(reinterpret_cast<uint8_t*>(event) + eventSize, 0, padded - eventSize);
+      used += padded;
+      sequence->atom.size += static_cast<uint32_t>(padded);
+    }
 
     // Measure peak in
     float maxIn = 0.0f;
@@ -631,7 +575,6 @@ class StandaloneApp {
 
   LV2_URID atomSequence_ = 0;
   LV2_URID eventTransfer_ = 0;
-  LV2_URID midiEvent_ = 0;
   LV2_URID atomInt_ = 0;
   LV2_URID atomFloat_ = 0;
   LV2_URID atomObject_ = 0;
@@ -643,10 +586,10 @@ class StandaloneApp {
   LV2_URID maxBlockLength_ = 0;
   LV2_URID preAmpDbURID_ = 0;
   LV2_URID postAmpDbURID_ = 0;
-  std::array<LV2_URID, NAMRig::kStageCount> pathURIDs_{};
+  std::array<LV2_URID, 4> pathURIDs_{};
   int32_t maxFramesOption_ = kMaxFrames;
 
-  std::array<float, NAMRig::kRigControlPortCount> controls_{};
+  std::array<float, 185> controls_{};
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_{};
 
   std::vector<float> inputAudio_;
@@ -656,8 +599,6 @@ class StandaloneApp {
   std::vector<uint8_t> notifyBuffer_;
 
   MessageQueue uiToAudio_;
-  MessageQueue midiToAudio_;
-  std::vector<HMIDIIN> midiInputs_;
   StandaloneMeter inPeakMeter_{-80.0f};
   StandaloneMeter outPeakMeter_{-80.0f};
   StandaloneMeter preAmpDbMeter_{-120.0f};

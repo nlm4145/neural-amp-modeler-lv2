@@ -307,7 +307,7 @@ class PlateReverb {
   void process(float* left, float* right, size_t count, float roomPercent,
                 float mixPercent, float decayPercent, float sizePercent,
                 float dampingPercent, float predelayMs,
-                bool roomEnabled = true, bool plateEnabled = true, bool hall = false) {
+                bool roomEnabled = true, bool plateEnabled = true) {
     const float roomTarget = roomEnabled ? clamp01(roomPercent * 0.01f) : 0.0f;
     const float mixTarget = plateEnabled ? clamp01(mixPercent * 0.01f) : 0.0f;
     // Independent rack bypasses must also suppress already-smoothed wet tails.
@@ -319,13 +319,9 @@ class PlateReverb {
       return;
     }
     cleared_ = false;
-    // Hall: the same tank stretched to a larger room with a longer floor on
-    // the decay, so Size and Decay keep their meaning in both algorithms.
-    const float sizeTarget = hall ? 1.3f + 1.1f * clamp01(sizePercent * 0.01f)
-                                  : 0.6f + 0.8f * clamp01(sizePercent * 0.01f);
+    const float sizeTarget = 0.6f + 0.8f * clamp01(sizePercent * 0.01f);
     if (smoothedSize_ < 0.0f) smoothedSize_ = sizeTarget;
-    const float decay = hall ? 0.55f + 0.44f * clamp01(decayPercent * 0.01f)
-                             : 0.30f + 0.68f * clamp01(decayPercent * 0.01f);
+    const float decay = 0.30f + 0.68f * clamp01(decayPercent * 0.01f);
     const double dampCutoff = 15000.0 * std::pow(0.1, clamp01(dampingPercent * 0.01f));
     const float dampCoeff = static_cast<float>(1.0 - std::exp(-2.0 * kPi * dampCutoff / rate_));
     const float bandwidthCoeff = static_cast<float>(1.0 - std::exp(-2.0 * kPi * 10000.0 / rate_));
@@ -404,7 +400,7 @@ class PlateReverb {
 
  private:
   static constexpr double kPi = 3.14159265358979323846;
-  static constexpr double kMaxSize = 2.4;
+  static constexpr double kMaxSize = 1.4;
   static constexpr double kModDepth = 12.0;
   static constexpr double kInputAp[4] = {142.0, 107.0, 379.0, 277.0};
   static constexpr double kEarlyMsL[5] = {11.3, 19.7, 27.1, 34.9, 41.3};

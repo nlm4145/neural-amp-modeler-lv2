@@ -1,6 +1,4 @@
 #import "rig_theme.h"
-#include "fx_controls.h"
-#include <string>
 
 #include <cmath>
 
@@ -62,26 +60,6 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 179: return value < 0.5f ? @"OFF" : [NSString stringWithFormat:@"%.0f%%", value];
     case 180: return [NSString stringWithFormat:@"%.0f%%", value];
     case 181: return [NSString stringWithFormat:@"%+.1f dB", value];
-    default: break;
+    default: return @"";
   }
-  if (!NAMRig::isFxControlPort(port)) return @"";
-  const NAMRig::FxControl& c = NAMRig::fxControl(port);
-  const std::string unit = c.unit;
-  if (unit == "dB") {
-    if (c.minimum <= -24.0f && value <= -23.95f) return @"OFF";
-    return [NSString stringWithFormat:@"%+.1f dB", value];
-  }
-  if (unit == "%") {
-    const bool offAtZero = c.minimum == 0.0f && c.defaultValue == 0.0f;
-    if (offAtZero && value < 0.5f) return @"OFF";
-    return [NSString stringWithFormat:(c.minimum < 0.0f ? @"%+.0f%%" : @"%.0f%%"), value];
-  }
-  if (unit == "Hz")
-    return value < 10.0f ? [NSString stringWithFormat:@"%.2f Hz", value]
-                         : [NSString stringWithFormat:@"%.0f Hz", value];
-  if (unit == "st") return [NSString stringWithFormat:@"%+.0f st", value];
-  if (unit == "ct") return [NSString stringWithFormat:@"%+.0f ct", value];
-  if (port == NAMRig::kMidiChannelPort)
-    return value < 0.5f ? @"OMNI" : [NSString stringWithFormat:@"%.0f", value];
-  return [NSString stringWithFormat:@"CC %.0f", value];
 }
