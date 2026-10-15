@@ -5,15 +5,20 @@
 # out-of-tree in a single CMake invocation, then installs both to their system locations.
 #
 # Usage:
-#   ./build.sh               (build + install + codesign + dlopen check + relaunch running apps)
+#   ./build.sh               (interactive settings, then build + install + relaunch)
+#   ./build.sh --no-menu     (reuse processing settings without prompting)
+#   ./build.sh --dry-run     (preview settings and configure command only)
 #   ./build.sh --no-launch   (build + install without launching any applications)
 #   ./build.sh --element     (specifically launch Element after build)
 #   ./build.sh --standalone  (specifically launch Axe FX standalone after build)
+#   ./build.sh --parallel    (build with parallel model processing)
+#   ./build.sh --serial      (build with serial model processing)
 #
 # Override paths with environment variables:
 #   BUILD_DIR=/path/to/build ./build.sh
 #   LV2_DIR=/path/to/lv2 ./build.sh
 #   INSTALL_DIR=/path/to/Applications ./build.sh
+#   BUILD_PARALLEL_MODELS=ON BUILD_PARALLEL_CABS=OFF BUILD_SMART_BYPASS=OFF ./build.sh --no-menu
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,9 +30,21 @@ fi
 NO_LAUNCH=0
 FORCE_LAUNCH_ELEMENT=0
 FORCE_LAUNCH_STANDALONE=0
+MENU=auto
+DRY_RUN=0
+PROCESSING_FLAG=""
+
+usage() {
+  echo "Usage: $0 [--menu|--no-menu] [--dry-run] [--parallel|--serial] [--no-launch|--element|--standalone]"
+}
 
 for arg in "$@"; do
   case "$arg" in
+    --menu) MENU=on ;;
+    --no-menu) MENU=off ;;
+    --dry-run) DRY_RUN=1 ;;
+    --parallel) PROCESSING_FLAG=ON ;;
+    --serial) PROCESSING_FLAG=OFF ;;
     --no-launch)
       NO_LAUNCH=1
       ;;
@@ -38,12 +55,12 @@ for arg in "$@"; do
       FORCE_LAUNCH_STANDALONE=1
       ;;
     -h|--help)
-      echo "Usage: $0 [--no-launch] [--element] [--standalone]"
+      usage
       exit 0
       ;;
     *)
       echo "Unknown option: $arg" >&2
-      echo "Usage: $0 [--no-launch] [--element] [--standalone]" >&2
+      usage >&2
       exit 1
       ;;
   esac
@@ -67,22 +84,133 @@ INSTALL_BUNDLE="$LV2_DIR/neural_amp_modeler.lv2"
 
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 
-echo "== 1/5 Configuring: cmake -S $REPO_DIR -B $BUILD_DIR (Release)"
-mkdir -p "$BUILD_DIR"
+PARALLEL_MODELS=ON
+PARALLEL_CABS=OFF
+SMART_BYPASS=OFF
+# Read only known boolean entries, never execute cache contents as shell code.
+if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+  while IFS='=' read -r key value; do
+    case "$value" in
+      1|ON|on|YES|yes|TRUE|true|Y|y) value=ON ;;
+      0|OFF|off|NO|no|FALSE|false|N|n|IGNORE|NOTFOUND|*-NOTFOUND|"") value=OFF ;;
+      *) continue ;;
+    esac
+    case "$key" in
+      AXE_FX_PARALLEL_MODELS_DEFAULT:BOOL) PARALLEL_MODELS="$value" ;;
+      AXE_FX_PARALLEL_CABS_DEFAULT:BOOL) PARALLEL_CABS="$value" ;;
+      SMART_BYPASS_ENABLED:BOOL) SMART_BYPASS="$value" ;;
+    esac
+  done < "$BUILD_DIR/CMakeCache.txt"
+fi
+PARALLEL_MODELS="${BUILD_PARALLEL_MODELS-$PARALLEL_MODELS}"
+PARALLEL_MODELS="${PROCESSING_FLAG:-$PARALLEL_MODELS}"
+PARALLEL_CABS="${BUILD_PARALLEL_CABS-$PARALLEL_CABS}"
+SMART_BYPASS="${BUILD_SMART_BYPASS-$SMART_BYPASS}"
+for setting in PARALLEL_MODELS PARALLEL_CABS SMART_BYPASS; do
+  case "${!setting}" in
+    ON|OFF) ;;
+    *) echo "BUILD_$setting must be ON or OFF." >&2; exit 1 ;;
+  esac
+done
+
+LAUNCH=auto
+if (( NO_LAUNCH )); then LAUNCH=none
+elif (( FORCE_LAUNCH_STANDALONE )); then LAUNCH=standalone
+elif (( FORCE_LAUNCH_ELEMENT )); then LAUNCH=element
+fi
+
+processing_mode() {
+  if [[ "$PARALLEL_MODELS" == ON ]]; then echo "Parallel"; else echo "Serial"; fi
+}
+
+show_settings() {
+  echo "Processing mode: $(processing_mode)"
+  echo "Threaded NAM cabinets: $PARALLEL_CABS"
+  echo "Smart bypass (single-model LV2 only): $SMART_BYPASS"
+  echo "Launch: $LAUNCH"
+}
+
+choose_processing_mode() {
+  local mode_choice
+  echo
+  echo "Processing mode (macOS standalone):"
+  echo "  p  Parallel"
+  echo "  s  Serial"
+  if ! read -r -p "Mode [current: $(processing_mode)]: " mode_choice; then
+    return
+  fi
+  case "$mode_choice" in
+    p|P|parallel|Parallel) PARALLEL_MODELS=ON ;;
+    s|S|serial|Serial) PARALLEL_MODELS=OFF ;;
+    "") ;;
+    *) echo "Invalid mode. Use p or s." ;;
+  esac
+}
+
+if [[ "$MENU" == on || ( "$MENU" == auto && -t 0 && -t 1 ) ]]; then
+  while true; do
+    echo
+    echo "Axe FX Build Settings"
+    show_settings
+    echo "1  Processing mode: Parallel / Serial (macOS standalone)"
+    echo "2  Toggle threaded NAM cabinets (experimental, macOS standalone)"
+    echo "3  Toggle smart bypass (single-model LV2 only, not the rig)"
+    echo "4  Cycle launch: auto / standalone / element / none"
+    echo "Enter or b: build and install    q: quit"
+    if ! read -r -p "Choice: " choice; then
+      echo "Build cancelled."
+      exit 0
+    fi
+    case "$choice" in
+      1) choose_processing_mode ;;
+      2) if [[ "$PARALLEL_CABS" == ON ]]; then PARALLEL_CABS=OFF; else PARALLEL_CABS=ON; fi ;;
+      3) if [[ "$SMART_BYPASS" == ON ]]; then SMART_BYPASS=OFF; else SMART_BYPASS=ON; fi ;;
+      4) case "$LAUNCH" in auto) LAUNCH=standalone ;; standalone) LAUNCH=element ;; element) LAUNCH=none ;; none) LAUNCH=auto ;; esac ;;
+      ""|b|B) break ;;
+      q|Q) echo "Build cancelled."; exit 0 ;;
+      *) echo "Invalid choice. Use 1-4, Enter, b, or q." ;;
+    esac
+  done
+fi
+NO_LAUNCH=0
+FORCE_LAUNCH_STANDALONE=0
+FORCE_LAUNCH_ELEMENT=0
+case "$LAUNCH" in
+  none) NO_LAUNCH=1 ;;
+  standalone) FORCE_LAUNCH_STANDALONE=1 ;;
+  element) FORCE_LAUNCH_ELEMENT=1 ;;
+esac
 
 CMAKE_ARGS=(
   -S "$REPO_DIR"
   -B "$BUILD_DIR"
   -DCMAKE_BUILD_TYPE=Release
+  -DSMART_BYPASS_ENABLED="$SMART_BYPASS"
 )
 
 if (( IS_MACOS )); then
   CMAKE_ARGS+=(
     -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
     -DBUILD_AXE_FX_STANDALONE=ON
+    -DAXE_FX_PARALLEL_MODELS_DEFAULT="$PARALLEL_MODELS"
+    -DAXE_FX_PARALLEL_CABS_DEFAULT="$PARALLEL_CABS"
   )
 fi
 
+echo
+show_settings
+if (( ! IS_MACOS )); then
+  echo "Parallel model and cabinet choices apply only to the macOS standalone app."
+fi
+if (( DRY_RUN )); then
+  printf 'cmake'
+  printf ' %q' "${CMAKE_ARGS[@]}"
+  printf '\n'
+  exit 0
+fi
+
+echo "== 1/5 Configuring: cmake -S $REPO_DIR -B $BUILD_DIR (Release)"
+mkdir -p "$BUILD_DIR"
 cmake "${CMAKE_ARGS[@]}"
 
 echo "== 2/5 Building plugin and standalone simultaneously (-j$JOBS)"

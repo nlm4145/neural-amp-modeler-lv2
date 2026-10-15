@@ -32,6 +32,7 @@
 
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
+#include "polyphase_worker.h"
 #include "rack_controls.h"
 #include "standalone_controls.h"
 #include "standalone_worker.h"
@@ -620,7 +621,9 @@ class StandaloneHost {
     while (renderState_.load(std::memory_order_acquire) & kRenderActive)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if (plugin_) plugin_->setCabinetWorker(nullptr);
+    if (plugin_) plugin_->setPolyphaseWorker(nullptr);
     cabinetWorker_.stop();
+    polyphaseWorker_.stop();
     if (inputUnit_) {
       AudioOutputUnitStop(inputUnit_);
       AudioUnitUninitialize(inputUnit_);
@@ -1553,9 +1556,15 @@ class StandaloneHost {
     mach_timebase_info(&timebase);
     audioTicksPerFrame_ = timebase.numer > 0
         ? 1.0e9 * timebase.denom / (timebase.numer * streamRate) : 0.0;
-    // Experimental opt-in until real-device deadline benchmarks are available.
+    // Build selections apply to Finder/Dock launches; environment overrides
+    // are temporary so either path can still be compared without rebuilding.
     const char* parallel = std::getenv("AXE_FX_PARALLEL_CABS");
-    if (parallel && std::strcmp(parallel, "1") == 0) {
+    const char* parallelModels = std::getenv("AXE_FX_PARALLEL_MODELS");
+    const bool useParallelCabs = parallel ? std::strcmp(parallel, "1") == 0
+                                         : AXE_FX_PARALLEL_CABS_DEFAULT != 0;
+    const bool useParallelModels = parallelModels ? std::strcmp(parallelModels, "0") != 0
+                                                : AXE_FX_PARALLEL_MODELS_DEFAULT != 0;
+    if (useParallelCabs || useParallelModels) {
       void* rawGroup = nullptr;
       UInt32 size = sizeof(rawGroup);
       if (AudioUnitGetProperty(audioUnit_, kAudioOutputUnitProperty_OSWorkgroup,
@@ -1563,9 +1572,23 @@ class StandaloneHost {
         // AudioUnitGetProperty returns +1; ARC releases our reference after
         // the helper has retained it for its entire join/leave lifetime.
         os_workgroup_t group = (__bridge_transfer os_workgroup_t)rawGroup;
-        if (os_workgroup_max_parallel_threads(group, nullptr) > 1 &&
-            cabinetWorker_.start((__bridge void*)group, bufferSize_ / streamRate))
+        const size_t maxThreads = os_workgroup_max_parallel_threads(group, nullptr);
+        size_t helpers = maxThreads > 1 ? maxThreads - 1 : 0;
+        if (helpers && useParallelCabs &&
+            cabinetWorker_.start((__bridge void*)group, bufferSize_ / streamRate)) {
           plugin_->setCabinetWorker(&cabinetWorker_);
+          --helpers;
+        }
+        if (helpers && useParallelModels &&
+            polyphaseWorker_.start((__bridge void*)group, bufferSize_ / streamRate, helpers)) {
+          plugin_->setPolyphaseWorker(&polyphaseWorker_);
+          std::fprintf(stderr, "Multicore models: %zu helper threads enabled\n",
+                       polyphaseWorker_.helperCount());
+        } else if (useParallelModels) {
+          std::fprintf(stderr, "Multicore models unavailable; using serial processing\n");
+        }
+      } else if (useParallelModels) {
+        std::fprintf(stderr, "No audio workgroup; using serial model processing\n");
       }
     }
     renderState_.store(0, std::memory_order_release);
@@ -1650,6 +1673,7 @@ class StandaloneHost {
 
   NSWindow* __weak window_ = nil;
   NAMRig::CabinetWorker cabinetWorker_;
+  NAMRig::PolyphaseWorker polyphaseWorker_;
   static constexpr uint32_t kRenderActive = 1, kRenderSuspended = 2;
   std::atomic<uint32_t> renderState_{kRenderSuspended};
   double audioTicksPerFrame_ = 0.0;

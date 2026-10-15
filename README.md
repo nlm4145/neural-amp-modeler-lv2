@@ -158,6 +158,28 @@ To simultaneously build and install both the LV2 plugin (for hosts/DAWs like Ele
 ./build.sh
 ```
 
+In a terminal, the script opens a settings menu before building:
+
+```text
+Axe FX Build Settings
+Parallel models: ON
+Threaded NAM cabinets: OFF
+Smart bypass (single-model LV2 only): OFF
+Launch: auto
+1  Toggle parallel models (macOS standalone)
+2  Toggle threaded NAM cabinets (experimental, macOS standalone)
+3  Toggle smart bypass (single-model LV2 only, not the rig)
+4  Cycle launch: auto / standalone / element / none
+Enter or b: build and install    q: quit
+```
+
+Processing choices are remembered in that build directory's CMake cache. The
+threading choices become installed-app defaults, including normal Finder/Dock
+launches; they do not depend on terminal environment variables. The initial
+defaults are parallel models ON, threaded cabinets OFF, and smart bypass OFF.
+The launch choice applies only to the current build. Audio-device settings,
+oversampling, models, and presets are not changed by the menu.
+
 This single script:
 1. Configures CMake and compiles both the LV2 plugin bundle and the native macOS standalone app in parallel.
 2. Installs the LV2 bundle to `~/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2`.
@@ -165,9 +187,22 @@ This single script:
 4. Relaunches whichever application was running (`Element` or `Axe FX`), or launches `Axe FX` if neither was running.
 
 Options:
+- `./build.sh --no-menu` builds without prompting, reusing cached processing choices.
+- `./build.sh --menu` forces the menu, even with piped input.
+- `./build.sh --dry-run` previews settings and the configure command without building, installing, or saving changes.
 - `./build.sh --no-launch` — build and install without launching applications.
 - `./build.sh --element` — specifically launch/reopen Element.
 - `./build.sh --standalone` — specifically launch/reopen Axe FX standalone.
+
+Non-interactive input/output automatically skips the menu. For scripted overrides:
+
+```bash
+BUILD_PARALLEL_MODELS=ON BUILD_PARALLEL_CABS=ON BUILD_SMART_BYPASS=OFF ./build.sh --no-menu
+```
+
+These overrides accept `ON` or `OFF` and take precedence over the cached settings.
+Parallel model and cabinet processing apply to the macOS standalone only. Smart
+bypass affects only the original single-model LV2 plugin, not Axe FX's rig.
 
 ### Manual build
 
@@ -197,8 +232,8 @@ After building, the plugin will be in **build/neural_amp_modeler.lv2** (and on m
 
 #### Experimental dual-NAM cabinet threading
 
-Launch the built app with `AXE_FX_PARALLEL_CABS=1` to process Cab B on a
-prestarted real-time helper while Cab A runs on the audio thread:
+Enable threaded NAM cabinets in the build menu to process Cab B on a prestarted
+real-time helper while Cab A runs on the audio thread. For a temporary override:
 
 ```bash
 AXE_FX_PARALLEL_CABS=1 "build-standalone/src/Axe FX.app/Contents/MacOS/Axe FX"
@@ -210,7 +245,8 @@ Model quality, oversampling, blend math, and reported latency are unchanged;
 each Cab B job completes in the same buffer before mixing. Workgroup membership
 helps macOS coordinate the threads, but does not pin them to performance cores
 or guarantee a speedup. Wakeup overhead can outweigh savings on small models.
-The option defaults off pending real-device dropout/deadline measurements.
+The initial build default is OFF. Use `AXE_FX_PARALLEL_CABS=0` for a temporary
+opt-out when the installed build has threading enabled.
 
 Build and run the worker/lifecycle and bit-equality checks independently:
 
@@ -221,6 +257,45 @@ build-standalone/src/verify_parallel_cabs --benchmark
 ```
 
 ### Oversampled model CPU
+
+#### Multicore models (macOS standalone)
+
+Multicore models start enabled in the build menu. Build and install normally with
+`./build.sh`; the selected default also applies when launching the local build:
+
+```bash
+"build/src/Axe FX.app/Contents/MacOS/Axe FX"
+```
+
+For a serial comparison, quit the running app and launch with the explicit opt-out:
+
+```bash
+AXE_FX_PARALLEL_MODELS=0 "/Applications/Axe FX.app/Contents/MacOS/Axe FX"
+```
+
+Eligible oversampled WaveNets distribute their independent native-rate phases
+across the audio thread and up to three prestarted real-time helpers in the
+device's audio workgroup. The pool is shared by the pedal, amp and Cab A; those
+stages still execute in signal-chain order. Cab B does not use this pool and can
+use the separate `AXE_FX_PARALLEL_CABS=1` option. Total helper count respects the
+workgroup's parallel-thread limit. The terminal reports the enabled helper count.
+
+Models without separable phases, phase blocks shorter than 32 samples, LV2 hosts,
+and devices without a usable workgroup retain serial processing. Every published
+job finishes before the buffer returns; no extra buffering or reported latency
+is introduced. Workgroup scheduling is best effort, not a dropout guarantee.
+Use the serial opt-out if helper scheduling causes problems on a particular device.
+`AXE_FX_PARALLEL_MODELS=1` temporarily enables processing in a build configured OFF.
+
+Compare exact output and offline callback timings (including deadline overruns):
+
+```bash
+cmake --build build --target verify_parallel_polyphase
+build/src/verify_parallel_polyphase --benchmark
+```
+
+The executor hook lives in the NeuralAudio submodule's `PolyphaseModel.h`; keep
+that submodule change together with this feature when sharing the checkout.
 
 At True Nx (and at any host rate that is a multiple of the model rate) NeuralAudio
 runs a WaveNet as N native-rate copies instead of one dilation-scaled model; the
@@ -238,6 +313,8 @@ build/src/nam_bench --base 96000 --factors 1,2,4,8 --polyphase 1 model.nam   # p
 
 ```-DUSE_NATIVE_ARCH=ON```: If you have a relatively modern x64 processor, you can pass ```-DUSE_NATIVE_ARCH=ON``` on your cmake command line to enable certain processor-specific optimizations.
 
-```-DSMART_BYPASS_ENABLED=ON```: If enabled, this will bypass model processing if input has been silent (below -100 dB by default) for a sufficient number of samples (determined by the model's receptive field size).
+```-DSMART_BYPASS_ENABLED=ON```: In the original single-model LV2 plugin only, bypass model processing after sufficiently long silence (below -100 dB by default). This does not enable smart bypass in the rig/standalone app.
+
+```-DAXE_FX_PARALLEL_MODELS_DEFAULT=ON``` / ```-DAXE_FX_PARALLEL_CABS_DEFAULT=OFF```: Set macOS standalone threading defaults; these are the options controlled by the build menu. Runtime `AXE_FX_PARALLEL_MODELS=0|1` and `AXE_FX_PARALLEL_CABS=0|1` overrides take precedence.
 
 Also see the [NeuralAudio CMake options](https://github.com/mikeoliphant/NeuralAudio#cmake-options) - adding these to your neural-amp-modeler-lv2 cmake will pass them to the NeuralAudio build.

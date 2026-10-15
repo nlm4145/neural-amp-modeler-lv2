@@ -48,6 +48,7 @@
 namespace NAMRig {
 class WavIR;
 class CabinetWorker;
+class PolyphaseWorker;
 static constexpr unsigned int MAX_FILE_NAME = 1024;
 
 enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 };
@@ -252,6 +253,7 @@ public:
   void process(uint32_t sampleCount, uint64_t cabinetDeadlineTicks = 0) noexcept;
   // The standalone host owns this executor; change it only with audio stopped.
   void setCabinetWorker(CabinetWorker* worker) noexcept { cabinetWorker = worker; }
+  void setPolyphaseWorker(PolyphaseWorker* worker) noexcept { polyphaseWorker = worker; }
   void writePath(Stage stage);
   void writeAllPaths();
 
@@ -276,6 +278,7 @@ public:
 
 private:
   CabinetWorker* cabinetWorker = nullptr;
+  PolyphaseWorker* polyphaseWorker = nullptr;
   uint64_t cabinetDeadlineTicks = 0;
   struct URIs {
     LV2_URID atomObject;

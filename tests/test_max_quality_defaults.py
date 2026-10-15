@@ -13,6 +13,8 @@ ttl = (ROOT / "resources/neural_amp_modeler_rig.ttl.in").read_text()
 header = (ROOT / "src/nam_rig_plugin.h").read_text()
 ui = (ROOT / "src/nam_rig_ui.mm").read_text()
 dsp = (ROOT / "src/nam_rig_plugin.cpp").read_text()
+standalone = (ROOT / "src/standalone_main.mm").read_text()
+cmake = (ROOT / "src/CMakeLists.txt").read_text()
 
 
 def port_default(index: int) -> float:
@@ -36,4 +38,10 @@ assert "osPopup" not in ui
 assert "[so selectItemAtIndex:3]" in ui
 assert "loader.SetDefaultQualityScaleFactor(1.0f)" in dsp
 assert "response.model->SetQualityScaleFactor(1.0f)" in dsp
+assert 'option(AXE_FX_PARALLEL_MODELS_DEFAULT "Enable macOS parallel model phases by default" ON)' in cmake
+assert 'option(AXE_FX_PARALLEL_CABS_DEFAULT "Enable macOS threaded NAM cabinets by default" OFF)' in cmake
+assert 'parallelModels ? std::strcmp(parallelModels, "0") != 0' in standalone
+assert ': AXE_FX_PARALLEL_MODELS_DEFAULT != 0;' in standalone
+assert ': AXE_FX_PARALLEL_CABS_DEFAULT != 0;' in standalone
 print("  PASS  fresh rig defaults to full-tier True 8x on every nonlinear stage")
+print("  PASS  macOS standalone defaults to parallel models with a serial opt-out")

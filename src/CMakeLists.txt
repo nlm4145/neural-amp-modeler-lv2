@@ -268,6 +268,16 @@ if (APPLE)
 	add_executable(verify_cabinet_worker EXCLUDE_FROM_ALL
 		../tests/verify_cabinet_worker.cpp cabinet_worker.cpp)
 	target_include_directories(verify_cabinet_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	add_executable(verify_parallel_polyphase EXCLUDE_FROM_ALL
+		../tests/verify_parallel_polyphase.cpp polyphase_worker.h cabinet_worker.cpp)
+	target_include_directories(verify_parallel_polyphase PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/NeuralAudio)
+	target_compile_definitions(verify_parallel_polyphase PRIVATE
+		NAM_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+		NAMRIG_VERIFY_POLYPHASE_POLICY_FAILURE
+		thread_policy_set=verifyPolyphasePolicySet)
+	target_link_libraries(verify_parallel_polyphase PRIVATE
+		NeuralAudio Threads::Threads ${ACCELERATE_FRAMEWORK})
 	add_executable(verify_parallel_cabs EXCLUDE_FROM_ALL
 		../tests/verify_parallel_cabs.cpp nam_rig_plugin.cpp wav_ir.cpp
 		oversample.cpp cabinet_worker.cpp dsp_accel.cpp)
@@ -307,6 +317,8 @@ if (APPLE)
 
 	option(BUILD_AXE_FX_STANDALONE "Build the native macOS Axe FX app" ON)
 	if (BUILD_AXE_FX_STANDALONE)
+		option(AXE_FX_PARALLEL_MODELS_DEFAULT "Enable macOS parallel model phases by default" ON)
+		option(AXE_FX_PARALLEL_CABS_DEFAULT "Enable macOS threaded NAM cabinets by default" OFF)
 		find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
 		add_executable(axe_fx_standalone MACOSX_BUNDLE
@@ -327,6 +339,9 @@ if (APPLE)
 			PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 		target_include_directories(axe_fx_standalone PRIVATE
 			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+		target_compile_definitions(axe_fx_standalone PRIVATE
+			AXE_FX_PARALLEL_MODELS_DEFAULT=$<BOOL:${AXE_FX_PARALLEL_MODELS_DEFAULT}>
+			AXE_FX_PARALLEL_CABS_DEFAULT=$<BOOL:${AXE_FX_PARALLEL_CABS_DEFAULT}>)
 		target_link_libraries(axe_fx_standalone PRIVATE NeuralAudio Threads::Threads
 			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}

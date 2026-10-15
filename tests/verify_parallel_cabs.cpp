@@ -3,6 +3,7 @@
 // Usage: verify_parallel_cabs [wavenet.nam [lstm.nam]] [--benchmark]
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
+#include "polyphase_worker.h"
 #include "wav_ir.h"
 #include "rack_controls.h"
 
@@ -584,8 +585,8 @@ struct Pair {
                 serial.calls[stage].caller == parallel.calls[stage].caller +
                                                   parallel.calls[stage].worker,
             "each real graph processes identical frames and call counts");
-      check(serial.calls[stage].largest <= static_cast<size_t>(8 * kBlockLength) &&
-                parallel.calls[stage].largest <= static_cast<size_t>(8 * kBlockLength),
+      check(serial.calls[stage].largest <= static_cast<size_t>(16 * kBlockLength) &&
+                parallel.calls[stage].largest <= static_cast<size_t>(16 * kBlockLength),
             "model calls stay within allocated worst-case True-domain buffers");
       if (stage != 3)
         check(parallel.calls[stage].worker == 0, "only Cab B may execute off caller");
@@ -659,9 +660,118 @@ struct Pair {
 
 int pipelineFactor(int mode, double rate) {
   if (mode == 0) return 1;
-  // True modes target 96 kHz * N, not host-rate * N; the cascade caps at 8.
+  // True modes target 96 kHz * N, not host-rate * N; the cascade caps at 16.
   const double wanted = 96000.0 * (1 << (mode - 3)) / rate;
-  return wanted < 1.5 ? 1 : wanted < 3.0 ? 2 : wanted < 6.0 ? 4 : 8;
+  return wanted < 1.5 ? 1 : wanted < 3.0 ? 2 : wanted < 6.0 ? 4 : wanted < 12.0 ? 8 : 16;
+}
+
+void verifyMulticoreModels(const std::string& standard, const std::string& a2,
+                           const std::string& lstm) {
+  testSection = "96 kHz raw multicore model integration";
+  Pair pair(96000.0, false); // Decorators would hide PolyphaseModel from the pool.
+  struct ScopedPool {
+    Plugin& plugin;
+    NAMRig::PolyphaseWorker pool;
+    ~ScopedPool() {
+      plugin.setPolyphaseWorker(nullptr);
+      pool.stop();
+    }
+  } executor{pair.parallel.plugin}; // Destroy before Pair, including on exceptions.
+  check(executor.pool.start(nullptr, kBlockLength / 96000.0, 3) &&
+            executor.pool.helperCount() == 3,
+        "start three null-workgroup offline phase helpers alongside cabinet worker");
+  pair.parallel.plugin.setPolyphaseWorker(&executor.pool);
+
+  auto verifyGraph = [&](Stage stage, const std::string& path, size_t phases) {
+    pair.installed(stage, path);
+    for (Host* host : {&pair.serial, &pair.parallel}) {
+      auto* model = host->plugin.models[static_cast<size_t>(stage)];
+      if (path == a2)
+        check(dynamic_cast<NeuralAudio::CompositeModel*>(model) &&
+                  model->HasQualityScaling() && model->GetQualityScaleFactor() == 1.0f,
+              "packed A2 installs its full-quality raw composite graph");
+      while (auto* composite = dynamic_cast<NeuralAudio::CompositeModel*>(model))
+        model = composite->GetCurrentModel();
+      check(model != nullptr, "raw graph has an active model");
+      auto* poly = dynamic_cast<NeuralAudio::PolyphaseModel*>(model);
+      check(phases > 1 ? poly && poly->GetNumPhases() == phases : !poly,
+            "raw graph has expected native-rate phases or non-polyphase fallback");
+    }
+  };
+  auto latency = [](int mode) {
+    const int factor = pipelineFactor(mode, 96000.0);
+    return factor == 2 ? 23.0f : factor == 4 ? 35.0f : factor == 8 ? 41.0f
+         : factor == 16 ? 44.0f : 0.0f;
+  };
+  pair.set(47, 0);
+  pair.paths({{Stage::Pedal, standard}, {Stage::Amp, a2},
+              {Stage::Cab, standard}, {Stage::Cab2, a2}});
+  for (int mode : kModes) {
+    testSection = "96 kHz multicore grouped/dual NAM mode " + std::to_string(mode);
+    pair.set(20, static_cast<float>(mode));
+    pair.set(21, static_cast<float>(mode));
+    const size_t phases = mode == 0 ? 1 : 2 * pipelineFactor(mode, 96000.0);
+    // True8 is a 768 kHz domain here: sixteen phases for these 48 kHz models.
+    check(mode != 6 || phases == 16, "96 kHz True8 loads sixteen native-rate phases");
+    const auto cabBLoads = pair.serial.loads[3];
+    for (bool dual : {false, true}) {
+      pair.set(47, dual ? 1 : 0);
+      check(pair.sweep(3) > 0.0, "raw multicore comparison exercises nonzero output");
+      verifyGraph(Stage::Pedal, standard, phases);
+      verifyGraph(Stage::Amp, a2, phases);
+      verifyGraph(Stage::Cab, standard, phases);
+      verifyGraph(Stage::Cab2, a2, 2);
+      check(pair.serial.controls[29] == (dual ? 2 : 1) * latency(mode),
+            "grouped pedal/amp/Cab A or independent dual Cab A latency is exact");
+    }
+    check(pair.serial.loads[3] == cabBLoads + (mode == 0 ? 1 : 0),
+          "serial-stage mode changes never reload the base-rate Cab B graph");
+  }
+
+  for (auto modes : {std::array<int, 2>{0, 6}, {4, 5}, {6, 4}}) {
+    testSection = "96 kHz multicore differing pedal/amp modes " +
+                  std::to_string(modes[0]) + "/" + std::to_string(modes[1]);
+    pair.set(20, static_cast<float>(modes[0]));
+    pair.set(21, static_cast<float>(modes[1]));
+    for (bool dual : {false, true}) {
+      pair.set(47, dual ? 1 : 0);
+      pair.sweep(3);
+      verifyGraph(Stage::Pedal, standard,
+                  modes[0] == 0 ? 1 : 2 * pipelineFactor(modes[0], 96000.0));
+      for (Stage stage : {Stage::Amp, Stage::Cab})
+        verifyGraph(stage, stage == Stage::Amp ? a2 : standard,
+                    2 * pipelineFactor(modes[1], 96000.0));
+      check(pair.serial.controls[29] == latency(modes[0]) +
+                (dual ? 2 : 1) * latency(modes[1]),
+            "differing True domains retain exact summed converter latency");
+    }
+  }
+
+  testSection = "96 kHz multicore bypass topology and model swaps";
+  pair.set(20, 6); pair.set(21, 6);
+  for (size_t port : {7u, 8u, 9u, 47u}) {
+    pair.set(port, 0);
+    pair.sweep(3);
+    check(pair.serial.controls[29] == (port == 7 || port == 8 ? 82.0f : 41.0f),
+          "pedal/amp/cab bypass switches preserve exact True8 topology latency");
+    pair.set(port, 1);
+    pair.sweep(3);
+    check(pair.serial.controls[29] == 82.0f, "dual NAM topology restored after bypass");
+  }
+  for (const auto& path : {a2, standard, lstm, standard}) {
+    pair.paths({{Stage::Pedal, path}, {Stage::Amp, path},
+                {Stage::Cab, path}, {Stage::Cab2, path}});
+    check(pair.sweep(3) > 0.0, "swapped raw models produce nonzero exact output");
+    for (Stage stage : {Stage::Pedal, Stage::Amp, Stage::Cab, Stage::Cab2})
+      verifyGraph(stage, path, path == lstm ? 1 : stage == Stage::Cab2 ? 2 : 16);
+  }
+  executor.pool.stop();
+  pair.sweep(); // Attached but stopped pool falls back without resetting graphs.
+  check(executor.pool.start(nullptr, kBlockLength / 96000.0, 3), "restart phase pool");
+  pair.sweep();
+  pair.parallel.plugin.setPolyphaseWorker(nullptr);
+  pair.sweep(); // Existing cabinet executor remains attached throughout.
+  std::printf("PASS: 96 kHz raw multicore standard/A2/LSTM graphs; grouped/dual NAM, True8 sixteen phases, mixed modes, bypass/swaps, irregular/oversized blocks, exact audio/atoms/latency, phase pool stop/restart/detach\n");
 }
 
 void verifyPlugins(double rate, const std::string& wave, const std::string& lstm) {
@@ -693,7 +803,8 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
     pair.set(53, 0); pair.set(54, 0); pair.set(33, 0); pair.set(59, 0);
     pair.steady(true, true, true, factor);
     check(pair.serial.loads[3] == cabBLoads, "amp True changes never reload Cab B");
-    const int latency = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41 : 0;
+    const int latency = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41
+                      : factor == 16 ? 44 : 0;
     check(pair.serial.controls[29] == 2.0f * latency,
           "latency includes shared pedal/amp and independent True Cab A cascades");
 
@@ -1049,7 +1160,8 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
       if (!trueCab && mode != 0) continue;
       pair.set(21, static_cast<float>(mode));
       const int factor = trueCab ? pipelineFactor(mode, rate) : 1;
-      const size_t compensation = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41 : 0;
+      const size_t compensation = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41
+                                : factor == 16 ? 44 : 0;
       for (float alignment : {-10.0f, -3.5f, 0.0f, 3.5f, 10.0f}) {
         testSection = "real impulse alignment " + std::to_string(alignment) +
                       " ms, C=" + std::to_string(compensation) + " at " + std::to_string(rate);
@@ -1098,7 +1210,7 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
     const auto back = impulsePeaks(pair);
     check(back == dual, "re-enabling both cabinets restores signed alignment without stale history");
   }
-  std::printf("PASS: %.0f Hz WAV cancellation/amplification, optional polarity, stereo smooth switching, signed impulse timing including real True C=23/35/41, A/B-only and dry behavior\n", rate);
+  std::printf("PASS: %.0f Hz WAV cancellation/amplification, optional polarity, stereo smooth switching, signed impulse timing including real True C=23/35/41/44, A/B-only and dry behavior\n", rate);
 }
 
 void benchmark(const std::string& wave, const std::string& lstm) {
@@ -1159,7 +1271,9 @@ int main(int argc, char** argv) {
     const std::string lstm = arguments.size() < 2
         ? defaultModel("deps/NeuralAudio/Utils/Models/BossLSTM-1x16.nam")
         : std::filesystem::absolute(arguments[1]).string();
-    for (const auto& path : {wave, lstm}) {
+    const std::string standard = defaultModel("deps/NeuralAudio/Utils/Models/BossWN-standard.nam");
+    const std::string a2 = defaultModel("deps/NeuralAudio/Utils/Models/BossWN-a2.nam");
+    for (const auto& path : {wave, lstm, standard, a2}) {
       if (!std::filesystem::is_regular_file(path)) {
         std::fprintf(stderr, "FAIL: model fixture not found: %s\n", path.c_str());
         return 1;
@@ -1171,6 +1285,7 @@ int main(int argc, char** argv) {
     fixtures.write(2);
     fixtures.writeIdentity();
     verifyEnvironment();
+    verifyMulticoreModels(standard, a2, lstm);
     for (double rate : {48000.0, 96000.0}) {
       verifyAlignment(rate, fixtures);
       verifyPlugins(rate, wave, lstm);

@@ -1,5 +1,6 @@
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
+#include "polyphase_worker.h"
 
 #include <algorithm>
 #include <cassert>
@@ -1296,7 +1297,14 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
   const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
   if (pre != 1.0f)
     for (size_t i = 0; i < count; ++i) samples[i] *= pre;
-  model->Process(samples, samples, count);
+  // Cab B may already be running on a different executor. Only the callback's
+  // serial stages own the phase pool, including independently oversampled Cab A.
+  if (polyphaseWorker && stage != stageIndex(Stage::Cab2)) {
+    polyphaseWorker->setDeadline(cabinetDeadlineTicks);
+    polyphaseWorker->process(model, samples, samples, count);
+  } else {
+    model->Process(samples, samples, count);
+  }
   const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
   if (post != 1.0f)
     for (size_t i = 0; i < count; ++i) samples[i] *= post;
