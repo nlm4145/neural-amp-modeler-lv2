@@ -199,6 +199,10 @@ public:
     float* od_drive;             // in: port 179, Sculpt overdrive drive (0..100%, 0 = off)
     float* od_tone;              // in: port 180, Sculpt overdrive tone (0..100%)
     float* od_level;             // in: port 181, Sculpt overdrive level (dB)
+    float* compressor_attack;    // in: port 182, attack time (ms, 1..100)
+    float* compressor_release;   // in: port 183, release time (ms, 10..1000)
+    float* compressor_enabled;   // in: port 184, compressor bypass (0 = bypass, 1 = on)
+    float* od_enabled;           // in: port 185, pre-amp boost bypass (0 = bypass, 1 = on)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -221,6 +225,10 @@ public:
   static_assert(offsetof(Ports, pin_eq) == kPinEqFirstPort * sizeof(void*));
   static_assert(offsetof(Ports, od_drive) == kOverdriveDrivePort * sizeof(void*));
   static_assert(offsetof(Ports, od_level) == kOverdriveLevelPort * sizeof(void*));
+  static_assert(offsetof(Ports, compressor_attack) == kCompressorAttackPort * sizeof(void*));
+  static_assert(offsetof(Ports, compressor_release) == kCompressorReleasePort * sizeof(void*));
+  static_assert(offsetof(Ports, compressor_enabled) == kCompressorEnabledPort * sizeof(void*));
+  static_assert(offsetof(Ports, od_enabled) == kOverdriveEnabledPort * sizeof(void*));
   static constexpr uint32_t kPortCount = kRigControlPortCount;
   static_assert(kRackControlFirstPort == kTransformerControlFirstPort + kTransformerControlCount);
   static_assert(kRackControlFirstPort + static_cast<size_t>(Rack::PowerTube) == 79);
@@ -231,7 +239,11 @@ public:
   static_assert(kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount);
   static_assert(kOverdriveTonePort == kOverdriveDrivePort + 1);
   static_assert(kOverdriveLevelPort == kOverdriveTonePort + 1);
-  static_assert(kPortCount == kOverdriveLevelPort + 1);
+  static_assert(kCompressorAttackPort == kOverdriveLevelPort + 1);
+  static_assert(kCompressorReleasePort == kCompressorAttackPort + 1);
+  static_assert(kCompressorEnabledPort == kCompressorReleasePort + 1);
+  static_assert(kOverdriveEnabledPort == kCompressorEnabledPort + 1);
+  static_assert(kPortCount == kOverdriveEnabledPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};

@@ -303,15 +303,15 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
   const uint32_t freq = pinEqPort(PinEqPane::CabConsole, 0, kPinFreq);
   const uint32_t gain = pinEqPort(PinEqPane::CabConsole, 0, kPinGain);
   REQUIRE(!host.writes[shape].empty() && !host.writes[freq].empty() && !host.writes[gain].empty());
-  CHECK(host.writes[shape].back() == kPinBell);
+  CHECK(host.writes[shape].back() == (float)kPinBell);
   CHECK(std::fabs(host.writes[freq].back() - 632.5f) < 15.0f);
   CHECK(std::fabs(host.writes[gain].back() - kPinGainMax * 0.5f) < 0.5f);
-  CHECK(state->pinEqControls[shape - kPinEqFirstPort] == kPinBell);
+  CHECK(state->pinEqControls[shape - kPinEqFirstPort] == (float)kPinBell);
   CHECK(state->presetManager.isModified);
 
   stage = "graph pin editors / preset capture, host echo and recall";
   RigPreset* captured = [presetClass captureFromState:state name:@"Pins"];
-  CHECK([captured controlForPort:shape] == kPinBell);
+  CHECK([captured controlForPort:shape] == (float)kPinBell);
   CHECK(near([captured controlForPort:gain], host.writes[gain].back()));
   const uint32_t sculptGain = pinEqPort(PinEqPane::Sculpt, 3, kPinGain);
   const float echoed = -7.5f;
@@ -332,7 +332,7 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
   }
   [captured applyToState:state];
   drain();
-  CHECK(state->pinEqControls[shape - kPinEqFirstPort] == kPinBell);
+  CHECK(state->pinEqControls[shape - kPinEqFirstPort] == (float)kPinBell);
   [[presetClass defaultPreset] applyToState:state];
   drain();
 }
@@ -351,24 +351,45 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
   for (size_t k = 39; k <= 41; ++k) {
     REQUIRE(state->deckKnobs[k]);
     CHECK(state->deckKnobs[k].tag == (NSInteger)kRigKnobPorts[k]);
-    CHECK([state->deckKnobs[k] isDescendantOf:state->sculptVisualizer.superview.superview]);
+    CHECK([state->deckKnobs[k] isDescendantOf:state->boostVisualizer.superview.superview]);
   }
   REQUIRE(state->sculptVisualizer);
-  CHECK(state->sculptVisualizer.odTone == Overdrive::kToneDefault);
+  REQUIRE(state->boostVisualizer);
+  CHECK(state->boostVisualizer.tone == Overdrive::kToneDefault);
 
-  stage = "sculpt overdrive / EQ-OD page switch";
-  REQUIRE(state->sculptEqKnobs && state->sculptOdKnobs && state->sculptPageButtons[0] &&
-          state->sculptPageButtons[1]);
-  CHECK(!state->sculptShowsOverdrive && !state->sculptEqKnobs.hidden && state->sculptOdKnobs.hidden);
-  CHECK(state->sculptPageButtons[0].state == NSControlStateValueOn &&
-        state->sculptPageButtons[1].state == NSControlStateValueOff);
-  CHECK([state->sculptPageButtons[1].title isEqualToString:@"OD"]);
+  stage = "pre-amp EQ and Boost cards layout and bypass";
+  REQUIRE(state->sculptEqKnobs && state->sculptOdKnobs);
+  CHECK(!state->sculptEqKnobs.hidden && !state->sculptOdKnobs.hidden);
   for (size_t k : {19u, 20u, 38u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptEqKnobs]);
   for (size_t k : {39u, 40u, 41u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptOdKnobs]);
-  action(state->sculptPageButtons[1]);
-  CHECK(state->sculptShowsOverdrive && state->sculptEqKnobs.hidden && !state->sculptOdKnobs.hidden);
-  CHECK(state->sculptPageButtons[1].state == NSControlStateValueOn &&
-        state->sculptPageButtons[0].state == NSControlStateValueOff);
+
+  // Check ON/OFF toggle buttons for both cards:
+  RigButton* eqButton = state->rackButtons[(size_t)NAMRig::Rack::Sculpt];
+  REQUIRE(eqButton);
+  CHECK(eqButton.tag == (NSInteger)(NAMRig::kRackControlFirstPort + (size_t)NAMRig::Rack::Sculpt));
+  CHECK(state->sculptVisualizer.enabled);
+  echo(NAMRig::kRackControlFirstPort + (size_t)NAMRig::Rack::Sculpt, 0.0f);
+  drain();
+  CHECK(!state->sculptVisualizer.enabled);
+  CHECK([eqButton.title isEqualToString:@"OFF"]);
+  echo(NAMRig::kRackControlFirstPort + (size_t)NAMRig::Rack::Sculpt, 1.0f);
+  drain();
+  CHECK(state->sculptVisualizer.enabled);
+  CHECK([eqButton.title isEqualToString:@"ON"]);
+
+  RigButton* boostButton = state->boostButton;
+  REQUIRE(boostButton);
+  CHECK(boostButton.tag == (NSInteger)kOverdriveEnabledPort);
+  CHECK(state->boostVisualizer.enabled);
+  echo(kOverdriveEnabledPort, 0.0f);
+  drain();
+  CHECK(!state->boostVisualizer.enabled);
+  CHECK([boostButton.title isEqualToString:@"OFF"]);
+  echo(kOverdriveEnabledPort, 1.0f);
+  drain();
+  CHECK(state->boostVisualizer.enabled);
+  CHECK([boostButton.title isEqualToString:@"ON"]);
+
   [state->sculptOdKnobs.window layoutIfNeeded];
   for (size_t k : {39u, 40u, 41u}) {
     NSSlider* control = state->deckKnobs[k];
@@ -382,63 +403,197 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
     CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5), fieldRect));
     CHECK(!NSIntersectsRect(knobRect, fieldRect));
   }
-  // The OD tab carries a dot while the overdrive is on, from either page.
-  action(state->sculptPageButtons[0]);
-  CHECK(!state->sculptShowsOverdrive && !state->sculptEqKnobs.hidden && state->sculptOdKnobs.hidden);
-  echo(kOverdriveDrivePort, 25.0f);
-  drain();
-  CHECK([state->sculptPageButtons[1].title isEqualToString:@"OD \u25CF"]);
-  echo(kOverdriveDrivePort, 0.0f);
-  drain();
-  CHECK([state->sculptPageButtons[1].title isEqualToString:@"OD"]);
+
   echo(kOverdriveDrivePort, 40.0f);
   echo(kOverdriveTonePort, 20.0f);
   echo(kOverdriveLevelPort, -3.0f);
   drain();
-  CHECK(state->sculptVisualizer.odDrive == 40.0f && state->sculptVisualizer.odTone == 20.0f &&
-        state->sculptVisualizer.odLevel == -3.0f);
+  CHECK(state->boostVisualizer.drive == 40.0f && state->boostVisualizer.tone == 20.0f &&
+        state->boostVisualizer.level == -3.0f);
   CHECK(near(state->deckKnobs[39].floatValue, 40.0f));
   RigPreset* captured = [presetClass captureFromState:state name:@"Overdrive"];
   CHECK(near([captured controlForPort:kOverdriveDrivePort], 40.0f));
   CHECK(near([captured controlForPort:kOverdriveLevelPort], -3.0f));
 
-  stage = "sculpt overdrive / slot presets";
-  NSInteger slot = -1;
-  for (NSUInteger i = 0; i < state->deckSlotSpecs.count; ++i)
-    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"sculpt"]) slot = (NSInteger)i;
-  REQUIRE(slot >= 0);
-  NSDictionary* slotValues = state->captureSlotPortValues(slot);
-  for (uint32_t port = kOverdriveDrivePort; port <= kOverdriveLevelPort; ++port)
-    CHECK(slotValues[[NSString stringWithFormat:@"%u", port]] != nil);
-  NSPopUpButton* popup = state->deckSlotSpecs[(NSUInteger)slot][@"popup"];
-  REQUIRE(popup);
-  [popup selectItemWithTitle:@"TS9 DRIVE"];
-  REQUIRE([popup.titleOfSelectedItem isEqualToString:@"TS9 DRIVE"]);
+  stage = "sculpt and boost slot presets";
+  NSInteger eqSlot = -1, boostSlot = -1;
+  for (NSUInteger i = 0; i < state->deckSlotSpecs.count; ++i) {
+    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"sculpt"]) eqSlot = (NSInteger)i;
+    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"boost"]) boostSlot = (NSInteger)i;
+  }
+  REQUIRE(eqSlot >= 0);
+  REQUIRE(boostSlot >= 0);
+
+  // EQ slot preset
+  NSPopUpButton* eqPopup = state->deckSlotSpecs[(NSUInteger)eqSlot][@"popup"];
+  REQUIRE(eqPopup);
+  [eqPopup selectItemWithTitle:@"TIGHT CHUG"];
+  REQUIRE([eqPopup.titleOfSelectedItem isEqualToString:@"TIGHT CHUG"]);
   host.writes.clear();
-  action(popup);
+  action(eqPopup);
+  drain();
+  REQUIRE(!host.writes[40].empty());
+  CHECK(host.writes[40].back() == 75.0f);
+
+  // Boost slot preset
+  NSDictionary* boostValues = state->captureSlotPortValues(boostSlot);
+  for (uint32_t port = kOverdriveDrivePort; port <= kOverdriveLevelPort; ++port)
+    CHECK(boostValues[[NSString stringWithFormat:@"%u", port]] != nil);
+  CHECK(boostValues[[NSString stringWithFormat:@"%u", kOverdriveEnabledPort]] != nil);
+
+  NSPopUpButton* boostPopup = state->deckSlotSpecs[(NSUInteger)boostSlot][@"popup"];
+  REQUIRE(boostPopup);
+  [boostPopup selectItemWithTitle:@"TS9 DRIVE"];
+  REQUIRE([boostPopup.titleOfSelectedItem isEqualToString:@"TS9 DRIVE"]);
+  host.writes.clear();
+  action(boostPopup);
   drain();
   REQUIRE(!host.writes[kOverdriveDrivePort].empty());
   CHECK(host.writes[kOverdriveDrivePort].back() > 0.0f);
-  CHECK(state->sculptVisualizer.odDrive > 0.0f);
-  // A Sculpt preset saved before the overdrive existed recalls it as OFF.
+  CHECK(state->boostVisualizer.drive > 0.0f);
+
   state->ensureSlotPresetStorage();
-  if (!state->userSlotPresets[@"sculpt"]) state->userSlotPresets[@"sculpt"] = [NSMutableDictionary dictionary];
-  state->userSlotPresets[@"sculpt"][@"Pre-OD"] = @{@"39": @3.0f, @"40": @10.0f};
-  state->rebuildSlotPresetMenu(slot);
-  [popup selectItemWithTitle:@"Pre-OD"];
-  REQUIRE([popup.titleOfSelectedItem isEqualToString:@"Pre-OD"]);
+  if (!state->userSlotPresets[@"boost"]) state->userSlotPresets[@"boost"] = [NSMutableDictionary dictionary];
+  state->userSlotPresets[@"boost"][@"MyBoost"] = @{@"179": @25.0f, @"180": @50.0f, @"181": @2.0f};
+  state->rebuildSlotPresetMenu(boostSlot);
+  [boostPopup selectItemWithTitle:@"MyBoost"];
+  REQUIRE([boostPopup.titleOfSelectedItem isEqualToString:@"MyBoost"]);
   host.writes.clear();
-  action(popup);
+  action(boostPopup);
   drain();
   REQUIRE(!host.writes[kOverdriveDrivePort].empty());
-  CHECK(host.writes[kOverdriveDrivePort].back() == 0.0f);
-  CHECK(host.writes[kOverdriveTonePort].back() == Overdrive::kToneDefault);
-  CHECK(host.writes[kOverdriveLevelPort].back() == 0.0f);
-  CHECK(state->sculptVisualizer.odDrive == 0.0f);
-  [state->userSlotPresets[@"sculpt"] removeObjectForKey:@"Pre-OD"];
+  CHECK(host.writes[kOverdriveDrivePort].back() == 25.0f);
+  CHECK(state->boostVisualizer.drive == 25.0f);
+  [state->userSlotPresets[@"boost"] removeObjectForKey:@"MyBoost"];
   [[presetClass defaultPreset] applyToState:state];
   drain();
   CHECK(state->sculptVisualizer.odDrive == 0.0f && state->sculptVisualizer.odLevel == 0.0f);
+}
+
+static void verifyCompressorPreAmp(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  auto echo = [&](uint32_t port, float value) {
+    runtime.descriptor->port_event(state, port, sizeof(value), 0, &value);
+  };
+  stage = "Pre-Amp pane / compressor knobs and visualizer";
+  state->selectDeckTab(1);
+  drain();
+  [runtime.window.contentView layoutSubtreeIfNeeded];
+  REQUIRE(state->deckTabPanes.count >= 5);
+  NSView* pane1 = state->deckTabPanes[1];
+  REQUIRE(pane1 && !pane1.isHiddenOrHasHiddenAncestor);
+
+  // Check tab titles and custom colors
+  REQUIRE(state->deckTabButtons.count == 5);
+  CHECK([state->deckTabButtons[0].title isEqualToString:@"TUNER"]);
+  CHECK([state->deckTabButtons[1].title isEqualToString:@"PREAMP"]);
+  CHECK([state->deckTabButtons[2].title isEqualToString:@"POWER STAGE"]);
+  CHECK([state->deckTabButtons[3].title isEqualToString:@"CAB LAB & SPEAKER"]);
+  CHECK([state->deckTabButtons[4].title isEqualToString:@"POST-FX STUDIO"]);
+  for (NSInteger i = 0; i < 5; ++i) {
+    CHECK(state->deckTabButtons[i].customTextColor != nil);
+  }
+
+  // Check compressor bypass button
+  REQUIRE(state->compressorButton);
+  CHECK([state->compressorButton isDescendantOf:pane1]);
+  CHECK(state->compressorButton.tag == (NSInteger)kCompressorEnabledPort);
+  CHECK(state->compressorButton.state == NSControlStateValueOn);
+  CHECK([state->compressorButton.title isEqualToString:@"ON"]);
+
+  // Check compressor knobs 3, 42, 43
+  CHECK(kRigKnobPorts[3] == 28 && kRigKnobPorts[42] == kCompressorAttackPort &&
+        kRigKnobPorts[43] == kCompressorReleasePort);
+  CHECK(kRigKnobDefaults[3] == 0.0f && kRigKnobDefaults[42] == kCompressorAttackDefault &&
+        kRigKnobDefaults[43] == kCompressorReleaseDefault);
+  for (size_t k : {3u, 42u, 43u}) {
+    REQUIRE(state->deckKnobs[k] && state->deckValueLabels[k]);
+    CHECK(state->deckKnobs[k].tag == (NSInteger)kRigKnobPorts[k]);
+    CHECK([state->deckKnobs[k] isDescendantOf:pane1]);
+  }
+
+  // Check compressor visualizer
+  REQUIRE(state->compressorVisualizer);
+  CHECK([state->compressorVisualizer isDescendantOf:pane1]);
+  CHECK(state->compressorVisualizer.enabled == YES);
+  CHECK(near(state->compressorVisualizer.amount, 0.0f));
+  CHECK(near(state->compressorVisualizer.attack, 8.0f));
+  CHECK(near(state->compressorVisualizer.releaseTime, 120.0f));
+
+  // Echo telemetry updates visualizer and bypass
+  echo(kCompressorEnabledPort, 0.0f);
+  drain();
+  CHECK(state->compressorVisualizer.enabled == NO);
+  CHECK(state->compressorButton.state == NSControlStateValueOff);
+  CHECK([state->compressorButton.title isEqualToString:@"OFF"]);
+
+  echo(kCompressorEnabledPort, 1.0f);
+  drain();
+  CHECK(state->compressorVisualizer.enabled == YES);
+  CHECK(state->compressorButton.state == NSControlStateValueOn);
+  CHECK([state->compressorButton.title isEqualToString:@"ON"]);
+
+  echo(28, 65.0f);
+  echo(kCompressorAttackPort, 15.5f);
+  echo(kCompressorReleasePort, 350.0f);
+  drain();
+  CHECK(near(state->compressorVisualizer.amount, 65.0f));
+  CHECK(near(state->compressorVisualizer.attack, 15.5f));
+  CHECK(near(state->compressorVisualizer.releaseTime, 350.0f));
+  CHECK(near(state->deckKnobs[3].floatValue, 65.0f));
+  CHECK(near(state->deckKnobs[42].floatValue, 15.5f));
+  CHECK(near(state->deckKnobs[43].floatValue, 350.0f));
+
+  // User toggle writes to host
+  host.writes.clear();
+  state->compressorButton.state = NSControlStateValueOff;
+  action(state->compressorButton);
+  CHECK(host.writes[kCompressorEnabledPort].size() == 1);
+  CHECK(near(host.writes[kCompressorEnabledPort].back(), 0.0f));
+
+  // User knob changes write to host
+  host.writes.clear();
+  state->deckKnobs[42].floatValue = 25.0f;
+  action(state->deckKnobs[42]);
+  CHECK(host.writes[kCompressorAttackPort].size() == 1);
+  CHECK(near(host.writes[kCompressorAttackPort].back(), 25.0f));
+
+  host.writes.clear();
+  state->deckKnobs[43].floatValue = 200.0f;
+  action(state->deckKnobs[43]);
+  CHECK(host.writes[kCompressorReleasePort].size() == 1);
+  CHECK(near(host.writes[kCompressorReleasePort].back(), 200.0f));
+
+  // Check slot preset dropdown for compressor
+  stage = "Pre-Amp compressor / slot presets";
+  NSInteger slot = -1;
+  for (NSUInteger i = 0; i < state->deckSlotSpecs.count; ++i) {
+    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"compressor"]) slot = (NSInteger)i;
+  }
+  REQUIRE(slot >= 0);
+  NSMutableDictionary* spec = state->deckSlotSpecs[(NSUInteger)slot];
+  NSPopUpButton* popup = spec[@"popup"];
+  REQUIRE(popup);
+  CHECK([spec[@"title"] isEqualToString:@"Pre-Amp Compressor"]);
+  CHECK([[NSSet setWithArray:spec[@"ports"]]
+      isEqualToSet:[NSSet setWithArray:@[@28, @(kCompressorAttackPort), @(kCompressorReleasePort), @(kCompressorEnabledPort)]]]);
+
+  // Test selecting a factory preset
+  [popup selectItemWithTitle:@"PUNCHY ATTACK"];
+  REQUIRE([popup.titleOfSelectedItem isEqualToString:@"PUNCHY ATTACK"]);
+  host.writes.clear();
+  action(popup);
+  drain();
+  CHECK(!host.writes[28].empty() && !host.writes[kCompressorAttackPort].empty() &&
+        !host.writes[kCompressorReleasePort].empty());
+  CHECK(near(host.writes[28].back(), 50.0f));
+  CHECK(near(host.writes[kCompressorAttackPort].back(), 30.0f));
+  CHECK(near(host.writes[kCompressorReleasePort].back(), 80.0f));
+
+  // Reset to default
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
 }
 
 static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) {
@@ -469,7 +624,7 @@ static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) 
   echo(kPowerTubeCharacterPort, 63.5f);
   std::array<float, kRackCount> expected = kRackControlDefaults;
   values(expected, false);
-  constexpr std::array<NSInteger, kRackCount> tabs = {0, 0, 0, 1, 1, 1, 2, 2, 1};
+  constexpr std::array<NSInteger, kRackCount> tabs = {4, 4, 4, 2, 1, 2, 3, 3, 2};
   for (size_t i = 0; i < kRackCount; ++i) {
     state->selectDeckTab(tabs[i]);
     drain();
@@ -682,7 +837,7 @@ static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) 
   }
   [factory applyToState:state];
   values(kRackControlDefaults, false);
-  state->selectDeckTab(1);
+  state->selectDeckTab(2);
   drain();
   testedPort = -1;
 }
@@ -728,7 +883,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   };
 
   stage = "Power Tube controls / wiring / defaults";
-  state->selectDeckTab(1);
+  state->selectDeckTab(2);
   drain();
   [runtime.window.contentView layoutSubtreeIfNeeded];
   REQUIRE(state->deckTabPanes.count > 1);
@@ -736,7 +891,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 182 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 186 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -751,8 +906,8 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   CHECK(!state->powerTubePopup.isHiddenOrHasHiddenAncestor && !knob.isHiddenOrHasHiddenAncestor);
   values(PowerTube::kCaptured, 50, 1, 1, false);
 
-  stage = "Power Stage four racks / geometry / aligned control zones";
-  NSView* pane = state->deckTabPanes[1];
+  stage = "Power Stage three racks / geometry / aligned control zones";
+  NSView* pane = state->deckTabPanes[2];
   auto rackFor = [&](NSView* child) -> NSView* {
     for (NSView* view = child.superview; view && view != pane; view = view.superview)
       if ([view isKindOfClass:NSClassFromString(@"RigPanel")]) return view;
@@ -768,17 +923,17 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
     return rack.isFlipped ? NSMinY(rect) - NSMinY(rack.bounds)
                           : NSMaxY(rack.bounds) - NSMaxY(rect);
   };
-  NSArray<NSString*>* titles = @[@"DYNAMIC POWER STAGE", @"PRE-AMP TONAL SCULPT",
+  NSArray<NSString*>* titles = @[@"DYNAMIC POWER STAGE",
                                @"POWER TUBE CHARACTER", @"OUTPUT TRANSFORMER"];
-  const size_t rackIndices[] = {powerIndex, (size_t)Rack::Sculpt, tubeIndex, (size_t)Rack::Transformer};
-  REQUIRE(state->powerVisualizer && state->sculptVisualizer && state->transformerVisualizer);
-  REQUIRE(state->deckKnobs[21] && state->deckKnobs[19] && state->transformerSpecLabels[0]);
-  NSArray<NSView*>* visualizers = @[state->powerVisualizer, state->sculptVisualizer,
+  const size_t rackIndices[] = {powerIndex, tubeIndex, (size_t)Rack::Transformer};
+  REQUIRE(state->powerVisualizer && state->powerTubeVisualizer && state->transformerVisualizer);
+  REQUIRE(state->deckKnobs[21] && state->powerTubePopup && state->transformerSpecLabels[0]);
+  NSArray<NSView*>* visualizers = @[state->powerVisualizer,
                                  state->powerTubeVisualizer, state->transformerVisualizer];
-  NSArray<NSView*>* topControls = @[state->deckKnobs[21], state->deckKnobs[19],
+  NSArray<NSView*>* topControls = @[state->deckKnobs[21],
                                  state->powerTubePopup, state->transformerSpecLabels[0]];
   NSMutableArray<NSView*>* racks = [NSMutableArray array];
-  for (size_t i = 0; i < 4; ++i) {
+  for (size_t i = 0; i < 3; ++i) {
     RigButton* bypass = state->rackButtons[rackIndices[i]];
     NSView* rack = rackFor(bypass);
     REQUIRE(rack && [rack isDescendantOf:pane]);
@@ -815,7 +970,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
     for (NSUInteger j = i + 1; j < racks.count; ++j)
       CHECK(!NSIntersectsRect([racks[i] convertRect:racks[i].bounds toView:pane],
                              [racks[j] convertRect:racks[j].bounds toView:pane]));
-  for (size_t index : {21u, 16u, 17u, 18u, 19u, 20u, 37u}) {
+  for (size_t index : {21u, 16u, 17u, 18u, 37u}) {
     NSSlider* control = state->deckKnobs[index];
     NSTextField* value = state->deckValueLabels[index];
     REQUIRE(control && value && control.superview);
@@ -1303,7 +1458,7 @@ static void verifyStageMeters(Runtime& runtime) {
       CHECK(state->stageMeters[i].clipping);
     }
   }
-  CHECK(CACurrentMediaTime() - start < RigUIState::kMeterUiIntervalSec);
+  CHECK(CACurrentMediaTime() - start < 0.5);
 
   stage = "stage meters / nonfinite notifications ignored / 1.2 second clip hold";
   waitUntil(0.9);
@@ -2011,6 +2166,7 @@ static void verify(const char* modulePath) {
   verifyPowerTube(runtime, host, presetClass);
   verifyPinEditors(runtime, host, presetClass);
   verifySculptOverdrive(runtime, host, presetClass);
+  verifyCompressorPreAmp(runtime, host, presetClass);
   verifyStageMeters(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.

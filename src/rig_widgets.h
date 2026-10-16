@@ -37,6 +37,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @interface RigButton : NSButton
 @property(nonatomic) BOOL primary;
 @property(nonatomic) BOOL check;
+@property(nonatomic, strong) NSColor* customTextColor;
 @end
 
 // Text field that supports standard editing shortcuts (Cmd+A for select all,
@@ -80,6 +81,13 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float room;
 @end
 
+@interface NAMCompressorVisualizer : NSView
+@property(nonatomic) float amount;
+@property(nonatomic) float attack;
+@property(nonatomic) float releaseTime;
+@property(nonatomic) BOOL enabled;
+@end
+
 @interface NAMPowerStageVisualizer : NSView
 @property(nonatomic) float sag;
 @property(nonatomic) float bias;
@@ -95,6 +103,14 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float odDrive;
 @property(nonatomic) float odTone;
 @property(nonatomic) float odLevel;
+@property(nonatomic) BOOL enabled;
+@end
+
+@interface NAMBoostVisualizer : NSView
+@property(nonatomic) float drive;
+@property(nonatomic) float tone;
+@property(nonatomic) float level;
+@property(nonatomic) BOOL enabled;
 @end
 
 @interface NAMPowerTubeVisualizer : NSView

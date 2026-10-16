@@ -29,7 +29,11 @@ assert "kPowerTubeTypePort == kRackControlFirstPort + kRackCount" in header
 assert "kMidPushPort == kPowerTubeCharacterPort + 1" in header
 assert "kPinEqFirstPort == kMidPushPort + 1" in header
 assert "kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount" in header
-assert "kPortCount == kOverdriveLevelPort + 1" in header
+assert "kCompressorAttackPort == kOverdriveLevelPort + 1" in header
+assert "kCompressorReleasePort == kCompressorAttackPort + 1" in header
+assert "kCompressorEnabledPort == kCompressorReleasePort + 1" in header
+assert "kOverdriveEnabledPort == kCompressorEnabledPort + 1" in header
+assert "kPortCount == kOverdriveEnabledPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 for index, symbol in enumerate(symbols, 71):

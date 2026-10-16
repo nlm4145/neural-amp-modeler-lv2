@@ -48,7 +48,7 @@ assert static_symbols == {port: symbol for port, symbol in ttl_symbols.items()
                           if port not in excluded_ports | family_ports}, (
     "shared static ports and symbols must exactly match shipped preset coverage and TTL"
 )
-assert "kRigKnobCount = 42" in knobs_h
+assert "kRigKnobCount = 44" in knobs_h
 expected_ports = [
     15, 23, 4, 28, 22, 12, 13, 14, 25, 26, 27, 5, 32, 33,
     34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46,
@@ -60,7 +60,11 @@ assert static_symbols[81] == "power_tube_character"
 expected_ports.append(81)
 assert static_symbols[82] == "mid_push"
 for port, sym in (("kOverdriveDrivePort", "od_drive"), ("kOverdriveTonePort", "od_tone"),
-                  ("kOverdriveLevelPort", "od_level")):
+                  ("kOverdriveLevelPort", "od_level"),
+                  ("kCompressorAttackPort", "compressor_attack"),
+                  ("kCompressorReleasePort", "compressor_release"),
+                  ("kCompressorEnabledPort", "compressor_enabled"),
+                  ("kOverdriveEnabledPort", "od_enabled")):
     assert static_symbols[int(port_constants[port])] == sym
 expected_ports.append(82)
 
@@ -232,8 +236,8 @@ for required_audio_sym in (
     assert required_audio_sym in standalone_mm, f"standalone_main.mm missing {required_audio_sym}"
 
 assert '@"CAB A LVL"' in ui_mm, "knobNames[8] must be labeled CAB A LVL"
-assert "const size_t groupCounts[3] = {4, 6, 1};" in ui_mm, \
-    "Cab card must display only 1 knob (OUTPUT) directly underneath, with advanced cab knobs in Dual-Cabinet Blend Console"
+assert "const size_t groupCounts[3] = {2, 6, 1};" in ui_mm, \
+    "Pedal card has 2 knobs (Gate threshold/release), amp has 6, cab has 1 (OUTPUT)"
 plugin_cpp = (ROOT / "src" / "nam_rig_plugin.cpp").read_text()
 assert "if (haveA && consoleOn) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
     "cab_level (CAB A LVL) must scale Cab A independently before blending with Cab B"

@@ -115,7 +115,9 @@ static NSString* stageName(NSInteger stage) {
 - (void)applyReverbPreset:(NSButton*)sender;
 - (void)applySpatialPreset:(NSButton*)sender;
 - (void)applyPowerPreset:(NSButton*)sender;
+- (void)applyCompressorPreset:(NSButton*)sender;
 - (void)applySculptPreset:(NSButton*)sender;
+- (void)applyBoostPreset:(NSButton*)sender;
 - (void)sculptPageClicked:(NSButton*)sender;
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
@@ -617,7 +619,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)showAmpAdvanced:(NSButton*)sender {
   (void)sender;
   if (!_state) return;
-  _state->selectDeckTab(1);  // Switch to POWER STAGE & IRON in Lower Studio Deck
+  _state->selectDeckTab(2);  // Switch to POWER STAGE in Lower Studio Deck
 }
 
 - (void)speakerProfileChanged:(NSPopUpButton*)sender {
@@ -631,13 +633,13 @@ static NSString* stageName(NSInteger stage) {
 - (void)showSpeakerLoad:(NSButton*)sender {
   (void)sender;
   if (!_state) return;
-  _state->selectDeckTab(2);  // Switch to CAB LAB & SPEAKER in Lower Studio Deck
+  _state->selectDeckTab(3);  // Switch to CAB LAB & SPEAKER in Lower Studio Deck
 }
 
 - (void)showEffects:(NSButton*)sender {
   (void)sender;
   if (!_state) return;
-  _state->selectDeckTab(0);  // Switch to POST-FX STUDIO in Lower Studio Deck
+  _state->selectDeckTab(4);  // Switch to POST-FX STUDIO in Lower Studio Deck
 }
 
 - (void)resetAllKnobs:(id)sender {
@@ -731,19 +733,40 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
+- (void)applyCompressorPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct CompPreset { float amount, attack, releaseTime; };
+  const CompPreset presets[] = {
+    {40.0f, 15.0f, 200.0f},  // SMOOTH SUSTAIN
+    {50.0f, 30.0f, 80.0f},   // PUNCHY ATTACK
+    {65.0f, 2.0f, 60.0f},    // FAST SQUASH
+    {25.0f, 10.0f, 150.0f},  // TRANSPARENT
+    {0.0f, 8.0f, 120.0f}     // OFF / BYPASS
+  };
+  if (sender.tag >= 0 && sender.tag < 5) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(28, p.amount); _state->updateControl(28, p.amount);
+    _state->sendControl(NAMRig::kCompressorAttackPort, p.attack);
+    _state->updateControl(NAMRig::kCompressorAttackPort, p.attack);
+    _state->sendControl(NAMRig::kCompressorReleasePort, p.releaseTime);
+    _state->updateControl(NAMRig::kCompressorReleasePort, p.releaseTime);
+    [self markPresetModified];
+  }
+}
+
 - (void)sculptPageClicked:(NSButton*)sender {
   if (_state) _state->setSculptPage(sender.tag == 1);
 }
 
 - (void)applySculptPreset:(NSButton*)sender {
   if (!_state) return;
-  struct SculptPreset { float bright, inputEq, midPush, odDrive, odTone, odLevel; };
+  struct SculptPreset { float bright, inputEq, midPush; };
   const SculptPreset presets[] = {
-    {6.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f},    // LEAD BOOST
-    {3.0f, 75.0f, 0.0f, 0.0f, 50.0f, 0.0f},   // TIGHT CHUG
-    {0.0f, 60.0f, 70.0f, 0.0f, 50.0f, 0.0f},  // OD PUSH
-    {0.0f, 30.0f, 0.0f, 20.0f, 55.0f, 6.0f},  // TS9 DRIVE
-    {0.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f}     // FLAT
+    {6.0f, 0.0f, 0.0f},    // LEAD BOOST
+    {3.0f, 75.0f, 0.0f},   // TIGHT CHUG
+    {0.0f, 60.0f, 70.0f},  // MID PUSH
+    {5.0f, 30.0f, 40.0f},  // BRIGHT & OPEN
+    {0.0f, 0.0f, 0.0f}     // FLAT
   };
   if (sender.tag >= 0 && sender.tag < 5) {
     const auto& p = presets[sender.tag];
@@ -751,12 +774,28 @@ static NSString* stageName(NSInteger stage) {
     _state->sendControl(40, p.inputEq); _state->updateControl(40, p.inputEq);
     _state->sendControl(NAMRig::kMidPushPort, p.midPush);
     _state->updateControl(NAMRig::kMidPushPort, p.midPush);
-    _state->sendControl(NAMRig::kOverdriveDrivePort, p.odDrive);
-    _state->updateControl(NAMRig::kOverdriveDrivePort, p.odDrive);
-    _state->sendControl(NAMRig::kOverdriveTonePort, p.odTone);
-    _state->updateControl(NAMRig::kOverdriveTonePort, p.odTone);
-    _state->sendControl(NAMRig::kOverdriveLevelPort, p.odLevel);
-    _state->updateControl(NAMRig::kOverdriveLevelPort, p.odLevel);
+    [self markPresetModified];
+  }
+}
+
+- (void)applyBoostPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct BoostPreset { float drive, tone, level; };
+  const BoostPreset presets[] = {
+    {0.0f, 50.0f, 6.0f},   // CLEAN BOOST
+    {35.0f, 55.0f, 2.0f},  // TS9 DRIVE
+    {60.0f, 65.0f, 4.0f},  // LEAD PUSH
+    {15.0f, 70.0f, 3.0f},  // TIGHT CHUG
+    {45.0f, 40.0f, 0.0f}   // WARM OVERDRIVE
+  };
+  if (sender.tag >= 0 && sender.tag < 5) {
+    const auto& p = presets[sender.tag];
+    _state->sendControl(NAMRig::kOverdriveDrivePort, p.drive);
+    _state->updateControl(NAMRig::kOverdriveDrivePort, p.drive);
+    _state->sendControl(NAMRig::kOverdriveTonePort, p.tone);
+    _state->updateControl(NAMRig::kOverdriveTonePort, p.tone);
+    _state->sendControl(NAMRig::kOverdriveLevelPort, p.level);
+    _state->updateControl(NAMRig::kOverdriveLevelPort, p.level);
     [self markPresetModified];
   }
 }
@@ -1690,13 +1729,15 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
   const CGFloat sortW = 180.0;
   controller.sort = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24 + searchW + 12 + gearW + 10, bh - 38, sortW, 28) pullsDown:NO];
-  [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
+  [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match", @"ESR (Best Accuracy)", @"ESR (Highest Error)"]];
   NSArray<NSString*>* sortTips = @[
     @"Newest — Show the most recently published tones first.",
     @"Trending — Use Tone3000's current popularity ranking.",
     @"Most Downloaded — Show tones with the highest download counts first.",
     @"Oldest — Show the earliest published tones first.",
-    @"Best Match — Prioritize search relevance for the current query."
+    @"Best Match — Prioritize search relevance for the current query.",
+    @"ESR (Best Accuracy) — Order tones by lowest Error-to-Signal Ratio first (most accurate analog captures).",
+    @"ESR (Highest Error) — Order tones by highest Error-to-Signal Ratio first."
   ];
   for (NSUInteger item = 0; item < sortTips.count; ++item)
     [controller.sort itemAtIndex:item].toolTip = sortTips[item];
@@ -1946,7 +1987,8 @@ static NSView* addDeckKnobCell(NSView* parent,
 
 static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString* subtitle,
                                       NSColor* titleColor, RigUIState* state = nullptr,
-                                      NAMRig::Rack rackID = NAMRig::Rack::Count) {
+                                      NAMRig::Rack rackID = NAMRig::Rack::Count,
+                                      uint32_t customPort = 0) {
   RigPanel* rack = addPanel(parent, NSZeroRect);
   rack.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -1966,9 +2008,10 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
   [[tLabel.leadingAnchor constraintEqualToAnchor:hView.leadingAnchor] setActive:YES];
   [[tLabel.centerYAnchor constraintEqualToAnchor:hView.centerYAnchor] setActive:YES];
 
-  if (state && rackID != NAMRig::Rack::Count) {
-    const size_t index = static_cast<size_t>(rackID);
-    const uint32_t port = NAMRig::kRackControlFirstPort + index;
+  if (state && (rackID != NAMRig::Rack::Count || customPort != 0)) {
+    const uint32_t port = (rackID != NAMRig::Rack::Count)
+        ? (NAMRig::kRackControlFirstPort + static_cast<size_t>(rackID))
+        : customPort;
     RigButton* button = rigButton(hView, @"ON", state->uiController,
                                   @selector(controlChanged:), NSZeroRect);
     button.tag = port;
@@ -1987,8 +2030,17 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
     [tLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                     forOrientation:NSLayoutConstraintOrientationHorizontal];
     [[tLabel.trailingAnchor constraintLessThanOrEqualToAnchor:button.leadingAnchor constant:-10] setActive:YES];
-    state->rackButtons[index] = button;
-    state->updateControl(port, state->rackControls[index]);
+    if (rackID != NAMRig::Rack::Count) {
+      const size_t index = static_cast<size_t>(rackID);
+      state->rackButtons[index] = button;
+      state->updateControl(port, state->rackControls[index]);
+    } else if (customPort == NAMRig::kCompressorEnabledPort) {
+      state->compressorButton = button;
+      state->updateControl(port, state->compressorEnabled);
+    } else if (customPort == NAMRig::kOverdriveEnabledPort) {
+      state->boostButton = button;
+      state->updateControl(port, state->boostEnabled);
+    }
   } else if (subtitle.length) {
     NSTextField* sLabel = addLabel(hView, subtitle, NSZeroRect,
                                    [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
@@ -2088,6 +2140,15 @@ static NSPopUpButton* addSlotPresetDropdown(
     spec[@"enabledPort"] = enabledPort;
     break;
   }
+  if ([slotKey isEqualToString:@"compressor"]) {
+    NSNumber* enabledPort = @(NAMRig::kCompressorEnabledPort);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
+  } else if ([slotKey isEqualToString:@"boost"]) {
+    NSNumber* enabledPort = @(NAMRig::kOverdriveEnabledPort);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
+  }
   [state->deckSlotSpecs addObject:spec];
   state->rebuildSlotPresetMenu(slotIdx);
 
@@ -2144,22 +2205,31 @@ static void addLowerStudioDeck(RigUIState* state,
   [[tabStack.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
   NSArray<NSString*>* tabTitles = @[
-    @"POST-FX STUDIO",
-    @"POWER STAGE & IRON",
+    @"TUNER",
+    @"PREAMP",
+    @"POWER STAGE",
     @"CAB LAB & SPEAKER",
-    @"PRECISION TUNER"
+    @"POST-FX STUDIO"
+  ];
+  NSArray<NSColor*>* tabColors = @[
+    [NSColor colorWithSRGBRed:0.35 green:0.78 blue:1.00 alpha:1.0],  // Blue (Tuner)
+    [NSColor colorWithSRGBRed:1.00 green:0.62 blue:0.18 alpha:1.0],  // Orange (Preamp)
+    [NSColor colorWithSRGBRed:0.80 green:0.55 blue:1.00 alpha:1.0],  // Purple (Power Stage)
+    [NSColor colorWithSRGBRed:0.30 green:0.90 blue:0.60 alpha:1.0],  // Green (Cab Lab)
+    [NSColor colorWithSRGBRed:0.75 green:0.78 blue:0.90 alpha:1.0]   // Subtle Lavender (Post-FX)
   ];
   NSMutableArray<RigButton*>* tabBtns = [NSMutableArray array];
-  for (NSInteger i = 0; i < 4; ++i) {
+  for (NSInteger i = 0; i < 5; ++i) {
     RigButton* b = rigButton(tabStack, tabTitles[(NSUInteger)i],
                              state->uiController, @selector(switchDeckTab:),
                              NSZeroRect);
     b.tag = i;
     b.buttonType = NSButtonTypeToggle;
     b.check = YES;
+    b.customTextColor = tabColors[(NSUInteger)i];
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [tabStack addArrangedSubview:b];
-    [[b.widthAnchor constraintEqualToConstant:162] setActive:YES];
+    [[b.widthAnchor constraintEqualToConstant:138] setActive:YES];
     [[b.heightAnchor constraintEqualToConstant:26] setActive:YES];
     [tabBtns addObject:b];
   }
@@ -2185,9 +2255,9 @@ static void addLowerStudioDeck(RigUIState* state,
   [[deckContainer.trailingAnchor constraintEqualToAnchor:expansionSlot.trailingAnchor constant:-16] setActive:YES];
   [[deckContainer.bottomAnchor constraintEqualToAnchor:expansionSlot.bottomAnchor constant:-12] setActive:YES];
 
-  // Create 4 tab panes
+  // Create 5 tab panes
   NSMutableArray<NSView*>* panes = [NSMutableArray array];
-  for (NSInteger i = 0; i < 4; ++i) {
+  for (NSInteger i = 0; i < 5; ++i) {
     NSView* p = [[NSView alloc] initWithFrame:NSZeroRect];
     p.translatesAutoresizingMaskIntoConstraints = NO;
     [deckContainer addSubview:p];
@@ -2205,9 +2275,9 @@ static void addLowerStudioDeck(RigUIState* state,
   NSColor* cyanColor = [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:1.0];
 
   // ==========================================
-  // PANE 0: POST-FX STUDIO
+  // PANE 4: POST-FX STUDIO
   // ==========================================
-  NSView* pane0 = panes[0];
+  NSView* pane0 = panes[4];
   NSStackView* row0 = [[NSStackView alloc] initWithFrame:NSZeroRect];
   row0.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   row0.distribution = NSStackViewDistributionFillProportionally;
@@ -2429,9 +2499,9 @@ static void addLowerStudioDeck(RigUIState* state,
   }
 
   // ==========================================
-  // PANE 1: POWER STAGE & IRON
+  // PANE 2: POWER STAGE & IRON
   // ==========================================
-  NSView* pane1 = panes[1];
+  NSView* pane1 = panes[2];
   NSStackView* row1 = [[NSStackView alloc] initWithFrame:NSZeroRect];
   row1.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   row1.distribution = NSStackViewDistributionFill;
@@ -2444,7 +2514,6 @@ static void addLowerStudioDeck(RigUIState* state,
   [[row1.trailingAnchor constraintEqualToAnchor:pane1.trailingAnchor] setActive:YES];
 
   RigPanel* pwrRackRef = nil;
-  RigPanel* sculptRackRef = nil;
   RigPanel* transRackRef = nil;
   RigPanel* tubeRackRef = nil;
 
@@ -2519,111 +2588,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[pwrVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
   }
 
-  // 2. Pre-Amp Sculpting (2 knobs: 19, 20)
-  {
-    RigPanel* rack = addStudioRackSection(row1, @"PRE-AMP TONAL SCULPT", @"INPUT CONDITIONING", goldColor, state, NAMRig::Rack::Sculpt);
-    [row1 addArrangedSubview:rack];
-    sculptRackRef = rack;
-
-    // Two pages of three knobs share the 108pt zone: EQ and the overdrive.
-    NSView* kr = [[NSView alloc] initWithFrame:NSZeroRect];
-    kr.translatesAutoresizingMaskIntoConstraints = NO;
-    [rack addSubview:kr];
-    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
-    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
-    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
-    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
-
-    const size_t sculptPages[2][3] = {{19, 20, 38}, {39, 40, 41}};
-    NSStackView* pages[2];
-    for (size_t pg = 0; pg < 2; ++pg) {
-      NSStackView* page = [[NSStackView alloc] initWithFrame:NSZeroRect];
-      page.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-      page.distribution = NSStackViewDistributionFillEqually;
-      page.spacing = 6.0;
-      page.translatesAutoresizingMaskIntoConstraints = NO;
-      [kr addSubview:page];
-      [[page.topAnchor constraintEqualToAnchor:kr.topAnchor] setActive:YES];
-      [[page.bottomAnchor constraintEqualToAnchor:kr.bottomAnchor] setActive:YES];
-      [[page.leadingAnchor constraintEqualToAnchor:kr.leadingAnchor] setActive:YES];
-      [[page.trailingAnchor constraintEqualToAnchor:kr.trailingAnchor] setActive:YES];
-      for (size_t idx : sculptPages[pg])
-        [page addArrangedSubview:addDeckKnobCell(page, state, idx, mins, maxes, knobNames, knobDescriptions)];
-      pages[pg] = page;
-    }
-    state->sculptEqKnobs = pages[0];
-    state->sculptOdKnobs = pages[1];
-
-    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
-    card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
-    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
-    card.layer.borderWidth = 1.0;
-    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
-    [rack addSubview:card];
-    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
-    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
-    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
-    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
-
-    NSTextField* desc = addLabel(card, @"TS-style overdrive and pre-amp EQ before the capture.",
-                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
-                                 rigDimText(), NSTextAlignmentLeft);
-    desc.translatesAutoresizingMaskIntoConstraints = NO;
-    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
-    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
-    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
-
-    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
-    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    chips.distribution = NSStackViewDistributionFill;  // popup takes what the EQ/OD tabs leave
-    chips.spacing = 6.0;
-    chips.translatesAutoresizingMaskIntoConstraints = NO;
-    [card addSubview:chips];
-    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
-    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
-    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
-    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
-
-    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"OD PUSH",
-                                               @"TS9 DRIVE", @"FLAT"];
-    addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp Tonal Sculpt",
-                          [@[@39, @40, @(NAMRig::kMidPushPort), @(NAMRig::kOverdriveDrivePort),
-                             @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)]
-                              arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Sculpt)],
-                          sculptPresetTitles,
-                          @selector(applySculptPreset:));
-    NSArray<NSString*>* pageTitles = @[@"EQ", @"OD"];
-    NSArray<NSString*>* pageTips = @[
-      @"Show the EQ knobs: Bright, Input EQ and Mid Push.",
-      @"Show the Tube Screamer-style overdrive: Drive, Tone and Level. A dot means the overdrive is on."];
-    for (NSInteger pg = 0; pg < 2; ++pg) {
-      RigButton* b = rigChip(chips, pageTitles[pg], state->uiController, @selector(sculptPageClicked:), pg);
-      b.buttonType = NSButtonTypePushOnPushOff;
-      b.toolTip = pageTips[pg];
-      [chips addArrangedSubview:b];
-      [[b.widthAnchor constraintEqualToConstant:pg == 0 ? 34 : 44] setActive:YES];
-      [[b.heightAnchor constraintEqualToConstant:20] setActive:YES];
-      state->sculptPageButtons[(size_t)pg] = b;
-    }
-
-    NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
-    scVis.translatesAutoresizingMaskIntoConstraints = NO;
-    scVis.bright = 0.0f;
-    scVis.inputEq = 0.0f;
-    scVis.midPush = 0.0f;
-    scVis.odTone = NAMRig::Overdrive::kToneDefault;
-    state->sculptVisualizer = scVis;
-    state->setSculptPage(false);
-    installPinEditor(state, scVis.pinEditor);
-    [card addSubview:scVis];
-    [[scVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
-    [[scVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
-    [[scVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
-    [[scVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
-  }
-
-  // 3. Power Tube Character shares the power-stage engine, not a second saturator.
+  // 2. Power Tube Character shares the power-stage engine, not a second saturator.
   {
     RigPanel* rack = addStudioRackSection(row1, @"POWER TUBE CHARACTER", @"TUBE-INSPIRED POST-CAPTURE SHAPING", goldColor, state, NAMRig::Rack::PowerTube);
     [row1 addArrangedSubview:rack];
@@ -2890,16 +2855,15 @@ static void addLowerStudioDeck(RigUIState* state,
     state->updateTransformerTelemetry(0);
   }
 
-  if (pwrRackRef && sculptRackRef && transRackRef && tubeRackRef) {
-    [[sculptRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.70] setActive:YES];
-    [[tubeRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.88] setActive:YES];
-    [[transRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.88] setActive:YES];
+  if (pwrRackRef && transRackRef && tubeRackRef) {
+    [[tubeRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:0.90] setActive:YES];
+    [[transRackRef.widthAnchor constraintEqualToAnchor:pwrRackRef.widthAnchor multiplier:1.05] setActive:YES];
   }
 
   // ==========================================
-  // PANE 2: CAB LAB & SPEAKER
+  // PANE 3: CAB LAB & SPEAKER
   // ==========================================
-  NSView* pane2 = panes[2];
+  NSView* pane2 = panes[3];
   NSStackView* row2 = [[NSStackView alloc] initWithFrame:NSZeroRect];
   row2.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   row2.distribution = NSStackViewDistributionFillProportionally;
@@ -3085,14 +3049,12 @@ static void addLowerStudioDeck(RigUIState* state,
   }
 
   // ==========================================
-  // PANE 3: PRECISION TUNER DECK
+  // PANE 1: PRE AMP
   // ==========================================
-  NSView* pane3 = panes[3];
-  state->tunerPanel = pane3;
-
+  NSView* pane3 = panes[1];
   NSStackView* row3 = [[NSStackView alloc] initWithFrame:NSZeroRect];
   row3.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  row3.distribution = NSStackViewDistributionFill;
+  row3.distribution = NSStackViewDistributionFillEqually;
   row3.spacing = 14.0;
   row3.translatesAutoresizingMaskIntoConstraints = NO;
   [pane3 addSubview:row3];
@@ -3101,10 +3063,247 @@ static void addLowerStudioDeck(RigUIState* state,
   [[row3.leadingAnchor constraintEqualToAnchor:pane3.leadingAnchor] setActive:YES];
   [[row3.trailingAnchor constraintEqualToAnchor:pane3.trailingAnchor] setActive:YES];
 
+  // 1. Pre-Amp Compressor (3 knobs: 3 [Amount], 42 [Attack], 43 [Release])
+  {
+    RigPanel* rack = addStudioRackSection(row3, @"PRE-AMP COMPRESSOR", @"DYNAMIC CONTROL & TRANSIENTS",
+                                          goldColor, state, NAMRig::Rack::Count, NAMRig::kCompressorEnabledPort);
+    [row3 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t compK[3] = {3, 42, 43};
+    for (size_t idx : compK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Studio feed-forward VCA compressor with soft knee and dynamic gain reduction.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* compPresetTitles = @[@"SMOOTH SUSTAIN", @"PUNCHY ATTACK", @"FAST SQUASH", @"TRANSPARENT", @"OFF / BYPASS"];
+    addSlotPresetDropdown(chips, state, @"compressor", @"Pre-Amp Compressor",
+                          @[@28, @(NAMRig::kCompressorAttackPort), @(NAMRig::kCompressorReleasePort)],
+                          compPresetTitles, @selector(applyCompressorPreset:));
+
+    NAMCompressorVisualizer* compVis = [[NAMCompressorVisualizer alloc] initWithFrame:NSZeroRect];
+    compVis.translatesAutoresizingMaskIntoConstraints = NO;
+    compVis.amount = 0.0f;
+    compVis.attack = 8.0f;
+    compVis.releaseTime = 120.0f;
+    state->compressorVisualizer = compVis;
+    [card addSubview:compVis];
+    [[compVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[compVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[compVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[compVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 2. Pre-Amp EQ (left)
+  {
+    RigPanel* rack = addStudioRackSection(row3, @"PRE-AMP EQ", @"INPUT CONDITIONING & SHAPING", goldColor, state, NAMRig::Rack::Sculpt);
+    [row3 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t eqK[3] = {19, 20, 38};
+    for (size_t idx : eqK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+    state->sculptEqKnobs = kr;
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Bright switch, input EQ, mid push, and 6-band parametric pin EQ.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* sculptPresetTitles = @[@"LEAD BOOST", @"TIGHT CHUG", @"MID PUSH", @"BRIGHT & OPEN", @"FLAT"];
+    addSlotPresetDropdown(chips, state, @"sculpt", @"Pre-Amp EQ",
+                          [@[@39, @40, @(NAMRig::kMidPushPort)]
+                              arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Sculpt)],
+                          sculptPresetTitles,
+                          @selector(applySculptPreset:));
+
+    NAMSculptVisualizer* scVis = [[NAMSculptVisualizer alloc] initWithFrame:NSZeroRect];
+    scVis.translatesAutoresizingMaskIntoConstraints = NO;
+    scVis.bright = 0.0f;
+    scVis.inputEq = 0.0f;
+    scVis.midPush = 0.0f;
+    scVis.odTone = NAMRig::Overdrive::kToneDefault;
+    scVis.enabled = state->rackControls[(size_t)NAMRig::Rack::Sculpt] >= 0.5f;
+    state->sculptVisualizer = scVis;
+    installPinEditor(state, scVis.pinEditor);
+    [card addSubview:scVis];
+    [[scVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[scVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[scVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[scVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // 3. Pre-Amp Boost (right)
+  {
+    RigPanel* rack = addStudioRackSection(row3, @"PRE-AMP BOOST", @"TS-STYLE OVERDRIVE & PUSH",
+                                          goldColor, state, NAMRig::Rack::Count, NAMRig::kOverdriveEnabledPort);
+    [row3 addArrangedSubview:rack];
+
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6.0;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+
+    const size_t boostK[3] = {39, 40, 41};
+    for (size_t idx : boostK) {
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+    }
+    state->sculptOdKnobs = kr;
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES; card.layer.cornerRadius = 6.0;
+    card.layer.backgroundColor = [NSColor colorWithSRGBRed:0.11 green:0.12 blue:0.15 alpha:0.95].CGColor;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.8].CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+
+    NSTextField* desc = addLabel(card, @"Tube Screamer-inspired overdrive with symmetric soft clipping and active tone filtering.",
+                                 NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
+                                 rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+
+    NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.spacing = 6.0;
+    chips.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:chips];
+    [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    NSArray<NSString*>* boostPresetTitles = @[@"CLEAN BOOST", @"TS9 DRIVE", @"LEAD PUSH", @"TIGHT CHUG", @"WARM OVERDRIVE"];
+    addSlotPresetDropdown(chips, state, @"boost", @"Pre-Amp Boost",
+                          @[@(NAMRig::kOverdriveDrivePort), @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)],
+                          boostPresetTitles, @selector(applyBoostPreset:));
+
+    NAMBoostVisualizer* bVis = [[NAMBoostVisualizer alloc] initWithFrame:NSZeroRect];
+    bVis.translatesAutoresizingMaskIntoConstraints = NO;
+    bVis.drive = 0.0f;
+    bVis.tone = NAMRig::Overdrive::kToneDefault;
+    bVis.level = 0.0f;
+    bVis.enabled = state->boostEnabled;
+    state->boostVisualizer = bVis;
+    [card addSubview:bVis];
+    [[bVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[bVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[bVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[bVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
+
+  // ==========================================
+  // PANE 0: PRECISION TUNER DECK
+  // ==========================================
+  NSView* pane4 = panes[0];
+  state->tunerPanel = pane4;
+
+  NSStackView* row4 = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  row4.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row4.distribution = NSStackViewDistributionFill;
+  row4.spacing = 14.0;
+  row4.translatesAutoresizingMaskIntoConstraints = NO;
+  [pane4 addSubview:row4];
+  [[row4.topAnchor constraintEqualToAnchor:pane4.topAnchor] setActive:YES];
+  [[row4.bottomAnchor constraintEqualToAnchor:pane4.bottomAnchor] setActive:YES];
+  [[row4.leadingAnchor constraintEqualToAnchor:pane4.leadingAnchor] setActive:YES];
+  [[row4.trailingAnchor constraintEqualToAnchor:pane4.trailingAnchor] setActive:YES];
+
   // 1. Pitch Detector Display
   {
-    RigPanel* pitchRack = addStudioRackSection(row3, @"PITCH DETECTOR", @"HARMONIC TRACKER", cyanColor);
-    [row3 addArrangedSubview:pitchRack];
+    RigPanel* pitchRack = addStudioRackSection(row4, @"PITCH DETECTOR", @"HARMONIC TRACKER", cyanColor);
+    [row4 addArrangedSubview:pitchRack];
     [[pitchRack.widthAnchor constraintEqualToConstant:290] setActive:YES];
 
     NSView* displayBox = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -3162,8 +3361,8 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 2. Precision Cent Deviation Meter & String Reference
   {
-    RigPanel* meterRack = addStudioRackSection(row3, @"PRECISION CENT DEVIATION", @"±50 CENTS HIGH-RES STROBE METER", cyanColor);
-    [row3 addArrangedSubview:meterRack];
+    RigPanel* meterRack = addStudioRackSection(row4, @"PRECISION CENT DEVIATION", @"±50 CENTS HIGH-RES STROBE METER", cyanColor);
+    [row4 addArrangedSubview:meterRack];
 
     // Ruler markings view
     NSView* ruler = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -3331,8 +3530,8 @@ static void addLowerStudioDeck(RigUIState* state,
 
   // 3. Tuner Controls & Calibration
   {
-    RigPanel* ctrlRack = addStudioRackSection(row3, @"TUNER CONTROLS & ROUTING", @"CALIBRATION & MUTE", cyanColor);
-    [row3 addArrangedSubview:ctrlRack];
+    RigPanel* ctrlRack = addStudioRackSection(row4, @"TUNER CONTROLS & ROUTING", @"CALIBRATION & MUTE", cyanColor);
+    [row4 addArrangedSubview:ctrlRack];
     [[ctrlRack.widthAnchor constraintEqualToConstant:290] setActive:YES];
 
     RigButton* tBtn = rigButton(ctrlRack, @"TUNER ACTIVE", state->uiController,
@@ -3766,7 +3965,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"CAB B LVL", @"ALIGN", @"DLY TIME", @"DLY FDBK",
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
-                                      @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL"];
+                                      @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
+                                      @"ATTACK", @"RELEASE"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -3774,7 +3974,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
-                                       @"OFF", @"50%", @"+0.0 dB"];
+                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -3817,19 +4017,21 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Mid push (pre-amp). Overdrive-style midrange bell (750 Hz, up to +9 dB) before the NAM amp model, like a Tube Screamer or tight boost. Pair with Input EQ and a little Drive to stand in for a separate overdrive capture. 0% is exact bypass.",
       @"Overdrive drive (pre-amp, Tube Screamer-style). Clips only the mids above 720 Hz with a soft diode pair and mixes the clean signal back, so bass stays tight and pick attack survives. Sits in front of the amp like a pedal, ahead of Amp Drive. Low drive with Level up is the classic boost into a high-gain amp. 0% is exact bypass.",
       @"Overdrive tone. Treble roll-off after the clipper, from dark (700 Hz) to bright (8.4 kHz). Shown on the Sculpt graph. Only applies while OD Drive is on.",
-      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on."
+      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on.",
+      @"Attack time for the pre-model compressor (1 to 100 ms). Faster attack clamps pick transients sooner; slower attack lets the transient through for more snap.",
+      @"Release time for the pre-model compressor (10 to 1000 ms). Faster release gives a breathing, lively response; slower release yields smooth sustain."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, -12.0};
+        0.0, 0.0, -12.0, 1.0, 10.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        100.0, 100.0, 12.0};
+        100.0, 100.0, 12.0, 100.0, 1000.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -3848,8 +4050,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     RigPanel* tileBoxes[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
-    const size_t groupSlots[3][6] = {{0, 1, 2, 3, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 0, 0, 0, 0, 0}};
-    const size_t groupCounts[3] = {4, 6, 1};
+    // Pedal tile displays Gate threshold and release; Input level trim is fixed at 0 dB
+    // and compressor amount lives in the dedicated Pre-Amp Compressor tone card.
+    const size_t groupSlots[3][6] = {{0, 1, 0, 0, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 0, 0, 0, 0, 0}};
+    const size_t groupCounts[3] = {2, 6, 1};
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -3863,7 +4067,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       // 64pt. Cell width must fit the 70pt value box, so each 6-knob group
       // gets 1/6 of its tile width; spacing only separates groups, never
       // cells — knobs can't drift together no matter how wide the window is.
-      // The 4-knob pedal group keeps roomier cells for the same knob size.
+      // The 2-knob pedal group keeps roomier cells for the same knob size.
       const CGFloat groupPad = 4.0;
       const CGFloat knobSide = 64.0;
       NSView* prev = nil;
@@ -3945,7 +4149,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[expansionSlot.bottomAnchor constraintEqualToAnchor:rigPane.bottomAnchor constant:-20] setActive:YES];
 
     addLowerStudioDeck(state, expansionSlot, mins, maxes, knobNames, knobDescriptions);
-    state->selectDeckTab(0);
+    state->selectDeckTab(1);
 
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));

@@ -25,6 +25,10 @@ inline void forEachWin32ControlDefault(Set&& set) {
       case 51: value = 35.0f; break;
       case 52: value = 40.0f; break;
       case 58: value = 10.0f; break;
+      case NAMRig::kCompressorAttackPort: value = NAMRig::kCompressorAttackDefault; break;
+      case NAMRig::kCompressorReleasePort: value = NAMRig::kCompressorReleaseDefault; break;
+      case NAMRig::kCompressorEnabledPort:
+      case NAMRig::kOverdriveEnabledPort: value = 1.0f; break;
       default: break;
     }
     set(entry.port, value);

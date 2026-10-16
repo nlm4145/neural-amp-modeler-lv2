@@ -19,7 +19,15 @@ inline constexpr uint32_t kPinEqPortCount = 96;
 inline constexpr uint32_t kOverdriveDrivePort = 179;
 inline constexpr uint32_t kOverdriveTonePort = 180;
 inline constexpr uint32_t kOverdriveLevelPort = 181;
-inline constexpr uint32_t kRigControlPortCount = 182;
+// Pre-Amp Compressor attack, release, and bypass controls.
+inline constexpr uint32_t kCompressorAttackPort = 182;
+inline constexpr uint32_t kCompressorReleasePort = 183;
+inline constexpr uint32_t kCompressorEnabledPort = 184;
+inline constexpr float kCompressorAttackDefault = 8.0f;     // ms
+inline constexpr float kCompressorReleaseDefault = 120.0f;  // ms
+// Pre-Amp Boost (Overdrive) bypass control.
+inline constexpr uint32_t kOverdriveEnabledPort = 185;
+inline constexpr uint32_t kRigControlPortCount = 186;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

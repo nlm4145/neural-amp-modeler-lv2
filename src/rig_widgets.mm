@@ -3,6 +3,7 @@
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include "dynamics.h"
 #include "pin_eq.h"
 #include "power_tube_controls.h"
 #include "overdrive.h"
@@ -272,14 +273,18 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
 
   NSColor* border;
   if (self.primary) {
-    NSColor* base = on ? rigAccent() : rigAccentDim();
+    NSColor* base = self.customTextColor
+        ? [self.customTextColor blendedColorWithFraction:0.55 ofColor:NSColor.blackColor]
+        : (on ? rigAccent() : rigAccentDim());
     if (self.isHighlighted) base = [base blendedColorWithFraction:0.22 ofColor:NSColor.blackColor];
     else if (_hovered) base = [base blendedColorWithFraction:0.14 ofColor:NSColor.whiteColor];
     NSGradient* g = [[NSGradient alloc]
         initWithStartingColor:[base blendedColorWithFraction:0.18 ofColor:NSColor.blackColor]
                   endingColor:base];
     [g drawInBezierPath:p angle:90.0];
-    border = [base blendedColorWithFraction:0.22 ofColor:NSColor.whiteColor];
+    border = self.customTextColor
+        ? [self.customTextColor blendedColorWithFraction:0.25 ofColor:NSColor.whiteColor]
+        : [base blendedColorWithFraction:0.22 ofColor:NSColor.whiteColor];
   } else {
     NSColor* fill = on ? [rigAccent() colorWithAlphaComponent:0.24]
                        : (self.isHighlighted ? rigRaised()
@@ -300,9 +305,10 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   if (self.check) {
     const CGFloat d = 6.0;
     NSRect dot = NSMakeRect(NSMinX(r) + 9.0, NSMidY(r) - d * 0.5, d, d);
-    NSColor* dc = on ? rigGreen() : [rigDimText() colorWithAlphaComponent:0.5];
+    NSColor* dotColor = self.customTextColor ?: rigGreen();
+    NSColor* dc = on ? dotColor : [rigDimText() colorWithAlphaComponent:0.5];
     if (on) {
-      [[rigGreen() colorWithAlphaComponent:0.30] setFill];
+      [[dotColor colorWithAlphaComponent:0.30] setFill];
       [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(dot, -2.5, -2.5)] fill];
     }
     [dc setFill];
@@ -315,8 +321,14 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
     NSMutableParagraphStyle* ps = [NSMutableParagraphStyle new];
     ps.alignment = NSTextAlignmentCenter;
     ps.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSColor* tc = self.primary ? NSColor.whiteColor
-        : ((_hovered || self.isHighlighted || on) ? rigText() : rigDimText());
+    NSColor* tc;
+    if (self.customTextColor) {
+      tc = self.primary ? self.customTextColor
+                        : (_hovered ? self.customTextColor : [self.customTextColor colorWithAlphaComponent:0.85]);
+    } else {
+      tc = self.primary ? NSColor.whiteColor
+                        : ((_hovered || self.isHighlighted || on) ? rigText() : rigDimText());
+    }
     if (!self.enabled) tc = [rigDimText() colorWithAlphaComponent:0.5];
     NSDictionary* attrs = @{
       NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
@@ -1206,6 +1218,234 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 }
 @end
 
+@implementation NAMCompressorVisualizer
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  self = [super initWithFrame:frameRect];
+  if (self) {
+    _enabled = YES;
+  }
+  return self;
+}
+- (BOOL)isFlipped { return NO; }
+- (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
+- (void)setAmount:(float)v { _amount = v; self.needsDisplay = YES; }
+- (void)setAttack:(float)v { _attack = v; self.needsDisplay = YES; }
+- (void)setReleaseTime:(float)v { _releaseTime = v; self.needsDisplay = YES; }
+
+- (void)drawRect:(NSRect)dirty {
+  (void)dirty;
+  NSRect r = self.bounds;
+  if (r.size.width < 10 || r.size.height < 10) return;
+
+  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
+  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [bg fill];
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  bg.lineWidth = 1.0;
+  [bg stroke];
+
+  CGFloat splitX = r.size.width * 0.48;
+
+  NSBezierPath* sep = [NSBezierPath bezierPath];
+  [sep moveToPoint:NSMakePoint(splitX, 8)];
+  [sep lineToPoint:NSMakePoint(splitX, r.size.height - 8)];
+  sep.lineWidth = 1.0;
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.8] setStroke];
+  [sep stroke];
+
+  const float compNorm = std::min(1.0f, std::max(0.0f, _amount * 0.01f));
+  const BOOL isBypassed = !_enabled || compNorm < 0.005f;
+  const float activeNorm = _enabled ? compNorm : 0.0f;
+  const float attackMs = std::max(0.5f, _attack > 0.0f ? _attack : 8.0f);
+  const float releaseMs = std::max(5.0f, _releaseTime > 0.0f ? _releaseTime : 120.0f);
+  const float thresholdDb = -12.0f - 24.0f * activeNorm;
+  const float ratio = 1.0f + 5.0f * activeNorm;
+  const float makeupDb = 6.0f * activeNorm;
+
+  NSDictionary* headerAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
+  };
+  [@"COMPRESSION TRANSFER" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+
+  NSDictionary* envHeaderAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
+  };
+  [@"ATTACK & RELEASE ENVELOPE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:envHeaderAttrs];
+
+  NSString* telemetry;
+  if (!_enabled) {
+    telemetry = @"COMPRESSOR BYPASSED (OFF)";
+  } else if (compNorm < 0.005f) {
+    telemetry = @"COMPRESSOR BYPASSED (0%)";
+  } else {
+    telemetry = [NSString stringWithFormat:@"THRESH: %.0fdB  •  RATIO: %.1f:1  •  ATTACK: %.1fms  •  REL: %.0fms",
+                 thresholdDb, ratio, attackMs, releaseMs];
+  }
+  NSDictionary* infoAttrs = @{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSForegroundColorAttributeName: isBypassed
+        ? [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
+        : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
+  };
+  NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
+  [telemetry drawAtPoint:NSMakePoint(r.size.width - 14 - infoSize.width, r.size.height - 18) withAttributes:infoAttrs];
+
+  const CGFloat lPad = 32.0;
+  const CGFloat rPad = splitX - 16.0;
+  const CGFloat bPad = 22.0;
+  const CGFloat tPad = r.size.height - 28.0;
+  const CGFloat plotW = rPad - lPad;
+  const CGFloat plotH = tPad - bPad;
+
+  NSDictionary* dbAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
+  };
+
+  const char* dbLabels[] = {"0", "-20", "-40", "-60"};
+  for (int d = 0; d < 4; ++d) {
+    CGFloat frac = (CGFloat)d / 3.0;
+    CGFloat y = bPad + plotH * (1.0 - frac);
+
+    NSBezierPath* hline = [NSBezierPath bezierPath];
+    [hline moveToPoint:NSMakePoint(lPad, y)];
+    [hline lineToPoint:NSMakePoint(rPad, y)];
+    CGFloat pattern[2] = {2.0, 3.0};
+    [hline setLineDash:pattern count:2 phase:0.0];
+    hline.lineWidth = 0.5;
+    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.45] setStroke];
+    [hline stroke];
+
+    NSString* lbl = [NSString stringWithUTF8String:dbLabels[d]];
+    [lbl drawAtPoint:NSMakePoint(lPad - 20, y - 5) withAttributes:dbAttrs];
+  }
+
+  NSBezierPath* diag = [NSBezierPath bezierPath];
+  [diag moveToPoint:NSMakePoint(lPad, bPad)];
+  [diag lineToPoint:NSMakePoint(rPad, tPad)];
+  CGFloat diagPattern[2] = {3.0, 3.0};
+  [diag setLineDash:diagPattern count:2 phase:0.0];
+  diag.lineWidth = 0.8;
+  [[NSColor colorWithSRGBRed:0.30 green:0.33 blue:0.40 alpha:0.6] setStroke];
+  [diag stroke];
+
+  const int kSteps = 60;
+  NSBezierPath* curve = [NSBezierPath bezierPath];
+  for (int s = 0; s <= kSteps; ++s) {
+    float inDb = -60.0f + 60.0f * ((float)s / (float)kSteps);
+    float redDb = (activeNorm > 0.005f) ? NAMRig::compressorReductionDb(inDb, thresholdDb, ratio, 6.0f) : 0.0f;
+    float outDb = inDb + ((activeNorm > 0.005f) ? makeupDb : 0.0f) - redDb;
+    outDb = std::clamp(outDb, -60.0f, 6.0f);
+
+    CGFloat x = lPad + ((inDb + 60.0f) / 60.0f) * plotW;
+    CGFloat y = bPad + ((outDb + 60.0f) / 60.0f) * plotH;
+    if (s == 0) [curve moveToPoint:NSMakePoint(x, y)];
+    else [curve lineToPoint:NSMakePoint(x, y)];
+  }
+
+  NSBezierPath* fill = [curve copy];
+  [fill lineToPoint:NSMakePoint(rPad, bPad)];
+  [fill lineToPoint:NSMakePoint(lPad, bPad)];
+  [fill closePath];
+
+  NSGradient* g = [[NSGradient alloc]
+      initWithStartingColor:[NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:0.35 * (0.2f + 0.8f * activeNorm)]
+                endingColor:[NSColor colorWithSRGBRed:0.20 green:0.12 blue:0.05 alpha:0.02]];
+  [g drawInBezierPath:fill angle:270.0];
+
+  curve.lineWidth = 2.0;
+  [[NSColor colorWithSRGBRed:1.00 green:0.80 blue:0.30 alpha:isBypassed ? 0.55 : 0.95] setStroke];
+  [curve stroke];
+
+  if (activeNorm > 0.005f) {
+    CGFloat tx = lPad + ((thresholdDb + 60.0f) / 60.0f) * plotW;
+    float outThreshDb = thresholdDb + makeupDb - NAMRig::compressorReductionDb(thresholdDb, thresholdDb, ratio, 6.0f);
+    CGFloat ty = bPad + ((outThreshDb + 60.0f) / 60.0f) * plotH;
+    NSBezierPath* dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(tx - 3.5, ty - 3.5, 7.0, 7.0)];
+    [[NSColor colorWithSRGBRed:1.0 green:0.9 blue:0.4 alpha:1.0] setFill];
+    [dot fill];
+    [[NSColor colorWithSRGBRed:0.1 green:0.1 blue:0.1 alpha:0.8] setStroke];
+    dot.lineWidth = 1.0;
+    [dot stroke];
+  }
+
+  const CGFloat elPad = splitX + 24.0;
+  const CGFloat erPad = r.size.width - 20.0;
+  const CGFloat eplotW = erPad - elPad;
+  const CGFloat eplotH = plotH;
+
+  for (int d = 0; d < 3; ++d) {
+    CGFloat y = bPad + eplotH * (1.0 - (CGFloat)d / 2.0);
+    NSBezierPath* hline = [NSBezierPath bezierPath];
+    [hline moveToPoint:NSMakePoint(elPad, y)];
+    [hline lineToPoint:NSMakePoint(erPad, y)];
+    CGFloat pattern[2] = {2.0, 3.0};
+    [hline setLineDash:pattern count:2 phase:0.0];
+    hline.lineWidth = 0.5;
+    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.45] setStroke];
+    [hline stroke];
+  }
+
+  [@"0 dB" drawAtPoint:NSMakePoint(elPad - 18, bPad + eplotH - 5) withAttributes:dbAttrs];
+  [@"GR" drawAtPoint:NSMakePoint(elPad - 18, bPad + 2) withAttributes:dbAttrs];
+
+  const float maxT = 250.0f;
+  const float burstStart = 20.0f;
+  const float burstEnd = 90.0f;
+  const float maxReductionNorm = compNorm;
+
+  NSBezierPath* env = [NSBezierPath bezierPath];
+  const int kEnvSteps = 80;
+  for (int s = 0; s <= kEnvSteps; ++s) {
+    float t = maxT * ((float)s / (float)kEnvSteps);
+    float gain = 1.0f;
+    if (t < burstStart) {
+      gain = 1.0f;
+    } else if (t < burstEnd) {
+      float elapsed = t - burstStart;
+      float attProgress = 1.0f - std::exp(-elapsed / std::max(0.5f, attackMs * 0.35f));
+      float gr = maxReductionNorm * 0.75f * attProgress;
+      gain = 1.0f - gr;
+    } else {
+      float elapsedAtt = burstEnd - burstStart;
+      float attProgress = 1.0f - std::exp(-elapsedAtt / std::max(0.5f, attackMs * 0.35f));
+      float maxGr = maxReductionNorm * 0.75f * attProgress;
+      float elapsedRel = t - burstEnd;
+      float relProgress = std::exp(-elapsedRel / std::max(5.0f, releaseMs * 0.35f));
+      gain = 1.0f - maxGr * relProgress;
+    }
+    CGFloat x = elPad + (t / maxT) * eplotW;
+    CGFloat y = bPad + gain * eplotH;
+    if (s == 0) [env moveToPoint:NSMakePoint(x, y)];
+    else [env lineToPoint:NSMakePoint(x, y)];
+  }
+
+  NSBezierPath* envFill = [env copy];
+  [envFill lineToPoint:NSMakePoint(erPad, bPad)];
+  [envFill lineToPoint:NSMakePoint(elPad, bPad)];
+  [envFill closePath];
+
+  NSGradient* eg = [[NSGradient alloc]
+      initWithStartingColor:[NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.35 * (0.2f + 0.8f * compNorm)]
+                endingColor:[NSColor colorWithSRGBRed:0.05 green:0.18 blue:0.22 alpha:0.02]];
+  [eg drawInBezierPath:envFill angle:270.0];
+
+  env.lineWidth = 2.0;
+  [[NSColor colorWithSRGBRed:0.35 green:0.90 blue:1.00 alpha:0.95] setStroke];
+  [env stroke];
+
+  NSDictionary* timeAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightRegular],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.50 green:0.55 blue:0.65 alpha:0.8]
+  };
+  [@"0ms" drawAtPoint:NSMakePoint(elPad, bPad - 14) withAttributes:timeAttrs];
+  [@"100ms" drawAtPoint:NSMakePoint(elPad + (100.0f / maxT) * eplotW - 12, bPad - 14) withAttributes:timeAttrs];
+  [@"250ms" drawAtPoint:NSMakePoint(erPad - 20, bPad - 14) withAttributes:timeAttrs];
+}
+@end
+
 @implementation NAMPowerStageVisualizer
 - (BOOL)isFlipped { return NO; }
 - (void)setSag:(float)v { _sag = v; self.needsDisplay = YES; }
@@ -1291,11 +1531,12 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 @implementation NAMSculptVisualizer
 - (instancetype)initWithFrame:(NSRect)frame {
   if ((self = [super initWithFrame:frame])) {
+    _enabled = YES;
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Sculpt
         accent:[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:1.0]];
     [self addSubview:_pinEditor];
     _odTone = NAMRig::Overdrive::kToneDefault;
-    self.toolTip = @"Pre-amp EQ before the capture: Tight, Bright, Mid Push and, with OD Drive on, the overdrive's Tone and Level. The overdrive's clipping depends on how hard you play and is not drawn.";
+    self.toolTip = @"Pre-amp EQ before the capture: Tight, Bright, Mid Push and 6-band parametric pin EQ.";
   }
   return self;
 }
@@ -1308,6 +1549,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   _pinEditor.frame = NSInsetRect([self plotRect], -kPinEditorInset, -kPinEditorInset);
 }
 - (BOOL)isFlipped { return NO; }
+- (void)setEnabled:(BOOL)v { _enabled = v; _pinEditor.hidden = !v; self.needsDisplay = YES; }
 - (void)setBright:(float)v { _bright = v; self.needsDisplay = YES; }
 - (void)setInputEq:(float)v { _inputEq = v; self.needsDisplay = YES; }
 - (void)setMidPush:(float)v { _midPush = v; self.needsDisplay = YES; }
@@ -1330,17 +1572,20 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
-  [@"PRE-AMP OVERDRIVE & TONAL SCULPT" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [@"PRE-AMP TONAL SCULPT & EQ" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
-  const bool odOn = _odDrive >= 0.5f;
-  NSString* stat = odOn
-      ? [NSString stringWithFormat:@"OD: %.0f%%  •  TONE: %.0f%%  •  LEVEL: %+.1f dB",
-                                   _odDrive, _odTone, _odLevel]
-      : [NSString stringWithFormat:@"BRIGHT: %+.1f dB  •  MID: %.0f%%  •  TIGHT: %.0f%%",
-                                   _bright * 0.06, _midPush, _inputEq];
+  NSString* stat;
+  if (!_enabled) {
+    stat = @"PRE-AMP EQ BYPASSED (OFF)";
+  } else {
+    stat = [NSString stringWithFormat:@"BRIGHT: %+.1f dB  •  MID: %.0f%%  •  TIGHT: %.0f%%",
+                                       _bright * 0.06, _midPush, _inputEq];
+  }
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
+    NSForegroundColorAttributeName: _enabled
+        ? [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
+        : [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
   };
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
   [stat drawAtPoint:NSMakePoint(std::max(14.0, r.size.width - 14 - ssz.width), r.size.height - 32) withAttributes:statAttrs];
@@ -1359,10 +1604,6 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
   [baseLine stroke];
 
-  // The DSP's own filters (amp_advanced.h): Input EQ high-pass at 20..180 Hz,
-  // Bright +6 dB shelf at 2.2 kHz, Mid Push +9 dB bell at 750 Hz (Q 0.8).
-  // With the overdrive on, its post-clip Tone and Level (overdrive.h) are
-  // added; the clipping itself depends on level and is not drawn.
   NSBezierPath* curve = [NSBezierPath bezierPath];
   const int nPts = 120;
   const float tight = std::clamp(_inputEq / 100.0f, 0.0f, 1.0f);
@@ -1380,14 +1621,160 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     if (tight > 0.0f) totalDb += NAMRig::pinMagnitudeDb(hp, hz, kPinPlotRate);
     if (bright > 0.0f) totalDb += NAMRig::pinMagnitudeDb(shelf, hz, kPinPlotRate);
     if (mid > 0.0f) totalDb += NAMRig::pinMagnitudeDb(bell, hz, kPinPlotRate);
-    if (odOn) totalDb += NAMRig::Overdrive::postClipResponseDb(hz, kPinPlotRate, _odTone, _odLevel);
     const NSPoint p = NSMakePoint(leftM + frac * pw, pinPlotY(plot, totalDb));
     if (i == 0) [curve moveToPoint:p];
     else [curve lineToPoint:p];
   }
   curve.lineWidth = 2.5;
-  [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95] setStroke];
+  [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:_enabled ? 0.95 : 0.35] setStroke];
   [curve stroke];
+}
+@end
+
+@implementation NAMBoostVisualizer
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    _tone = NAMRig::Overdrive::kToneDefault;
+    _enabled = YES;
+    self.toolTip = @"TS-style symmetrical soft-clipping saturation and post-clip tone filter in front of the amplifier.";
+  }
+  return self;
+}
+- (BOOL)isFlipped { return NO; }
+- (void)setDrive:(float)v { _drive = v; self.needsDisplay = YES; }
+- (void)setTone:(float)v { _tone = v; self.needsDisplay = YES; }
+- (void)setLevel:(float)v { _level = v; self.needsDisplay = YES; }
+- (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
+
+- (void)drawRect:(NSRect)dirty {
+  const NSRect r = self.bounds;
+  if (r.size.width < 10 || r.size.height < 10) return;
+
+  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
+  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [bg fill];
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  bg.lineWidth = 1.0;
+  [bg stroke];
+
+  const CGFloat splitX = NSMidX(r);
+  NSBezierPath* sep = [NSBezierPath bezierPath];
+  [sep moveToPoint:NSMakePoint(splitX, 8)];
+  [sep lineToPoint:NSMakePoint(splitX, r.size.height - 8)];
+  sep.lineWidth = 1.0;
+  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.8] setStroke];
+  [sep stroke];
+
+  const BOOL isBypassed = !_enabled;
+  const float activeDrive = _enabled ? _drive : 0.0f;
+  const float activeTone = _tone;
+  const float activeLevel = _level;
+
+  NSDictionary* leftHeaderAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
+  };
+  [@"DRIVE SATURATION" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:leftHeaderAttrs];
+
+  NSDictionary* rightHeaderAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
+  };
+  [@"TONE & LEVEL RESPONSE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:rightHeaderAttrs];
+
+  NSString* telemetry;
+  if (!_enabled) {
+    telemetry = @"BOOST BYPASSED (OFF)";
+  } else if (_drive < 0.5f) {
+    telemetry = [NSString stringWithFormat:@"CLEAN BOOST  •  LEVEL: %+.1f dB", _level];
+  } else {
+    telemetry = [NSString stringWithFormat:@"DRIVE: %.0f%%  •  TONE: %.0f%%  •  LEVEL: %+.1f dB", _drive, _tone, _level];
+  }
+  NSDictionary* infoAttrs = @{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSForegroundColorAttributeName: isBypassed
+        ? [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
+        : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
+  };
+  NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
+  [telemetry drawAtPoint:NSMakePoint(r.size.width - 14 - infoSize.width, r.size.height - 18) withAttributes:infoAttrs];
+
+  // Left Plot: Transfer Curve (Input vs Output)
+  const CGFloat lPad = 28.0;
+  const CGFloat lRight = splitX - 16.0;
+  const CGFloat bPad = 20.0;
+  const CGFloat tPad = r.size.height - 30.0;
+  const CGFloat lPlotW = lRight - lPad;
+  const CGFloat lPlotH = tPad - bPad;
+  const CGFloat lMidY = bPad + lPlotH * 0.5;
+  const CGFloat lMidX = lPad + lPlotW * 0.5;
+
+  // Center axes
+  NSBezierPath* axes = [NSBezierPath bezierPath];
+  [axes moveToPoint:NSMakePoint(lPad, lMidY)];
+  [axes lineToPoint:NSMakePoint(lRight, lMidY)];
+  [axes moveToPoint:NSMakePoint(lMidX, bPad)];
+  [axes lineToPoint:NSMakePoint(lMidX, tPad)];
+  CGFloat pat[2] = {2.0, 3.0};
+  [axes setLineDash:pat count:2 phase:0.0];
+  axes.lineWidth = 0.5;
+  [[NSColor colorWithSRGBRed:0.25 green:0.28 blue:0.35 alpha:0.5] setStroke];
+  [axes stroke];
+
+  // Saturation curve
+  const float driveNorm = std::clamp(activeDrive * 0.01f, 0.0f, 1.0f);
+  const double g = NAMRig::Overdrive::branchGain(driveNorm);
+  NSBezierPath* satCurve = [NSBezierPath bezierPath];
+  const int kSatSteps = 50;
+  for (int s = 0; s <= kSatSteps; ++s) {
+    const double x = -1.0 + 2.0 * ((double)s / (double)kSatSteps);
+    const double clipped = x + NAMRig::Overdrive::clip(g * x * 0.15);
+    const double maxOut = 1.0 + NAMRig::Overdrive::clip(g * 0.15);
+    const double yNorm = (maxOut > 0.0) ? std::clamp(clipped / maxOut, -1.0, 1.0) : x;
+    const NSPoint pt = NSMakePoint(lPad + ((x + 1.0) * 0.5) * lPlotW, lMidY + yNorm * (lPlotH * 0.45));
+    if (s == 0) [satCurve moveToPoint:pt];
+    else [satCurve lineToPoint:pt];
+  }
+  satCurve.lineWidth = 2.0;
+  if (isBypassed) {
+    [[NSColor colorWithSRGBRed:0.45 green:0.35 blue:0.20 alpha:0.4] setStroke];
+  } else {
+    [[NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:0.95] setStroke];
+  }
+  [satCurve stroke];
+
+  // Right Plot: Post-Clip Tone Frequency Response (200 Hz .. 12 kHz, -18 dB .. +18 dB)
+  const CGFloat rLeft = splitX + 28.0;
+  const CGFloat rRight = r.size.width - 20.0;
+  const CGFloat rPlotW = rRight - rLeft;
+  const CGFloat rMidY = bPad + lPlotH * 0.5;
+
+  NSBezierPath* rBase = [NSBezierPath bezierPath];
+  [rBase moveToPoint:NSMakePoint(rLeft, rMidY)];
+  [rBase lineToPoint:NSMakePoint(rRight, rMidY)];
+  [rBase setLineDash:pat count:2 phase:0.0];
+  rBase.lineWidth = 0.5;
+  [[NSColor colorWithSRGBRed:0.25 green:0.28 blue:0.35 alpha:0.5] setStroke];
+  [rBase stroke];
+
+  NSBezierPath* toneCurve = [NSBezierPath bezierPath];
+  const int kToneSteps = 60;
+  for (int s = 0; s <= kToneSteps; ++s) {
+    const double frac = (double)s / (double)kToneSteps;
+    const double hz = 200.0 * std::pow(60.0, frac); // 200 Hz to 12 kHz
+    const double respDb = isBypassed ? 0.0 : NAMRig::Overdrive::postClipResponseDb(hz, kPinPlotRate, activeTone, activeLevel);
+    const CGFloat y = rMidY + std::clamp((CGFloat)(respDb / 18.0), -1.0, 1.0) * (lPlotH * 0.45);
+    const NSPoint pt = NSMakePoint(rLeft + frac * rPlotW, y);
+    if (s == 0) [toneCurve moveToPoint:pt];
+    else [toneCurve lineToPoint:pt];
+  }
+  toneCurve.lineWidth = 2.0;
+  if (isBypassed) {
+    [[NSColor colorWithSRGBRed:0.20 green:0.45 blue:0.50 alpha:0.4] setStroke];
+  } else {
+    [[NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95] setStroke];
+  }
+  [toneCurve stroke];
 }
 @end
 

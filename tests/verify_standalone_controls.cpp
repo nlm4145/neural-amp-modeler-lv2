@@ -21,7 +21,8 @@ int main() {
   std::array<float, kRackCount> racks{};
   std::array<float, kPinEqPortCount> pins{};
   std::array<float, 3> overdrive{};
-  float mid = 0;
+  std::array<float, 3> compressor{};
+  float mid = 0, od_enabled = 0;
   Plugin::Ports segmented{}, indexed{};
   unsigned char sentinel = 0;
   const auto seed = [&](Plugin::Ports& ports) {
@@ -36,7 +37,9 @@ int main() {
       {4, base}, {32, stereo}, {34, advanced}, {42, speaker}, {47, fx},
       {kTransformerControlFirstPort, transformer}, {kRackControlFirstPort, racks},
       {kPowerTubeTypePort, tube}, {kMidPushPort, {&mid, 1}},
-      {kPinEqFirstPort, pins}, {kOverdriveDrivePort, overdrive}});
+      {kPinEqFirstPort, pins}, {kOverdriveDrivePort, overdrive},
+      {kCompressorAttackPort, compressor},
+      {kOverdriveEnabledPort, {&od_enabled, 1}}});
   const std::span<float> values(flat);
   bindStandaloneControls(indexed, {{4, values.subspan(4, 27)}, {32, values.subspan(32)}});
   for (uint32_t p = 0; p < Plugin::kPortCount; ++p) {
@@ -54,7 +57,8 @@ int main() {
   if (base[0] != flat[4] || base.back() != flat[30] || stereo[0] != flat[32] ||
       advanced.back() != flat[41] || speaker.back() != flat[46] || fx.back() != flat[59] ||
       transformer.back() != flat[70] || racks.back() != flat[79] || tube.back() != flat[81] ||
-      mid != flat[82] || pins.back() != flat[178] || overdrive.back() != flat[181]) std::abort();
+      mid != flat[82] || pins.back() != flat[178] || overdrive.back() != flat[181] ||
+      compressor.back() != flat[184] || od_enabled != flat[185]) std::abort();
   // Exercise the Windows pin override instead of its flat-array backing.
   bindStandaloneControls(indexed, {{kPinEqFirstPort, pins}});
   for (size_t i = 0; i < pins.size(); ++i)

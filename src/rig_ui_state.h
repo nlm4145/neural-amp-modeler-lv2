@@ -143,7 +143,7 @@ struct RigUIState {
   __strong NSView* deckContainer = nil;
   __strong NSArray<RigButton*>* deckTabButtons = nil;
   __strong NSArray<NSView*>* deckTabPanes = nil;
-  NSInteger activeDeckTab = 0;
+  NSInteger activeDeckTab = 1;
 
   // Deck knobs mirror the continuous DSP parameters:
   std::array<__strong NSSlider*, kRigKnobCount> deckKnobs{};
@@ -154,6 +154,9 @@ struct RigUIState {
   std::array<__strong RigButton*, NAMRig::kRackCount> rackButtons{};
 
   // Live hardware visualizers for the studio deck:
+  __strong NAMCompressorVisualizer* compressorVisualizer = nil;
+  __strong RigButton* compressorButton = nil;
+  float compressorEnabled = 1.0f;
   __strong NAMDelayTapVisualizer* delayVisualizer = nil;
   __strong NAMReverbDecayVisualizer* reverbVisualizer = nil;
   __strong NAMSpatialAcousticVisualizer* spatialVisualizer = nil;
@@ -163,6 +166,9 @@ struct RigUIState {
   __strong NSPopUpButton* powerTubePopup = nil;
   __strong NAMPowerTubeVisualizer* powerTubeVisualizer = nil;
   __strong NAMSculptVisualizer* sculptVisualizer = nil;
+  __strong RigButton* boostButton = nil;
+  float boostEnabled = 1.0f;
+  __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
   __strong NSView* sculptEqKnobs = nil;
@@ -202,8 +208,8 @@ struct RigUIState {
         NSView* pane = deckTabPanes[(NSUInteger)i];
         pane.hidden = (i != index);
       }
-      if (index == 3) {
-        // Switched to Tuner tab: activate tuner DSP
+      if (index == 0) {
+        // Switched to Tuner tab (index 0): activate tuner DSP
         sendControl(16, 1.0f);
         if (tunerButton) {
           tunerButton.state = NSControlStateValueOn;
@@ -215,8 +221,8 @@ struct RigUIState {
         }
         if (tunerPanel) tunerPanel.hidden = NO;
         if (muteOnTune) muteOutputForTuner();
-      } else if (prevTab == 3) {
-        // Leaving Tuner tab: disable tuner DSP and restore output if muted
+      } else if (prevTab == 0) {
+        // Leaving Tuner tab (index 0): disable tuner DSP and restore output if muted
         sendControl(16, 0.0f);
         if (tunerButton) {
           tunerButton.state = NSControlStateValueOff;
@@ -1017,6 +1023,8 @@ struct RigUIState {
     if (NAMRig::isPinEqPort(port)) return pinEqControls[port - NAMRig::kPinEqFirstPort];
     if (port == NAMRig::kPowerTubeTypePort) return (float)powerTubeProfile;
     if (port == NAMRig::kPowerTubeCharacterPort) return powerTubeCharacter;
+    if (port == NAMRig::kCompressorEnabledPort) return compressorEnabled ? 1.0f : 0.0f;
+    if (port == NAMRig::kOverdriveEnabledPort) return boostEnabled ? 1.0f : 0.0f;
     if (port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
       return rackControls[port - NAMRig::kRackControlFirstPort];
@@ -1914,6 +1922,10 @@ struct RigUIState {
         if (!alive || !*alive) return;
         if (index == (size_t)NAMRig::Rack::PowerTube && powerTubeVisualizer)
           powerTubeVisualizer.enabled = rackControls[index] >= 0.5f;
+        if (index == (size_t)NAMRig::Rack::Sculpt && sculptVisualizer) {
+          sculptVisualizer.enabled = rackControls[index] >= 0.5f;
+          sculptVisualizer.needsDisplay = YES;
+        }
         if (index == (size_t)NAMRig::Rack::Power) refreshSpeakerVisualizer();
         RigButton* button = rackButtons[index];
         if (!button) return;
@@ -1925,6 +1937,46 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateRack();
       else dispatch_async(dispatch_get_main_queue(), updateRack);
+      return;
+    }
+    if (port == NAMRig::kCompressorEnabledPort) {
+      compressorEnabled = std::isfinite(value) ? (value >= 0.5f ? 1.0f : 0.0f) : 1.0f;
+      auto updateComp = ^{
+        if (!alive || !*alive) return;
+        if (compressorVisualizer) {
+          compressorVisualizer.enabled = compressorEnabled >= 0.5f;
+          compressorVisualizer.needsDisplay = YES;
+        }
+        if (compressorButton) {
+          const bool enabled = compressorEnabled >= 0.5f;
+          compressorButton.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+          compressorButton.title = enabled ? @"ON" : @"OFF";
+          compressorButton.primary = enabled;
+          compressorButton.needsDisplay = YES;
+        }
+      };
+      if ([NSThread isMainThread]) updateComp();
+      else dispatch_async(dispatch_get_main_queue(), updateComp);
+      return;
+    }
+    if (port == NAMRig::kOverdriveEnabledPort) {
+      boostEnabled = std::isfinite(value) ? (value >= 0.5f ? 1.0f : 0.0f) : 1.0f;
+      auto updateBoost = ^{
+        if (!alive || !*alive) return;
+        if (boostVisualizer) {
+          boostVisualizer.enabled = boostEnabled >= 0.5f;
+          boostVisualizer.needsDisplay = YES;
+        }
+        if (boostButton) {
+          const bool enabled = boostEnabled >= 0.5f;
+          boostButton.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+          boostButton.title = enabled ? @"ON" : @"OFF";
+          boostButton.primary = enabled;
+          boostButton.needsDisplay = YES;
+        }
+      };
+      if ([NSThread isMainThread]) updateBoost();
+      else dispatch_async(dispatch_get_main_queue(), updateBoost);
       return;
     }
     if (port == NAMRig::kPowerTubeTypePort) {
@@ -2111,13 +2163,29 @@ struct RigUIState {
         powerVisualizer.needsDisplay = YES;
       }
       if (port == 38) refreshSpeakerVisualizer();
-      if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort ||
-                               (port >= NAMRig::kOverdriveDrivePort &&
-                                port <= NAMRig::kOverdriveLevelPort))) {
+      if (compressorVisualizer && (port == 28 || port == NAMRig::kCompressorAttackPort ||
+                                   port == NAMRig::kCompressorReleasePort)) {
+        if (port == 28) compressorVisualizer.amount = value;
+        else if (port == NAMRig::kCompressorAttackPort) compressorVisualizer.attack = value;
+        else if (port == NAMRig::kCompressorReleasePort) compressorVisualizer.releaseTime = value;
+        compressorVisualizer.needsDisplay = YES;
+      }
+      if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort)) {
         if (port == 39) sculptVisualizer.bright = value;
         else if (port == 40) sculptVisualizer.inputEq = value;
         else if (port == NAMRig::kMidPushPort) sculptVisualizer.midPush = value;
-        else if (port == NAMRig::kOverdriveDrivePort) sculptVisualizer.odDrive = value;
+        sculptVisualizer.needsDisplay = YES;
+      }
+      if (boostVisualizer && (port >= NAMRig::kOverdriveDrivePort &&
+                              port <= NAMRig::kOverdriveLevelPort)) {
+        if (port == NAMRig::kOverdriveDrivePort) boostVisualizer.drive = value;
+        else if (port == NAMRig::kOverdriveTonePort) boostVisualizer.tone = value;
+        else if (port == NAMRig::kOverdriveLevelPort) boostVisualizer.level = value;
+        boostVisualizer.needsDisplay = YES;
+      }
+      if (sculptVisualizer && (port >= NAMRig::kOverdriveDrivePort &&
+                               port <= NAMRig::kOverdriveLevelPort)) {
+        if (port == NAMRig::kOverdriveDrivePort) sculptVisualizer.odDrive = value;
         else if (port == NAMRig::kOverdriveTonePort) sculptVisualizer.odTone = value;
         else sculptVisualizer.odLevel = value;
         sculptVisualizer.needsDisplay = YES;

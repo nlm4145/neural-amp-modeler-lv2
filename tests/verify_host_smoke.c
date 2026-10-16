@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
   CHECK(h != NULL, "instantiate at 48 kHz");
   if (!h) return 1;
 
-  enum { kPorts = 182, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
+  enum { kPorts = 186, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
   float ctl[kPorts] = {0};           /* mirrors Plugin::kPortCount */
@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
   memcpy(ctl + 60, trims, sizeof(trims));
   for (uint32_t p = 71; p < kRackEnd; ++p) ctl[p] = 1.0f;
   ctl[80] = 0.0f; ctl[81] = 50.0f; /* Captured, not a tenth rack switch */
+  ctl[182] = 8.0f; ctl[183] = 120.0f; ctl[184] = 1.0f; /* compressor attack, release, enabled */
 
   d->connect_port(h, 0, controlBuf);
   d->connect_port(h, 1, notifyBuf);

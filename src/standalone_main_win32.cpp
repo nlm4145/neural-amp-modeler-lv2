@@ -217,7 +217,9 @@ class StandaloneApp {
     NAMRig::bindStandaloneControls(plugin_->ports, {
         {4, controls.subspan(4, 27)}, {32, controls.subspan(32, 51)},
         {NAMRig::kPinEqFirstPort, pinEqControls_},
-        {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)}});
+        {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)},
+        {NAMRig::kCompressorAttackPort, controls.subspan(NAMRig::kCompressorAttackPort, 3)},
+        {NAMRig::kOverdriveEnabledPort, controls.subspan(NAMRig::kOverdriveEnabledPort, 1)}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -589,7 +591,7 @@ class StandaloneApp {
   std::array<LV2_URID, 4> pathURIDs_{};
   int32_t maxFramesOption_ = kMaxFrames;
 
-  std::array<float, 185> controls_{};
+  std::array<float, 186> controls_{};
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_{};
 
   std::vector<float> inputAudio_;

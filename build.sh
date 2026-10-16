@@ -279,11 +279,13 @@ PY
 
   ensure_local_codesign_identity() {
     mkdir -p "$CODESIGN_DIR"
-    if [[ ! -f "$CODESIGN_KC" ]]; then
+    if [[ ! -f "$CODESIGN_KC" ]] || ! security unlock-keychain -p "$CODESIGN_PASS" "$CODESIGN_KC" >/dev/null 2>&1; then
+      rm -f "$CODESIGN_KC"
       security create-keychain -p "$CODESIGN_PASS" "$CODESIGN_KC"
+      security unlock-keychain -p "$CODESIGN_PASS" "$CODESIGN_KC"
     fi
-    security set-keychain-settings "$CODESIGN_KC"
-    security unlock-keychain -p "$CODESIGN_PASS" "$CODESIGN_KC"
+    security set-keychain-settings -t 3600 "$CODESIGN_KC" 2>/dev/null || true
+    security unlock-keychain -p "$CODESIGN_PASS" "$CODESIGN_KC" >/dev/null 2>&1 || true
 
     if ! security find-identity -p codesigning "$CODESIGN_KC" 2>/dev/null | grep -q "$CODESIGN_ID"; then
       local tmpdir

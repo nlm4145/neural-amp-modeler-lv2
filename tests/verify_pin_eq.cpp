@@ -54,7 +54,9 @@ int main() {
   CHECK(pinEqPort(PinEqPane::Speaker, 0, kPinShape) == 155, "speaker pins append at 155");
   CHECK(pinEqPort(PinEqPane::Speaker, 5, kPinQ) == kPinEqFirstPort + kPinEqPortCount - 1 &&
         kPinEqFirstPort + kPinEqPortCount - 1 == 178, "last pin port");
-  CHECK(kOverdriveDrivePort == 179 && kRigControlPortCount == 182, "overdrive appends after the pins");
+  CHECK(kOverdriveDrivePort == 179 && kCompressorAttackPort == 182 && kCompressorEnabledPort == 184 &&
+        kOverdriveEnabledPort == 185 && kRigControlPortCount == 186,
+        "overdrive and compressor append after the pins");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::Sculpt, 0, kPinShape)) == "sculpt_pin1_shape", "symbol");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::Transformer, 2, kPinFreq)) == "transformer_pin3_freq", "symbol");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::CabConsole, 5, kPinQ)) == "cab_console_pin6_q", "symbol");

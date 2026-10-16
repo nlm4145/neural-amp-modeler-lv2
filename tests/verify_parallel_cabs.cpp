@@ -387,6 +387,10 @@ struct Host {
     std::copy(NAMRig::kRackControlDefaults.begin(), NAMRig::kRackControlDefaults.end(),
               controls.begin() + NAMRig::kRackControlFirstPort);
     controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
+    controls[NAMRig::kCompressorAttackPort] = NAMRig::kCompressorAttackDefault;
+    controls[NAMRig::kCompressorReleasePort] = NAMRig::kCompressorReleaseDefault;
+    controls[NAMRig::kCompressorEnabledPort] = 1.0f;
+    controls[NAMRig::kOverdriveEnabledPort] = 1.0f;
     // Connect the original fields explicitly; append arrays and tube controls below.
     plugin.ports = {
         sequence(control), sequence(notify), input.data(), left.data(),
@@ -414,7 +418,11 @@ struct Host {
     plugin.ports.od_drive = &controls[NAMRig::kOverdriveDrivePort];
     plugin.ports.od_tone = &controls[NAMRig::kOverdriveTonePort];
     plugin.ports.od_level = &controls[NAMRig::kOverdriveLevelPort];
-    static_assert(Plugin::kPortCount == 182, "update connections if ports change");
+    plugin.ports.compressor_attack = &controls[NAMRig::kCompressorAttackPort];
+    plugin.ports.compressor_release = &controls[NAMRig::kCompressorReleasePort];
+    plugin.ports.compressor_enabled = &controls[NAMRig::kCompressorEnabledPort];
+    plugin.ports.od_enabled = &controls[NAMRig::kOverdriveEnabledPort];
+    static_assert(Plugin::kPortCount == 186, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

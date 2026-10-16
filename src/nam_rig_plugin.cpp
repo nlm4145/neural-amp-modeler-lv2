@@ -910,12 +910,16 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   }
   smoothedInputLevel = gain;
 
-  // One-knob, feed-forward guitar compressor before the pedal/amp chain.
+  // Feed-forward guitar compressor before the pedal/amp chain.
   // Amount progressively lowers threshold (-12 -> -36 dB), raises ratio
-  // (1:1 -> 6:1), and adds up to 6 dB makeup. Fixed 8 ms attack / 120 ms
-  // release and a 6 dB soft knee retain pick definition without pumping.
-  const float compAmount = std::max(0.0f, std::min(1.0f,
-      *ports.compressor * 0.01f));
+  // (1:1 -> 6:1), and adds up to 6 dB makeup. Attack (1..100 ms, default 8 ms)
+  // and release (10..1000 ms, default 120 ms) smooth gain reduction with a 6 dB
+  // soft knee to retain pick definition without pumping.
+  // Port 184 (compressor_enabled) bypasses the compressor when toggled off.
+  const bool compEnabled = !ports.compressor_enabled || *ports.compressor_enabled >= 0.5f;
+  const float compAmount = compEnabled
+      ? std::max(0.0f, std::min(1.0f, *ports.compressor * 0.01f))
+      : 0.0f;
   if (compAmount <= 0.0001f) {
     compressorEnvelope = 0.0f;
     compressorGain = 1.0f;
@@ -923,10 +927,12 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     const float thresholdDb = -12.0f - 24.0f * compAmount;
     const float ratio = 1.0f + 5.0f * compAmount;
     const float makeupDb = 6.0f * compAmount;
+    const float attackMs = std::max(0.1f, portValue(ports.compressor_attack, kCompressorAttackDefault));
+    const float releaseMs = std::max(1.0f, portValue(ports.compressor_release, kCompressorReleaseDefault));
     const float envAttack = 1.0f - std::exp(-1.0f / (sampleRate * 0.001));
     const float envRelease = 1.0f - std::exp(-1.0f / (sampleRate * 0.080));
-    const float gainAttack = 1.0f - std::exp(-1.0f / (sampleRate * 0.008));
-    const float gainRelease = 1.0f - std::exp(-1.0f / (sampleRate * 0.120));
+    const float gainAttack = 1.0f - std::exp(-1.0f / (sampleRate * (attackMs * 0.001f)));
+    const float gainRelease = 1.0f - std::exp(-1.0f / (sampleRate * (releaseMs * 0.001f)));
     for (uint32_t i = 0; i < sampleCount; ++i) {
       const float level = std::fabs(ports.audio_out[i]);
       compressorEnvelope += (level - compressorEnvelope) *
@@ -1163,10 +1169,13 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
       // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
-      if (rackOn(Rack::Sculpt))
+      const bool odOn = portValue(ports.od_enabled, 1.0f) >= 0.5f;
+      if (odOn)
         overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
                           portValue(ports.od_tone, Overdrive::kToneDefault),
                           portValue(ports.od_level, 0.0f));
+      else
+        overdrive.reset();
       const float target = dbToLinear(*ports.amp_drive);
       const float coeff = 1.0f - std::exp(-1.0f /
           static_cast<float>(std::max(1.0, domainRate) * 0.010));

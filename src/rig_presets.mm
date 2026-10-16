@@ -437,6 +437,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
+    if (port == 4) {
+      p->_controls[4] = 0.0f;
+      continue;
+    }
     const float val = state->knobs[k] ? state->knobs[k].floatValue : kRigKnobDefaults[k];
     p->_controls[port] = val;
   }
@@ -532,6 +536,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
+    if (port == 4) {
+      state->sendControl(4, 0.0f);
+      state->updateControl(4, 0.0f);
+      continue;
+    }
     auto it = _controls.find(port);
     const float val = (it != _controls.end()) ? it->second : kRigKnobDefaults[k];
     state->sendControl(port, val);
@@ -986,6 +995,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   for (NSString* f in files) {
     if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    if ([[f stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
     NSString* fullPath = [dir stringByAppendingPathComponent:f];
     NSData* data = [NSData dataWithContentsOfFile:fullPath];
     if (!data) continue;
@@ -993,6 +1003,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     id obj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&parseErr];
     if (![obj isKindOfClass:[NSMutableDictionary class]]) continue;
     NSMutableDictionary* root = (NSMutableDictionary*)obj;
+
+    if (presetName.length && slotKey.length) {
+      NSDictionary* sp = root[@"slot_presets"];
+      if (![sp isKindOfClass:[NSDictionary class]] || ![sp[slotKey] isEqualToString:presetName])
+        continue;
+    }
 
     NSMutableDictionary* portsDict = [root[@"ports"] isKindOfClass:[NSDictionary class]]
         ? [root[@"ports"] mutableCopy] : [NSMutableDictionary dictionary];
@@ -1036,6 +1052,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
   for (NSString* f in files) {
     if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    if ([[f stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
     NSString* fullPath = [dir stringByAppendingPathComponent:f];
     NSData* data = [NSData dataWithContentsOfFile:fullPath];
     if (!data) continue;
@@ -1061,6 +1078,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
   for (NSString* f in files) {
     if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    if ([[f stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
     NSString* fullPath = [dir stringByAppendingPathComponent:f];
     NSData* data = [NSData dataWithContentsOfFile:fullPath];
     if (!data) continue;

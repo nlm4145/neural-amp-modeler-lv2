@@ -19,6 +19,8 @@
 #include <vector>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -85,6 +87,58 @@ static NSString* artworkCachePathForTone(NSInteger toneId, NSInteger stage);
 static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 @implementation ToneItem @end
 
+// Extracts the validation ESR (Error-to-Signal Ratio) from a .nam file.
+// Scans the memory-mapped file directly for "validation_esr", running sub-millisecond
+// without parsing the heavy weights tensor. Returns -1.0 if not found or on error.
+static double extractESRFromNamFile(NSString* path) {
+  if (!path.length) return -1.0;
+  if (![path.pathExtension.lowercaseString isEqualToString:@"nam"]) return -1.0;
+
+  int fd = open(path.fileSystemRepresentation, O_RDONLY);
+  if (fd < 0) return -1.0;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 50 * 1024 * 1024) {
+    close(fd);
+    return -1.0;
+  }
+  const size_t size = (size_t)st.st_size;
+  const void* mem = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+  close(fd);
+  if (mem == MAP_FAILED) return -1.0;
+
+  const char* needle = "\"validation_esr\"";
+  const size_t needleLen = strlen(needle);
+  const char* match = (const char*)memmem(mem, size, needle, needleLen);
+  double esr = -1.0;
+  if (match) {
+    const char* p = match + needleLen;
+    const char* end = (const char*)mem + size;
+    while (p < end && (*p == ' ' || *p == ':' || *p == '\t' || *p == '\r' || *p == '\n')) {
+      p++;
+    }
+    if (p < end && ((*p >= '0' && *p <= '9') || *p == '.' || *p == '-')) {
+      char* endPtr = nullptr;
+      double val = strtod(p, &endPtr);
+      if (endPtr > p && val >= 0.0 && val <= 10.0) {
+        esr = val;
+      }
+    }
+  }
+  munmap((void*)mem, size);
+  return esr;
+}
+
+// Formats an ESR value (e.g. 0.0032 -> ".003 ESR", 0.0353 -> ".035 ESR", < 0.0005 -> "<.001 ESR").
+static NSString* formatESRValue(double esr) {
+  if (esr <= 0.0 || esr > 10.0 || std::isnan(esr)) return nil;
+  if (esr < 0.0005) return @"<.001 ESR";
+  NSString* numStr = [NSString stringWithFormat:@"%.3f", esr];
+  if ([numStr hasPrefix:@"0."]) {
+    numStr = [numStr substringFromIndex:1];
+  }
+  return [NSString stringWithFormat:@"%@ ESR", numStr];
+}
+
 @implementation ToneCardItem {
   NSImageView *_artView;
   NSTextField *_titleField;
@@ -120,7 +174,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _detailField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_detailField];
 
-  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 16, 195, 18)];
+  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 16, 204, 18)];
   _tagField.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
   _tagField.textColor = rigDimText();
   _tagField.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -218,6 +272,13 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
     }
   }
 
+  if (item.minESR > 0.0) {
+    NSString* esrStr = formatESRValue(item.minESR);
+    NSString* rating = (item.minESR < 0.01) ? @"Great" : ((item.minESR < 0.035) ? @"Good" : @"Acceptable");
+    if (s.length) [s appendString:@"\n\n"];
+    [s appendFormat:@"Accuracy (ESR)\n%@ (%@ Accuracy · lower is better)", esrStr, rating];
+  }
+
   if (s.length) [s appendString:@"\n\n"];
   [s appendString:item.local ? @"Click to load into rig · Right-click to view on Tone3000"
                             : @"Click to download and load into rig · Right-click to view on Tone3000"];
@@ -239,6 +300,12 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
   if (item.customCount > 0) [badges addObject:[NSString stringWithFormat:@"Custom (%ld)", (long)item.customCount]];
   if (item.irsCount > 0) [badges addObject:[NSString stringWithFormat:@"IR (%ld)", (long)item.irsCount]];
 
+  double esr = self.browserController ? [self.browserController effectiveESRForItem:item] : item.minESR;
+  NSString* esrBadge = formatESRValue(esr);
+  if (esrBadge.length) {
+    [badges insertObject:esrBadge atIndex:0];
+  }
+
   if (badges.count > 0) {
     NSString* badgeText = [badges componentsJoinedByString:@" · "];
     if (item.local) {
@@ -249,8 +316,13 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
       _tagField.textColor = rigDimText();
     }
   } else if (item.local) {
-    _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@  ·  Downloaded",
-        (long)(item.models.count ?: 1), item.models.count == 1 ? @"" : @"s"];
+    if (esrBadge.length) {
+      _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@  ·  %@  ·  Downloaded",
+          (long)(item.models.count ?: 1), item.models.count == 1 ? @"" : @"s", esrBadge];
+    } else {
+      _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@  ·  Downloaded",
+          (long)(item.models.count ?: 1), item.models.count == 1 ? @"" : @"s"];
+    }
     _tagField.textColor = rigGreen();
   } else if (item.remoteModels.count > 0) {
     _tagField.stringValue = [NSString stringWithFormat:@"%ld model%@ available",
@@ -594,12 +666,14 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   if (!self.sort) return;
   [self.sort removeAllItems];
   if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Local"]) {
-    [self.sort addItemsWithTitles:@[@"Alphabetical", @"Time Downloaded", @"Alphabetical (Z-A)", @"Time Downloaded (Oldest)"]];
+    [self.sort addItemsWithTitles:@[@"Alphabetical", @"Time Downloaded", @"ESR (Best Accuracy)", @"Alphabetical (Z-A)", @"Time Downloaded (Oldest)", @"ESR (Highest Error)"]];
     NSArray<NSString*>* tips = @[
       @"Alphabetical — Order tones alphabetically by title (A to Z).",
       @"Time Downloaded — Order tones by most recent download timestamp on this Mac.",
+      @"ESR (Best Accuracy) — Order tones by lowest Error-to-Signal Ratio first (most accurate analog captures).",
       @"Alphabetical (Z-A) — Order tones reverse-alphabetically by title (Z to A).",
-      @"Time Downloaded (Oldest) — Order tones by earliest download timestamp on this Mac."
+      @"Time Downloaded (Oldest) — Order tones by earliest download timestamp on this Mac.",
+      @"ESR (Highest Error) — Order tones by highest Error-to-Signal Ratio first."
     ];
     for (NSUInteger i = 0; i < tips.count && i < (NSUInteger)self.sort.numberOfItems; ++i) {
       [self.sort itemAtIndex:(NSInteger)i].toolTip = tips[i];
@@ -621,13 +695,15 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     self.sort.toolTip = @"Recent mode displays tones ordered by most recently modified.";
   } else {
     // Browse mode
-    [self.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
+    [self.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match", @"ESR (Best Accuracy)", @"ESR (Highest Error)"]];
     NSArray<NSString*>* sortTips = @[
       @"Newest — Show the most recently published tones first.",
       @"Trending — Use Tone3000's current popularity ranking.",
       @"Most Downloaded — Show tones with the highest download counts first.",
       @"Oldest — Show the earliest published tones first.",
-      @"Best Match — Prioritize search relevance for the current query."
+      @"Best Match — Prioritize search relevance for the current query.",
+      @"ESR (Best Accuracy) — Order tones by lowest Error-to-Signal Ratio first (most accurate analog captures).",
+      @"ESR (Highest Error) — Order tones by highest Error-to-Signal Ratio first."
     ];
     for (NSUInteger i = 0; i < sortTips.count && i < (NSUInteger)self.sort.numberOfItems; ++i) {
       [self.sort itemAtIndex:(NSInteger)i].toolTip = sortTips[i];
@@ -694,6 +770,91 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     }
   }
   return [NSDate distantPast];
+}
+
+- (double)effectiveESRForItem:(ToneItem*)item {
+  if (!item) return -1.0;
+  if (item.minESR > 0.0) return item.minESR;
+  if (item.minESR < 0.0 && item.models.count == 0) return -1.0;
+
+  double bestESR = -1.0;
+  if (item.models.count > 0) {
+    for (NSString* p in item.models) {
+      double val = extractESRFromNamFile(p);
+      if (val >= 0.0) {
+        bestESR = (bestESR < 0.0) ? val : MIN(bestESR, val);
+      }
+    }
+  }
+
+  NSFileManager* fm = [NSFileManager defaultManager];
+  if (bestESR < 0.0 && item.title.length) {
+    NSString* library = [@"~/Music/Tone3000 Library" stringByExpandingTildeInPath];
+    NSString* category = @"Amp";
+    if (item.stage == 0) category = @"Pedal";
+    else if (item.stage == 2) category = @"Cab";
+    else if ([item.gear.lowercaseString isEqualToString:@"amp-cab"] || [item.gear.lowercaseString isEqualToString:@"full-rig"])
+      category = @"Full Rig";
+
+    NSArray<NSString*>* categories = @[category, @"Full Rig", @"Amp", @"Cab", @"Pedal"];
+    NSMutableSet<NSString*>* checkedFolders = [NSMutableSet set];
+    for (NSString* cat in categories) {
+      NSString* folder = [[library stringByAppendingPathComponent:cat]
+                          stringByAppendingPathComponent:safeFilename(item.title)];
+      if ([checkedFolders containsObject:folder]) continue;
+      [checkedFolders addObject:folder];
+      BOOL isDir = NO;
+      if ([fm fileExistsAtPath:folder isDirectory:&isDir] && isDir) {
+        NSArray<NSString*>* contents = [fm contentsOfDirectoryAtPath:folder error:nil];
+        for (NSString* fn in contents) {
+          if ([fn.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+            double val = extractESRFromNamFile([folder stringByAppendingPathComponent:fn]);
+            if (val >= 0.0) {
+              bestESR = (bestESR < 0.0) ? val : MIN(bestESR, val);
+            }
+          }
+        }
+        if (bestESR >= 0.0) break;
+      }
+    }
+  }
+
+  if (bestESR < 0.0) {
+    NSString* pDir = previewCacheDir();
+    if (item.toneId > 0) {
+      NSString* prevIdFolder = [pDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld", (long)item.toneId]];
+      BOOL isDir = NO;
+      if ([fm fileExistsAtPath:prevIdFolder isDirectory:&isDir] && isDir) {
+        NSArray<NSString*>* contents = [fm contentsOfDirectoryAtPath:prevIdFolder error:nil];
+        for (NSString* fn in contents) {
+          if ([fn.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+            double val = extractESRFromNamFile([prevIdFolder stringByAppendingPathComponent:fn]);
+            if (val >= 0.0) {
+              bestESR = (bestESR < 0.0) ? val : MIN(bestESR, val);
+            }
+          }
+        }
+      }
+    }
+    if (bestESR < 0.0 && item.title.length) {
+      NSString* prevFolder = [pDir stringByAppendingPathComponent:safeFilename(item.title)];
+      BOOL isDir = NO;
+      if ([fm fileExistsAtPath:prevFolder isDirectory:&isDir] && isDir) {
+        NSArray<NSString*>* contents = [fm contentsOfDirectoryAtPath:prevFolder error:nil];
+        for (NSString* fn in contents) {
+          if ([fn.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+            double val = extractESRFromNamFile([prevFolder stringByAppendingPathComponent:fn]);
+            if (val >= 0.0) {
+              bestESR = (bestESR < 0.0) ? val : MIN(bestESR, val);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  item.minESR = (bestESR >= 0.0) ? bestESR : -1.0;
+  return item.minESR;
 }
 
 - (void)dealloc {
@@ -1114,7 +1275,11 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   if ([self.mode isEqualToString:@"Browse"]) {
     self.browseSort = self.sort.titleOfSelectedItem;
     if (sender) [self persistFilterSelection];
-    [self refreshOnline];
+    if ([self.browseSort containsString:@"ESR"]) {
+      [self filterChanged:nil];
+    } else {
+      [self refreshOnline];
+    }
     return;
   }
   if (sender) [self persistFilterSelection];
@@ -1667,14 +1832,30 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
     [shown addObject:item];
   }
-  if ([self.mode isEqualToString:@"Recent"]) {
+  NSString* sortChoice = self.sort.titleOfSelectedItem ?: ([self.mode isEqualToString:@"Favorites"] ? self.favoritesSort : ([self.mode isEqualToString:@"Local"] ? self.localSort : self.browseSort)) ?: @"";
+  if ([sortChoice containsString:@"ESR"]) {
+    const BOOL highestFirst = [sortChoice containsString:@"Highest"];
+    [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
+      double esrA = [self effectiveESRForItem:a];
+      double esrB = [self effectiveESRForItem:b];
+      const BOOL aHasESR = (esrA > 0.0);
+      const BOOL bHasESR = (esrB > 0.0);
+      if (aHasESR && !bHasESR) return NSOrderedAscending;
+      if (!aHasESR && bHasESR) return NSOrderedDescending;
+      if (!aHasESR && !bHasESR) {
+        return [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+      }
+      if (esrA < esrB) return highestFirst ? NSOrderedDescending : NSOrderedAscending;
+      if (esrA > esrB) return highestFirst ? NSOrderedAscending : NSOrderedDescending;
+      return [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+    }];
+  } else if ([self.mode isEqualToString:@"Recent"]) {
     [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
       NSDate* dateA = [self effectiveDownloadDateForItem:a];
       NSDate* dateB = [self effectiveDownloadDateForItem:b];
       return [dateB compare:dateA];
     }];
   } else if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Local"]) {
-    NSString* sortChoice = self.sort.titleOfSelectedItem ?: ([self.mode isEqualToString:@"Favorites"] ? self.favoritesSort : self.localSort) ?: @"Alphabetical";
     if ([sortChoice hasPrefix:@"Time Downloaded"] || [sortChoice containsString:@"Downloaded"]) {
       const BOOL oldestFirst = [sortChoice containsString:@"Oldest"];
       [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
@@ -1717,6 +1898,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (NSInteger)collectionView:(NSCollectionView *)collectionView numberOfItemsInSection:(NSInteger)section { return self.visibleItems.count; }
 - (NSCollectionViewItem *)collectionView:(NSCollectionView *)collectionView itemForRepresentedObjectAtIndexPath:(NSIndexPath *)indexPath {
   ToneCardItem *card = [collectionView makeItemWithIdentifier:@"ToneCard" forIndexPath:indexPath];
+  card.browserController = self;
   card.representedObject = self.visibleItems[indexPath.item];
   __weak ToneBrowserController *weakSelf = self;
   card.onFavToggle = ^(ToneItem *item) {
@@ -1994,6 +2176,13 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     NSData *json = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:nil];
     if (json) {
       [json writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
+    }
+    item.minESR = 0.0; [self effectiveESRForItem:item];
+    for (ToneCardItem *card in self.collectionView.visibleItems) {
+      ToneItem *cardItem = (ToneItem *)card.representedObject;
+      if ([cardItem isKindOfClass:[ToneItem class]] && cardItem.toneId == item.toneId) {
+        card.representedObject = cardItem;
+      }
     }
     self.status.stringValue = [NSString stringWithFormat:@"Previewing %@ — %lu model%@ ready (Click ★ to save)",
                                item.title ?: @"tone",
@@ -2348,6 +2537,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (p.length && [fm fileExistsAtPath:p]) [paths addObject:p];
   }
   item.models = paths; item.local = YES;
+  item.minESR = 0.0; [self effectiveESRForItem:item];
   self.status.stringValue = [NSString stringWithFormat:@"%ld models ready — %@", (long)paths.count, item.title];
   if (self.state) {
     const size_t stage = (size_t)item.stage;

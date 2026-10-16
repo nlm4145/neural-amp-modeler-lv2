@@ -79,7 +79,7 @@ const char* PresetManager::portToSymbol(uint32_t port) {
 }
 
 int32_t PresetManager::symbolToPort(const std::string& symbol) {
-  for (uint32_t p = 4; p <= 181; ++p) {
+  for (uint32_t p = 4; p < NAMRig::kRigControlPortCount; ++p) {
     const char* s = portToSymbol(p);
     if (s && symbol == s) return static_cast<int32_t>(p);
   }

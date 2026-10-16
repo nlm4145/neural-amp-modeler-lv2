@@ -70,6 +70,10 @@ inline constexpr RigControlSymbol kRigStaticControlSymbols[] = {
     {kOverdriveDrivePort, "od_drive"},
     {kOverdriveTonePort, "od_tone"},
     {kOverdriveLevelPort, "od_level"},
+    {kCompressorAttackPort, "compressor_attack"},
+    {kCompressorReleasePort, "compressor_release"},
+    {kCompressorEnabledPort, "compressor_enabled"},
+    {kOverdriveEnabledPort, "od_enabled"},
 };
 
 // Non-null results have static lifetime, including generated pin names.
