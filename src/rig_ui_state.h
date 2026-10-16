@@ -259,7 +259,7 @@ struct RigUIState {
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
 
-  // Tuner UI: master toggle + readout elements in Pro Studio Deck tab 3.
+  // Tuner UI: master toggle + readout elements in Pro Studio Deck tab 0.
   __strong NSButton* tunerButton = nil;
   __strong NSView* tunerPanel = nil;
   __strong NSTextField* tunerNoteLabel = nil;
@@ -275,7 +275,7 @@ struct RigUIState {
     auto alive = this->isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!alive || !*alive) return;
-      if (activeDeckTab != 3) return;
+      if (activeDeckTab != 0) return;
       if (!tunerPanel || tunerPanel.hidden) return;
       if (tunerButton && tunerButton.state != NSControlStateValueOn) return;
       if (lastTunerNote < 0) {

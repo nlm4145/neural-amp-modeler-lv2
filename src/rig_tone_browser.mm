@@ -128,11 +128,11 @@ static double extractESRFromNamFile(NSString* path) {
   return esr;
 }
 
-// Formats an ESR value (e.g. 0.0032 -> ".003 ESR", 0.0353 -> ".035 ESR", < 0.0005 -> "<.001 ESR").
+// Formats an ESR value to 5 decimal places (e.g. 0.00352 -> ".00352 ESR", 0.00024 -> ".00024 ESR", < 0.000005 -> "<.00001 ESR").
 static NSString* formatESRValue(double esr) {
   if (esr <= 0.0 || esr > 10.0 || std::isnan(esr)) return nil;
-  if (esr < 0.0005) return @"<.001 ESR";
-  NSString* numStr = [NSString stringWithFormat:@"%.3f", esr];
+  if (esr < 0.000005) return @"<.00001 ESR";
+  NSString* numStr = [NSString stringWithFormat:@"%.5f", esr];
   if ([numStr hasPrefix:@"0."]) {
     numStr = [numStr substringFromIndex:1];
   }
@@ -274,7 +274,7 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
 
   if (item.minESR > 0.0) {
     NSString* esrStr = formatESRValue(item.minESR);
-    NSString* rating = (item.minESR < 0.01) ? @"Great" : ((item.minESR < 0.035) ? @"Good" : @"Acceptable");
+    NSString* rating = (item.minESR < 0.001) ? @"Hyper" : ((item.minESR < 0.01) ? @"Great" : ((item.minESR < 0.035) ? @"Good" : @"Acceptable"));
     if (s.length) [s appendString:@"\n\n"];
     [s appendFormat:@"Accuracy (ESR)\n%@ (%@ Accuracy · lower is better)", esrStr, rating];
   }

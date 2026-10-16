@@ -59,6 +59,8 @@ assert 'if ([self.browseSort containsString:@"ESR"])' in browser_mm, \
     "sortChanged: must handle ESR sorting locally in Browse mode"
 assert 'prevIdFolder' in browser_mm, \
     "effectiveESRForItem: must resolve PreviewCache folders by toneId"
+assert '%.5f' in browser_mm, \
+    "formatESRValue must format to 5 decimal places (.00001 level)"
 
 # 8. Behavioral simulation of the comparator logic
 class MockToneItem:

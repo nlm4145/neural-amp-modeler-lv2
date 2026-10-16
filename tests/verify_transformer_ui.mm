@@ -596,6 +596,73 @@ static void verifyCompressorPreAmp(Runtime& runtime, Host& host, Class presetCla
   drain();
 }
 
+static void verifyTunerDeck(Runtime& runtime, Host& host) {
+  RigUIState* state = runtime.state;
+  stage = "Tuner deck / tab 0 selection and display update";
+  state->selectDeckTab(0);
+  drain();
+  [runtime.window.contentView layoutSubtreeIfNeeded];
+
+  REQUIRE(state->deckTabPanes.count >= 5);
+  NSView* pane0 = state->deckTabPanes[0];
+  REQUIRE(pane0 && !pane0.isHiddenOrHasHiddenAncestor);
+  REQUIRE(state->tunerPanel && !state->tunerPanel.isHidden);
+  REQUIRE(state->tunerButton);
+  CHECK(state->tunerButton.state == NSControlStateValueOn);
+  CHECK(state->activeDeckTab == 0);
+
+  // Initial state without notes
+  state->lastTunerNote = -1.0f;
+  state->lastTunerCents = 0.0f;
+  state->updateTunerDisplay();
+  drain();
+  CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"—"]);
+  CHECK(state->tunerNeedle.isHidden == YES);
+
+  // Send detected pitch (e.g. A4 = 69, 0 cents)
+  state->lastTunerNote = 69.0f;
+  state->lastTunerCents = 0.0f;
+  state->updateTunerDisplay();
+  drain();
+  CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"A4"]);
+  CHECK([state->tunerCentsLabel.stringValue containsString:@"IN TUNE"]);
+  CHECK(state->tunerNeedle.isHidden == NO);
+
+  // Send flat pitch (e.g. E2 = 40, -10 cents)
+  state->lastTunerNote = 40.0f;
+  state->lastTunerCents = -10.0f;
+  state->updateTunerDisplay();
+  drain();
+  CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"E2"]);
+  CHECK([state->tunerCentsLabel.stringValue containsString:@"FLAT"]);
+
+  // Switch to another tab (e.g. tab 1 PREAMP)
+  state->selectDeckTab(1);
+  drain();
+  CHECK(state->tunerPanel.isHidden == YES);
+  CHECK(state->tunerButton.state == NSControlStateValueOff);
+  CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"—"]);
+  CHECK(state->tunerNeedle.isHidden == YES);
+
+  // While inactive, updateTunerDisplay should not display pitch on inactive deck
+  state->lastTunerNote = 45.0f;
+  state->updateTunerDisplay();
+  drain();
+  CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"—"]);
+
+  // Switch back to Tuner tab
+  state->selectDeckTab(0);
+  drain();
+  CHECK(state->tunerPanel.isHidden == NO);
+  CHECK(state->tunerButton.state == NSControlStateValueOn);
+  state->lastTunerNote = 64.0f; // E4
+  state->lastTunerCents = 3.0f;
+  state->updateTunerDisplay();
+  drain();
+  CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"E4"]);
+  CHECK([state->tunerCentsLabel.stringValue containsString:@"SHARP"]);
+}
+
 static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) {
   using namespace NAMRig;
   RigUIState* state = runtime.state;
@@ -2167,6 +2234,7 @@ static void verify(const char* modulePath) {
   verifyPinEditors(runtime, host, presetClass);
   verifySculptOverdrive(runtime, host, presetClass);
   verifyCompressorPreAmp(runtime, host, presetClass);
+  verifyTunerDeck(runtime, host);
   verifyStageMeters(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.

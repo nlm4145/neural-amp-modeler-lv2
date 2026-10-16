@@ -74,7 +74,7 @@ static NSString* stageName(NSInteger stage) {
 
 @interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate>
 @property(nonatomic, assign) RigUIState* state;
-- (void)chooseModel:(NSButton*)sender;
+- (void)chooseModel:(id)sender;
 - (void)clearModel:(id)sender;
 - (void)removeStageSelection:(id)sender;
 - (void)removeBothCabsSelection:(id)sender;
@@ -156,29 +156,47 @@ static NSString* stageName(NSInteger stage) {
   if (!_state) return;
   _state->markModified();
 }
-- (void)chooseModel:(NSButton*)sender {
-  if (!_state || sender.tag < 0 || sender.tag > 3) return;
+- (void)chooseModel:(id)sender {
+  NSInteger tag = [sender respondsToSelector:@selector(tag)] ? [sender tag] : -1;
+  if (!_state || tag < 0 || tag > 3) return;
   NSOpenPanel* panel = [NSOpenPanel openPanel];
   panel.title = [NSString stringWithFormat:@"Choose %@ NAM Model",
-                 @[@"a Pedal", @"an Amp", @"a Cab", @"a Cab B"][(NSUInteger)sender.tag]];
+                 @[@"a Pedal", @"an Amp", @"a Cab", @"a Cab B"][(NSUInteger)tag]];
   panel.prompt = @"Load Model";
   panel.canChooseFiles = YES;
   panel.canChooseDirectories = NO;
   panel.allowsMultipleSelection = NO;
-  panel.allowedFileTypes = sender.tag >= 2
+  panel.allowedFileTypes = tag >= 2
       ? @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel", @"wav"]
       : @[@"nam", @"nammodel", @"json", @"aidax", @"aidadspmodel"];
+
+  NSString* defaultDir = nil;
+  if (!_state->selectedPaths[(size_t)tag].empty()) {
+    NSString* existing = [NSString stringWithUTF8String:_state->selectedPaths[(size_t)tag].c_str()];
+    defaultDir = [existing stringByDeletingLastPathComponent];
+  }
+  if (!defaultDir.length || ![[NSFileManager defaultManager] fileExistsAtPath:defaultDir]) {
+    NSString* category = tag == 0 ? @"Pedal" : (tag == 1 ? @"Amp" : @"Cab");
+    NSString* toneLib = [[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath] stringByAppendingPathComponent:category];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:toneLib]) {
+      defaultDir = toneLib;
+    }
+  }
+  if (defaultDir.length) {
+    panel.directoryURL = [NSURL fileURLWithPath:defaultDir];
+  }
+
   if ([panel runModal] == NSModalResponseOK) {
     NSString* chosen = panel.URL.path;
-    std::vector<std::string> discovered = discoverModelsForStagePath(chosen.fileSystemRepresentation, (size_t)sender.tag);
+    std::vector<std::string> discovered = discoverModelsForStagePath(chosen.fileSystemRepresentation, (size_t)tag);
     NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithCapacity:discovered.size()];
     for (const auto& m : discovered) {
       if (!m.empty()) [paths addObject:[NSString stringWithUTF8String:m.c_str()]];
     }
     if (paths.count > 0) {
-      _state->setStageModels((size_t)sender.tag, paths);
+      _state->setStageModels((size_t)tag, paths);
     }
-    _state->sendPath((size_t)sender.tag, chosen.fileSystemRepresentation);
+    _state->sendPath((size_t)tag, chosen.fileSystemRepresentation);
     [self markPresetModified];
   }
 }
@@ -234,6 +252,14 @@ static NSString* stageName(NSInteger stage) {
   if (stage < 0 || stage > 2) return;
 
   if (stage < 2) {
+    NSMenuItem* loadItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Load %@ Model from Disk…", stageName(stage)]
+                                                      action:@selector(chooseModel:)
+                                               keyEquivalent:@""];
+    loadItem.target = self;
+    loadItem.tag = stage;
+    [menu addItem:loadItem];
+    [menu addItem:[NSMenuItem separatorItem]];
+
     BOOL hasModel = !_state->selectedPaths[(size_t)stage].empty();
     NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@"Remove Selection"
                                                   action:@selector(removeStageSelection:)
@@ -246,6 +272,21 @@ static NSString* stageName(NSInteger stage) {
         : [NSString stringWithFormat:@"No %@ model loaded to remove.", stageName(stage)];
     [menu addItem:item];
   } else {
+    NSMenuItem* loadCabA = [[NSMenuItem alloc] initWithTitle:@"Load Cab A Model from Disk…"
+                                                      action:@selector(chooseModel:)
+                                               keyEquivalent:@""];
+    loadCabA.target = self;
+    loadCabA.tag = 2;
+    [menu addItem:loadCabA];
+
+    NSMenuItem* loadCabB = [[NSMenuItem alloc] initWithTitle:@"Load Cab B Model from Disk…"
+                                                      action:@selector(chooseModel:)
+                                               keyEquivalent:@""];
+    loadCabB.target = self;
+    loadCabB.tag = 3;
+    [menu addItem:loadCabB];
+    [menu addItem:[NSMenuItem separatorItem]];
+
     BOOL hasCabA = !_state->selectedPaths[2].empty();
     BOOL hasCabB = !_state->selectedPaths[3].empty();
 
@@ -4319,8 +4360,26 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[mp.heightAnchor constraintEqualToConstant:23] setActive:YES];
 
       if (i < 2) {
-        [[mp.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        RigButton* browseBtn = rigButton(box, @"…", state->uiController, @selector(chooseModel:), NSZeroRect);
+        browseBtn.tag = (NSInteger)i;
+        browseBtn.toolTip = [NSString stringWithFormat:@"Choose a %@ NAM model from disk.",
+                             i == 0 ? @"Pedal" : @"Amp"];
+        browseBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        [[mp.trailingAnchor constraintEqualToAnchor:browseBtn.leadingAnchor constant:-4] setActive:YES];
+        [[browseBtn.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
+        [[browseBtn.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
+        [[browseBtn.widthAnchor constraintEqualToConstant:26] setActive:YES];
+        [[browseBtn.heightAnchor constraintEqualToConstant:23] setActive:YES];
       } else {
+        RigButton* browseA = rigButton(box, @"…", state->uiController, @selector(chooseModel:), NSZeroRect);
+        browseA.tag = 2;
+        browseA.toolTip = @"Choose a Cab A NAM model or WAV impulse response from disk.";
+        browseA.translatesAutoresizingMaskIntoConstraints = NO;
+        [[mp.trailingAnchor constraintEqualToAnchor:browseA.leadingAnchor constant:-4] setActive:YES];
+        [[browseA.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
+        [[browseA.widthAnchor constraintEqualToConstant:26] setActive:YES];
+        [[browseA.heightAnchor constraintEqualToConstant:23] setActive:YES];
+
         NSPopUpButton* mpB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         state->modelPickers[3] = mpB;
         mpB.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4348,7 +4407,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         onB.toolTip = @"Enable the second cabinet. Cab A pans left and Cab B pans right by the Width amount. Changes use a short click-free fade.";
         onB.translatesAutoresizingMaskIntoConstraints = NO;
         state->powerButtons[3] = onB;
-        [[mpB.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:6] setActive:YES];
+        [[mpB.leadingAnchor constraintEqualToAnchor:browseA.trailingAnchor constant:6] setActive:YES];
         [[mpB.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
         [[mpB.heightAnchor constraintEqualToConstant:23] setActive:YES];
         [[mpB.widthAnchor constraintEqualToAnchor:mp.widthAnchor] setActive:YES];
