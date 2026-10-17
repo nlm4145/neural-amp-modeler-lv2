@@ -1770,15 +1770,13 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
   const CGFloat sortW = 180.0;
   controller.sort = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24 + searchW + 12 + gearW + 10, bh - 38, sortW, 28) pullsDown:NO];
-  [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match", @"ESR (Best Accuracy)", @"ESR (Highest Error)"]];
+  [controller.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
   NSArray<NSString*>* sortTips = @[
     @"Newest — Show the most recently published tones first.",
     @"Trending — Use Tone3000's current popularity ranking.",
     @"Most Downloaded — Show tones with the highest download counts first.",
     @"Oldest — Show the earliest published tones first.",
-    @"Best Match — Prioritize search relevance for the current query.",
-    @"ESR (Best Accuracy) — Order tones by lowest Error-to-Signal Ratio first (most accurate analog captures).",
-    @"ESR (Highest Error) — Order tones by highest Error-to-Signal Ratio first."
+    @"Best Match — Prioritize search relevance for the current query."
   ];
   for (NSUInteger item = 0; item < sortTips.count; ++item)
     [controller.sort itemAtIndex:item].toolTip = sortTips[item];
