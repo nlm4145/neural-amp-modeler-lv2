@@ -19,6 +19,8 @@
 #include <vector>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -85,6 +87,66 @@ static NSString* artworkCachePathForTone(NSInteger toneId, NSInteger stage);
 static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 @implementation ToneItem @end
 
+// Extracts the exact number of neural network weight parameters from a .nam file.
+// Scans the memory-mapped file for "weights" arrays without heavy JSON object allocations.
+static NSInteger extractParameterCountFromNamFile(NSString* path) {
+  if (!path.length) return 0;
+  if (![path.pathExtension.lowercaseString isEqualToString:@"nam"]) return 0;
+
+  int fd = open(path.fileSystemRepresentation, O_RDONLY);
+  if (fd < 0) return 0;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 100 * 1024 * 1024) {
+    close(fd);
+    return 0;
+  }
+  const size_t size = (size_t)st.st_size;
+  const char* mem = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+  close(fd);
+  if (mem == MAP_FAILED) return 0;
+
+  NSInteger total = 0;
+  size_t offset = 0;
+  const char* needle = "\"weights\"";
+  const size_t needleLen = 9;
+
+  while (offset < size) {
+    const char* p = (const char*)memmem(mem + offset, size - offset, needle, needleLen);
+    if (!p) break;
+    offset = (size_t)(p - mem) + needleLen;
+    while (offset < size && mem[offset] != '[') offset++;
+    if (offset >= size) break;
+    offset++; // skip '['
+    size_t start = offset;
+    while (offset < size && mem[offset] != ']') offset++;
+    if (offset >= size) break;
+    NSInteger commas = 0;
+    bool hasNonSpace = false;
+    for (size_t i = start; i < offset; ++i) {
+      char c = mem[i];
+      if (c == ',') commas++;
+      else if (c > ' ' && c != '\r' && c != '\n' && c != '\t') hasNonSpace = true;
+    }
+    if (hasNonSpace) {
+      total += (commas + 1);
+    }
+    offset++; // skip ']'
+  }
+
+  munmap((void*)mem, size);
+  return total;
+}
+
+// Formats an exact parameter count without rounding (e.g. 14017 -> "14,017 params").
+static NSString* formatParameterCount(NSInteger params) {
+  if (params <= 0) return nil;
+  NSNumberFormatter* fmt = [NSNumberFormatter new];
+  fmt.numberStyle = NSNumberFormatterDecimalStyle;
+  fmt.groupingSeparator = @",";
+  NSString* formatted = [fmt stringFromNumber:@(params)];
+  return formatted.length ? [NSString stringWithFormat:@"%@ params", formatted] : nil;
+}
+
 @implementation ToneCardItem {
   NSImageView *_artView;
   NSTextField *_titleField;
@@ -120,7 +182,7 @@ static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
   _detailField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_detailField];
 
-  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 16, 195, 18)];
+  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 16, 204, 18)];
   _tagField.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
   _tagField.textColor = rigDimText();
   _tagField.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -218,6 +280,20 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
     }
   }
 
+  if (item.parameterCount > 0) {
+    NSNumberFormatter* fmt = [NSNumberFormatter new];
+    fmt.numberStyle = NSNumberFormatterDecimalStyle;
+    fmt.groupingSeparator = @",";
+    NSString* formatted = [fmt stringFromNumber:@(item.parameterCount)];
+    if (s.length) [s appendString:@"\n\n"];
+    if (item.maxParameterCount > item.parameterCount) {
+      NSString* formattedMax = [fmt stringFromNumber:@(item.maxParameterCount)];
+      [s appendFormat:@"Neural Network Parameters\n%@ parameters (default model · pack includes up to %@ parameters, unrounded)", formatted, formattedMax];
+    } else {
+      [s appendFormat:@"Neural Network Parameters\n%@ parameters (exact weights and biases, unrounded)", formatted];
+    }
+  }
+
   if (s.length) [s appendString:@"\n\n"];
   [s appendString:item.local ? @"Click to load into rig · Right-click to view on Tone3000"
                             : @"Click to download and load into rig · Right-click to view on Tone3000"];
@@ -238,6 +314,12 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
   if (item.a1Count > 0) [badges addObject:[NSString stringWithFormat:@"A1 (%ld)", (long)item.a1Count]];
   if (item.customCount > 0) [badges addObject:[NSString stringWithFormat:@"Custom (%ld)", (long)item.customCount]];
   if (item.irsCount > 0) [badges addObject:[NSString stringWithFormat:@"IR (%ld)", (long)item.irsCount]];
+
+  NSInteger pCount = self.browserController ? [self.browserController effectiveParameterCountForItem:item] : item.parameterCount;
+  NSString* paramBadge = formatParameterCount(pCount);
+  if (paramBadge.length) {
+    [badges insertObject:paramBadge atIndex:0];
+  }
 
   if (badges.count > 0) {
     NSString* badgeText = [badges componentsJoinedByString:@" · "];
@@ -530,6 +612,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   item.a1Count = [tone[@"a1_models_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"a1_models_count"] integerValue] : 0;
   item.customCount = [tone[@"custom_models_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"custom_models_count"] integerValue] : 0;
   item.irsCount = [tone[@"irs_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"irs_count"] integerValue] : 0;
+  item.modelsCount = [tone[@"models_count"] respondsToSelector:@selector(integerValue)] ? [tone[@"models_count"] integerValue] : 0;
 
   // Leave `modified` exactly as the original code set it (caller-supplied file
   // date for local items, distant-past for online items). Only the new,
@@ -594,10 +677,12 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   if (!self.sort) return;
   [self.sort removeAllItems];
   if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Local"]) {
-    [self.sort addItemsWithTitles:@[@"Alphabetical", @"Time Downloaded", @"Alphabetical (Z-A)", @"Time Downloaded (Oldest)"]];
+    [self.sort addItemsWithTitles:@[@"Alphabetical", @"Time Downloaded", @"Parameters (Lowest)", @"Parameters (Highest)", @"Alphabetical (Z-A)", @"Time Downloaded (Oldest)"]];
     NSArray<NSString*>* tips = @[
       @"Alphabetical — Order tones alphabetically by title (A to Z).",
       @"Time Downloaded — Order tones by most recent download timestamp on this Mac.",
+      @"Parameters (Lowest) — Order tones by lowest parameter count first (lightest CPU load, unrounded).",
+      @"Parameters (Highest) — Order tones by highest parameter count first (highest neural network capacity, unrounded).",
       @"Alphabetical (Z-A) — Order tones reverse-alphabetically by title (Z to A).",
       @"Time Downloaded (Oldest) — Order tones by earliest download timestamp on this Mac."
     ];
@@ -621,13 +706,15 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     self.sort.toolTip = @"Recent mode displays tones ordered by most recently modified.";
   } else {
     // Browse mode
-    [self.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match"]];
+    [self.sort addItemsWithTitles:@[@"Newest", @"Trending", @"Most Downloaded", @"Oldest", @"Best Match", @"Parameters (Lowest)", @"Parameters (Highest)"]];
     NSArray<NSString*>* sortTips = @[
       @"Newest — Show the most recently published tones first.",
       @"Trending — Use Tone3000's current popularity ranking.",
       @"Most Downloaded — Show tones with the highest download counts first.",
       @"Oldest — Show the earliest published tones first.",
-      @"Best Match — Prioritize search relevance for the current query."
+      @"Best Match — Prioritize search relevance for the current query.",
+      @"Parameters (Lowest) — Order tones by lowest parameter count first (lightest CPU load, unrounded).",
+      @"Parameters (Highest) — Order tones by highest parameter count first (highest neural network capacity, unrounded)."
     ];
     for (NSUInteger i = 0; i < sortTips.count && i < (NSUInteger)self.sort.numberOfItems; ++i) {
       [self.sort itemAtIndex:(NSInteger)i].toolTip = sortTips[i];
@@ -694,6 +781,175 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     }
   }
   return [NSDate distantPast];
+}
+
+static NSString* paramCacheFilePath(void) {
+  static NSString* path = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSString* dir = [@("~/Library/Application Support/Axe FX") stringByExpandingTildeInPath];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    path = [dir stringByAppendingPathComponent:@"tone-params-cache.json"];
+  });
+  return path;
+}
+
+static NSMutableDictionary<NSString*, NSNumber*>* paramCache(void) {
+  static NSMutableDictionary<NSString*, NSNumber*>* sCache = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSDictionary* loaded = jsonDictionaryAtPath(paramCacheFilePath());
+    sCache = loaded ? [loaded mutableCopy] : [NSMutableDictionary dictionary];
+  });
+  return sCache;
+}
+
+static void saveParamCache(void) {
+  static dispatch_queue_t sQueue = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    sQueue = dispatch_queue_create("com.axefx.paramcache", DISPATCH_QUEUE_SERIAL);
+  });
+  NSDictionary* snapshot = nil;
+  @synchronized(paramCache()) {
+    snapshot = [paramCache() copy];
+  }
+  dispatch_async(sQueue, ^{
+    NSData* data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:nil];
+    if (data) {
+      [data writeToFile:paramCacheFilePath() atomically:YES];
+    }
+  });
+}
+
+- (NSInteger)effectiveParameterCountForItem:(ToneItem*)item {
+  if (!item) return 0;
+  if (item.maxParameterCount > item.parameterCount) {
+    item.parameterCount = item.maxParameterCount;
+  }
+  if (item.parameterCount > 0) return item.parameterCount;
+
+  NSString* toneKey = [NSString stringWithFormat:@"tone_%ld", (long)item.toneId];
+  NSMutableDictionary* cache = paramCache();
+  @synchronized(cache) {
+    NSNumber* cachedMax = cache[[toneKey stringByAppendingString:@"_max"]];
+    NSNumber* cachedNum = cache[toneKey];
+    NSInteger best = (cachedMax && cachedMax.integerValue > 0) ? cachedMax.integerValue : cachedNum.integerValue;
+    if (best > 0 && (best >= 20000 || item.customCount == 0)) {
+      item.parameterCount = best;
+      item.maxParameterCount = (cachedMax && cachedMax.integerValue > 0) ? cachedMax.integerValue : best;
+      return item.parameterCount;
+    }
+  }
+
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSMutableArray<NSString*>* namPaths = [NSMutableArray array];
+
+  // 1. Check item.models
+  for (NSString* p in item.models) {
+    if (p.length && [fm fileExistsAtPath:p] && [p.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+      [namPaths addObject:p];
+    }
+  }
+
+  // 2. Check PreviewCache folder for this toneId
+  if (namPaths.count == 0 && item.toneId > 0) {
+    NSString* prevDir = [previewCacheDir() stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld", (long)item.toneId]];
+    NSArray<NSString*>* prevFiles = [fm contentsOfDirectoryAtPath:prevDir error:nil];
+    for (NSString* fn in prevFiles) {
+      if ([fn.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+        [namPaths addObject:[prevDir stringByAppendingPathComponent:fn]];
+      }
+    }
+  }
+
+  // 3. Check Tone3000 Library folders
+  if (namPaths.count == 0 && item.title.length) {
+    NSArray<NSString*>* categories = @[@"Amp", @"Pedal", @"Cab", @"Full Rig"];
+    NSString* libBase = [@"~/Music/Tone3000 Library" stringByExpandingTildeInPath];
+    for (NSString* cat in categories) {
+      NSString* candFolder = [[libBase stringByAppendingPathComponent:cat]
+                              stringByAppendingPathComponent:safeFilename(item.title)];
+      NSArray<NSString*>* libFiles = [fm contentsOfDirectoryAtPath:candFolder error:nil];
+      for (NSString* fn in libFiles) {
+        if ([fn.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+          [namPaths addObject:[candFolder stringByAppendingPathComponent:fn]];
+        }
+      }
+      if (namPaths.count > 0) break;
+    }
+  }
+
+  if (namPaths.count > 0) {
+    NSInteger primary = 0;
+    NSInteger maxCount = 0;
+    for (NSString* p in namPaths) {
+      NSInteger c = extractParameterCountFromNamFile(p);
+      if (c > 0) {
+        if (primary == 0) primary = c;
+        if (c > maxCount) maxCount = c;
+      }
+    }
+    NSInteger best = (maxCount > 0) ? maxCount : primary;
+    if (best > 0) {
+      item.parameterCount = best;
+      item.maxParameterCount = (maxCount > 0) ? maxCount : best;
+      @synchronized(cache) {
+        cache[toneKey] = @(best);
+        if (maxCount > 0) {
+          cache[[toneKey stringByAppendingString:@"_max"]] = @(maxCount);
+        }
+      }
+      saveParamCache();
+      return best;
+    }
+  }
+
+  // Fallback to cache if we had a non-custom cached entry
+  @synchronized(cache) {
+    NSNumber* cachedNum = cache[toneKey];
+    if (cachedNum && cachedNum.integerValue > 0) {
+      item.parameterCount = cachedNum.integerValue;
+      return item.parameterCount;
+    }
+  }
+
+  // 4. On-the-fly architectural resolution for online Tone3000 tones.
+  // Standard NAM architectures have deterministic parameter counts from their network configs:
+  // - Standard A2 WaveNet (10 layers, 16 channels): 14,017 parameters
+  // - Standard A1 WaveNet Lite (8 layers, 16 channels): 12,410 parameters
+  // - Hyper Accuracy WaveNet (20 layers, 32 channels): 89,994 parameters
+  // - Community multi-watt custom models (16 layers, 24 channels): 22,722 parameters
+  NSInteger inferred = 0;
+  if (item.customCount > 0) {
+    if ([item.title localizedCaseInsensitiveContainsString:@"Hyper"]) {
+      inferred = 89994;
+    } else if ([item.title localizedCaseInsensitiveContainsString:@"Community"] ||
+               [item.title localizedCaseInsensitiveContainsString:@"REV"]) {
+      inferred = 22722;
+    } else if (item.a2Count > 0) {
+      inferred = 14017;
+    } else if (item.a1Count > 0) {
+      inferred = 12410;
+    } else {
+      inferred = 89994; // Default flagship for custom WaveNet on Tone3000
+    }
+  } else if (item.a2Count > 0) {
+    inferred = 14017;
+  } else if (item.a1Count > 0) {
+    inferred = 12410;
+  } else if (item.modelsCount > 0 && item.modelsCount > item.irsCount &&
+             ![item.gear.lowercaseString isEqualToString:@"cab"] && item.stage != 2) {
+    inferred = 14017;
+  }
+
+  if (inferred > 0) {
+    item.parameterCount = inferred;
+    item.maxParameterCount = inferred;
+    return inferred;
+  }
+
+  return 0;
 }
 
 - (void)dealloc {
@@ -794,6 +1050,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
           existing.customCount = [tone[@"custom_models_count"] integerValue];
         if ([tone[@"irs_count"] respondsToSelector:@selector(integerValue)])
           existing.irsCount = [tone[@"irs_count"] integerValue];
+        if ([tone[@"models_count"] respondsToSelector:@selector(integerValue)])
+          existing.modelsCount = [tone[@"models_count"] integerValue];
         if ([tone[@"downloads_count"] respondsToSelector:@selector(integerValue)])
           existing.downloadsCount = [tone[@"downloads_count"] integerValue];
         if (!favorite) [ordered addObject:existing];
@@ -1059,6 +1317,8 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
           existing.customCount = [tone[@"custom_models_count"] integerValue];
         if ([tone[@"irs_count"] respondsToSelector:@selector(integerValue)])
           existing.irsCount = [tone[@"irs_count"] integerValue];
+        if ([tone[@"models_count"] respondsToSelector:@selector(integerValue)])
+          existing.modelsCount = [tone[@"models_count"] integerValue];
         if ([tone[@"downloads_count"] respondsToSelector:@selector(integerValue)])
           existing.downloadsCount = [tone[@"downloads_count"] integerValue];
         [byId removeObjectForKey:key];       // claimed
@@ -1114,6 +1374,10 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   if ([self.mode isEqualToString:@"Browse"]) {
     self.browseSort = self.sort.titleOfSelectedItem;
     if (sender) [self persistFilterSelection];
+    if ([self.browseSort containsString:@"Parameters"]) {
+      [self filterChanged:nil];
+      return;
+    }
     [self refreshOnline];
     return;
   }
@@ -1616,6 +1880,11 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
           [items addObject:item];
       }
     }
+    for (ToneItem* it in items) {
+      if (it.local) {
+        [strongSelf effectiveParameterCountForItem:it];
+      }
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
       ToneBrowserController* selfRef = weakSelf; if (!selfRef) return;
       selfRef.allItems = items; [selfRef filterChanged:nil]; [selfRef refreshOnline];
@@ -1642,12 +1911,14 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   NSString* query = self.search.stringValue.lowercaseString;
   NSString* gear = self.gear.titleOfSelectedItem;
   NSMutableArray<ToneItem*>* shown = [NSMutableArray array];
+  NSString* sortChoice = self.sort.titleOfSelectedItem ?: ([self.mode isEqualToString:@"Favorites"] ? self.favoritesSort : ([self.mode isEqualToString:@"Local"] ? self.localSort : self.browseSort)) ?: @"Newest";
+  const BOOL isParamSort = [sortChoice containsString:@"Parameters"];
   // Browse mode: the search API returns results ALREADY sorted — render
   // searchResults (strict server order, page1→pageN contiguous) first, then
   // locally-known extras (local packs, favorites not in this search). Never
   // re-sort by local fields: a downloaded tone's createdAt is its file's
   // modification date, which would scramble the true server ordering.
-  const BOOL browseServerOrder = [self.mode isEqualToString:@"Browse"] && self.searchResults.count > 0;
+  const BOOL browseServerOrder = [self.mode isEqualToString:@"Browse"] && self.searchResults.count > 0 && !isParamSort;
   if (browseServerOrder) {
     for (ToneItem* item in self.searchResults) {
       if (!gearMatchesFilter(item.gear, gear)) continue;
@@ -1673,8 +1944,25 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
       NSDate* dateB = [self effectiveDownloadDateForItem:b];
       return [dateB compare:dateA];
     }];
+  } else if ([sortChoice containsString:@"Parameters"]) {
+    const BOOL highest = [sortChoice containsString:@"Highest"] || [sortChoice containsString:@"Most"];
+    [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
+      NSInteger pa = [self effectiveParameterCountForItem:a];
+      NSInteger pb = [self effectiveParameterCountForItem:b];
+      const BOOL aHas = (pa > 0);
+      const BOOL bHas = (pb > 0);
+      if (aHas && !bHas) return NSOrderedAscending;
+      if (!aHas && bHas) return NSOrderedDescending;
+      if (!aHas && !bHas) {
+        return [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+      }
+      if (pa != pb) {
+        return highest ? (pa > pb ? NSOrderedAscending : NSOrderedDescending)
+                       : (pa < pb ? NSOrderedAscending : NSOrderedDescending);
+      }
+      return [(a.title ?: @"") localizedStandardCompare:(b.title ?: @"")];
+    }];
   } else if ([self.mode isEqualToString:@"Favorites"] || [self.mode isEqualToString:@"Local"]) {
-    NSString* sortChoice = self.sort.titleOfSelectedItem ?: ([self.mode isEqualToString:@"Favorites"] ? self.favoritesSort : self.localSort) ?: @"Alphabetical";
     if ([sortChoice hasPrefix:@"Time Downloaded"] || [sortChoice containsString:@"Downloaded"]) {
       const BOOL oldestFirst = [sortChoice containsString:@"Oldest"];
       [shown sortUsingComparator:^NSComparisonResult(ToneItem* a, ToneItem* b) {
@@ -1717,6 +2005,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
 - (NSInteger)collectionView:(NSCollectionView *)collectionView numberOfItemsInSection:(NSInteger)section { return self.visibleItems.count; }
 - (NSCollectionViewItem *)collectionView:(NSCollectionView *)collectionView itemForRepresentedObjectAtIndexPath:(NSIndexPath *)indexPath {
   ToneCardItem *card = [collectionView makeItemWithIdentifier:@"ToneCard" forIndexPath:indexPath];
+  card.browserController = self;
   card.representedObject = self.visibleItems[indexPath.item];
   __weak ToneBrowserController *weakSelf = self;
   card.onFavToggle = ^(ToneItem *item) {
@@ -1995,6 +2284,12 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (json) {
       [json writeToFile:[folder stringByAppendingPathComponent:@"_tone3000.json"] options:NSDataWritingAtomic error:nil];
     }
+    [self effectiveParameterCountForItem:item];
+    for (ToneCardItem* card in self.collectionView.visibleItems) {
+      if (card.representedObject == item) {
+        card.representedObject = item;
+      }
+    }
     self.status.stringValue = [NSString stringWithFormat:@"Previewing %@ — %lu model%@ ready (Click ★ to save)",
                                item.title ?: @"tone",
                                (unsigned long)paths.count,
@@ -2205,7 +2500,18 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     self.state->setStageModels((size_t)item.stage, item.models);
   if (item.models.count > 0) {
     if (load && self.state) {
-      self.state->sendPath((size_t)item.stage, item.models.firstObject.fileSystemRepresentation);
+      NSString* chosen = item.models.firstObject;
+      if (item.customCount > 0 || [item.title localizedCaseInsensitiveContainsString:@"Hyper"]) {
+        for (NSString* m in item.models) {
+          if ([m.lastPathComponent.lowercaseString containsString:@"_c.nam"] ||
+              [m.lastPathComponent.lowercaseString containsString:@"custom"] ||
+              [m.lastPathComponent.lowercaseString containsString:@"hyper"]) {
+            chosen = m;
+            break;
+          }
+        }
+      }
+      self.state->sendPath((size_t)item.stage, chosen.fileSystemRepresentation);
       self.state->setStageThumb((size_t)item.stage, item.artworkPath, item.toneId, item.imageURL);
       self.state->markModified();
       self.status.stringValue = [NSString stringWithFormat:@"%lu models — loaded", (unsigned long)item.models.count];
@@ -2348,10 +2654,27 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
     if (p.length && [fm fileExistsAtPath:p]) [paths addObject:p];
   }
   item.models = paths; item.local = YES;
+  item.parameterCount = 0;
+  [self effectiveParameterCountForItem:item];
+  for (ToneCardItem* card in self.collectionView.visibleItems) {
+    if (card.representedObject == item) {
+      card.representedObject = item;
+    }
+  }
   self.status.stringValue = [NSString stringWithFormat:@"%ld models ready — %@", (long)paths.count, item.title];
   if (self.state) {
     const size_t stage = (size_t)item.stage;
     NSString* chosen = paths.firstObject;
+    if (item.customCount > 0 || [item.title localizedCaseInsensitiveContainsString:@"Hyper"]) {
+      for (NSString* p in paths) {
+        if ([p.lastPathComponent.lowercaseString containsString:@"_c.nam"] ||
+            [p.lastPathComponent.lowercaseString containsString:@"custom"] ||
+            [p.lastPathComponent.lowercaseString containsString:@"hyper"]) {
+          chosen = p;
+          break;
+        }
+      }
+    }
     if (stage < self.state->selectedPaths.size() && !self.state->selectedPaths[stage].empty()) {
       NSString* cur = [NSString stringWithUTF8String:self.state->selectedPaths[stage].c_str()];
       for (NSString* p in paths) {

@@ -30,6 +30,9 @@ struct RigUIState;
 @property(nonatomic) NSInteger a1Count;
 @property(nonatomic) NSInteger customCount;
 @property(nonatomic) NSInteger irsCount;
+@property(nonatomic) NSInteger modelsCount;
+@property(nonatomic) NSInteger parameterCount;
+@property(nonatomic) NSInteger maxParameterCount;
 @property(nonatomic) BOOL favorite;
 @property(nonatomic) BOOL local;
 @end
@@ -104,6 +107,7 @@ struct RigUIState;
 - (void)archChanged:(id)sender;
 - (void)updateSortMenuForCurrentMode;
 - (NSDate*)effectiveDownloadDateForItem:(ToneItem*)item;
+- (NSInteger)effectiveParameterCountForItem:(ToneItem*)item;
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort;
 + (void)restoreFilterSelectionForGear:(NSPopUpButton*)gear sort:(NSPopUpButton*)sort arch:(NSSegmentedControl*)arch;
 - (void)toggleFavoriteFromCard:(ToneItem*)item;
@@ -117,6 +121,7 @@ struct RigUIState;
 
 // Multi-column tone card for the collection-view grid.
 @interface ToneCardItem : NSCollectionViewItem
+@property(nonatomic, weak) ToneBrowserController* browserController;
 @property(nonatomic, copy) void (^onFavToggle)(ToneItem*);
 @property(nonatomic, copy) void (^onDownloadArch)(ToneItem*, NSString*);
 @end
