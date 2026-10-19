@@ -471,6 +471,8 @@ std::vector<std::string> PresetManager::getSlotFactoryPresets(const std::string&
     return {"Captured Clean", "6L6 Warmth (25%)", "6L6 Saturated (50%)", "EL34 Punch (35%)", "EL34 High-Gain (65%)"};
   } else if (slotKey == "sculpt") {
     return {"Flat Bypass", "TS Tight Boost", "Midrange Push", "Fat Lead"};
+  } else if (slotKey == "boost") {
+    return {"Clean Boost", "TS9 Drive", "Lead Push", "Tight Chug", "Warm Overdrive"};
   }
   return {"Default"};
 }

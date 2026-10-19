@@ -464,6 +464,62 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
   REQUIRE(!host.writes[kOverdriveDrivePort].empty());
   CHECK(host.writes[kOverdriveDrivePort].back() == 25.0f);
   CHECK(state->boostVisualizer.drive == 25.0f);
+
+  // Pre-Amp EQ and Boost presets unlinking verification:
+  // 1. Set distinct boost parameters
+  echo(kOverdriveDrivePort, 35.0f);
+  echo(kOverdriveTonePort, 55.0f);
+  echo(kOverdriveLevelPort, 2.0f);
+  drain();
+  CHECK(state->boostVisualizer.drive == 35.0f);
+
+  // 2. User preset with legacy overdrive keys (e.g. "TS9 (No Clipping)") must NOT modify boost
+  if (!state->userSlotPresets[@"sculpt"]) state->userSlotPresets[@"sculpt"] = [NSMutableDictionary dictionary];
+  state->userSlotPresets[@"sculpt"][@"TS9 (No Clipping)"] = @{
+    @"39": @0.0f, @"40": @0.0f, @"82": @0.0f,
+    @"179": @9.5f, @"180": @50.0f, @"181": @-8.0f
+  };
+  state->rebuildSlotPresetMenu(eqSlot);
+  [eqPopup selectItemWithTitle:@"TS9 (No Clipping)"];
+  REQUIRE([eqPopup.titleOfSelectedItem isEqualToString:@"TS9 (No Clipping)"]);
+  host.writes.clear();
+  action(eqPopup);
+  drain();
+  CHECK(host.writes[kOverdriveDrivePort].empty());
+  CHECK(host.writes[kOverdriveTonePort].empty());
+  CHECK(host.writes[kOverdriveLevelPort].empty());
+  CHECK(state->boostVisualizer.drive == 35.0f);
+  CHECK(state->boostVisualizer.tone == 55.0f);
+  CHECK(state->boostVisualizer.level == 2.0f);
+
+  // 3. User preset without overdrive keys must NOT reset boost to odDefaults
+  state->userSlotPresets[@"sculpt"][@"Clean EQ"] = @{
+    @"39": @5.0f, @"40": @30.0f, @"82": @40.0f
+  };
+  state->rebuildSlotPresetMenu(eqSlot);
+  [eqPopup selectItemWithTitle:@"Clean EQ"];
+  REQUIRE([eqPopup.titleOfSelectedItem isEqualToString:@"Clean EQ"]);
+  host.writes.clear();
+  action(eqPopup);
+  drain();
+  CHECK(host.writes[kOverdriveDrivePort].empty());
+  CHECK(host.writes[kOverdriveTonePort].empty());
+  CHECK(host.writes[kOverdriveLevelPort].empty());
+  CHECK(state->boostVisualizer.drive == 35.0f);
+  CHECK(state->boostVisualizer.tone == 55.0f);
+  CHECK(state->boostVisualizer.level == 2.0f);
+
+  // 4. Boost preset selection must not touch sculpt controls (39, 40, 82)
+  [boostPopup selectItemWithTitle:@"TS9 DRIVE"];
+  host.writes.clear();
+  action(boostPopup);
+  drain();
+  CHECK(host.writes[39].empty());
+  CHECK(host.writes[40].empty());
+  CHECK(host.writes[kMidPushPort].empty());
+
+  [state->userSlotPresets[@"sculpt"] removeObjectForKey:@"TS9 (No Clipping)"];
+  [state->userSlotPresets[@"sculpt"] removeObjectForKey:@"Clean EQ"];
   [state->userSlotPresets[@"boost"] removeObjectForKey:@"MyBoost"];
   [[presetClass defaultPreset] applyToState:state];
   drain();

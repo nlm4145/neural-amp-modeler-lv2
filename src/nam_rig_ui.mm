@@ -1310,18 +1310,6 @@ static NSString* stageName(NSInteger stage) {
         _state->sendControl(NAMRig::kMidPushPort, 0.0f);
         _state->updateControl(NAMRig::kMidPushPort, 0.0f);
       }
-      // Sculpt presets saved before the overdrive existed recall it as OFF.
-      if ([spec[@"key"] isEqualToString:@"sculpt"]) {
-        const std::pair<uint32_t, float> odDefaults[] = {
-            {NAMRig::kOverdriveDrivePort, 0.0f},
-            {NAMRig::kOverdriveTonePort, NAMRig::Overdrive::kToneDefault},
-            {NAMRig::kOverdriveLevelPort, 0.0f}};
-        for (const auto& [port, value] : odDefaults) {
-          if (values[[NSString stringWithFormat:@"%u", port]]) continue;
-          _state->sendControl(port, value);
-          _state->updateControl(port, value);
-        }
-      }
       // Slot presets saved before graph pins existed recall with no pins.
       for (NSNumber* pNum in spec[@"ports"]) {
         const uint32_t port = pNum.unsignedIntValue;
@@ -1329,11 +1317,13 @@ static NSString* stageName(NSInteger stage) {
         _state->sendControl(port, NAMRig::pinEqDefault(port));
         _state->updateControl(port, NAMRig::pinEqDefault(port));
       }
+      NSSet<NSNumber*>* allowedPorts = [NSSet setWithArray:spec[@"ports"] ?: @[]];
       for (id portKey in values) {
         if (![portKey isKindOfClass:[NSString class]]) continue;
         id valObj = values[portKey];
         if (![valObj respondsToSelector:@selector(floatValue)]) continue;
         const uint32_t port = (uint32_t)[(NSString*)portKey integerValue];
+        if (![allowedPorts containsObject:@(port)]) continue;
         const float val = [valObj floatValue];
         _state->sendControl(port, val);
         _state->updateControl(port, val);

@@ -965,6 +965,7 @@ struct RigUIState {
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![root isKindOfClass:[NSDictionary class]]) return;
     NSDictionary* rootDict = (NSDictionary*)root;
+    bool needsSave = false;
     for (id slotKey in rootDict) {
       if (![slotKey isKindOfClass:[NSString class]]) continue;
       id slotVal = rootDict[slotKey];
@@ -974,10 +975,28 @@ struct RigUIState {
         if (![presetName isKindOfClass:[NSString class]]) continue;
         id presetVal = ((NSDictionary*)slotVal)[presetName];
         if ([presetVal isKindOfClass:[NSDictionary class]]) {
-          map[presetName] = [presetVal copy];
+          NSMutableDictionary* pCopy = [presetVal mutableCopy];
+          if ([slotKey isEqualToString:@"sculpt"]) {
+            NSArray<NSString*>* odKeys = @[
+              [NSString stringWithFormat:@"%u", NAMRig::kOverdriveDrivePort],
+              [NSString stringWithFormat:@"%u", NAMRig::kOverdriveTonePort],
+              [NSString stringWithFormat:@"%u", NAMRig::kOverdriveLevelPort],
+              [NSString stringWithFormat:@"%u", NAMRig::kOverdriveEnabledPort]
+            ];
+            for (NSString* k in odKeys) {
+              if (pCopy[k] != nil) {
+                [pCopy removeObjectForKey:k];
+                needsSave = true;
+              }
+            }
+          }
+          map[presetName] = [pCopy copy];
         }
       }
       userSlotPresets[slotKey] = map;
+    }
+    if (needsSave) {
+      saveUserSlotPresetsToDisk();
     }
   }
 
