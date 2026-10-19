@@ -473,13 +473,31 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
     [menu addItem:it];
   }
 
-  NSInteger totalCount = item.a2Count + item.a1Count + item.customCount;
-  NSString *allTitle = totalCount > 0
-      ? [NSString stringWithFormat:@"Download All Formats (%ld)", (long)totalCount]
-      : @"Download All Models";
-  NSMenuItem *allItem = [[NSMenuItem alloc] initWithTitle:allTitle action:@selector(downloadAllArchs:) keyEquivalent:@""];
-  allItem.target = self;
-  [menu addItem:allItem];
+  if (item.stage == 2 || [item.gear.lowercaseString isEqualToString:@"cab"] || item.irsCount > 0) {
+    if (item.irsCount > 0) {
+      NSString *title = [NSString stringWithFormat:@"Download Impulse Responses (%ld)", (long)item.irsCount];
+      NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(downloadAllArchs:) keyEquivalent:@""];
+      it.target = self;
+      [menu addItem:it];
+    } else if (item.a2Count == 0 && item.a1Count == 0 && item.customCount == 0) {
+      NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:@"Download Models" action:@selector(downloadAllArchs:) keyEquivalent:@""];
+      it.target = self;
+      [menu addItem:it];
+    }
+  } else {
+    NSInteger archCount = (item.a2Count > 0 ? 1 : 0) + (item.a1Count > 0 ? 1 : 0) + (item.customCount > 0 ? 1 : 0);
+    if (archCount > 1) {
+      NSInteger totalCount = item.a2Count + item.a1Count + item.customCount;
+      NSString *allTitle = [NSString stringWithFormat:@"Download All Formats (%ld)", (long)totalCount];
+      NSMenuItem *allItem = [[NSMenuItem alloc] initWithTitle:allTitle action:@selector(downloadAllArchs:) keyEquivalent:@""];
+      allItem.target = self;
+      [menu addItem:allItem];
+    } else if (archCount == 0) {
+      NSMenuItem *allItem = [[NSMenuItem alloc] initWithTitle:@"Download All Models" action:@selector(downloadAllArchs:) keyEquivalent:@""];
+      allItem.target = self;
+      [menu addItem:allItem];
+    }
+  }
 }
 
 - (IBAction)downloadA2:(id)sender {

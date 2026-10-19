@@ -53,4 +53,9 @@ assert "driveLow_" in speaker_src and "sigmoid(driveLow_ * gain)" in speaker_src
 )
 assert "SPEAKER LOAD" in ui
 assert "Speaker Dynamics / Impedance" in ui
+assert "speakerDescriptions" in ui
+assert "Resistive — Flat resistive dummy load" in ui
+assert "profileDescription" in speaker_src
+assert "Resistive — Flat resistive dummy load" in speaker_src
+assert "Resistive (flat dummy load)" in ttl
 print("  PASS  speaker load ports, bypass default, damping coupling, DSP placement, and UI are wired")

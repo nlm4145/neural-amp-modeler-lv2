@@ -81,6 +81,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)removeBothCabsSelection:(id)sender;
 - (void)downloadStageArchitecture:(NSMenuItem*)sender;
 - (BOOL)isStageArchitectureDownloaded:(size_t)stage arch:(NSString*)arch;
+- (BOOL)isStageArchitectureAvailable:(size_t)stage arch:(NSString*)arch;
 - (ToneItem*)toneItemForStage:(size_t)stage;
 - (NSMenuItem*)downloadArchitectureMenuItemForStage:(size_t)stage title:(NSString*)menuTitle;
 - (void)menuNeedsUpdate:(NSMenu*)menu;
@@ -276,7 +277,18 @@ static NSString* stageName(NSInteger stage) {
       }
     }
   }
-  if (found) return found;
+  if (found) {
+    if (toneDict) {
+      if (found.a2Count <= 0 && [toneDict[@"a2_models_count"] respondsToSelector:@selector(integerValue)])
+        found.a2Count = [toneDict[@"a2_models_count"] integerValue];
+      if (found.a1Count <= 0 && [toneDict[@"a1_models_count"] respondsToSelector:@selector(integerValue)])
+        found.a1Count = [toneDict[@"a1_models_count"] integerValue];
+      if (found.customCount <= 0 && [toneDict[@"custom_models_count"] respondsToSelector:@selector(integerValue)])
+        found.customCount = [toneDict[@"custom_models_count"] integerValue];
+      if (!found.toneData) found.toneData = toneDict;
+    }
+    return found;
+  }
 
   if (toneDict) {
     NSMutableArray<NSString*>* models = [NSMutableArray array];
@@ -406,11 +418,81 @@ static NSString* stageName(NSInteger stage) {
   return NO;
 }
 
+- (BOOL)isStageArchitectureAvailable:(size_t)stage arch:(NSString*)arch {
+  if (stage >= 2) return NO; // Cabs do not use neural network architectures (A2/A1/Custom)
+  ToneItem* item = [self toneItemForStage:stage];
+  if (!item || item.toneId <= 0) return NO;
+
+  // 1. If already downloaded on disk, it's definitely available for this profile:
+  if ([self isStageArchitectureDownloaded:stage arch:arch]) return YES;
+
+  // 2. Check explicit counts from ToneItem metadata:
+  if ([arch isEqualToString:@"2"]) {
+    if (item.a2Count > 0) return YES;
+  } else if ([arch isEqualToString:@"1"]) {
+    if (item.a1Count > 0) return YES;
+  } else if ([arch isEqualToString:@"custom"]) {
+    if (item.customCount > 0) return YES;
+    if ([item.title localizedCaseInsensitiveContainsString:@"Hyper"]) return YES;
+  }
+
+  // 3. Check remoteModels if already fetched:
+  if (item.remoteModels.count > 0) {
+    for (NSDictionary* m in item.remoteModels) {
+      if (![m isKindOfClass:NSDictionary.class]) continue;
+      id av = m[@"architecture_version"];
+      NSString* avStr = [av isKindOfClass:NSString.class] ? av : [av respondsToSelector:@selector(stringValue)] ? [av stringValue] : nil;
+      if (avStr.length) {
+        if ([arch isEqualToString:@"2"] && [avStr isEqualToString:@"2"]) return YES;
+        if ([arch isEqualToString:@"1"] && [avStr isEqualToString:@"1"]) return YES;
+        if ([arch isEqualToString:@"custom"] && [avStr.lowercaseString isEqualToString:@"custom"]) return YES;
+      }
+      NSString* name = [m[@"name"] isKindOfClass:NSString.class] ? [(NSString*)m[@"name"] lowercaseString] : @"";
+      if ([arch isEqualToString:@"custom"] && ([name containsString:@"custom"] || [name containsString:@"hyper"])) return YES;
+    }
+  }
+
+  // 4. Check raw toneData from _tone3000.json or API:
+  NSDictionary* td = item.toneData;
+  if ([td isKindOfClass:NSDictionary.class]) {
+    if ([arch isEqualToString:@"2"] && [td[@"a2_models_count"] respondsToSelector:@selector(integerValue)] && [td[@"a2_models_count"] integerValue] > 0) return YES;
+    if ([arch isEqualToString:@"1"] && [td[@"a1_models_count"] respondsToSelector:@selector(integerValue)] && [td[@"a1_models_count"] integerValue] > 0) return YES;
+    if ([arch isEqualToString:@"custom"] && [td[@"custom_models_count"] respondsToSelector:@selector(integerValue)] && [td[@"custom_models_count"] integerValue] > 0) return YES;
+  }
+
+  // 5. Check _tone3000.json manifest on disk for download entries:
+  NSString* curPath = (stage < _state->selectedPaths.size() && !_state->selectedPaths[stage].empty())
+      ? [NSString stringWithUTF8String:_state->selectedPaths[stage].c_str()]
+      : nil;
+  if (curPath.length) {
+    NSString* folder = [curPath stringByDeletingLastPathComponent];
+    NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:manifestPath]) {
+      NSDictionary* manifest = jsonDictionaryAtPath(manifestPath);
+      NSArray* downloads = [manifest[@"downloads"] isKindOfClass:NSArray.class] ? manifest[@"downloads"] : nil;
+      for (NSDictionary* dl in downloads) {
+        if (![dl isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary* orig = [dl[@"original_model"] isKindOfClass:NSDictionary.class] ? dl[@"original_model"] : nil;
+        id av = orig[@"architecture_version"];
+        NSString* avStr = [av isKindOfClass:NSString.class] ? av : [av respondsToSelector:@selector(stringValue)] ? [av stringValue] : nil;
+        if (avStr.length) {
+          if ([arch isEqualToString:@"2"] && [avStr isEqualToString:@"2"]) return YES;
+          if ([arch isEqualToString:@"1"] && [avStr isEqualToString:@"1"]) return YES;
+          if ([arch isEqualToString:@"custom"] && [avStr.lowercaseString isEqualToString:@"custom"]) return YES;
+        }
+      }
+    }
+  }
+
+  return NO;
+}
+
 - (void)downloadStageArchitecture:(NSMenuItem*)sender {
   if (!_state) return;
   NSDictionary* dict = [sender.representedObject isKindOfClass:NSDictionary.class] ? sender.representedObject : nil;
   if (!dict) return;
   size_t stage = [dict[@"stage"] unsignedIntegerValue];
+  if (stage >= 2) return; // Cabs do not have A2/A1/Custom architectures
   NSString* arch = dict[@"arch"];
   if (!arch.length) return;
 
@@ -444,39 +526,56 @@ static NSString* stageName(NSInteger stage) {
 }
 
 - (NSMenuItem*)downloadArchitectureMenuItemForStage:(size_t)stage title:(NSString*)menuTitle {
-  NSMenuItem* parent = [[NSMenuItem alloc] initWithTitle:menuTitle ?: @"Download Architecture"
-                                                  action:NULL
-                                           keyEquivalent:@""];
+  if (stage >= 2) return nil; // Cabs do not use neural network architectures (A2/A1/Custom)
+
   BOOL hasModel = (stage < _state->selectedPaths.size() && !_state->selectedPaths[stage].empty());
   if (!hasModel) {
-    parent.enabled = NO;
-    parent.toolTip = @"No model loaded for this stage.";
-    return parent;
+    return nil;
   }
 
   ToneItem* item = [self toneItemForStage:stage];
   if (!item || item.toneId <= 0) {
-    parent.enabled = NO;
-    parent.toolTip = @"Current model was not loaded from Tone3000.";
-    return parent;
+    return nil;
   }
-
-  NSMenu* sub = [[NSMenu alloc] initWithTitle:menuTitle ?: @"Download Architecture"];
 
   struct ArchOption {
     NSString* archKey;
     NSString* displayName;
-  };
-  std::vector<ArchOption> options = {
-    {@"2", @"A2"},
-    {@"1", @"A1"},
-    {@"custom", @"Custom"}
+    NSInteger modelCount;
   };
 
+  std::vector<ArchOption> options;
+  if ([self isStageArchitectureAvailable:stage arch:@"2"]) {
+    options.push_back({@"2", @"A2", item.a2Count});
+  }
+  if ([self isStageArchitectureAvailable:stage arch:@"1"]) {
+    options.push_back({@"1", @"A1", item.a1Count});
+  }
+  if ([self isStageArchitectureAvailable:stage arch:@"custom"]) {
+    options.push_back({@"custom", @"Custom", item.customCount});
+  }
+
+  if (options.empty()) {
+    return nil;
+  }
+
+  NSMenuItem* parent = [[NSMenuItem alloc] initWithTitle:menuTitle ?: @"Download Architecture"
+                                                  action:NULL
+                                           keyEquivalent:@""];
+  NSMenu* sub = [[NSMenu alloc] initWithTitle:menuTitle ?: @"Download Architecture"];
+
+  NSInteger undownloadedCount = 0;
   for (const auto& opt : options) {
     BOOL dl = [self isStageArchitectureDownloaded:stage arch:opt.archKey];
-    NSString* title = dl ? [NSString stringWithFormat:@"%@ Architecture (Downloaded)", opt.displayName]
-                         : [NSString stringWithFormat:@"%@ Architecture", opt.displayName];
+    if (!dl) undownloadedCount++;
+
+    NSString* countSuffix = (opt.modelCount > 0)
+        ? [NSString stringWithFormat:@" (%ld model%@)", (long)opt.modelCount, opt.modelCount == 1 ? @"" : @"s"]
+        : @"";
+    NSString* title = dl
+        ? [NSString stringWithFormat:@"%@ Architecture%@ (Downloaded)", opt.displayName, countSuffix]
+        : [NSString stringWithFormat:@"%@ Architecture%@", opt.displayName, countSuffix];
+
     NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:title
                                                 action:@selector(downloadStageArchitecture:)
                                          keyEquivalent:@""];
@@ -490,7 +589,13 @@ static NSString* stageName(NSInteger stage) {
   }
 
   parent.submenu = sub;
-  parent.toolTip = [NSString stringWithFormat:@"Download other architectures for %@", item.title ?: @"this tone"];
+  if (undownloadedCount > 0) {
+    parent.toolTip = [NSString stringWithFormat:@"Download alternative architectures for %@ (%ld available to download)",
+                      item.title ?: @"this tone", (long)undownloadedCount];
+  } else {
+    parent.toolTip = [NSString stringWithFormat:@"All available architectures for %@ are already downloaded.",
+                      item.title ?: @"this tone"];
+  }
   return parent;
 }
 
@@ -525,8 +630,11 @@ static NSString* stageName(NSInteger stage) {
         : [NSString stringWithFormat:@"No %@ model loaded to remove.", stageName(stage)];
     [menu addItem:item];
 
-    [menu addItem:[NSMenuItem separatorItem]];
-    [menu addItem:[self downloadArchitectureMenuItemForStage:(size_t)stage title:@"Download Architecture"]];
+    NSMenuItem* archItem = [self downloadArchitectureMenuItemForStage:(size_t)stage title:@"Download Architecture"];
+    if (archItem) {
+      [menu addItem:[NSMenuItem separatorItem]];
+      [menu addItem:archItem];
+    }
   } else {
     NSMenuItem* loadCabA = [[NSMenuItem alloc] initWithTitle:@"Load Cab A Model from Disk…"
                                                       action:@selector(chooseModel:)
@@ -557,9 +665,6 @@ static NSString* stageName(NSInteger stage) {
           ? @"Completely remove the selected cabinet model or impulse response."
           : @"No cabinet model or IR loaded to remove.";
       [menu addItem:item];
-
-      [menu addItem:[NSMenuItem separatorItem]];
-      [menu addItem:[self downloadArchitectureMenuItemForStage:2 title:@"Download Architecture"]];
     } else {
       NSMenuItem* itemA = [[NSMenuItem alloc] initWithTitle:@"Remove Selection"
                                                      action:@selector(removeStageSelection:)
@@ -593,10 +698,6 @@ static NSString* stageName(NSInteger stage) {
       itemBoth.enabled = hasCabA || hasCabB;
       itemBoth.toolTip = @"Completely remove both Cabinet A and Cabinet B selections.";
       [menu addItem:itemBoth];
-
-      [menu addItem:[NSMenuItem separatorItem]];
-      [menu addItem:[self downloadArchitectureMenuItemForStage:2 title:@"Download Architecture (Cab A)"]];
-      [menu addItem:[self downloadArchitectureMenuItemForStage:3 title:@"Download Architecture (Cab B)"]];
     }
   }
 }
@@ -3199,11 +3300,25 @@ static void addLowerStudioDeck(RigUIState* state,
     NSPopUpButton* deckSpkr = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [deckSpkr addItemsWithTitles:@[@"Captured / Off", @"Auto", @"Resistive", @"Open Back",
                                   @"Vintage Alnico", @"UK 4x12", @"Modern 4x12", @"Bass"]];
+    NSArray<NSString*>* speakerDescriptions = @[
+      @"Captured / Off — Exact bypass. Preserves the original speaker load and interaction already present in the NAM model without adding reactive impedance or cone dynamics.",
+      @"Auto — Automatically detects and selects a matching reactive speaker load based on the loaded Cabinet A impulse response or model name. Defaults to Resistive if unrecognized.",
+      @"Resistive — Flat resistive dummy load (attenuator style). Nearly flat impedance with minimal 95 Hz resonance and gentle 2.5 kHz inductive rise for transparent, uncolored dynamic response.",
+      @"Open Back — American combo-style open-back cabinet (1x12 or 2x12). Resonant peak at 92 Hz, loose excursion bloom, longer compression decay, and open high-frequency chime above 1.8 kHz.",
+      @"Vintage Alnico — British vintage alnico magnet drivers (Celestion Blue/Gold/Cream). Warm, pronounced cone breakup and compression, 105 Hz resonance, and rich upper-mid inductive rise at 1.6 kHz.",
+      @"UK 4x12 — Classic British 4x12 closed-back stack with ceramic greenbacks (Marshall 1960). Strong 118 Hz resonance, punchy mid-bass bark, quick excursion response, and 2.0 kHz inductance rise.",
+      @"Modern 4x12 — Oversized American closed-back 4x12 with Vintage 30s (Rectifier style). Deep 82 Hz resonance, heavy sub-bass thump, tight excursion control, and 2.2 kHz presence bite.",
+      @"Bass — Heavyweight multi-driver bass enclosure (8x10, 4x10, 1x15). Deep 58 Hz low-end resonance, massive 48 Hz sub-bass thump, extended excursion release, and subdued top-end response."
+    ];
+    for (NSUInteger item = 0; item < speakerDescriptions.count && item < (NSUInteger)deckSpkr.numberOfItems; ++item)
+      [deckSpkr itemAtIndex:item].toolTip = speakerDescriptions[item];
     deckSpkr.controlSize = NSControlSizeRegular;
     deckSpkr.tag = 42;
     deckSpkr.target = state->uiController;
     deckSpkr.action = @selector(speakerProfileChanged:);
     deckSpkr.translatesAutoresizingMaskIntoConstraints = NO;
+    [deckSpkr selectItemAtIndex:0];
+    deckSpkr.toolTip = deckSpkr.selectedItem.toolTip;
     [rack addSubview:deckSpkr];
     [[deckSpkr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
     [[deckSpkr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];

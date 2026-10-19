@@ -33,6 +33,43 @@ class SpeakerDynamics {
     return std::max(kCaptured, std::min(kBass, profile));
   }
 
+  static const char* profileName(int profile) noexcept {
+    switch (clampProfile(profile)) {
+      case kCaptured: return "Captured / Off";
+      case kAuto: return "Auto";
+      case kResistive: return "Resistive";
+      case kOpenBack: return "Open Back";
+      case kVintageAlnico: return "Vintage Alnico";
+      case kUK412: return "UK 4x12";
+      case kModern412: return "Modern 4x12";
+      case kBass: return "Bass";
+      default: return "Unknown";
+    }
+  }
+
+  static const char* profileDescription(int profile) noexcept {
+    switch (clampProfile(profile)) {
+      case kCaptured:
+        return "Captured / Off — Exact bypass. Preserves the original speaker load and interaction already present in the NAM model without adding reactive impedance or cone dynamics.";
+      case kAuto:
+        return "Auto — Automatically detects and selects a matching reactive speaker load based on the loaded Cabinet A impulse response or model name. Defaults to Resistive if unrecognized.";
+      case kResistive:
+        return "Resistive — Flat resistive dummy load (attenuator style). Nearly flat impedance with minimal 95 Hz resonance and gentle 2.5 kHz inductive rise for transparent, uncolored dynamic response.";
+      case kOpenBack:
+        return "Open Back — American combo-style open-back cabinet (1x12 or 2x12). Resonant peak at 92 Hz, loose excursion bloom, longer compression decay, and open high-frequency chime above 1.8 kHz.";
+      case kVintageAlnico:
+        return "Vintage Alnico — British vintage alnico magnet drivers (Celestion Blue/Gold/Cream). Warm, pronounced cone breakup and compression, 105 Hz resonance, and rich upper-mid inductive rise at 1.6 kHz.";
+      case kUK412:
+        return "UK 4x12 — Classic British 4x12 closed-back stack with ceramic greenbacks (Marshall 1960). Strong 118 Hz resonance, punchy mid-bass bark, quick excursion response, and 2.0 kHz inductance rise.";
+      case kModern412:
+        return "Modern 4x12 — Oversized American closed-back 4x12 with Vintage 30s (Rectifier style). Deep 82 Hz resonance, heavy sub-bass thump, tight excursion control, and 2.2 kHz presence bite.";
+      case kBass:
+        return "Bass — Heavyweight multi-driver bass enclosure (8x10, 4x10, 1x15). Deep 58 Hz low-end resonance, massive 48 Hz sub-bass thump, extended excursion release, and subdued top-end response.";
+      default:
+        return "";
+    }
+  }
+
   // Whole-token matching on the file name: a token is a maximal run of
   // letters and digits, compared case-insensitively.
   static int profileFromCabPath(const char* path) noexcept {
@@ -199,13 +236,21 @@ class SpeakerDynamics {
   };
 
   static constexpr Profile kProfiles_[kProfileCount] = {
+      // 0. Captured / Off: exact bypass, no added load or excursion response
       {80, 0, .7, 90, 0, .7, 2000, 0, 90, 0, 0, 0, .004, .080},
+      // 1. Auto: resolved dynamically from the cabinet IR path (defaults to Resistive)
       {80, 0, .7, 90, 0, .7, 2000, 0, 90, 0, 0, 0, .004, .080},
+      // 2. Resistive: flat attenuator dummy load; minimal 95 Hz resonance, 2.5 kHz inductance
       {95, .35, .60, 82, .25, .55, 2500, 1.0, 90, 1.1, .10, .35, .003, .060},
+      // 3. Open Back: 1x12/2x12 combo; 92 Hz resonance, loose bloom, 1.8 kHz open chime
       {92, 2.0, .66, 72, 1.8, .58, 1800, 3.5, 76, 2.0, .22, .90, .006, .160},
+      // 4. Vintage Alnico: Blue/Gold/Cream; 105 Hz resonance, warm cone breakup, 1.6 kHz rise
       {105, 2.4, .78, 88, 1.5, .65, 1600, 4.5, 92, 2.8, .32, 1.25, .010, .220},
+      // 5. UK 4x12: Greenback 1960 stack; strong 118 Hz bark, punchy thump, 2.0 kHz inductance
       {118, 3.0, .95, 105, 1.8, .75, 2000, 3.5, 110, 2.5, .28, 1.05, .005, .110},
+      // 6. Modern 4x12: Oversized Rectifier V30; deep 82 Hz resonance, tight thump, 2.2 kHz bite
       {82, 2.5, .82, 68, 2.3, .72, 2200, 3.0, 82, 2.2, .24, .78, .003, .075},
+      // 7. Bass: Multi-driver bass cab (8x10/4x10/1x15); 58 Hz sub resonance, 48 Hz thump
       {58, 2.1, .72, 48, 2.5, .65, 1500, 2.0, 55, 1.5, .16, .62, .008, .240},
   };
 

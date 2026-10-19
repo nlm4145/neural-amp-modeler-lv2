@@ -229,6 +229,19 @@ int main() {
   check(Spk::profileFromCabPath("/Users/bass/IRs/Marshall 1960.wav") == Spk::kUK412,
         "a parent directory name cannot override the cabinet file name");
 
+  // ---- Profile names and descriptions. ----
+  bool descriptionsValid = true;
+  for (int p = 0; p < Spk::kProfileCount; ++p) {
+    const char* name = Spk::profileName(p);
+    const char* desc = Spk::profileDescription(p);
+    descriptionsValid = descriptionsValid && name != nullptr && std::strlen(name) > 0 &&
+                        desc != nullptr && std::strlen(desc) > 0;
+  }
+  check(descriptionsValid, "every profile has a non-empty name and description");
+  check(std::strstr(Spk::profileDescription(Spk::kResistive), "Resistive") != nullptr &&
+        std::strstr(Spk::profileDescription(Spk::kResistive), "dummy load") != nullptr,
+        "Resistive description contains 'Resistive' and 'dummy load'");
+
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n",
               failures);
   return failures ? 1 : 0;
