@@ -260,6 +260,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
+  postCompressor.initialize(rate);
 
   if (options)
     optionsSet(this, options);
@@ -291,6 +292,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
+  postCompressor.initialize(rate);
   appliedBass = -999.0f;
   appliedMid = -999.0f;
   appliedTreble = -999.0f;
@@ -1823,6 +1825,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     smoothedOutputLevel = gain;
 
     const auto processEffects = [&] {
+      postCompressor.process(L, R, n, portValue(ports.post_compressor, 0.0f),
+                             portValue(ports.post_compressor_attack, 8.0f),
+                             portValue(ports.post_compressor_release, 120.0f),
+                             portValue(ports.post_compressor_enabled, 1.0f) >= 0.5f);
       if (rackOn(Rack::Delay))
         delayFx.process(L, R, n, portValue(ports.delay_time, 400.0f),
                         portValue(ports.delay_feedback, 35.0f),

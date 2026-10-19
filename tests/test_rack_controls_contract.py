@@ -33,7 +33,8 @@ assert "kCompressorAttackPort == kOverdriveLevelPort + 1" in header
 assert "kCompressorReleasePort == kCompressorAttackPort + 1" in header
 assert "kCompressorEnabledPort == kCompressorReleasePort + 1" in header
 assert "kOverdriveEnabledPort == kCompressorEnabledPort + 1" in header
-assert "kPortCount == kOverdriveEnabledPort + 1" in header
+assert "kPostCompressorFirstPort == kOverdriveEnabledPort + 1" in header
+assert "kPortCount == kPostCompressorEnabledPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 for index, symbol in enumerate(symbols, 71):

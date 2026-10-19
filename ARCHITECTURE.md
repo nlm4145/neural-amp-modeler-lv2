@@ -79,6 +79,9 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 179 | `od_drive` | in | 0-100%; Pre-Amp Tonal Sculpt TS-style overdrive (`src/overdrive.h`), first in Sculpt ahead of Amp Drive, in the amp's True domain; 0 = exact bypass; connection optional |
 | 180 | `od_tone` | in | 0-100%, default 50%; overdrive treble roll-off (1st-order, 700 Hz–8.4 kHz); only while Drive > 0 |
 | 181 | `od_level` | in | -12..+12 dB, default 0; overdrive output trim; only while Drive > 0 |
+| 182–184 | `compressor_attack`/`compressor_release`/`compressor_enabled` | in | Pre-amp compressor timing and independent bypass |
+| 185 | `od_enabled` | in | Pre-amp boost bypass |
+| 186–189 | `post_compressor`/`post_compressor_attack`/`post_compressor_release`/`post_compressor_enabled` | in | Post-FX Studio stereo compressor: amount 0–100%, attack 1–100 ms (default 8), release 10–1000 ms (default 120), independent enable (default 1); all optional |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
@@ -133,6 +136,19 @@ for 3 ms, latches mute behavior: 3 ms detector decay,
 at most 5 ms remaining hold, and the selected gain-release time. A confirmed
 onset clears that latch immediately. Controls and preset port indices do not
 change; signals below the opening threshold still cannot reliably reopen the gate.
+
+## Post-FX compressor
+
+`StereoCompressor` (`src/dynamics.h`) runs at session rate after the cabinet mix,
+post EQ and output trim, before stereo delay and plate/room reverb. It uses the
+louder channel's envelope and one shared gain for both channels, preserving the
+stereo image. Amount uses the pre-amp compressor's 6 dB soft-knee curve: threshold
+−12 to −36 dB, ratio 1:1 to 6:1, makeup 0 to +6 dB. It adds no lookahead or latency.
+Amount and wet bypass glide over ~10 ms; settled OFF or Amount 0 is bit-exact.
+Bypass leaves all controls and delay/reverb tails intact. The existing nine-rack
+contiguous port array is unchanged; the new independent enable lives at 189.
+Rig presets, A/B snapshots and the `post_compressor` slot dropdown capture all
+four controls. Older presets restore neutral Amount 0, 8/120 ms and enable 1.
 
 ## Sculpt overdrive
 

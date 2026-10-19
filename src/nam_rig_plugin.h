@@ -203,6 +203,10 @@ public:
     float* compressor_release;   // in: port 183, release time (ms, 10..1000)
     float* compressor_enabled;   // in: port 184, compressor bypass (0 = bypass, 1 = on)
     float* od_enabled;           // in: port 185, pre-amp boost bypass (0 = bypass, 1 = on)
+    float* post_compressor;         // in: port 186, stereo post-cab amount (%)
+    float* post_compressor_attack;  // in: port 187, ms
+    float* post_compressor_release; // in: port 188, ms
+    float* post_compressor_enabled; // in: port 189, independent bypass
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -243,7 +247,12 @@ public:
   static_assert(kCompressorReleasePort == kCompressorAttackPort + 1);
   static_assert(kCompressorEnabledPort == kCompressorReleasePort + 1);
   static_assert(kOverdriveEnabledPort == kCompressorEnabledPort + 1);
-  static_assert(kPortCount == kOverdriveEnabledPort + 1);
+  static_assert(offsetof(Ports, post_compressor) == kPostCompressorAmountPort * sizeof(void*));
+  static_assert(offsetof(Ports, post_compressor_attack) == kPostCompressorAttackPort * sizeof(void*));
+  static_assert(offsetof(Ports, post_compressor_release) == kPostCompressorReleasePort * sizeof(void*));
+  static_assert(offsetof(Ports, post_compressor_enabled) == kPostCompressorEnabledPort * sizeof(void*));
+  static_assert(kPostCompressorFirstPort == kOverdriveEnabledPort + 1);
+  static_assert(kPortCount == kPostCompressorEnabledPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -346,6 +355,7 @@ private:
   StereoDelay delayFx;
   PlateReverb reverbFx;
   NoiseGate noiseGate;
+  StereoCompressor postCompressor;
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;
   AmpAdvanced ampAdvanced;

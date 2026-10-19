@@ -22,6 +22,7 @@ int main() {
   std::array<float, kPinEqPortCount> pins{};
   std::array<float, 3> overdrive{};
   std::array<float, 3> compressor{};
+  std::array<float, 4> postCompressor{};
   float mid = 0, od_enabled = 0;
   Plugin::Ports segmented{}, indexed{};
   unsigned char sentinel = 0;
@@ -39,7 +40,8 @@ int main() {
       {kPowerTubeTypePort, tube}, {kMidPushPort, {&mid, 1}},
       {kPinEqFirstPort, pins}, {kOverdriveDrivePort, overdrive},
       {kCompressorAttackPort, compressor},
-      {kOverdriveEnabledPort, {&od_enabled, 1}}});
+      {kOverdriveEnabledPort, {&od_enabled, 1}},
+      {kPostCompressorFirstPort, postCompressor}});
   const std::span<float> values(flat);
   bindStandaloneControls(indexed, {{4, values.subspan(4, 27)}, {32, values.subspan(32)}});
   for (uint32_t p = 0; p < Plugin::kPortCount; ++p) {
@@ -58,7 +60,8 @@ int main() {
       advanced.back() != flat[41] || speaker.back() != flat[46] || fx.back() != flat[59] ||
       transformer.back() != flat[70] || racks.back() != flat[79] || tube.back() != flat[81] ||
       mid != flat[82] || pins.back() != flat[178] || overdrive.back() != flat[181] ||
-      compressor.back() != flat[184] || od_enabled != flat[185]) std::abort();
+      compressor.back() != flat[184] || od_enabled != flat[185] ||
+      postCompressor.back() != flat[189]) std::abort();
   // Exercise the Windows pin override instead of its flat-array backing.
   bindStandaloneControls(indexed, {{kPinEqFirstPort, pins}});
   for (size_t i = 0; i < pins.size(); ++i)

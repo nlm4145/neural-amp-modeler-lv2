@@ -219,7 +219,8 @@ class StandaloneApp {
         {NAMRig::kPinEqFirstPort, pinEqControls_},
         {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)},
         {NAMRig::kCompressorAttackPort, controls.subspan(NAMRig::kCompressorAttackPort, 3)},
-        {NAMRig::kOverdriveEnabledPort, controls.subspan(NAMRig::kOverdriveEnabledPort, 1)}});
+        {NAMRig::kOverdriveEnabledPort, controls.subspan(NAMRig::kOverdriveEnabledPort, 1)},
+        {NAMRig::kPostCompressorFirstPort, controls.subspan(NAMRig::kPostCompressorFirstPort, 4)}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))

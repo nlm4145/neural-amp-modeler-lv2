@@ -1063,6 +1063,8 @@ static NSString* stageName(NSInteger stage) {
     _state->sendControl(port, NAMRig::kRackControlDefaults[i]);
     _state->updateControl(port, NAMRig::kRackControlDefaults[i]);
   }
+  _state->sendControl(NAMRig::kPostCompressorEnabledPort, 1.0f);
+  _state->updateControl(NAMRig::kPostCompressorEnabledPort, 1.0f);
   [self resetTransformerControls:sender];
   [self markPresetModified];
 }
@@ -1171,6 +1173,27 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)sculptPageClicked:(NSButton*)sender {
   if (_state) _state->setSculptPage(sender.tag == 1);
+}
+
+- (void)applyPostCompressorPreset:(NSButton*)sender {
+  if (!_state) return;
+  const float presets[][3] = {
+    {0.0f, 8.0f, 120.0f},    // OFF / BYPASS
+    {25.0f, 20.0f, 150.0f},  // STUDIO GLUE
+    {40.0f, 30.0f, 80.0f},   // PUNCHY ATTACK
+    {45.0f, 12.0f, 200.0f},  // SMOOTH LEAD
+    {65.0f, 2.0f, 60.0f}     // PEAK CONTROL
+  };
+  if (sender.tag < 0 || sender.tag >= 5) return;
+  for (uint32_t i = 0; i < 3; ++i) {
+    const uint32_t port = NAMRig::kPostCompressorFirstPort + i;
+    _state->sendControl(port, presets[sender.tag][i]);
+    _state->updateControl(port, presets[sender.tag][i]);
+  }
+  const float enabled = sender.tag == 0 ? 0.0f : 1.0f;
+  _state->sendControl(NAMRig::kPostCompressorEnabledPort, enabled);
+  _state->updateControl(NAMRig::kPostCompressorEnabledPort, enabled);
+  [self markPresetModified];
 }
 
 - (void)applySculptPreset:(NSButton*)sender {
@@ -2447,6 +2470,9 @@ static RigPanel* addStudioRackSection(NSView* parent, NSString* title, NSString*
     } else if (customPort == NAMRig::kOverdriveEnabledPort) {
       state->boostButton = button;
       state->updateControl(port, state->boostEnabled);
+    } else if (customPort == NAMRig::kPostCompressorEnabledPort) {
+      state->postCompressorButton = button;
+      state->updateControl(port, state->postCompressorEnabled);
     }
   } else if (subtitle.length) {
     NSTextField* sLabel = addLabel(hView, subtitle, NSZeroRect,
@@ -2553,6 +2579,10 @@ static NSPopUpButton* addSlotPresetDropdown(
     spec[@"enabledPort"] = enabledPort;
   } else if ([slotKey isEqualToString:@"boost"]) {
     NSNumber* enabledPort = @(NAMRig::kOverdriveEnabledPort);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
+  } else if ([slotKey isEqualToString:@"post_compressor"]) {
+    NSNumber* enabledPort = @(NAMRig::kPostCompressorEnabledPort);
     spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
     spec[@"enabledPort"] = enabledPort;
   }
@@ -2695,6 +2725,62 @@ static void addLowerStudioDeck(RigUIState* state,
   [[row0.bottomAnchor constraintEqualToAnchor:pane0.bottomAnchor] setActive:YES];
   [[row0.leadingAnchor constraintEqualToAnchor:pane0.leadingAnchor] setActive:YES];
   [[row0.trailingAnchor constraintEqualToAnchor:pane0.trailingAnchor] setActive:YES];
+
+  // Stereo post-cab dynamics, independent of the Pre-Amp Compressor.
+  {
+    RigPanel* rack = addStudioRackSection(row0, @"STEREO COMPRESSOR", @"POST-CAB DYNAMICS",
+        violetColor, state, NAMRig::Rack::Count, NAMRig::kPostCompressorEnabledPort);
+    [row0 addArrangedSubview:rack];
+    NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    kr.distribution = NSStackViewDistributionFillEqually;
+    kr.spacing = 6;
+    kr.translatesAutoresizingMaskIntoConstraints = NO;
+    [rack addSubview:kr];
+    [[kr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
+    [[kr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:10] setActive:YES];
+    [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
+    [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
+    for (size_t idx : {size_t{44}, size_t{45}, size_t{46}})
+      [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
+
+    NSView* card = [[NSView alloc] initWithFrame:NSZeroRect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.wantsLayer = YES;
+    card.layer.cornerRadius = 6;
+    card.layer.backgroundColor = rigRaised().CGColor;
+    [rack addSubview:card];
+    [[card.topAnchor constraintEqualToAnchor:kr.bottomAnchor constant:10] setActive:YES];
+    [[card.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:12] setActive:YES];
+    [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
+    [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
+    NSTextField* desc = addLabel(card, @"Linked stereo leveling before delay & reverb.\nPreserves the stereo image without pushing the amp.", NSZeroRect,
+        [NSFont systemFontOfSize:9 weight:NSFontWeightRegular], rigDimText(), NSTextAlignmentLeft);
+    desc.translatesAutoresizingMaskIntoConstraints = NO;
+    desc.maximumNumberOfLines = 2;
+    [[desc.topAnchor constraintEqualToAnchor:card.topAnchor constant:8] setActive:YES];
+    [[desc.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[desc.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    NSPopUpButton* presets = addSlotPresetDropdown(card, state, @"post_compressor", @"Stereo Compressor",
+        @[@(NAMRig::kPostCompressorAmountPort), @(NAMRig::kPostCompressorAttackPort), @(NAMRig::kPostCompressorReleasePort)],
+        @[@"OFF / BYPASS", @"STUDIO GLUE", @"PUNCHY ATTACK", @"SMOOTH LEAD", @"PEAK CONTROL"], @selector(applyPostCompressorPreset:));
+    [[presets.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
+    [[presets.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[presets.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    NAMCompressorVisualizer* vis = [[NAMCompressorVisualizer alloc] initWithFrame:NSZeroRect];
+    vis.compact = YES;
+    vis.translatesAutoresizingMaskIntoConstraints = NO;
+    vis.amount = 0;
+    vis.attack = 8;
+    vis.releaseTime = 120;
+    vis.enabled = state->postCompressorEnabled >= 0.5f;
+    state->postCompressorVisualizer = vis;
+    [card addSubview:vis];
+    [[vis.topAnchor constraintEqualToAnchor:presets.bottomAnchor constant:8] setActive:YES];
+    [[vis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[vis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[vis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];
+  }
 
   // 1. Stereo Tape Delay (4 knobs: 28, 29, 30, 31)
   {
@@ -4389,7 +4475,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
                                       @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
-                                      @"ATTACK", @"RELEASE"];
+                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -4397,7 +4483,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
-                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms"];
+                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -4442,19 +4528,22 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Overdrive tone. Treble roll-off after the clipper, from dark (700 Hz) to bright (8.4 kHz). Shown on the Sculpt graph. Only applies while OD Drive is on.",
       @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on.",
       @"Attack time for the pre-model compressor (1 to 100 ms). Faster attack clamps pick transients sooner; slower attack lets the transient through for more snap.",
-      @"Release time for the pre-model compressor (10 to 1000 ms). Faster release gives a breathing, lively response; slower release yields smooth sustain."
+      @"Release time for the pre-model compressor (10 to 1000 ms). Faster release gives a breathing, lively response; slower release yields smooth sustain.",
+      @"Post-cab stereo compression before delay and reverb. Amount lowers threshold, raises ratio and adds makeup gain. Both channels share gain reduction to preserve the stereo image. 0% is exact bypass; independent of pre-amp compression.",
+      @"Post-cab compressor attack (1 to 100 ms). Slower attack preserves pick punch; faster attack controls peaks. No lookahead or added latency.",
+      @"Post-cab compressor release (10 to 1000 ms). Short releases recover between notes; longer releases smooth sustained leads."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, -12.0, 1.0, 10.0};
+        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        100.0, 100.0, 12.0, 100.0, 1000.0};
+        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;

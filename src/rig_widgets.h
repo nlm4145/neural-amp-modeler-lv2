@@ -82,6 +82,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @end
 
 @interface NAMCompressorVisualizer : NSView
+@property(nonatomic) BOOL compact;
 @property(nonatomic) float amount;
 @property(nonatomic) float attack;
 @property(nonatomic) float releaseTime;

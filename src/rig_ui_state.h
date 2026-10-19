@@ -157,6 +157,9 @@ struct RigUIState {
   __strong NAMCompressorVisualizer* compressorVisualizer = nil;
   __strong RigButton* compressorButton = nil;
   float compressorEnabled = 1.0f;
+  __strong NAMCompressorVisualizer* postCompressorVisualizer = nil;
+  __strong RigButton* postCompressorButton = nil;
+  float postCompressorEnabled = 1.0f;
   __strong NAMDelayTapVisualizer* delayVisualizer = nil;
   __strong NAMReverbDecayVisualizer* reverbVisualizer = nil;
   __strong NAMSpatialAcousticVisualizer* spatialVisualizer = nil;
@@ -1044,6 +1047,7 @@ struct RigUIState {
     if (port == NAMRig::kPowerTubeCharacterPort) return powerTubeCharacter;
     if (port == NAMRig::kCompressorEnabledPort) return compressorEnabled ? 1.0f : 0.0f;
     if (port == NAMRig::kOverdriveEnabledPort) return boostEnabled ? 1.0f : 0.0f;
+    if (port == NAMRig::kPostCompressorEnabledPort) return postCompressorEnabled;
     if (port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
       return rackControls[port - NAMRig::kRackControlFirstPort];
@@ -1931,6 +1935,26 @@ struct RigUIState {
 
   void updateControl(uint32_t port, float value) {
     auto alive = this->isAlive;
+    if (port == NAMRig::kPostCompressorEnabledPort) {
+      postCompressorEnabled = std::isfinite(value) ? (value >= 0.5f ? 1.0f : 0.0f) : 1.0f;
+      auto updatePostComp = ^{
+        if (!alive || !*alive) return;
+        const bool enabled = postCompressorEnabled >= 0.5f;
+        if (postCompressorVisualizer) {
+          postCompressorVisualizer.enabled = enabled;
+          postCompressorVisualizer.needsDisplay = YES;
+        }
+        if (postCompressorButton) {
+          postCompressorButton.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+          postCompressorButton.title = enabled ? @"ON" : @"OFF";
+          postCompressorButton.primary = enabled;
+          postCompressorButton.needsDisplay = YES;
+        }
+      };
+      if ([NSThread isMainThread]) updatePostComp();
+      else dispatch_async(dispatch_get_main_queue(), updatePostComp);
+      return;
+    }
     if (port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
       const size_t index = port - NAMRig::kRackControlFirstPort;
@@ -2188,6 +2212,13 @@ struct RigUIState {
         else if (port == NAMRig::kCompressorAttackPort) compressorVisualizer.attack = value;
         else if (port == NAMRig::kCompressorReleasePort) compressorVisualizer.releaseTime = value;
         compressorVisualizer.needsDisplay = YES;
+      }
+      if (postCompressorVisualizer && port >= NAMRig::kPostCompressorFirstPort &&
+          port <= NAMRig::kPostCompressorReleasePort) {
+        if (port == NAMRig::kPostCompressorAmountPort) postCompressorVisualizer.amount = value;
+        else if (port == NAMRig::kPostCompressorAttackPort) postCompressorVisualizer.attack = value;
+        else postCompressorVisualizer.releaseTime = value;
+        postCompressorVisualizer.needsDisplay = YES;
       }
       if (sculptVisualizer && (port == 39 || port == 40 || port == NAMRig::kMidPushPort)) {
         if (port == 39) sculptVisualizer.bright = value;

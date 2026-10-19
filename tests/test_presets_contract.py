@@ -48,7 +48,7 @@ assert static_symbols == {port: symbol for port, symbol in ttl_symbols.items()
                           if port not in excluded_ports | family_ports}, (
     "shared static ports and symbols must exactly match shipped preset coverage and TTL"
 )
-assert "kRigKnobCount = 44" in knobs_h
+assert "kRigKnobCount = 47" in knobs_h
 expected_ports = [
     15, 23, 4, 28, 22, 12, 13, 14, 25, 26, 27, 5, 32, 33,
     34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46,

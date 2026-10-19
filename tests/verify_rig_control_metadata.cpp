@@ -47,14 +47,15 @@ int main(int argc, char** argv) {
     ++defaultCount;
   });
   const RigPreset defaultPreset = RigPreset::createDefault();
-  CHECK(defaultCount == 77 && defaultPreset.controls.size() == 77, "exact Windows default key coverage");
+  CHECK(defaultCount == 81 && defaultPreset.controls.size() == 81, "exact Windows default key coverage");
   const std::map<uint32_t, float> nonzeroStaticDefaults = {
       {7, 1.0f}, {8, 1.0f}, {9, 1.0f}, {15, -80.0f},
       {20, static_cast<float>(kOversampleTrue8)}, {21, static_cast<float>(kOversampleTrue8)},
       {23, 150.0f}, {24, 2.0f}, {27, 20000.0f}, {43, 25.0f}, {44, 25.0f},
       {45, 50.0f}, {46, 50.0f}, {50, 400.0f}, {51, 35.0f}, {52, 40.0f},
       {55, 50.0f}, {56, 50.0f}, {57, 50.0f}, {58, 10.0f}, {180, 50.0f},
-      {182, 8.0f}, {183, 120.0f}, {184, 1.0f}, {185, 1.0f}};
+      {182, 8.0f}, {183, 120.0f}, {184, 1.0f}, {185, 1.0f},
+      {187, 8.0f}, {188, 120.0f}, {189, 1.0f}};
   for (uint32_t port = 0; port < hostDefaults.size(); ++port) {
     const bool mapped = PresetManager::portToSymbol(port) != nullptr;
     CHECK(initialized[port] == mapped, "default enumeration matches Windows mapping at %u", port);
@@ -114,7 +115,7 @@ int main(int argc, char** argv) {
   std::map<uint32_t, std::string> ttlSymbols;
   for (std::sregex_iterator it(ttl.begin(), ttl.end(), portPattern), end; it != end; ++it)
     CHECK(ttlSymbols.emplace(std::stoul((*it)[1]), (*it)[2]).second, "unique TTL port");
-  CHECK(ttlSymbols.size() == 186, "complete shipped TTL fixture");
+  CHECK(ttlSymbols.size() == kRigControlPortCount, "complete shipped TTL fixture");
 
   const std::set<uint32_t> excluded = {0, 1, 2, 3, 6, 10, 11, 16, 17, 18, 19, 29, 31};
   std::map<uint32_t, const char*> symbols;
@@ -123,15 +124,15 @@ int main(int argc, char** argv) {
     CHECK(symbol && *symbol, "non-empty symbol at %u", port);
     CHECK(symbols.emplace(port, symbol).second, "enumerate port %u once", port);
     CHECK(names.emplace(symbol).second, "unique symbol at %u", port);
-    CHECK(port < 186 && !excluded.count(port), "preset coverage at %u", port);
+    CHECK(port < kRigControlPortCount && !excluded.count(port), "preset coverage at %u", port);
     CHECK(ttlSymbols.count(port) && ttlSymbols.at(port) == symbol, "TTL parity at %u", port);
     CHECK(rigControlSymbol(port) == symbol, "lookup/enumeration pointer identity at %u", port);
   });
-  CHECK(symbols.size() == 173, "exact macOS/shared preset coverage");
+  CHECK(symbols.size() == 177, "exact macOS/shared preset coverage");
 
-  for (uint32_t port = 0; port <= 186; ++port) {
+  for (uint32_t port = 0; port <= kRigControlPortCount; ++port) {
     const char* symbol = rigControlSymbol(port);
-    const bool mapped = port < 186 && !excluded.count(port);
+    const bool mapped = port < kRigControlPortCount && !excluded.count(port);
     CHECK((symbol != nullptr) == mapped, "lookup coverage at %u", port);
     CHECK(symbols.count(port) == static_cast<size_t>(mapped), "enumeration coverage at %u", port);
     const char* windows = PresetManager::portToSymbol(port);
@@ -166,7 +167,7 @@ int main(int argc, char** argv) {
   }
 
   RigPreset preset;
-  for (uint32_t port = 0; port <= 185; ++port)
+  for (uint32_t port = 0; port < kRigControlPortCount; ++port)
     preset.controls[port] = static_cast<float>(port) + 0.25f;
   const auto path = std::filesystem::temp_directory_path() /
       ("verify-rig-symbols-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".json");
@@ -177,7 +178,7 @@ int main(int argc, char** argv) {
     file >> saved;
   }
   CHECK(saved["ports"].size() == preset.controls.size(), "all numeric ports preserved, including unknowns");
-  CHECK(saved["params"].size() == 77, "Windows named coverage unchanged");
+  CHECK(saved["params"].size() == 81, "Windows named coverage includes post compression");
   for (const auto& control : preset.controls) {
     CHECK(saved["ports"][std::to_string(control.first)] == control.second, "numeric value at %u", control.first);
     const char* symbol = rigControlSymbol(control.first);

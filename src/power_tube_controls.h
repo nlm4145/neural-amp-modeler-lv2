@@ -27,7 +27,14 @@ inline constexpr float kCompressorAttackDefault = 8.0f;     // ms
 inline constexpr float kCompressorReleaseDefault = 120.0f;  // ms
 // Pre-Amp Boost (Overdrive) bypass control.
 inline constexpr uint32_t kOverdriveEnabledPort = 185;
-inline constexpr uint32_t kRigControlPortCount = 186;
+// Independent Post-FX Studio stereo compressor (append-only).
+inline constexpr uint32_t kPostCompressorAmountPort = 186;
+inline constexpr uint32_t kPostCompressorAttackPort = 187;
+inline constexpr uint32_t kPostCompressorReleasePort = 188;
+inline constexpr uint32_t kPostCompressorEnabledPort = 189;
+inline constexpr uint32_t kPostCompressorFirstPort = kPostCompressorAmountPort;
+inline constexpr std::array<float, 4> kPostCompressorDefaults = {0.0f, 8.0f, 120.0f, 1.0f};
+inline constexpr uint32_t kRigControlPortCount = 190;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

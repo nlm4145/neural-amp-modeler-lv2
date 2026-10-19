@@ -1047,7 +1047,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 186 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 190 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -1498,6 +1498,96 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   [factory applyToState:state];
   drain();
   testedPort = -1;
+}
+
+static void verifyPostCompressor(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  stage = "Post-FX compressor / layout, automation, presets and independent bypass";
+  state->selectDeckTab(4);
+  drain();
+  [runtime.window.contentView layoutSubtreeIfNeeded];
+  NSView* pane = state->deckTabPanes[4];
+  REQUIRE(state->postCompressorButton && state->postCompressorVisualizer);
+  CHECK([state->postCompressorButton isDescendantOf:pane]);
+  CHECK([state->postCompressorVisualizer isDescendantOf:pane]);
+  CHECK(state->postCompressorVisualizer.bounds.size.width > 150);
+  CHECK(state->postCompressorVisualizer.bounds.size.height > 30);
+  for (size_t k : {44u, 45u, 46u}) {
+    REQUIRE(state->deckKnobs[k] && state->deckValueLabels[k]);
+    CHECK([state->deckKnobs[k] isDescendantOf:pane]);
+    CHECK(state->deckKnobs[k].tag == (NSInteger)kRigKnobPorts[k]);
+    NSView* cell = state->deckKnobs[k].superview;
+    CHECK(cell.bounds.size.width >= 70);
+    CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5), state->deckValueLabels[k].frame));
+  }
+  NSInteger slot = -1;
+  for (NSUInteger i = 0; i < state->deckSlotSpecs.count; ++i)
+    if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"post_compressor"]) slot = (NSInteger)i;
+  REQUIRE(slot >= 0);
+  NSMutableDictionary* spec = state->deckSlotSpecs[(NSUInteger)slot];
+  NSPopUpButton* popup = spec[@"popup"];
+  CHECK([spec[@"ports"] count] == 4);
+  const float preAmount = state->currentPortValueForSlot(28);
+  [popup selectItemWithTitle:@"SMOOTH LEAD"];
+  host.writes.clear();
+  action(popup);
+  drain();
+  CHECK(near(state->postCompressorVisualizer.amount, 45));
+  CHECK(near(state->postCompressorVisualizer.attack, 12));
+  CHECK(near(state->postCompressorVisualizer.releaseTime, 200));
+  CHECK(state->postCompressorEnabled == 1);
+  CHECK(host.writes[28].empty() && host.writes[kCompressorEnabledPort].empty());
+  CHECK(near(state->currentPortValueForSlot(28), preAmount));
+
+  float attack = 35;
+  runtime.descriptor->port_event(state, kPostCompressorAttackPort, sizeof(attack), 0, &attack);
+  drain();
+  CHECK(near(state->deckKnobs[45].floatValue, 35));
+  CHECK(near(state->postCompressorVisualizer.attack, 35));
+  state->postCompressorButton.state = NSControlStateValueOff;
+  host.writes.clear();
+  action(state->postCompressorButton);
+  drain();
+  CHECK(state->postCompressorEnabled == 0 && !state->postCompressorVisualizer.enabled);
+  CHECK(near(state->currentPortValueForSlot(kPostCompressorAmountPort), 45));
+  CHECK(host.writes[kPostCompressorEnabledPort].size() == 1);
+  NSDictionary* values = state->captureSlotPortValues(slot);
+  CHECK([values[@"189"] floatValue] == 0);
+  CHECK([values[@"186"] floatValue] == 45);
+  state->userSlotPresets[@"post_compressor"] = [@{@"Test Stereo": values} mutableCopy];
+  state->rebuildSlotPresetMenu(slot);
+  [popup selectItemWithTitle:@"STUDIO GLUE"];
+  action(popup);
+  drain();
+  [popup selectItemWithTitle:@"Test Stereo"];
+  action(popup);
+  drain();
+  CHECK(state->postCompressorEnabled == 0);
+  CHECK(near(state->postCompressorVisualizer.amount, 45));
+  RigPreset* captured = [presetClass captureFromState:state name:@"Post Dynamics"];
+  CHECK([captured controlForPort:kPostCompressorEnabledPort] == 0);
+  CHECK([captured controlForPort:kPostCompressorAmountPort] == 45);
+  NSString* path = [testRoot stringByAppendingPathComponent:@"post-dynamics.json"];
+  REQUIRE([captured saveToFile:path error:nil]);
+  RigPreset* loaded = [presetClass loadFromFile:path];
+  REQUIRE(loaded);
+  CHECK([loaded controlForPort:kPostCompressorAmountPort] == 45);
+  CHECK([loaded controlForPort:kPostCompressorAttackPort] == 35);
+  CHECK([loaded controlForPort:kPostCompressorReleasePort] == 200);
+  CHECK([loaded controlForPort:kPostCompressorEnabledPort] == 0);
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+  CHECK(state->postCompressorEnabled == 1 && state->postCompressorVisualizer.amount == 0);
+  [captured applyToState:state];
+  drain();
+  CHECK(state->postCompressorEnabled == 0 && state->postCompressorVisualizer.amount == 45);
+  RigPreset* sparse = [[presetClass alloc] init];
+  [sparse applyToState:state];
+  drain();
+  CHECK(state->postCompressorEnabled == 1 && state->postCompressorVisualizer.amount == 0);
+  CHECK(state->postCompressorVisualizer.attack == 8 && state->postCompressorVisualizer.releaseTime == 120);
+  [state->userSlotPresets[@"post_compressor"] removeObjectForKey:@"Test Stereo"];
 }
 
 static void verifyStageMeters(Runtime& runtime) {
@@ -2323,6 +2413,7 @@ static void verify(const char* modulePath) {
   verifyPinEditors(runtime, host, presetClass);
   verifySculptOverdrive(runtime, host, presetClass);
   verifyCompressorPreAmp(runtime, host, presetClass);
+  verifyPostCompressor(runtime, host, presetClass);
   verifyTunerDeck(runtime, host);
   verifyStageMeters(runtime);
   stage = "cleanup";

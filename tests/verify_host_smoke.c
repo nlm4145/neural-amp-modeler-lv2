@@ -1,5 +1,5 @@
 /* Minimal LV2 host smoke test for the BUILT rig plugin (.so path = argv[1]):
- *   - instantiate with urid:map + worker:schedule, connect all 182 ports,
+ *   - instantiate with urid:map + worker:schedule, connect all 190 ports,
  *     run blocks both smaller and LARGER than the un-negotiated 512 default
  *     maxBlockLength (the chain must slice, not overrun).
  *   - latency port must read 0 with no models loaded.
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
   CHECK(h != NULL, "instantiate at 48 kHz");
   if (!h) return 1;
 
-  enum { kPorts = 186, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
+  enum { kPorts = 190, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
   float ctl[kPorts] = {0};           /* mirrors Plugin::kPortCount */
@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
   for (uint32_t p = 71; p < kRackEnd; ++p) ctl[p] = 1.0f;
   ctl[80] = 0.0f; ctl[81] = 50.0f; /* Captured, not a tenth rack switch */
   ctl[182] = 8.0f; ctl[183] = 120.0f; ctl[184] = 1.0f; /* compressor attack, release, enabled */
+  ctl[187] = 8.0f; ctl[188] = 120.0f; ctl[189] = 1.0f; /* post compressor defaults */
 
   d->connect_port(h, 0, controlBuf);
   d->connect_port(h, 1, notifyBuf);
@@ -159,6 +160,29 @@ int main(int argc, char** argv) {
         "gate ports: modest pick reopens to >95% gain within 0.8 ms");
   CHECK(gateFinite && gateStereo && ctl[29] == 0.0f,
         "gate ports: finite dual-mono output without added latency");
+
+  /* Post-FX compression must work with the pre-amp compressor bypassed and
+     recover exact dry on its own bypass, without changing host latency. */
+  ctl[15] = -80.0f;
+  ctl[184] = 0.0f;
+  ctl[186] = 100.0f;
+  for (int b = 0; b < 220; ++b) {
+    ((LV2_Atom_Sequence*)controlBuf)->atom.size = sizeof(LV2_Atom_Sequence_Body);
+    ((LV2_Atom_Sequence*)notifyBuf)->atom.size = kAtom - sizeof(LV2_Atom);
+    for (uint32_t i = 0; i < 512; ++i) inBuf[i] = 0.5f;
+    d->run(h, 512);
+  }
+  CHECK(outBuf[511] > 0.04f && outBuf[511] < 0.07f,
+        "post compressor reduces peaks independently of pre-amp compression");
+  CHECK(outBuf[511] == outRightBuf[511] && ctl[29] == 0,
+        "post compressor keeps stereo linked without added latency");
+  ctl[189] = 0;
+  for (int b = 0; b < 30; ++b) {
+    ((LV2_Atom_Sequence*)notifyBuf)->atom.size = kAtom - sizeof(LV2_Atom);
+    d->run(h, 512);
+  }
+  CHECK(outBuf[511] == 0.5f && outRightBuf[511] == 0.5f && ctl[186] == 100,
+        "post compressor bypass returns exact dry while preserving Amount");
 
   d->cleanup(h);
   printf(fails ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", fails);

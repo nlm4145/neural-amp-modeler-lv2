@@ -265,6 +265,8 @@ bool RigPreset::loadFromFile(const std::string& path) {
   }
 
   controls[59] = 0.0f; // legacy normal polarity default
+  for (uint32_t i = 0; i < NAMRig::kPostCompressorDefaults.size(); ++i)
+    controls[NAMRig::kPostCompressorFirstPort + i] = NAMRig::kPostCompressorDefaults[i];
   if (root.contains("ports") && root["ports"].is_object()) {
     for (auto& el : root["ports"].items()) {
       try {

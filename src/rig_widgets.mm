@@ -1231,6 +1231,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setAmount:(float)v { _amount = v; self.needsDisplay = YES; }
 - (void)setAttack:(float)v { _attack = v; self.needsDisplay = YES; }
 - (void)setReleaseTime:(float)v { _releaseTime = v; self.needsDisplay = YES; }
+- (void)setCompact:(BOOL)v { _compact = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
   (void)dirty;
@@ -1244,14 +1245,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   bg.lineWidth = 1.0;
   [bg stroke];
 
-  CGFloat splitX = r.size.width * 0.48;
+  CGFloat splitX = _compact ? r.size.width : r.size.width * 0.48;
 
   NSBezierPath* sep = [NSBezierPath bezierPath];
   [sep moveToPoint:NSMakePoint(splitX, 8)];
   [sep lineToPoint:NSMakePoint(splitX, r.size.height - 8)];
   sep.lineWidth = 1.0;
   [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.8] setStroke];
-  [sep stroke];
+  if (!_compact) [sep stroke];
 
   const float compNorm = std::min(1.0f, std::max(0.0f, _amount * 0.01f));
   const BOOL isBypassed = !_enabled || compNorm < 0.005f;
@@ -1266,13 +1267,13 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
-  [@"COMPRESSION TRANSFER" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [(_compact ? @"LINKED STEREO TRANSFER" : @"COMPRESSION TRANSFER") drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
   NSDictionary* envHeaderAttrs = @{
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
   };
-  [@"ATTACK & RELEASE ENVELOPE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:envHeaderAttrs];
+  if (!_compact) [@"ATTACK & RELEASE ENVELOPE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:envHeaderAttrs];
 
   NSString* telemetry;
   if (!_enabled) {
@@ -1281,8 +1282,10 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     telemetry = @"COMPRESSOR BYPASSED (0%)";
   } else {
     telemetry = [NSString stringWithFormat:@"THRESH: %.0fdB  •  RATIO: %.1f:1  •  ATTACK: %.1fms  •  REL: %.0fms",
-                 thresholdDb, ratio, attackMs, releaseMs];
+                  thresholdDb, ratio, attackMs, releaseMs];
   }
+  if (_compact) telemetry = isBypassed ? @"BYPASSED" :
+      [NSString stringWithFormat:@"THRESH %.0f dB  /  RATIO %.1f:1", thresholdDb, ratio];
   NSDictionary* infoAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: isBypassed
@@ -1290,12 +1293,13 @@ static CGFloat pinPlotY(NSRect plot, double db) {
         : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
   };
   NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
-  [telemetry drawAtPoint:NSMakePoint(r.size.width - 14 - infoSize.width, r.size.height - 18) withAttributes:infoAttrs];
+  [telemetry drawAtPoint:NSMakePoint(_compact ? 14 : r.size.width - 14 - infoSize.width,
+                                    r.size.height - (_compact ? 32 : 18)) withAttributes:infoAttrs];
 
   const CGFloat lPad = 32.0;
   const CGFloat rPad = splitX - 16.0;
   const CGFloat bPad = 22.0;
-  const CGFloat tPad = r.size.height - 28.0;
+  const CGFloat tPad = r.size.height - (_compact ? 44.0 : 28.0);
   const CGFloat plotW = rPad - lPad;
   const CGFloat plotH = tPad - bPad;
 
@@ -1371,6 +1375,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     [dot stroke];
   }
 
+  if (_compact) return;
   const CGFloat elPad = splitX + 24.0;
   const CGFloat erPad = r.size.width - 20.0;
   const CGFloat eplotW = erPad - elPad;

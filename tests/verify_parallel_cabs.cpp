@@ -422,7 +422,11 @@ struct Host {
     plugin.ports.compressor_release = &controls[NAMRig::kCompressorReleasePort];
     plugin.ports.compressor_enabled = &controls[NAMRig::kCompressorEnabledPort];
     plugin.ports.od_enabled = &controls[NAMRig::kOverdriveEnabledPort];
-    static_assert(Plugin::kPortCount == 186, "update connections if ports change");
+    plugin.ports.post_compressor = &controls[NAMRig::kPostCompressorAmountPort];
+    plugin.ports.post_compressor_attack = &controls[NAMRig::kPostCompressorAttackPort];
+    plugin.ports.post_compressor_release = &controls[NAMRig::kPostCompressorReleasePort];
+    plugin.ports.post_compressor_enabled = &controls[NAMRig::kPostCompressorEnabledPort];
+    static_assert(Plugin::kPortCount == 190, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

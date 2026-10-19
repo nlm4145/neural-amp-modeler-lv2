@@ -1051,4 +1051,26 @@
 					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
 					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional ;
 					rdfs:comment "Enable or bypass the pre-amp boost (overdrive)."
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 186 ;
+					lv2:symbol "post_compressor" ; lv2:name "Post-FX Compressor Amount" ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 100.0 ; units:unit units:pc ;
+					lv2:portProperty lv2:connectionOptional ;
+					rdfs:comment "Linked stereo compressor after the cabinet mix and EQ, before delay and reverb. Zero is exact bypass. Independent of the pre-amp compressor; adds no latency."
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 187 ;
+					lv2:symbol "post_compressor_attack" ; lv2:name "Post-FX Compressor Attack" ;
+					lv2:default 8.0 ; lv2:minimum 1.0 ; lv2:maximum 100.0 ; units:unit units:ms ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 188 ;
+					lv2:symbol "post_compressor_release" ; lv2:name "Post-FX Compressor Release" ;
+					lv2:default 120.0 ; lv2:minimum 10.0 ; lv2:maximum 1000.0 ; units:unit units:ms ;
+					lv2:portProperty lv2:connectionOptional, pprops:logarithmic
+				], [
+					a lv2:ControlPort, lv2:InputPort ; lv2:index 189 ;
+					lv2:symbol "post_compressor_enabled" ; lv2:name "Post-FX Compressor Enabled" ;
+					lv2:default 1.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+					lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional ;
+					rdfs:comment "Independent smoothed bypass. Preserves settings and does not reset delay or reverb tails."
 				] .

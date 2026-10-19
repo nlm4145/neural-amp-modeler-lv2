@@ -169,6 +169,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[9] = 1.0f;   // cab_enabled
   p->_controls[47] = 0.0f;  // cab2_enabled
   p->_controls[59] = 0.0f;  // cab2_polarity: normal
+  p->_controls[NAMRig::kPostCompressorEnabledPort] = 1.0f;
   p->_controls[20] = static_cast<float>(NAMRig::kOversampleTrue8);
   p->_controls[21] = static_cast<float>(NAMRig::kOversampleTrue8);
   p->_controls[24] = 2.0f;  // Loudness
@@ -252,6 +253,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   // Load controls: first from numeric "ports" if present
   preset->_controls[59] = 0.0f;  // Legacy presets default to normal polarity.
+  for (uint32_t i = 0; i < NAMRig::kPostCompressorDefaults.size(); ++i)
+    preset->_controls[NAMRig::kPostCompressorFirstPort + i] = NAMRig::kPostCompressorDefaults[i];
   for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
     preset->_controls[NAMRig::kTransformerControlFirstPort + i] = NAMRig::kTransformerControlDefaults[i];
   for (size_t i = 0; i < NAMRig::kRackCount; ++i)
@@ -451,6 +454,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[9] = p->_stages[2].enabled ? 1.0f : 0.0f;
   p->_controls[47] = p->_stages[3].enabled ? 1.0f : 0.0f;
   p->_controls[59] = state->cab2PolarityInverted ? 1.0f : 0.0f;
+  p->_controls[NAMRig::kPostCompressorEnabledPort] = state->postCompressorEnabled;
   p->_controls[20] = p->_stages[0].oversample;
   p->_controls[21] = p->_stages[1].oversample;
   p->_controls[24] = p->_stages[2].irNormalization;
@@ -494,6 +498,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   // 2. Modes and Profiles
+  const auto postEnabledIt = _controls.find(NAMRig::kPostCompressorEnabledPort);
+  const float postEnabled = postEnabledIt != _controls.end() ? postEnabledIt->second : 1.0f;
+  state->sendControl(NAMRig::kPostCompressorEnabledPort, postEnabled);
+  state->updateControl(NAMRig::kPostCompressorEnabledPort, postEnabled);
   state->sendControl(20, _stages[0].oversample);
   state->updateControl(20, _stages[0].oversample);
   state->sendControl(21, _stages[1].oversample);

@@ -54,6 +54,7 @@ appended_symbols += [f"{pane}_pin{b}_{p}" for pane in ("sculpt", "transformer", 
 appended_symbols += ["od_drive", "od_tone", "od_level"]
 appended_symbols += ["compressor_attack", "compressor_release", "compressor_enabled"]
 appended_symbols += ["od_enabled"]
+appended_symbols += ["post_compressor", "post_compressor_attack", "post_compressor_release", "post_compressor_enabled"]
 port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
 )]
@@ -63,14 +64,15 @@ assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + ap
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
 assert "kPortCount = kRigControlPortCount;" in header
-assert "kRigControlPortCount = 186;" in tube_controls
+assert "kRigControlPortCount = 190;" in tube_controls
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
 assert "kPowerTubeTypePort == kRackControlFirstPort + kRackCount" in header
 assert "kPinEqFirstPort == kMidPushPort + 1" in header
 assert "kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount" in header
-assert "kPortCount == kOverdriveEnabledPort + 1" in header
+assert "kPostCompressorFirstPort == kOverdriveEnabledPort + 1" in header
+assert "kPortCount == kPostCompressorEnabledPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 # The metadata table is the shared host/preset order, not absolute profile values.
@@ -132,7 +134,7 @@ assert re.search(r"if \(format == 0 && port >= NAMRig::kTransformerControlFirstP
 assert "write(controller, port, sizeof(value), 0, &value);" in body(state, "void sendControl(", "  ")
 event = body(ui, "void portEvent(")
 assert re.search(r"if \(format == 0 && buffer && size == sizeof\(float\) && port >= 4 &&\s*port < NAMRig::kRigControlPortCount\) \{\s*state->updateControl\(port, \*static_cast<const float\*>\(buffer\)\);\s*return;", event), (
-    "host float echoes must include 4..185, exclude 186+, and validate format/buffer/size"
+    "host float echoes must include 4..189, exclude 190+, and validate format/buffer/size"
 )
 
 assert "int transformerProfile = NAMRig::OutputTransformer::kCaptured;" in state
