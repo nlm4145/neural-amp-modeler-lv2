@@ -782,15 +782,25 @@ static NSString* stageName(NSInteger stage) {
     {50.0f, 30.0f, 80.0f},   // PUNCHY ATTACK
     {65.0f, 2.0f, 60.0f},    // FAST SQUASH
     {25.0f, 10.0f, 150.0f},  // TRANSPARENT
-    {0.0f, 8.0f, 120.0f}     // OFF / BYPASS
+    {0.0f, 8.0f, 120.0f},    // OFF / BYPASS
+    // High-gain captures already compress: use modest amount/makeup and let
+    // the pick transient through before leveling the body of the note.
+    {22.0f, 35.0f, 70.0f},   // METAL PICK CLARITY
+    {28.0f, 25.0f, 50.0f},   // SHRED DEFINITION
+    {18.0f, 20.0f, 45.0f},   // THRASH PRECISION
+    {32.0f, 30.0f, 140.0f}   // SINGING METAL LEAD
   };
-  if (sender.tag >= 0 && sender.tag < 5) {
+  const NSInteger presetCount = sizeof(presets) / sizeof(presets[0]);
+  if (sender.tag >= 0 && sender.tag < presetCount) {
     const auto& p = presets[sender.tag];
     _state->sendControl(28, p.amount); _state->updateControl(28, p.amount);
     _state->sendControl(NAMRig::kCompressorAttackPort, p.attack);
     _state->updateControl(NAMRig::kCompressorAttackPort, p.attack);
     _state->sendControl(NAMRig::kCompressorReleasePort, p.releaseTime);
     _state->updateControl(NAMRig::kCompressorReleasePort, p.releaseTime);
+    const float enabled = p.amount > 0.0f ? 1.0f : 0.0f;
+    _state->sendControl(NAMRig::kCompressorEnabledPort, enabled);
+    _state->updateControl(NAMRig::kCompressorEnabledPort, enabled);
     [self markPresetModified];
   }
 }
@@ -3157,10 +3167,12 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
     [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
-    NSArray<NSString*>* compPresetTitles = @[@"SMOOTH SUSTAIN", @"PUNCHY ATTACK", @"FAST SQUASH", @"TRANSPARENT", @"OFF / BYPASS"];
-    addSlotPresetDropdown(chips, state, @"compressor", @"Pre-Amp Compressor",
+    NSArray<NSString*>* compPresetTitles = @[@"SMOOTH SUSTAIN", @"PUNCHY ATTACK", @"FAST SQUASH", @"TRANSPARENT", @"OFF / BYPASS",
+                                           @"METAL PICK CLARITY", @"SHRED DEFINITION", @"THRASH PRECISION", @"SINGING METAL LEAD"];
+    NSPopUpButton* compPresets = addSlotPresetDropdown(chips, state, @"compressor", @"Pre-Amp Compressor",
                           @[@28, @(NAMRig::kCompressorAttackPort), @(NAMRig::kCompressorReleasePort)],
                           compPresetTitles, @selector(applyCompressorPreset:));
+    compPresets.toolTip = @"Select a compressor preset, or use Save Preset As… to save your own. For clearer high-gain solo picking, start with METAL PICK CLARITY. SHRED DEFINITION and THRASH PRECISION use shorter releases for fast picking; SINGING METAL LEAD adds gentler sustain. Keep Amount modest: its makeup gain can drive the amp into more saturation.";
 
     NAMCompressorVisualizer* compVis = [[NAMCompressorVisualizer alloc] initWithFrame:NSZeroRect];
     compVis.translatesAutoresizingMaskIntoConstraints = NO;

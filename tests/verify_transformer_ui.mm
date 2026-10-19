@@ -579,17 +579,50 @@ static void verifyCompressorPreAmp(Runtime& runtime, Host& host, Class presetCla
   CHECK([[NSSet setWithArray:spec[@"ports"]]
       isEqualToSet:[NSSet setWithArray:@[@28, @(kCompressorAttackPort), @(kCompressorReleasePort), @(kCompressorEnabledPort)]]]);
 
-  // Test selecting a factory preset
-  [popup selectItemWithTitle:@"PUNCHY ATTACK"];
-  REQUIRE([popup.titleOfSelectedItem isEqualToString:@"PUNCHY ATTACK"]);
-  host.writes.clear();
-  action(popup);
-  drain();
-  CHECK(!host.writes[28].empty() && !host.writes[kCompressorAttackPort].empty() &&
-        !host.writes[kCompressorReleasePort].empty());
-  CHECK(near(host.writes[28].back(), 50.0f));
-  CHECK(near(host.writes[kCompressorAttackPort].back(), 30.0f));
-  CHECK(near(host.writes[kCompressorReleasePort].back(), 80.0f));
+  // Exercise every factory menu entry, including enabling after bypass and
+  // values captured by user-saved slot presets. Keep the legacy indices intact.
+  struct ExpectedPreset { NSString* title; float amount, attack, releaseTime; };
+  const ExpectedPreset presets[] = {
+      {@"SMOOTH SUSTAIN", 40.0f, 15.0f, 200.0f},
+      {@"PUNCHY ATTACK", 50.0f, 30.0f, 80.0f},
+      {@"FAST SQUASH", 65.0f, 2.0f, 60.0f},
+      {@"TRANSPARENT", 25.0f, 10.0f, 150.0f},
+      {@"OFF / BYPASS", 0.0f, 8.0f, 120.0f},
+      {@"METAL PICK CLARITY", 22.0f, 35.0f, 70.0f},
+      {@"SHRED DEFINITION", 28.0f, 25.0f, 50.0f},
+      {@"THRASH PRECISION", 18.0f, 20.0f, 45.0f},
+      {@"SINGING METAL LEAD", 32.0f, 30.0f, 140.0f}};
+  CHECK([spec[@"factoryTitles"] count] == sizeof(presets) / sizeof(presets[0]));
+  for (const auto& p : presets) {
+    [popup selectItemWithTitle:p.title];
+    REQUIRE([popup.titleOfSelectedItem isEqualToString:p.title]);
+    host.writes.clear();
+    action(popup);
+    drain();
+    const float enabled = p.amount > 0.0f ? 1.0f : 0.0f;
+    const std::pair<uint32_t, float> values[] = {
+        {28, p.amount}, {kCompressorAttackPort, p.attack},
+        {kCompressorReleasePort, p.releaseTime}, {kCompressorEnabledPort, enabled}};
+    NSDictionary* captured = state->captureSlotPortValues(slot);
+    CHECK(host.writes.size() == 4);
+    for (const auto& [port, value] : values) {
+      REQUIRE(host.writes[port].size() == 1);
+      CHECK(near(host.writes[port].back(), value));
+      NSNumber* saved = captured[[NSString stringWithFormat:@"%u", port]];
+      REQUIRE(saved);
+      CHECK(near(saved.floatValue, value));
+    }
+    CHECK(near(state->deckKnobs[3].floatValue, p.amount));
+    CHECK(near(state->deckKnobs[42].floatValue, p.attack));
+    CHECK(near(state->deckKnobs[43].floatValue, p.releaseTime));
+    CHECK(near(state->compressorVisualizer.amount, p.amount));
+    CHECK(near(state->compressorVisualizer.attack, p.attack));
+    CHECK(near(state->compressorVisualizer.releaseTime, p.releaseTime));
+    CHECK(state->compressorVisualizer.enabled == (enabled > 0.0f));
+    CHECK(state->compressorButton.state == (enabled > 0.0f ? NSControlStateValueOn : NSControlStateValueOff));
+    CHECK([spec[@"selectedTitle"] isEqualToString:p.title]);
+    CHECK([spec[@"selectedIsUser"] boolValue] == NO);
+  }
 
   // Reset to default
   [[presetClass defaultPreset] applyToState:state];

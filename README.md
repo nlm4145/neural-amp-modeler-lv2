@@ -37,6 +37,26 @@ The expected input level to the plugin is 12dBu. For models that include input l
 
 If you run at a sample rate that is an even multiple of the model sample rate, the model will be correctly oversampled to behave as expected. So, if the model sample rate is 48kHz (which they typically are), and you are running at 96kHz, the model will be 2x oversampled. This also means that if your DAW supports oversampling, you can safely use it. Running oversampled comes with a signficant performance cost, but can be useful for reducing aliasing.
 
+## High-gain compressor presets
+
+In the macOS rig UI (LV2 and standalone), open **PREAMP → Pre-Amp Compressor**
+and use its preset dropdown. For clearer solo picking, start with **METAL PICK
+CLARITY**. The new presets use modest compression and slower attacks to preserve
+the pick transient before leveling the note body.
+
+| Preset | Amount | Attack | Release | Starting point for |
+| --- | ---: | ---: | ---: | --- |
+| METAL PICK CLARITY | 22% | 35 ms | 70 ms | Defined high-gain solo attacks |
+| SHRED DEFINITION | 28% | 25 ms | 50 ms | Fast alternate-picked runs |
+| THRASH PRECISION | 18% | 20 ms | 45 ms | Light leveling for aggressive, fast picking |
+| SINGING METAL LEAD | 32% | 30 ms | 140 ms | More sustained leads with an audible pick attack |
+
+Selecting an active preset turns the compressor on; **OFF / BYPASS** turns it
+off. Use **Save Preset As…** to keep your adjustments. Amount also adds makeup
+gain before the amp, so increasing it can add saturation rather than clarity.
+If notes still blur, try less Amount or amp gain and compare with bypass; a
+heavily saturated amp capture already compresses the signal.
+
 ## Testing
 
 Pre-compile DSP validators (Python, numpy) — run before `./build.sh` when
