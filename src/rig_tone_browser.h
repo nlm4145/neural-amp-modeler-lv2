@@ -37,6 +37,9 @@ struct RigUIState;
 @property(nonatomic) BOOL local;
 @end
 
+NSString* artworkForTone(NSInteger toneId, NSInteger stage);
+ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate* modified);
+
 @interface ToneBrowserController : NSObject <NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate>
 @property(nonatomic, assign) RigUIState* state;
 @property(nonatomic, strong) NSMutableArray<ToneItem*>* allItems;
@@ -89,13 +92,18 @@ struct RigUIState;
 @property(nonatomic) NSTimeInterval rateLimitUntil;
 @property(nonatomic) BOOL loadingNextPage;          // one search page in flight
 @property(nonatomic, copy) NSString* activeSearchPrefix;  // prefix the current page state belongs to
+@property(nonatomic, copy) NSString* activeCreator;       // active author/creator username filter (e.g. @"2dor")
+@property(nonatomic, copy) NSString* activeTextQuery;     // active text search filter
 @property(nonatomic) NSInteger previewGeneration;
 @property(nonatomic, strong) NSURLSessionDataTask* previewTask;
 - (void)loadMoreSearchResults;
+- (NSArray<NSString*>*)searchPathsForPrefix:(NSString*)prefix page:(NSInteger)page arch:(NSString*)arch;
+- (BOOL)toneItem:(ToneItem*)item matchesArchFilter:(NSString*)arch;
 - (void)mergeArchPages:(NSDictionary<NSString*, NSDictionary*>*)fetched page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)applySearchPage:(NSDictionary*)json page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache;
 - (void)downloadAllModels:(ToneItem*)item;
 - (void)downloadTone:(ToneItem*)item withArch:(NSString*)arch;
+- (void)downloadTone:(ToneItem*)item withArch:(NSString*)arch exact:(BOOL)exact;
 - (void)previewTone:(ToneItem*)item withArch:(NSString*)arch;
 - (void)expandIncompletePreviewStagesIfNeeded;
 - (void)downloadModelStep:(NSInteger)index of:(NSArray*)models item:(ToneItem*)item folder:(NSString*)folder downloads:(NSMutableArray<NSDictionary*>*)downloads;
@@ -117,6 +125,12 @@ struct RigUIState;
 - (void)refreshToneSession;
 - (void)refreshToneSessionAllowBrowser:(BOOL)allowBrowser;
 - (void)autoConnect;
+- (void)searchForAuthor:(NSString*)author;
+- (IBAction)searchSubmitted:(id)sender;
+- (BOOL)isKnownCreator:(NSString*)name;
+- (void)registerKnownCreator:(NSString*)name;
+- (void)preloadKnownCreators;
+- (void)parseSearchStringFast:(NSString*)raw intoCreator:(NSString**)outCreator query:(NSString**)outQuery;
 @end
 
 // Multi-column tone card for the collection-view grid.
@@ -124,6 +138,9 @@ struct RigUIState;
 @property(nonatomic, weak) ToneBrowserController* browserController;
 @property(nonatomic, copy) void (^onFavToggle)(ToneItem*);
 @property(nonatomic, copy) void (^onDownloadArch)(ToneItem*, NSString*);
+- (IBAction)openTone3000:(id)sender;
+- (IBAction)searchByAuthor:(id)sender;
+- (IBAction)openAuthorOnTone3000:(id)sender;
 @end
 // RigButton lives in rig_widgets.h (shared with the simple NAM UI).
 #endif

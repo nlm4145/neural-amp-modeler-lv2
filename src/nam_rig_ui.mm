@@ -71,6 +71,7 @@ static NSString* stageName(NSInteger stage) {
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
 #import "rig_tone_browser.h"
+#import "rig_tone_api.h"
 
 @interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate>
 @property(nonatomic, assign) RigUIState* state;
@@ -78,6 +79,10 @@ static NSString* stageName(NSInteger stage) {
 - (void)clearModel:(id)sender;
 - (void)removeStageSelection:(id)sender;
 - (void)removeBothCabsSelection:(id)sender;
+- (void)downloadStageArchitecture:(NSMenuItem*)sender;
+- (BOOL)isStageArchitectureDownloaded:(size_t)stage arch:(NSString*)arch;
+- (ToneItem*)toneItemForStage:(size_t)stage;
+- (NSMenuItem*)downloadArchitectureMenuItemForStage:(size_t)stage title:(NSString*)menuTitle;
 - (void)menuNeedsUpdate:(NSMenu*)menu;
 - (void)controlChanged:(NSControl*)sender;
 - (void)knobFieldCommitted:(NSTextField*)sender;
@@ -241,6 +246,254 @@ static NSString* stageName(NSInteger stage) {
   [self markPresetModified];
 }
 
+- (ToneItem*)toneItemForStage:(size_t)stage {
+  if (!_state || stage >= _state->selectedPaths.size()) return nil;
+  NSInteger toneId = (stage < _state->selectedToneIds.size()) ? _state->selectedToneIds[stage] : 0;
+  NSString* curPath = !_state->selectedPaths[stage].empty()
+      ? [NSString stringWithUTF8String:_state->selectedPaths[stage].c_str()]
+      : nil;
+  NSString* folder = curPath.length ? [curPath stringByDeletingLastPathComponent] : nil;
+  NSString* manifestPath = folder.length ? [folder stringByAppendingPathComponent:@"_tone3000.json"] : nil;
+  NSDictionary* root = (manifestPath.length && [[NSFileManager defaultManager] fileExistsAtPath:manifestPath])
+      ? jsonDictionaryAtPath(manifestPath) : nil;
+  NSDictionary* toneDict = [root[@"tone"] isKindOfClass:NSDictionary.class] ? root[@"tone"] : nil;
+  if (toneId <= 0 && toneDict && [toneDict[@"id"] respondsToSelector:@selector(integerValue)]) {
+    toneId = [toneDict[@"id"] integerValue];
+  }
+  if (toneId <= 0 && [curPath containsString:@"/PreviewCache/"]) {
+    NSString* seg = [folder lastPathComponent];
+    if (seg.integerValue > 0) toneId = seg.integerValue;
+  }
+
+  ToneItem* found = nil;
+  if (_state->browserController && toneId > 0) {
+    for (ToneItem* it in _state->browserController.allItems) {
+      if (it.toneId == toneId) { found = it; break; }
+    }
+    if (!found) {
+      for (ToneItem* it in _state->browserController.searchResults) {
+        if (it.toneId == toneId) { found = it; break; }
+      }
+    }
+  }
+  if (found) return found;
+
+  if (toneDict) {
+    NSMutableArray<NSString*>* models = [NSMutableArray array];
+    for (NSDictionary* dl in [root[@"downloads"] isKindOfClass:NSArray.class] ? root[@"downloads"] : @[]) {
+      NSString* fn = [dl[@"local_filename"] isKindOfClass:NSString.class] ? dl[@"local_filename"] : nil;
+      if (fn.length) {
+        NSString* p = [folder stringByAppendingPathComponent:fn];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) [models addObject:p];
+      }
+    }
+    NSDate* mtime = [[[NSFileManager defaultManager] attributesOfItemAtPath:manifestPath error:nil] fileModificationDate];
+    ToneItem* item = toneItem(toneDict, models, mtime);
+    if (item) return item;
+  }
+
+  if (toneId > 0) {
+    ToneItem* stub = [[ToneItem alloc] init];
+    stub.toneId = toneId;
+    stub.stage = (stage == 3) ? 2 : (NSInteger)stage;
+    stub.title = curPath ? [curPath.lastPathComponent stringByDeletingPathExtension] : [NSString stringWithFormat:@"Tone #%ld", (long)toneId];
+    if (stage < _state->selectedImageURLs.size() && !_state->selectedImageURLs[stage].empty()) {
+      stub.imageURL = [NSString stringWithUTF8String:_state->selectedImageURLs[stage].c_str()];
+    }
+    stub.artworkPath = artworkForTone(stub.toneId, stub.stage);
+    return stub;
+  }
+
+  return nil;
+}
+
+- (BOOL)isStageArchitectureDownloaded:(size_t)stage arch:(NSString*)arch {
+  if (!_state || stage >= _state->selectedPaths.size()) return NO;
+  NSString* targetCategory = [arch isEqualToString:@"2"] ? @"a2" : ([arch isEqualToString:@"1"] ? @"a1" : @"custom");
+  NSFileManager* fm = [NSFileManager defaultManager];
+
+  // 1. Check currently available model paths for this stage:
+  if (stage < _state->availableModelPaths.size()) {
+    for (const auto& pathStr : _state->availableModelPaths[stage]) {
+      if (pathStr.empty()) continue;
+      NSString* p = [NSString stringWithUTF8String:pathStr.c_str()];
+      if ([fm fileExistsAtPath:p]) {
+        RigUIState::RigModelArchInfo info = RigUIState::inspectModelArch(p);
+        if ([info.category isEqualToString:targetCategory]) {
+          return YES;
+        }
+      }
+    }
+  }
+
+  // 2. Candidate folders: current model folder, Tone3000 library folder, preview cache folder
+  NSString* curPath = !_state->selectedPaths[stage].empty()
+      ? [NSString stringWithUTF8String:_state->selectedPaths[stage].c_str()]
+      : nil;
+  NSMutableArray<NSString*>* candidateFolders = [NSMutableArray array];
+  if (curPath.length) {
+    [candidateFolders addObject:[curPath stringByDeletingLastPathComponent]];
+  }
+
+  ToneItem* item = [self toneItemForStage:stage];
+  if (item) {
+    NSString* category = (stage == 0) ? @"Pedal" : ((stage == 2 || stage == 3) ? @"Cab" : @"Amp");
+    if ([item.gear.lowercaseString isEqualToString:@"amp-cab"] || [item.gear.lowercaseString isEqualToString:@"full-rig"]) {
+      category = @"Full Rig";
+    }
+    NSString* libFolder = [[[[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]
+                            stringByAppendingPathComponent:category]
+                           stringByAppendingPathComponent:safeFilename(item.title)] copy];
+    if (libFolder.length && ![candidateFolders containsObject:libFolder]) {
+      [candidateFolders addObject:libFolder];
+    }
+    if (item.toneId > 0) {
+      NSString* previewFolder = [[[@("~/Library/Application Support/Axe FX/PreviewCache") stringByExpandingTildeInPath]
+                                  stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld", (long)item.toneId]] copy];
+      if (previewFolder.length && ![candidateFolders containsObject:previewFolder]) {
+        [candidateFolders addObject:previewFolder];
+      }
+    }
+  }
+
+  for (NSString* folder in candidateFolders) {
+    if (![fm fileExistsAtPath:folder]) continue;
+
+    // Check _tone3000.json manifest in folder:
+    NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+    if ([fm fileExistsAtPath:manifestPath]) {
+      NSDictionary* manifest = jsonDictionaryAtPath(manifestPath);
+      NSArray* downloads = [manifest[@"downloads"] isKindOfClass:NSArray.class] ? manifest[@"downloads"] : nil;
+      for (NSDictionary* dl in downloads) {
+        if (![dl isKindOfClass:NSDictionary.class]) continue;
+        NSString* localFn = [dl[@"local_filename"] isKindOfClass:NSString.class] ? dl[@"local_filename"] : nil;
+        if (!localFn.length) continue;
+        NSString* modelPath = [folder stringByAppendingPathComponent:localFn];
+        if (![fm fileExistsAtPath:modelPath]) continue;
+
+        NSDictionary* orig = [dl[@"original_model"] isKindOfClass:NSDictionary.class] ? dl[@"original_model"] : nil;
+        id av = orig[@"architecture_version"];
+        NSString* avStr = [av isKindOfClass:NSString.class] ? av : [av respondsToSelector:@selector(stringValue)] ? [av stringValue] : nil;
+        if (avStr.length) {
+          if ([arch isEqualToString:@"2"] && [avStr isEqualToString:@"2"]) return YES;
+          if ([arch isEqualToString:@"1"] && [avStr isEqualToString:@"1"]) return YES;
+          if ([arch isEqualToString:@"custom"] && [avStr.lowercaseString isEqualToString:@"custom"]) return YES;
+        }
+
+        RigUIState::RigModelArchInfo info = RigUIState::inspectModelArch(modelPath);
+        if ([info.category isEqualToString:targetCategory]) {
+          return YES;
+        }
+      }
+    }
+
+    // Check directory contents directly:
+    NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:folder error:nil];
+    for (NSString* f in files) {
+      if ([f hasPrefix:@"."] || [f hasPrefix:@"_"]) continue;
+      NSString* ext = f.pathExtension.lowercaseString;
+      if ([ext isEqualToString:@"nam"] || [ext isEqualToString:@"nammodel"] ||
+          [ext isEqualToString:@"aidax"] || [ext isEqualToString:@"aidadspmodel"]) {
+        NSString* fullPath = [folder stringByAppendingPathComponent:f];
+        RigUIState::RigModelArchInfo info = RigUIState::inspectModelArch(fullPath);
+        if ([info.category isEqualToString:targetCategory]) {
+          return YES;
+        }
+      }
+    }
+  }
+
+  return NO;
+}
+
+- (void)downloadStageArchitecture:(NSMenuItem*)sender {
+  if (!_state) return;
+  NSDictionary* dict = [sender.representedObject isKindOfClass:NSDictionary.class] ? sender.representedObject : nil;
+  if (!dict) return;
+  size_t stage = [dict[@"stage"] unsignedIntegerValue];
+  NSString* arch = dict[@"arch"];
+  if (!arch.length) return;
+
+  // If already downloaded: NO-OP!
+  if ([self isStageArchitectureDownloaded:stage arch:arch]) {
+    return;
+  }
+
+  ToneItem* item = [self toneItemForStage:stage];
+  if (!item || item.toneId <= 0) {
+    if (_state->browserController) {
+      _state->browserController.status.stringValue = @"Cannot download: capture was not loaded from Tone3000";
+    }
+    return;
+  }
+
+  // Ensure stage matches this target stage so models refresh properly:
+  item.stage = (stage == 3) ? 3 : (NSInteger)stage;
+
+  if (!_state->browserController) return;
+
+  if (!_state->browserController.accessToken.length) {
+    [_state->browserController connectIfNeeded];
+    if (!_state->browserController.accessToken.length) {
+      [_state->browserController connectTone3000:nil];
+      return;
+    }
+  }
+
+  [_state->browserController downloadTone:item withArch:arch exact:YES];
+}
+
+- (NSMenuItem*)downloadArchitectureMenuItemForStage:(size_t)stage title:(NSString*)menuTitle {
+  NSMenuItem* parent = [[NSMenuItem alloc] initWithTitle:menuTitle ?: @"Download Architecture"
+                                                  action:NULL
+                                           keyEquivalent:@""];
+  BOOL hasModel = (stage < _state->selectedPaths.size() && !_state->selectedPaths[stage].empty());
+  if (!hasModel) {
+    parent.enabled = NO;
+    parent.toolTip = @"No model loaded for this stage.";
+    return parent;
+  }
+
+  ToneItem* item = [self toneItemForStage:stage];
+  if (!item || item.toneId <= 0) {
+    parent.enabled = NO;
+    parent.toolTip = @"Current model was not loaded from Tone3000.";
+    return parent;
+  }
+
+  NSMenu* sub = [[NSMenu alloc] initWithTitle:menuTitle ?: @"Download Architecture"];
+
+  struct ArchOption {
+    NSString* archKey;
+    NSString* displayName;
+  };
+  std::vector<ArchOption> options = {
+    {@"2", @"A2"},
+    {@"1", @"A1"},
+    {@"custom", @"Custom"}
+  };
+
+  for (const auto& opt : options) {
+    BOOL dl = [self isStageArchitectureDownloaded:stage arch:opt.archKey];
+    NSString* title = dl ? [NSString stringWithFormat:@"%@ Architecture (Downloaded)", opt.displayName]
+                         : [NSString stringWithFormat:@"%@ Architecture", opt.displayName];
+    NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:title
+                                                action:@selector(downloadStageArchitecture:)
+                                         keyEquivalent:@""];
+    it.target = self;
+    it.representedObject = @{ @"stage": @(stage), @"arch": opt.archKey };
+    it.state = dl ? NSControlStateValueOn : NSControlStateValueOff;
+    it.toolTip = dl
+        ? [NSString stringWithFormat:@"%@ architecture is already downloaded for this tone.", opt.displayName]
+        : [NSString stringWithFormat:@"Download %@ architecture models for this tone from Tone3000.", opt.displayName];
+    [sub addItem:it];
+  }
+
+  parent.submenu = sub;
+  parent.toolTip = [NSString stringWithFormat:@"Download other architectures for %@", item.title ?: @"this tone"];
+  return parent;
+}
+
 - (void)menuNeedsUpdate:(NSMenu*)menu {
   [menu removeAllItems];
   if (!_state) return;
@@ -271,6 +524,9 @@ static NSString* stageName(NSInteger stage) {
         ? [NSString stringWithFormat:@"Completely remove the selected %@ model.", stageName(stage)]
         : [NSString stringWithFormat:@"No %@ model loaded to remove.", stageName(stage)];
     [menu addItem:item];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItem:[self downloadArchitectureMenuItemForStage:(size_t)stage title:@"Download Architecture"]];
   } else {
     NSMenuItem* loadCabA = [[NSMenuItem alloc] initWithTitle:@"Load Cab A Model from Disk…"
                                                       action:@selector(chooseModel:)
@@ -301,6 +557,9 @@ static NSString* stageName(NSInteger stage) {
           ? @"Completely remove the selected cabinet model or impulse response."
           : @"No cabinet model or IR loaded to remove.";
       [menu addItem:item];
+
+      [menu addItem:[NSMenuItem separatorItem]];
+      [menu addItem:[self downloadArchitectureMenuItemForStage:2 title:@"Download Architecture"]];
     } else {
       NSMenuItem* itemA = [[NSMenuItem alloc] initWithTitle:@"Remove Selection"
                                                      action:@selector(removeStageSelection:)
@@ -334,6 +593,10 @@ static NSString* stageName(NSInteger stage) {
       itemBoth.enabled = hasCabA || hasCabB;
       itemBoth.toolTip = @"Completely remove both Cabinet A and Cabinet B selections.";
       [menu addItem:itemBoth];
+
+      [menu addItem:[NSMenuItem separatorItem]];
+      [menu addItem:[self downloadArchitectureMenuItemForStage:2 title:@"Download Architecture (Cab A)"]];
+      [menu addItem:[self downloadArchitectureMenuItemForStage:3 title:@"Download Architecture (Cab B)"]];
     }
   }
 }
@@ -1754,10 +2017,12 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   // Search / tone type / sort / arch row: search query, tone type (gear), sort order, and architecture format side-by-side.
   const CGFloat searchW = bw * 0.32;
   controller.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(24, bh - 38, searchW, 28)];
-  controller.search.placeholderString = @"Search Tone3000";
+  controller.search.placeholderString = @"Search tones or @author…";
   controller.search.focusRingType = NSFocusRingTypeNone;
-  controller.search.toolTip = @"Search Tone3000 by tone title, creator, or gear type. Online results load page by page.";
+  controller.search.toolTip = @"Search Tone3000 by tone title, author (e.g. \"2dor\" or \"@2dor\"), or gear type. Online results load page by page.";
   controller.search.delegate = controller;
+  controller.search.target = controller;
+  controller.search.action = @selector(searchSubmitted:);
   [browser addSubview:controller.search];
 
   const CGFloat gearW = 126.0;
@@ -1807,7 +2072,7 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   controller.archControl.controlSize = NSControlSizeSmall;
   controller.archControl.segmentDistribution = NSSegmentDistributionFillEqually;
   controller.archControl.selectedSegment = 0;
-  controller.archControl.toolTip = @"Choose model format to download: A2 (Default modern standard), A1 (Legacy standard), Custom architectures, or All formats.";
+  controller.archControl.toolTip = @"Filter search results and choose download format: A2 (Default modern standard), A1 (Legacy standard), Custom architectures, or All formats.";
   [browser addSubview:controller.archControl];
 
   [ToneBrowserController restoreFilterSelectionForGear:controller.gear sort:controller.sort arch:controller.archControl];

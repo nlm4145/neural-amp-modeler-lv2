@@ -84,7 +84,7 @@ static NSCache<NSString*, NSImage*>* artworkCache(void) {
 
 // Forward declarations (definitions are below, after the keychain helpers).
 static NSString* artworkCachePathForTone(NSInteger toneId, NSInteger stage);
-static NSString* artworkForTone(NSInteger toneId, NSInteger stage);
+NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 @implementation ToneItem @end
 
 // Extracts the exact number of neural network weight parameters from a .nam file.
@@ -436,6 +436,22 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
   openItem.toolTip = @"Open this tone's detail page in your default web browser.";
   [menu addItem:openItem];
 
+  if (item.creator.length && ![item.creator isEqualToString:@"Tone3000"]) {
+    NSMenuItem *authorItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Search Tones by @%@", item.creator]
+                                                        action:@selector(searchByAuthor:)
+                                                 keyEquivalent:@""];
+    authorItem.target = self;
+    authorItem.toolTip = [NSString stringWithFormat:@"Search Tone3000 for all tones created by @%@", item.creator];
+    [menu addItem:authorItem];
+
+    NSMenuItem *webAuthorItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"View @%@ on Tone3000", item.creator]
+                                                           action:@selector(openAuthorOnTone3000:)
+                                                    keyEquivalent:@""];
+    webAuthorItem.target = self;
+    webAuthorItem.toolTip = [NSString stringWithFormat:@"Open https://www.tone3000.com/%@ in your default web browser.", item.creator];
+    [menu addItem:webAuthorItem];
+  }
+
   [menu addItem:[NSMenuItem separatorItem]];
 
   if (item.a2Count > 0) {
@@ -484,6 +500,19 @@ static NSString* formatToneCardTooltip(ToneItem* item) {
   NSURL *url = [NSURL URLWithString:item.toneURL];
   if (url) [[NSWorkspace sharedWorkspace] openURL:url];
 }
+- (IBAction)searchByAuthor:(id)sender {
+  ToneItem *item = (ToneItem *)self.representedObject;
+  if (![item isKindOfClass:[ToneItem class]] || !item.creator.length) return;
+  if (self.browserController) {
+    [self.browserController searchForAuthor:item.creator];
+  }
+}
+- (IBAction)openAuthorOnTone3000:(id)sender {
+  ToneItem *item = (ToneItem *)self.representedObject;
+  if (![item isKindOfClass:[ToneItem class]] || !item.creator.length) return;
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://www.tone3000.com/%@", item.creator]];
+  if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+}
 @end
 // RigButton moved to rig_widgets.mm (shared with the simple NAM UI).
 
@@ -497,7 +526,7 @@ static NSString* artworkCachePathForTone(NSInteger toneId, NSInteger stage) {
   return [root stringByAppendingPathComponent:name];
 }
 
-static NSString* artworkForTone(NSInteger toneId, NSInteger stage) {
+NSString* artworkForTone(NSInteger toneId, NSInteger stage) {
   NSString* path = artworkCachePathForTone(toneId, stage);
   return [[NSFileManager defaultManager] fileExistsAtPath:path] ? path : nil;
 }
@@ -572,7 +601,10 @@ static void saveSearchPageForPath(NSString* path, NSDictionary* page) {
                     [searchCacheKeyForPath(path) stringByAppendingPathExtension:@"json"]];
   [json writeToFile:file options:NSDataWritingAtomic error:nil];
 }
-static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate* modified) {
+
+static void registerKnownToneCreator(NSString* name);
+
+ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate* modified) {
   if (![tone[@"title"] isKindOfClass:NSString.class] || ![tone[@"id"] respondsToSelector:@selector(integerValue)])
     return nil;
   ToneItem* item = [[ToneItem alloc] init];
@@ -582,6 +614,7 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   item.stage = stageForGear(item.gear);
   NSDictionary* user = [tone[@"user"] isKindOfClass:NSDictionary.class] ? tone[@"user"] : nil;
   item.creator = [user[@"username"] isKindOfClass:NSString.class] ? user[@"username"] : @"Tone3000";
+  if (item.creator.length) registerKnownToneCreator(item.creator);
   item.toneURL = [tone[@"url"] isKindOfClass:NSString.class] ? tone[@"url"] :
       [NSString stringWithFormat:@"https://www.tone3000.com/tones/%ld", (long)item.toneId];
   NSArray* images = [tone[@"images"] isKindOfClass:NSArray.class] ? tone[@"images"] : nil;
@@ -620,7 +653,333 @@ static ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate
   item.modified = modified ?: [NSDate distantPast];
   return item;
 }
-@implementation ToneBrowserController
+
+// ---- TONE3000 known creators registry & query parsing ----
+static NSMutableSet<NSString*>* sKnownCreators = nil;
+static NSMutableDictionary<NSString*, NSString*>* sCanonicalCreators = nil;
+static NSMutableSet<NSString*>* sNonCreatorTokens = nil;
+static NSLock* sCreatorsLock = nil;
+
+static void ensureCreatorsInitialized(void) {
+  static dispatch_once_t sOnce;
+  dispatch_once(&sOnce, ^{
+    sCreatorsLock = [[NSLock alloc] init];
+    sKnownCreators = [NSMutableSet set];
+    sCanonicalCreators = [NSMutableDictionary dictionary];
+    sNonCreatorTokens = [NSMutableSet set];
+
+    NSArray<NSString*>* seeds = @[
+      @"2dor", @"outmodedelectronics", @"akka5", @"markswarbrick", @"83ennui",
+      @"ripper", @"slamminmofo", @"nordickai520", @"morenoteslesstalk", @"kosmicaudio",
+      @"studioampcaptures", @"deathblossomaudio", @"tone3000", @"metalheart", @"elbestia",
+      @"humbug", @"tonehunt", @"jorge", @"dougk", @"guitarjon"
+    ];
+    for (NSString* s in seeds) {
+      [sKnownCreators addObject:s.lowercaseString];
+      sCanonicalCreators[s.lowercaseString] = s;
+    }
+
+    NSString* path = [@"~/Library/Application Support/Axe FX/tone3000-creators.json" stringByExpandingTildeInPath];
+    NSData* data = [NSData dataWithContentsOfFile:path];
+    if (data) {
+      NSArray* list = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+      if ([list isKindOfClass:NSArray.class]) {
+        for (id entry in list) {
+          if ([entry isKindOfClass:NSString.class] && [entry length]) {
+            NSString* s = entry;
+            [sKnownCreators addObject:s.lowercaseString];
+            sCanonicalCreators[s.lowercaseString] = s;
+          }
+        }
+      }
+    }
+  });
+}
+
+static BOOL isKnownToneCreator(NSString* name) {
+  if (!name.length) return NO;
+  ensureCreatorsInitialized();
+  [sCreatorsLock lock];
+  BOOL known = [sKnownCreators containsObject:name.lowercaseString];
+  [sCreatorsLock unlock];
+  return known;
+}
+
+static NSString* canonicalToneCreator(NSString* name) {
+  if (!name.length) return name ?: @"";
+  ensureCreatorsInitialized();
+  [sCreatorsLock lock];
+  NSString* c = sCanonicalCreators[name.lowercaseString];
+  [sCreatorsLock unlock];
+  return c.length ? c : name;
+}
+
+static void registerKnownToneCreator(NSString* name) {
+  if (!name.length || [name isEqualToString:@"Tone3000"]) return;
+  ensureCreatorsInitialized();
+  NSString* lower = name.lowercaseString;
+  BOOL isNew = NO;
+  [sCreatorsLock lock];
+  if (![sKnownCreators containsObject:lower]) {
+    [sKnownCreators addObject:lower];
+    sCanonicalCreators[lower] = name;
+    [sNonCreatorTokens removeObject:lower];
+    isNew = YES;
+  }
+  [sCreatorsLock unlock];
+
+  if (isNew) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
+      [sCreatorsLock lock];
+      NSArray* list = [sCanonicalCreators allValues];
+      [sCreatorsLock unlock];
+      NSString* dir = [@"~/Library/Application Support/Axe FX" stringByExpandingTildeInPath];
+      [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+      NSString* path = [dir stringByAppendingPathComponent:@"tone3000-creators.json"];
+      NSData* json = [NSJSONSerialization dataWithJSONObject:list options:0 error:nil];
+      if (json) [json writeToFile:path atomically:YES];
+    });
+  }
+}
+
+static BOOL isKnownNonCreatorToken(NSString* token) {
+  if (!token.length) return NO;
+  ensureCreatorsInitialized();
+  [sCreatorsLock lock];
+  BOOL non = [sNonCreatorTokens containsObject:token.lowercaseString];
+  [sCreatorsLock unlock];
+  return non;
+}
+
+static void registerKnownNonCreatorToken(NSString* token) {
+  if (!token.length) return;
+  ensureCreatorsInitialized();
+  [sCreatorsLock lock];
+  [sNonCreatorTokens addObject:token.lowercaseString];
+  [sCreatorsLock unlock];
+}
+
+static void parseSearchStringFast(NSString* raw, NSString** outCreator, NSString** outQuery) {
+  if (outCreator) *outCreator = nil;
+  if (outQuery) *outQuery = nil;
+  if (!raw.length) return;
+  NSString* trimmed = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!trimmed.length) return;
+
+  if ([trimmed hasPrefix:@"@"]) {
+    NSString* sub = [trimmed substringFromIndex:1];
+    NSArray<NSString*>* parts = [sub componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSMutableArray<NSString*>* valid = [NSMutableArray array];
+    for (NSString* p in parts) if (p.length) [valid addObject:p];
+    if (valid.count) {
+      NSString* c = valid.firstObject;
+      registerKnownToneCreator(c);
+      if (outCreator) *outCreator = canonicalToneCreator(c);
+      if (outQuery && valid.count > 1) {
+        *outQuery = [[valid subarrayWithRange:NSMakeRange(1, valid.count - 1)] componentsJoinedByString:@" "];
+      }
+      return;
+    }
+  }
+
+  static NSRegularExpression* sPrefixRegex = nil;
+  static dispatch_once_t sRegexOnce;
+  dispatch_once(&sRegexOnce, ^{
+    sPrefixRegex = [NSRegularExpression regularExpressionWithPattern:@"^(?:author|creator|by|user):\\s*([A-Za-z0-9_\\-\\.]+)(.*)$"
+                                                             options:NSRegularExpressionCaseInsensitive error:nil];
+  });
+  NSTextCheckingResult* match = [sPrefixRegex firstMatchInString:trimmed options:0 range:NSMakeRange(0, trimmed.length)];
+  if (match && match.numberOfRanges >= 2) {
+    NSString* c = [trimmed substringWithRange:[match rangeAtIndex:1]];
+    registerKnownToneCreator(c);
+    if (outCreator) *outCreator = canonicalToneCreator(c);
+    if (outQuery && match.numberOfRanges >= 3 && [match rangeAtIndex:2].length > 0) {
+      NSString* rem = [[trimmed substringWithRange:[match rangeAtIndex:2]] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      if (rem.length) *outQuery = rem;
+    }
+    return;
+  }
+
+  NSArray<NSString*>* parts = [trimmed componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  NSMutableArray<NSString*>* valid = [NSMutableArray array];
+  for (NSString* p in parts) if (p.length) [valid addObject:p];
+  if (!valid.count) return;
+
+  NSString* first = valid.firstObject;
+  if (isKnownToneCreator(first)) {
+    if (outCreator) *outCreator = canonicalToneCreator(first);
+    if (outQuery && valid.count > 1) {
+      *outQuery = [[valid subarrayWithRange:NSMakeRange(1, valid.count - 1)] componentsJoinedByString:@" "];
+    }
+    return;
+  }
+
+  if (isKnownToneCreator(trimmed)) {
+    if (outCreator) *outCreator = canonicalToneCreator(trimmed);
+    return;
+  }
+
+  if (outQuery) *outQuery = trimmed;
+}
+
+static BOOL toneItemMatchesSearch(ToneItem* item, NSString* creatorFilter, NSString* rawSearch, NSArray<NSString*>* queryTokens) {
+  if (!rawSearch.length) return YES;
+
+  NSString* creatorLower = item.creator.lowercaseString ?: @"";
+  NSString* titleLower = item.title.lowercaseString ?: @"";
+  NSString* gearLower = item.gear.lowercaseString ?: @"";
+  NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", titleLower, creatorLower, gearLower];
+
+  if (creatorFilter.length) {
+    if ([creatorLower rangeOfString:creatorFilter.lowercaseString].location == NSNotFound) {
+      BOOL isExplicit = [rawSearch hasPrefix:@"@"] ||
+                        [rawSearch.lowercaseString hasPrefix:@"author:"] ||
+                        [rawSearch.lowercaseString hasPrefix:@"creator:"] ||
+                        [rawSearch.lowercaseString hasPrefix:@"by:"] ||
+                        [rawSearch.lowercaseString hasPrefix:@"user:"];
+      if (isExplicit || [searchable rangeOfString:rawSearch.lowercaseString].location == NSNotFound) {
+        return NO;
+      }
+    }
+  }
+
+  if (queryTokens.count > 0) {
+    for (NSString* token in queryTokens) {
+      if (token.length && [searchable rangeOfString:token].location == NSNotFound) return NO;
+    }
+  } else if (!creatorFilter.length && rawSearch.length) {
+    if ([searchable rangeOfString:rawSearch.lowercaseString].location == NSNotFound) return NO;
+  }
+
+  return YES;
+}
+
+@implementation ToneBrowserController {
+  BOOL _preloadedCreators;
+}
+
+- (BOOL)isKnownCreator:(NSString*)name {
+  return isKnownToneCreator(name);
+}
+
+- (void)registerKnownCreator:(NSString*)name {
+  registerKnownToneCreator(name);
+}
+
+- (void)parseSearchStringFast:(NSString*)raw intoCreator:(NSString**)outCreator query:(NSString**)outQuery {
+  parseSearchStringFast(raw, outCreator, outQuery);
+}
+
+- (BOOL)isValidUsernameString:(NSString*)str {
+  if (str.length < 1 || str.length > 40) return NO;
+  static NSCharacterSet* sUsernameChars = nil;
+  static dispatch_once_t sOnce;
+  dispatch_once(&sOnce, ^{
+    NSMutableCharacterSet* cs = [NSMutableCharacterSet alphanumericCharacterSet];
+    [cs addCharactersInString:@"_-."];
+    sUsernameChars = [cs invertedSet];
+  });
+  return [str rangeOfCharacterFromSet:sUsernameChars].location == NSNotFound;
+}
+
+- (void)resolveSearchString:(NSString*)rawString
+                 generation:(NSInteger)gen
+                 completion:(void (^)(NSString* creator, NSString* textQuery, NSInteger generation))completion {
+  if (!rawString.length) {
+    completion(nil, nil, gen);
+    return;
+  }
+  NSString* trimmed = [rawString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!trimmed.length) {
+    completion(nil, nil, gen);
+    return;
+  }
+
+  NSString* creator = nil;
+  NSString* query = nil;
+  parseSearchStringFast(trimmed, &creator, &query);
+
+  if (creator.length) {
+    completion(creator, query, gen);
+    return;
+  }
+
+  NSArray<NSString*>* parts = [trimmed componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  NSMutableArray<NSString*>* valid = [NSMutableArray array];
+  for (NSString* p in parts) if (p.length) [valid addObject:p];
+
+  NSString* first = valid.firstObject;
+  if (valid.count == 1 && [self isValidUsernameString:first] && !isKnownNonCreatorToken(first) && self.accessToken.length) {
+    NSString* encWord = [first stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
+    NSString* userPath = [NSString stringWithFormat:@"/users?query=%@", encWord];
+    __weak ToneBrowserController* weakSelf = self;
+    [self apiGET:userPath completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+      ToneBrowserController* strongSelf = weakSelf;
+      if (!strongSelf || strongSelf.searchGeneration != gen) return;
+      NSString* matchedUsername = nil;
+      if (status == 200 && [json isKindOfClass:NSDictionary.class]) {
+        NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : nil;
+        for (NSDictionary* u in data) {
+          if ([u isKindOfClass:NSDictionary.class] && [u[@"username"] isKindOfClass:NSString.class]) {
+            if ([u[@"username"] caseInsensitiveCompare:first] == NSOrderedSame) {
+              matchedUsername = u[@"username"];
+              break;
+            }
+          }
+        }
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        ToneBrowserController* s = weakSelf;
+        if (!s || s.searchGeneration != gen) return;
+        if (matchedUsername.length) {
+          registerKnownToneCreator(matchedUsername);
+          completion(matchedUsername, nil, gen);
+        } else {
+          registerKnownNonCreatorToken(first);
+          completion(nil, trimmed, gen);
+        }
+      });
+    }];
+    return;
+  }
+
+  completion(nil, trimmed, gen);
+}
+
+- (void)preloadKnownCreators {
+  if (_preloadedCreators || !self.accessToken.length) return;
+  _preloadedCreators = YES;
+  __weak ToneBrowserController* weakSelf = self;
+  [self apiGET:@"/users?sort=tones&page=1&page_size=50" completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+    ToneBrowserController* s = weakSelf;
+    if (!s || status != 200 || ![json isKindOfClass:NSDictionary.class]) return;
+    NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : nil;
+    for (NSDictionary* u in data) {
+      if ([u isKindOfClass:NSDictionary.class] && [u[@"username"] isKindOfClass:NSString.class]) {
+        registerKnownToneCreator(u[@"username"]);
+      }
+    }
+  }];
+}
+
+- (void)searchForAuthor:(NSString*)author {
+  if (!author.length) return;
+  registerKnownToneCreator(author);
+  self.mode = @"Browse";
+  for (RigButton* b in self.modeButtons)
+    b.state = [b.title isEqualToString:@"Browse"] ? NSControlStateValueOn : NSControlStateValueOff;
+  [self updateSortMenuForCurrentMode];
+  self.search.stringValue = author;
+  [self filterChanged:nil];
+  [self refreshOnline];
+}
+
+- (IBAction)searchSubmitted:(id)sender {
+  [self filterChanged:nil];
+  if (self.accessToken.length) {
+    [self refreshOnline];
+  }
+}
 // Persist the Browse filter dropdowns (gear + sort + arch) to disk on every USER change
 // (sender != nil; programmatic [self filterChanged:nil] calls never write), and
 // re-select the saved titles when the popup is built. Element recreates the
@@ -996,6 +1355,8 @@ static void saveParamCache(void) {
     }
     [self logTone3000:[NSString stringWithFormat:@"INIT tokens access=%d refresh=%d",
                        (int)access.length, (int)refresh.length]];
+    ensureCreatorsInitialized();
+    if (_accessToken.length) [self preloadKnownCreators];
   }
   return self;
 }
@@ -1154,28 +1515,138 @@ static void saveParamCache(void) {
   else if ([gearTitle isEqualToString:@"Cabs"]) gearParam = @"&gears=cab";
   else if ([gearTitle isEqualToString:@"Pedals"]) gearParam = @"&gears=pedal";
   else if ([gearTitle isEqualToString:@"Amp + Cab"]) gearParam = @"&gears=amp-cab";
-  NSString* encodedQuery = [self.search.stringValue stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
-  NSString* prefix = [NSString stringWithFormat:@"/tones/search?sort=%@%@%@", sort, gearParam,
-                      encodedQuery.length ? [@"&query=" stringByAppendingString:encodedQuery] : @""];
-  // A fresh search: draw a new generation and reset paging state. allItems is
-  // a persistent union (local packs, favorites, previously seen tones) — we do
-  // NOT prune it here; filterChanged renders searchResults first, extras after.
-  self.searchGeneration++;
-  [self.searchIds removeAllObjects];
-  self.activeSearchPrefix = prefix;
-  self.nextSearchPage = 1;
-  self.searchTotalPages = 0;
-  // Cache-first: page 1 comes from the local SearchCache when fresh, so re-
-  // sorting / re-searching within 10 minutes costs ZERO network requests.
-  [self loadMoreSearchResults];
-  // Favorites still come from the API (small, single page) — but not while a
-  // rate-limit cooldown is active; the cached flags carry us until it lifts.
-  if ([[NSDate date] timeIntervalSince1970] >= self.rateLimitUntil) {
-    [self apiGET:@"/tones/favorited?page=1&page_size=100" completion:^(NSDictionary* json, NSInteger status, NSError* error) {
-      NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
-      [self mergeRemoteTones:data favorite:YES];
-    }];
+  const NSInteger generation = ++self.searchGeneration;
+  [self preloadKnownCreators];
+
+  __weak ToneBrowserController* weakSelf = self;
+  [self resolveSearchString:self.search.stringValue generation:generation completion:^(NSString* creator, NSString* textQuery, NSInteger gen) {
+    ToneBrowserController* s = weakSelf;
+    if (!s || s.searchGeneration != gen) return;
+
+    s.activeCreator = creator;
+    s.activeTextQuery = textQuery;
+
+    NSString* creatorParam = @"";
+    if (creator.length) {
+      NSString* encCreator = [creator stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
+      creatorParam = [NSString stringWithFormat:@"&creators=%@", encCreator];
+    }
+    NSString* queryParam = @"";
+    if (textQuery.length) {
+      NSString* encQuery = [textQuery stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
+      queryParam = [NSString stringWithFormat:@"&query=%@", encQuery];
+    }
+
+    NSString* prefix = [NSString stringWithFormat:@"/tones/search?sort=%@%@%@%@", sort, gearParam, creatorParam, queryParam];
+
+    // A fresh search: reset paging state. allItems is
+    // a persistent union (local packs, favorites, previously seen tones) — we do
+    // NOT prune it here; filterChanged renders searchResults first, extras after.
+    [s.searchIds removeAllObjects];
+    s.activeSearchPrefix = prefix;
+    s.nextSearchPage = 1;
+    s.searchTotalPages = 0;
+    s.loadingNextPage = NO;
+
+    // Cache-first: page 1 comes from the local SearchCache when fresh, so re-
+    // sorting / re-searching within 10 minutes costs ZERO network requests.
+    [s loadMoreSearchResults];
+
+    // Favorites still come from the API (small, single page) — but not while a
+    // rate-limit cooldown is active; the cached flags carry us until it lifts.
+    if ([[NSDate date] timeIntervalSince1970] >= s.rateLimitUntil) {
+      [s apiGET:@"/tones/favorited?page=1&page_size=100" completion:^(NSDictionary* json, NSInteger status, NSError* error) {
+        NSArray* data = [json[@"data"] isKindOfClass:NSArray.class] ? json[@"data"] : @[];
+        [s mergeRemoteTones:data favorite:YES];
+      }];
+    }
+  }];
+}
+
+- (NSArray<NSString*>*)searchPathsForPrefix:(NSString*)prefix page:(NSInteger)page arch:(NSString*)arch {
+  if (!prefix.length) return @[];
+  if ([arch isEqualToString:@"2"]) {
+    return @[[NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=2", prefix, (long)page]];
+  } else if ([arch isEqualToString:@"1"]) {
+    return @[[NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=1", prefix, (long)page]];
+  } else if ([arch isEqualToString:@"custom"]) {
+    return @[[NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=custom", prefix, (long)page]];
   }
+  return @[
+    [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=2", prefix, (long)page],
+    [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=custom", prefix, (long)page],
+    [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=1", prefix, (long)page]
+  ];
+}
+
+- (BOOL)toneItem:(ToneItem*)item matchesArchFilter:(NSString*)arch {
+  if (!item) return NO;
+  if (!arch.length || [arch isEqualToString:@"all"]) return YES;
+
+  if ([arch isEqualToString:@"custom"]) {
+    if (item.customCount > 0) return YES;
+    if ([item.title localizedCaseInsensitiveContainsString:@"Hyper"]) return YES;
+    if (item.models.count > 0) {
+      for (NSString* m in item.models) {
+        NSString* lower = m.lastPathComponent.lowercaseString;
+        if ([lower containsString:@"_c.nam"] || [lower containsString:@"custom"] || [lower containsString:@"hyper"]) return YES;
+        RigUIState::RigModelArchInfo info = RigUIState::inspectModelArch(m);
+        if ([info.category isEqualToString:@"custom"]) return YES;
+      }
+    }
+    if (item.remoteModels.count > 0) {
+      for (NSDictionary* m in item.remoteModels) {
+        if (![m isKindOfClass:NSDictionary.class]) continue;
+        id av = m[@"architecture_version"];
+        if ([av isEqual:@"custom"] || ([av respondsToSelector:@selector(stringValue)] && [[av stringValue] isEqualToString:@"custom"])) return YES;
+        NSString* name = [m[@"name"] isKindOfClass:NSString.class] ? [(NSString*)m[@"name"] lowercaseString] : @"";
+        if ([name containsString:@"custom"] || [name containsString:@"hyper"]) return YES;
+      }
+    }
+    return NO;
+  }
+
+  if ([arch isEqualToString:@"2"]) {
+    if (item.a2Count > 0) return YES;
+    if (item.models.count > 0) {
+      for (NSString* m in item.models) {
+        NSString* lower = m.lastPathComponent.lowercaseString;
+        if ([lower containsString:@"(a2)"]) return YES;
+        RigUIState::RigModelArchInfo info = RigUIState::inspectModelArch(m);
+        if ([info.category isEqualToString:@"a2"]) return YES;
+      }
+    }
+    if (item.remoteModels.count > 0) {
+      for (NSDictionary* m in item.remoteModels) {
+        if (![m isKindOfClass:NSDictionary.class]) continue;
+        id av = m[@"architecture_version"];
+        if ([av isEqual:@"2"] || [av isEqual:@2] || ([av respondsToSelector:@selector(stringValue)] && [[av stringValue] isEqualToString:@"2"])) return YES;
+      }
+    }
+    return NO;
+  }
+
+  if ([arch isEqualToString:@"1"]) {
+    if (item.a1Count > 0) return YES;
+    if (item.models.count > 0) {
+      for (NSString* m in item.models) {
+        NSString* lower = m.lastPathComponent.lowercaseString;
+        if ([lower containsString:@"(a1)"]) return YES;
+        RigUIState::RigModelArchInfo info = RigUIState::inspectModelArch(m);
+        if ([info.category isEqualToString:@"a1"]) return YES;
+      }
+    }
+    if (item.remoteModels.count > 0) {
+      for (NSDictionary* m in item.remoteModels) {
+        if (![m isKindOfClass:NSDictionary.class]) continue;
+        id av = m[@"architecture_version"];
+        if ([av isEqual:@"1"] || [av isEqual:@1] || ([av respondsToSelector:@selector(stringValue)] && [[av stringValue] isEqualToString:@"1"])) return YES;
+      }
+    }
+    return NO;
+  }
+
+  return YES;
 }
 
 // Loads the NEXT page of the active search — NAM-Rig-style cache-first lazy
@@ -1190,15 +1661,11 @@ static void saveParamCache(void) {
   if ([[NSDate date] timeIntervalSince1970] < self.rateLimitUntil) return;
   const NSInteger page = self.nextSearchPage;
   const NSInteger generation = self.searchGeneration;
-  // The API caps search page_size at 25 (docs). CRITICAL: omitting the
-  // architecture param applies the LEGACY default (A1 + Custom ONLY —
-  // documented "excludes A2-only tones"), which hides nearly all new uploads
-  // and mismatched the site's result set/order. We fetch each architecture
-  // explicitly and merge: A2 first, then Custom, then A1, deduped by tone id.
-  NSString* p2  = [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=2", prefix, (long)page];
-  NSString* p1  = [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=1", prefix, (long)page];
-  NSString* pc  = [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=custom", prefix, (long)page];
-  NSArray<NSString*>* paths = @[p2, pc, p1];
+  // The API caps search page_size at 25 (docs). When arch is "all", we fetch
+  // each architecture explicitly and merge: A2 first, then Custom, then A1, deduped
+  // by tone id. When an explicit architecture is selected (e.g. Custom, A2, A1),
+  // we query only that architecture so search results accurately narrow down.
+  NSArray<NSString*>* paths = [self searchPathsForPrefix:prefix page:page arch:self.selectedArch];
 
   // 1) Cache-first: serve any page (<10 min old) from disk; only the misses
   // hit the network (sequential, ~150ms apart — server-friendly).
@@ -1257,18 +1724,16 @@ static void saveParamCache(void) {
   });
 }
 
-// Merges the three architecture pages of one page index into a single search
-// page and applies it. A2 first (matches the site's default), then Custom,
+// Merges the architecture page(s) of one page index into a single search
+// page and applies it. When "all" is active, merges A2 first, then Custom,
 // then A1, deduped by tone id. total_pages = max across arches, so the scroll
 // chain runs until every architecture is exhausted.
 - (void)mergeArchPages:(NSDictionary<NSString*, NSDictionary*>*)fetched page:(NSInteger)page generation:(NSInteger)generation fromCache:(BOOL)fromCache {
   NSMutableArray<NSDictionary*>* merged = [NSMutableArray array];
   NSMutableSet<NSNumber*>* seen = [NSMutableSet set];
   NSInteger totalPages = 0;
-  for (NSString* p in @[
-        [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=2", self.activeSearchPrefix, (long)page],
-        [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=custom", self.activeSearchPrefix, (long)page],
-        [NSString stringWithFormat:@"%@&page=%ld&page_size=25&architecture=1", self.activeSearchPrefix, (long)page]]) {
+  NSArray<NSString*>* paths = [self searchPathsForPrefix:self.activeSearchPrefix page:page arch:self.selectedArch];
+  for (NSString* p in paths) {
     NSDictionary* json = fetched[p];
     if (!json) continue;
     NSInteger tp = [json[@"total_pages"] respondsToSelector:@selector(integerValue)] ? [json[@"total_pages"] integerValue] : 0;
@@ -1336,20 +1801,23 @@ static void saveParamCache(void) {
     // (pages load strictly in ascending order via the scroll chain).
     BOOL page1 = (page == 1);
     if (page1) {
-      // Drop any previously-loaded search rows (all pages) then add this page.
-      NSMutableIndexSet* drop = [NSMutableIndexSet indexSet];
-      for (NSUInteger i = 0; i < self.searchResults.count; i++)
-        if ([self.searchIds containsObject:@(self.searchResults[i].toneId)]) [drop addIndex:i];
-      [self.searchResults removeObjectsAtIndexes:drop];
-      [self.searchResults replaceObjectsInRange:NSMakeRange(0, 0) withObjectsFromArray:pageItems];
+      [self.searchResults setArray:pageItems];
+      [self.searchIds removeAllObjects];
+      for (ToneItem* it in pageItems) [self.searchIds addObject:@(it.toneId)];
     } else {
       // Append (pages load strictly in ascending order via the scroll chain).
       [self.searchResults addObjectsFromArray:pageItems];
     }
     self.nextSearchPage = page + 1;
     [self filterChanged:nil];
-    self.status.stringValue = [NSString stringWithFormat:@"%lu tones • page %ld of %ld%@ — scroll for more",
-                               (unsigned long)self.visibleItems.count, (long)page, (long)pages,
+    if (page1 && self.visibleItems.count < 10 && self.nextSearchPage <= self.searchTotalPages && [[NSDate date] timeIntervalSince1970] >= self.rateLimitUntil) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self loadMoreSearchResults];
+      });
+    }
+    NSString* authorSuffix = self.activeCreator.length ? [NSString stringWithFormat:@" by @%@", self.activeCreator] : @"";
+    self.status.stringValue = [NSString stringWithFormat:@"%lu tones%@ • page %ld of %ld%@ — scroll for more",
+                               (unsigned long)self.visibleItems.count, authorSuffix, (long)page, (long)pages,
                                fromCache ? @" (cached)" : @""];
   });
 }
@@ -1908,11 +2376,31 @@ static void saveParamCache(void) {
     popup.toolTip = popup.selectedItem.toolTip ?: @"Filter Tone3000 results by capture type.";
   }
   if (sender) [self persistFilterSelection];
-  NSString* query = self.search.stringValue.lowercaseString;
+  NSString* rawSearch = self.search.stringValue ?: @"";
   NSString* gear = self.gear.titleOfSelectedItem;
   NSMutableArray<ToneItem*>* shown = [NSMutableArray array];
   NSString* sortChoice = self.sort.titleOfSelectedItem ?: ([self.mode isEqualToString:@"Favorites"] ? self.favoritesSort : ([self.mode isEqualToString:@"Local"] ? self.localSort : self.browseSort)) ?: @"Newest";
   const BOOL isParamSort = [sortChoice containsString:@"Parameters"];
+
+  NSString* localCreator = self.activeCreator;
+  NSString* localText = self.activeTextQuery;
+  if (!localCreator.length && !localText.length && rawSearch.length) {
+    parseSearchStringFast(rawSearch, &localCreator, &localText);
+  }
+  if (!rawSearch.length) {
+    localCreator = nil;
+    localText = nil;
+    self.activeCreator = nil;
+    self.activeTextQuery = nil;
+  }
+  NSArray<NSString*>* queryTokens = nil;
+  if (localText.length) {
+    NSArray<NSString*>* rawTokens = [localText.lowercaseString componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSMutableArray<NSString*>* cleaned = [NSMutableArray array];
+    for (NSString* t in rawTokens) if (t.length) [cleaned addObject:t];
+    queryTokens = cleaned;
+  }
+
   // Browse mode: the search API returns results ALREADY sorted — render
   // searchResults (strict server order, page1→pageN contiguous) first, then
   // locally-known extras (local packs, favorites not in this search). Never
@@ -1922,8 +2410,8 @@ static void saveParamCache(void) {
   if (browseServerOrder) {
     for (ToneItem* item in self.searchResults) {
       if (!gearMatchesFilter(item.gear, gear)) continue;
-      NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", item.title, item.creator, item.gear].lowercaseString;
-      if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
+      if (!toneItemMatchesSearch(item, localCreator, rawSearch, queryTokens)) continue;
+      if (![self toneItem:item matchesArchFilter:self.selectedArch]) continue;
       [shown addObject:item];
     }
   }
@@ -1934,8 +2422,8 @@ static void saveParamCache(void) {
     if ([self.mode isEqualToString:@"Favorites"] && !item.favorite) continue;
     if ([self.mode isEqualToString:@"Local"] && !item.local) continue;
     if (!gearMatchesFilter(item.gear, gear)) continue;
-    NSString* searchable = [NSString stringWithFormat:@"%@ %@ %@", item.title, item.creator, item.gear].lowercaseString;
-    if (query.length && [searchable rangeOfString:query].location == NSNotFound) continue;
+    if (!toneItemMatchesSearch(item, localCreator, rawSearch, queryTokens)) continue;
+    if (![self toneItem:item matchesArchFilter:self.selectedArch]) continue;
     [shown addObject:item];
   }
   if ([self.mode isEqualToString:@"Recent"]) {
@@ -2021,19 +2509,22 @@ static void saveParamCache(void) {
   NSInteger sel = self.archControl.selectedSegment;
   if (sel == 1) {
     self.selectedArch = @"1";
-    self.status.stringValue = @"Download Format: A1 Legacy Standard";
+    self.status.stringValue = @"Format: A1 Legacy Standard";
   } else if (sel == 2) {
     self.selectedArch = @"custom";
-    self.status.stringValue = @"Download Format: Custom Architecture (LSTM, WaveNet)";
+    self.status.stringValue = @"Format: Custom Architecture (LSTM, WaveNet)";
   } else if (sel == 3) {
     self.selectedArch = @"all";
-    self.status.stringValue = @"Download Format: All Models (A2, A1, Custom)";
+    self.status.stringValue = @"Format: All Formats (A2, A1, Custom)";
   } else {
     self.selectedArch = @"2";
-    self.status.stringValue = @"Download Format: A2 Default (Modern Fast Standard)";
+    self.status.stringValue = @"Format: A2 Default (Modern Fast Standard)";
   }
   if (sender) [self persistFilterSelection];
-  [self.collectionView reloadData];
+  [self filterChanged:sender];
+  if (sender && [self.mode isEqualToString:@"Browse"] && self.accessToken.length) {
+    [self refreshOnline];
+  }
 }
 
 - (void)collectionView:(NSCollectionView *)collectionView didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
@@ -2471,6 +2962,10 @@ static void saveParamCache(void) {
 }
 
 - (void)downloadTone:(ToneItem*)item withArch:(NSString*)requestedArch {
+  [self downloadTone:item withArch:requestedArch exact:NO];
+}
+
+- (void)downloadTone:(ToneItem*)item withArch:(NSString*)requestedArch exact:(BOOL)exact {
   if (!self.accessToken.length) {
     self.status.stringValue = @"Connect Tone3000 to download models";
     return;
@@ -2480,7 +2975,7 @@ static void saveParamCache(void) {
   self.status.stringValue = [NSString stringWithFormat:@"Getting models for %@…", item.title ?: @"this tone"];
 
   __weak ToneBrowserController *weakSelf = self;
-  [self fetchRemoteModelsForToneId:selectedToneId arch:arch completion:^(NSArray<NSDictionary*>* data) {
+  void (^handleModels)(NSArray<NSDictionary*>*) = ^(NSArray<NSDictionary*>* data) {
     dispatch_async(dispatch_get_main_queue(), ^{
       ToneBrowserController *strongSelf = weakSelf; if (!strongSelf) return;
       item.remoteModels = data;
@@ -2488,10 +2983,17 @@ static void saveParamCache(void) {
         strongSelf.status.stringValue = [NSString stringWithFormat:@"%lu models — downloading…", (unsigned long)data.count];
         [strongSelf downloadAllModels:item];
       } else {
-        strongSelf.status.stringValue = @"No downloadable models found for selected format";
+        NSString* archLabel = [arch isEqualToString:@"2"] ? @"A2" : ([arch isEqualToString:@"1"] ? @"A1 Legacy" : ([arch isEqualToString:@"custom"] ? @"Custom" : @"selected format"));
+        strongSelf.status.stringValue = [NSString stringWithFormat:@"No downloadable %@ models found for this tone", archLabel];
       }
     });
-  }];
+  };
+
+  if (exact && ![arch isEqualToString:@"all"]) {
+    [self fetchModelsForToneId:selectedToneId arch:arch page:1 accumulated:[NSMutableArray array] completion:handleModels];
+  } else {
+    [self fetchRemoteModelsForToneId:selectedToneId arch:arch completion:handleModels];
+  }
 }
 
 // Populate the selected stage's tile selector and load the first model.
@@ -2529,7 +3031,7 @@ static void saveParamCache(void) {
   if (!self.accessToken.length || item.remoteModels.count == 0) return;
   NSString* category;
   if (item.stage == 0) category = @"Pedal";
-  else if (item.stage == 2) category = @"Cab";
+  else if (item.stage == 2 || item.stage == 3) category = @"Cab";
   else if ([item.gear.lowercaseString isEqualToString:@"amp-cab"] || [item.gear.lowercaseString isEqualToString:@"full-rig"])
     category = @"Full Rig";   // NAM Rig's library layout: full rigs get their own folder
   else category = @"Amp";
