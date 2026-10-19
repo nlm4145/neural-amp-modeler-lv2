@@ -336,6 +336,7 @@ if (APPLE)
 			wav_ir.cpp wav_ir.h
 			oversample.cpp oversample.h oversample_modes.h
 			amp_advanced.h output_transformer.h speaker_dynamics.h space_fx.h
+			rig_standalone_profiler.h rig_standalone_profiler.mm
 			${RIG_UI_SOURCES}
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.icns
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.png)
@@ -344,7 +345,8 @@ if (APPLE)
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.png
 			PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 		target_include_directories(axe_fx_standalone PRIVATE
-			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+			../deps/NeuralAudio ../deps/lv2/include ../deps/denormal
+			../deps/NeuralAudio/deps/RTNeural/modules/json)
 		target_compile_definitions(axe_fx_standalone PRIVATE
 			AXE_FX_PARALLEL_MODELS_DEFAULT=$<BOOL:${AXE_FX_PARALLEL_MODELS_DEFAULT}>
 			AXE_FX_PARALLEL_CABS_DEFAULT=$<BOOL:${AXE_FX_PARALLEL_CABS_DEFAULT}>)

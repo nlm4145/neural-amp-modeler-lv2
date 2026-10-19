@@ -36,6 +36,8 @@
 #include "rack_controls.h"
 #include "standalone_controls.h"
 #include "standalone_worker.h"
+#include "oversample_modes.h"
+#import "rig_standalone_profiler.h"
 
 extern "C" const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index);
 
@@ -734,6 +736,19 @@ class StandaloneHost {
     }
     savePersistedAudioSettings();
     return true;
+  }
+
+  int oversampleMode() const {
+    return static_cast<int>(controls_[17] + 0.5f);
+  }
+
+  void setOversampleMode(int mode) {
+    controls_[16] = static_cast<float>(mode);
+    controls_[17] = static_cast<float>(mode);
+    if (uiDescriptor_ && uiHandle_) {
+      uiDescriptor_->port_event(uiHandle_, 20, sizeof(float), 0, &controls_[16]);
+      uiDescriptor_->port_event(uiHandle_, 21, sizeof(float), 0, &controls_[17]);
+    }
   }
 
   void setCpuMeterViews(NSTextField* label, NSView* barFill, NSView* barSlot) {
@@ -1863,6 +1878,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   NSView* _pluginHostView;
   NSPopUpButton* _audioPopup;
   NSMenu* _appAudioSubmenu;
+  NSMenu* _appPerfSubmenu;
   StandaloneAnimatedAmpView* _dockAmpView;
   std::unique_ptr<StandaloneHost> _host;
 }
@@ -2098,6 +2114,77 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
       [menu addItem:item];
     }
   }
+
+  // 7. PERFORMANCE MODE (OVERSAMPLING)
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"PERFORMANCE MODE (OVERSAMPLING)");
+  {
+    struct ModeEntry {
+      int mode;
+      NSString* title;
+    };
+    const ModeEntry kModes[] = {
+      {NAMRig::kOversampleTrue8, @"True 8× (Maximum Quality — Default)"},
+      {NAMRig::kOversampleTrue4, @"True 4× (Low Latency / Live)"},
+      {NAMRig::kOversampleTrue2, @"True 2× (Ultra-Low CPU)"},
+      {NAMRig::kOversampleLegacy, @"Legacy (Session Rate)"},
+      {NAMRig::kOversampleNone, @"Off / 1× (Bypass)"},
+    };
+    const int curMode = _host ? _host->oversampleMode() : NAMRig::kOversampleTrue8;
+    for (const auto& m : kModes) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:m.title
+                                                    action:@selector(selectOversampleMode:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = m.mode;
+      item.state = (curMode == m.mode) ? NSControlStateValueOn : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+
+  // 8. PROFILER
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"DSP PERFORMANCE PROFILER");
+  {
+    NSMenuItem* profItem = [[NSMenuItem alloc] initWithTitle:@"Profile Active Preset…"
+                                                      action:@selector(profileActivePresetAction:)
+                                               keyEquivalent:@""];
+    profItem.target = self;
+    [menu addItem:profItem];
+
+    NSMenuItem* profAllItem = [[NSMenuItem alloc] initWithTitle:@"Profile All Presets…"
+                                                         action:@selector(profileAllPresetsAction:)
+                                                  keyEquivalent:@""];
+    profAllItem.target = self;
+    [menu addItem:profAllItem];
+  }
+}
+
+- (void)populatePerformanceMenu:(NSMenu*)menu {
+  [menu removeAllItems];
+  struct ModeEntry {
+    int mode;
+    NSString* title;
+    NSString* tip;
+  };
+  const ModeEntry kModes[] = {
+    {NAMRig::kOversampleTrue8, @"True 8× (Maximum Quality — Default)", @"Highest fidelity. 8x oversampled neural amp stage."},
+    {NAMRig::kOversampleTrue4, @"True 4× (Low Latency / Live)", @"Recommended for 32/64 samples. Great balance of low latency and sound quality."},
+    {NAMRig::kOversampleTrue2, @"True 2× (Ultra-Low CPU)", @"Minimal CPU impact for high sample rates or older hardware."},
+    {NAMRig::kOversampleLegacy, @"Legacy (Session Rate)", @"Dilation scaling without true resampling."},
+    {NAMRig::kOversampleNone, @"Off / 1× (Bypass)", @"No oversampling."},
+  };
+  const int curMode = _host ? _host->oversampleMode() : NAMRig::kOversampleTrue8;
+  for (const auto& m : kModes) {
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:m.title
+                                                  action:@selector(selectOversampleMode:)
+                                           keyEquivalent:@""];
+    item.target = self;
+    item.tag = m.mode;
+    item.toolTip = m.tip;
+    item.state = (curMode == m.mode) ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:item];
+  }
 }
 
 - (void)refreshAudioMenusAndTitle {
@@ -2109,13 +2196,16 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     const double ms = (sr > 0.0) ? (static_cast<double>(buf) / sr) * 1000.0 : 0.0;
     _audioPopup.toolTip = [NSString stringWithFormat:
         @"Audio I/O & Engine Settings — Input: %s → Output: %s · %.1f kHz · %u samples (%.1f ms). "
-        @"Click to change input/output devices, input/output channels (Stereo Out), sample rate (kHz), or buffer size.",
+        @"Click to change input/output devices, input/output channels (Stereo Out), sample rate (kHz), buffer size, or oversampling mode.",
         _host ? _host->activeInputDeviceName().c_str() : "Default",
         _host ? _host->activeOutputDeviceName().c_str() : "Default",
         sr / 1000.0, buf, ms];
   }
   if (_appAudioSubmenu) {
     [self populateAudioMenu:_appAudioSubmenu includeTitleItem:NO];
+  }
+  if (_appPerfSubmenu) {
+    [self populatePerformanceMenu:_appPerfSubmenu];
   }
 }
 
@@ -2124,6 +2214,8 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     [self populateAudioMenu:menu includeTitleItem:YES];
   } else if (menu == _appAudioSubmenu) {
     [self populateAudioMenu:menu includeTitleItem:NO];
+  } else if (menu == _appPerfSubmenu) {
+    [self populatePerformanceMenu:menu];
   }
 }
 
@@ -2195,6 +2287,22 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   [self refreshAudioMenusAndTitle];
 }
 
+- (void)selectOversampleMode:(NSMenuItem*)sender {
+  if (!_host) return;
+  _host->setOversampleMode(static_cast<int>(sender.tag));
+  [self refreshAudioMenusAndTitle];
+}
+
+- (void)profileActivePresetAction:(id)sender {
+  (void)sender;
+  [RigStandaloneProfiler profileActivePresetWithParentWindow:_window];
+}
+
+- (void)profileAllPresetsAction:(id)sender {
+  (void)sender;
+  [RigStandaloneProfiler profileAllPresetsWithParentWindow:_window];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   (void)notification;
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -2210,6 +2318,31 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   _appAudioSubmenu.delegate = self;
   audioMenuItem.submenu = _appAudioSubmenu;
   [appMenu addItem:audioMenuItem];
+
+  NSMenuItem* perfMenuItem = [[NSMenuItem alloc] initWithTitle:@"Performance Mode (Oversampling)"
+                                                        action:NULL
+                                                 keyEquivalent:@""];
+  _appPerfSubmenu = [[NSMenu alloc] initWithTitle:@"Performance Mode (Oversampling)"];
+  _appPerfSubmenu.delegate = self;
+  perfMenuItem.submenu = _appPerfSubmenu;
+  [appMenu addItem:perfMenuItem];
+
+  [appMenu addItem:[NSMenuItem separatorItem]];
+
+  NSMenuItem* profActiveItem = [[NSMenuItem alloc] initWithTitle:@"Profile Active Preset…"
+                                                          action:@selector(profileActivePresetAction:)
+                                                   keyEquivalent:@"p"];
+  profActiveItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  profActiveItem.target = self;
+  [appMenu addItem:profActiveItem];
+
+  NSMenuItem* profAllItem = [[NSMenuItem alloc] initWithTitle:@"Profile All Presets…"
+                                                       action:@selector(profileAllPresetsAction:)
+                                                keyEquivalent:@"P"];
+  profAllItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  profAllItem.target = self;
+  [appMenu addItem:profAllItem];
+
   [appMenu addItem:[NSMenuItem separatorItem]];
   [appMenu addItemWithTitle:@"Quit Axe FX"
                      action:@selector(terminate:)
