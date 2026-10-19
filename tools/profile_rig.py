@@ -29,11 +29,20 @@ def instrument_calls(text, symbol, category):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scratch", required=True, type=pathlib.Path)
-    parser.add_argument("--build", default=ROOT / "build", type=pathlib.Path)
-    parser.add_argument("--blocks", default=300, type=int)
-    parser.add_argument("presets", nargs="+")
+    parser.add_argument("--scratch", default=pathlib.Path("/tmp/axe_fx_profile"), type=pathlib.Path,
+                        help="Scratch build directory (default: /tmp/axe_fx_profile)")
+    parser.add_argument("--build", default=ROOT / "build", type=pathlib.Path,
+                        help="CMake build directory containing built NeuralAudio objects (default: build)")
+    parser.add_argument("--blocks", default=100, type=int,
+                        help="Number of blocks to measure per condition (default: 100)")
+    parser.add_argument("presets", nargs="*", default=None,
+                        help="Preset .json files (default: all in ~/Library/Application Support/Axe FX/Presets/*.json)")
     args = parser.parse_args()
+    preset_files = [str(p) for p in args.presets] if args.presets else sorted(
+        str(p) for p in (pathlib.Path.home() / "Library/Application Support/Axe FX/Presets").glob("*.json")
+    )
+    if not preset_files:
+        parser.error("No presets found to profile.")
     scratch = args.scratch.resolve()
     scratch.mkdir(parents=True, exist_ok=True)
     sources = scratch / "src"
@@ -90,7 +99,7 @@ def main():
     command += [str(sources / p) for p in ["nam_rig_plugin.cpp", "cabinet_worker.cpp", "oversample.cpp", "wav_ir.cpp", "dsp_accel.cpp", "rig_knobs.cpp"]]
     command += objects + archives + ["-framework", "Accelerate", "-o", str(binary)]
     subprocess.run(command, cwd=build / "src", check=True)
-    subprocess.run([str(binary), "--blocks", str(args.blocks), *args.presets], check=True)
+    subprocess.run([str(binary), "--blocks", str(args.blocks), *preset_files], check=True)
 
 
 if __name__ == "__main__":

@@ -242,12 +242,16 @@ int main(int argc, char** argv) {
     require(!paths.empty() && blocks >= 20, "supply presets and at least 20 blocks");
     disable_denormals();
     for (const auto& path : paths) {
-      const auto preset = load(path);
-      const auto name = std::filesystem::path(path).stem().string();
-      for (uint32_t block : {32u, 64u, 128u}) {
-        for (size_t helpers : {size_t{3}, size_t{1}, size_t{0}}) measure(preset, name, block, helpers, "full", blocks);
-        for (const auto& variant : {"no-fx", "no-boost", "no-cab-b", "no-compressor", "amp-one-step-lower", "nam-core"})
-          measure(preset, name, block, 3, variant, blocks);
+      try {
+        const auto preset = load(path);
+        const auto name = std::filesystem::path(path).stem().string();
+        for (uint32_t block : {32u, 64u, 128u}) {
+          for (size_t helpers : {size_t{3}, size_t{1}, size_t{0}}) measure(preset, name, block, helpers, "full", blocks);
+          for (const auto& variant : {"no-fx", "no-boost", "no-cab-b", "no-compressor", "amp-one-step-lower", "nam-core"})
+            measure(preset, name, block, 3, variant, blocks);
+        }
+      } catch (const std::exception& error) {
+        std::fprintf(stderr, "WARN: skipping %s (%s)\n", path.c_str(), error.what());
       }
     }
   } catch (const std::exception& error) { std::fprintf(stderr, "FAIL: %s\n", error.what()); return 1; }
