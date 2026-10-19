@@ -180,6 +180,15 @@ RangeStats verifyRanges(PolyphaseWorker& worker, size_t phases, size_t samples,
 }
 
 void testExecutor() {
+  // Pin the policy independently of the dispatch implementation: short low-
+  // phase-count jobs stay serial; True8's 16 phases can use all three helpers.
+  require(PolyphaseWorker::helpersFor(3, 16, 15) == 0, "tiny phase blocks serial");
+  require(PolyphaseWorker::helpersFor(3, 2, 16) == 0, "short two-phase jobs serial");
+  require(PolyphaseWorker::helpersFor(3, 4, 16) == 0, "insufficient grouped work serial");
+  require(PolyphaseWorker::helpersFor(3, 8, 16) == 1, "short eight-phase job uses one helper");
+  require(PolyphaseWorker::helpersFor(3, 16, 16) == 3, "short sixteen-phase job uses three helpers");
+  require(PolyphaseWorker::helpersFor(1, 16, 16) == 1, "respect available helper cap");
+  require(PolyphaseWorker::helpersFor(3, 2, 32) == 1, "old long-block policy unchanged");
   static_assert(std::is_base_of<PolyphaseModel::Executor, PolyphaseWorker>::value);
   static_assert(std::is_same<decltype(&PolyphaseWorker::start),
                             bool (PolyphaseWorker::*)(void*, double, size_t)
@@ -215,10 +224,12 @@ void testExecutor() {
     }
     for (size_t phases : {size_t{0}, size_t{1}, size_t{2}, size_t{3},
                           size_t{8}, size_t{16}, size_t{64}}) {
-      for (size_t samples : {size_t{0}, size_t{31}, size_t{32}, size_t{1024}}) {
+      for (size_t samples : {size_t{0}, size_t{15}, size_t{16}, size_t{31}, size_t{32}, size_t{1024}}) {
+        const size_t expected = PolyphaseWorker::helpersFor(worker.helperCount(), phases, samples);
         const auto stats = verifyRanges(worker, phases, samples,
-                                        phases < 2 || samples < 32,
+                                        expected == 0,
                                         "threshold/range dispatch");
+        require(stats.helpers == expected, "workload-aware helper count");
         maxCalls = std::max(maxCalls, stats.calls);
         maxHelpers = std::max(maxHelpers, stats.helpers);
         maxRange = std::max(maxRange, stats.maxRange);
@@ -345,7 +356,7 @@ struct TracingExecutor : PolyphaseModel::Executor {
   void execute(ProcessRange callback, void* context, size_t phases,
                size_t minimumSamples) noexcept override {
     Job job{callback, context};
-    const bool eligible = phases >= 2 && minimumSamples >= 32;
+    const bool eligible = PolyphaseWorker::helpersFor(3, phases, minimumSamples) != 0;
     ++calls;
     if (eligible) ++eligibleCalls;
     else ++shortCalls;
@@ -509,13 +520,13 @@ void benchmark(const std::array<std::string, 2>& paths, Clock::time_point harnes
   // A time slice per configuration limits work on slower/debug builds. No
   // performance threshold is asserted: overruns are observations, not failures.
   const auto deadline = harnessStart + std::chrono::seconds(50);
-  size_t configurationsLeft = paths.size() * 3;
+  size_t configurationsLeft = paths.size() * 4;
   std::printf("== Benchmark: model=48kHz domain=768kHz (model factor16), "
               "session=96kHz factor8; wall time per complete Process, us\n");
   for (const auto& path : paths) {
     std::array<std::unique_ptr<LoadedModel>, 3> models;
     for (auto& model : models) model = std::make_unique<LoadedModel>(path, kFactor, 2048);
-    for (size_t block : {size_t{64}, size_t{128}, size_t{256}}) {
+    for (size_t block : {size_t{32}, size_t{64}, size_t{128}, size_t{256}}) {
       const size_t domainFrames = block * kSessionFactor;
       const double budgetUs = 1.0e6 * static_cast<double>(block) / kSessionRate;
       const auto signal = makeSignal((kWarmup + kMeasurements) * domainFrames,

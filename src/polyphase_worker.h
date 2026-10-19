@@ -16,6 +16,18 @@ class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
  public:
   static constexpr size_t kMaxHelpers = 3;
 
+  // Short blocks can still contain substantial work when many independent
+  // phases are grouped per thread. Keep tiny phase blocks serial, and require
+  // at least 64 native-rate samples per range below the old 32-sample cutoff.
+  static size_t helpersFor(size_t available, size_t phases, size_t samples) noexcept {
+    if (phases < 2 || samples < 16) return 0;
+    const size_t limit = std::min({available, kMaxHelpers, phases - 1});
+    if (samples >= 32) return limit;
+    const size_t phasesPerRange = (64 + samples - 1) / samples;
+    const size_t ranges = phases / phasesPerRange;
+    return ranges > 1 ? std::min(limit, ranges - 1) : 0;
+  }
+
   bool start(void* workgroup, double periodSeconds, size_t helperCount) noexcept {
 #if defined(__APPLE__) || defined(_WIN32)
     if (helperCount_ != 0) return false;
@@ -58,9 +70,7 @@ class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
                size_t phaseCount, size_t minimumPhaseSamples) noexcept override {
     if (phaseCount == 0) return;
 #if defined(__APPLE__) || defined(_WIN32)
-    // Kernel wake/wait overhead dominates very short native-rate phase blocks.
-    const size_t helpers = phaseCount > 1 && minimumPhaseSamples >= 32
-        ? std::min(helperCount_, phaseCount - 1) : 0;
+    const size_t helpers = helpersFor(helperCount_, phaseCount, minimumPhaseSamples);
     struct Job {
       void (*process)(void*, size_t, size_t) noexcept;
       void* context;

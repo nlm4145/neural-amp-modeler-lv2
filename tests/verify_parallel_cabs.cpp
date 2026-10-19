@@ -816,6 +816,22 @@ void verifyMulticoreModels(const std::string& standard, const std::string& a2,
 
   testSection = "96 kHz multicore bypass topology and model swaps";
   pair.set(20, 6); pair.set(21, 6);
+  // Exercise the newly eligible 16-native-sample phase blocks in real rig
+  // converters/graphs, including a negotiated 32-frame maximum and expiry.
+  for (int block : {32, 64}) {
+    for (Host* host : {&pair.serial, &pair.parallel}) {
+      host->plugin.setMaxBufferSize(block);
+      host->maxBlock = block;
+    }
+    for (unsigned i = 0; i < 48; ++i)
+      pair.run(static_cast<uint32_t>(block), false, true,
+               i % 3 == 0 ? mach_absolute_time() : 0);
+    check(pair.serial.controls[29] == 41.0f, "32/64-frame phase dispatch preserves True8 latency");
+  }
+  for (Host* host : {&pair.serial, &pair.parallel}) {
+    host->plugin.setMaxBufferSize(kBlockLength);
+    host->maxBlock = kBlockLength;
+  }
   // One True8 group remains in every case: pedal+amp with a session-rate dual
   // Cab A, the remaining serial stage(s) under a bypass, or pedal+amp+Cab A
   // once Cab B is dropped.

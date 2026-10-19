@@ -222,6 +222,21 @@ dilation scaling. 8-channel layers (A2) also have an ARM NEON kernel
 µs per 128-frame block. Verified by `tests/verify_polyphase_model.cpp`
 (build target `verify_polyphase_model`; pass extra `.nam` paths to test them).
 
+The standalone `PolyphaseWorker` admits short native-phase blocks by grouped
+work rather than a fixed 32-sample cutoff: 16–31 samples per phase require
+at least 64 samples in each thread's phase range; fewer than 16 stay serial.
+The existing policy for ≥32 samples is unchanged. Helpers remain synchronous,
+deadline-gated, allocation-free and bounded to three. Rejected jobs alone fall
+back to the caller; successfully published recurrent DSP is never retried.
+
+`src/rig_dsp_cache.h` caches unchanged dB gains, rate-derived glide/envelope
+coefficients, compressor timing and equal-power Width gains. The callback's
+rounding mode is part of each key; model calibration is keyed by its current
+recommended dB values, not pointer identity. Cab B alone owns its stage's gain
+caches while dispatched. Moving controls retain the original per-sample math
+and smoothing cadence; settled Width uses the same gain pair for the whole
+slice. Neither optimization adds latency or changes quality/oversampling.
+
 **Per-stage oversampling (ports 20/21)** uses the five-mode dropdown
 None / Legacy / True 2x / True 4x / True 8x. Fresh instances default both
 nonlinear stages to **True 8x** for maximum sound quality; lower modes remain

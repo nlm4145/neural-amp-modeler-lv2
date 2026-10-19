@@ -154,6 +154,9 @@ target_link_libraries(verify_polyphase_model PRIVATE NeuralAudio)
 add_executable(verify_control_work EXCLUDE_FROM_ALL ../tests/verify_control_work.cpp)
 target_include_directories(verify_control_work PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(verify_rig_dsp_cache EXCLUDE_FROM_ALL ../tests/verify_rig_dsp_cache.cpp)
+target_include_directories(verify_rig_dsp_cache PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 find_package(Threads REQUIRED)
 add_executable(verify_standalone_worker EXCLUDE_FROM_ALL
 	../tests/verify_standalone_worker.cpp standalone_worker.cpp)
@@ -265,6 +268,9 @@ if (APPLE)
 	find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 	find_library(COREIMAGE_FRAMEWORK CoreImage REQUIRED)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
+	add_executable(verify_low_buffer_rig EXCLUDE_FROM_ALL ../tests/verify_low_buffer_rig.cpp)
+	target_include_directories(verify_low_buffer_rig PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/lv2/include ../deps/NeuralAudio ../deps/NeuralAudio/deps/RTNeural/modules/json)
 	add_executable(verify_cabinet_worker EXCLUDE_FROM_ALL
 		../tests/verify_cabinet_worker.cpp cabinet_worker.cpp)
 	target_include_directories(verify_cabinet_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

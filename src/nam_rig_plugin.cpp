@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cfenv>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -580,6 +581,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // the per-stage ports 20/21 supersede it. It exists only for positional
   // alignment (see the header comment) and session-compat in the TTL.
 
+  blockRounding = std::fegetround();
+  rateCache.configure(sampleRate, blockRounding);
+
   lv2_atom_forge_set_buffer(&forge, reinterpret_cast<uint8_t*>(ports.notify), ports.notify->atom.size);
   lv2_atom_forge_sequence_head(&forge, &sequenceFrame, uris.unitsFrame);
 
@@ -901,7 +905,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // mute-aware release. The existing threshold/release controls stay unchanged.
   noiseGate.configure(sampleRate, *ports.gate_threshold, *ports.gate_release);
 
-  const float desiredInput = dbToLinear(*ports.input_level);
+  const float desiredInput = inputGainCache.get(*ports.input_level, blockRounding);
   float gain = smoothedInputLevel;
   for (uint32_t i = 0; i < sampleCount; ++i) {
     const float in = noiseGate.process(ports.audio_in[i]);
@@ -931,10 +935,11 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     const float makeupDb = 6.0f * compAmount;
     const float attackMs = std::max(0.1f, portValue(ports.compressor_attack, kCompressorAttackDefault));
     const float releaseMs = std::max(1.0f, portValue(ports.compressor_release, kCompressorReleaseDefault));
-    const float envAttack = 1.0f - std::exp(-1.0f / (sampleRate * 0.001));
-    const float envRelease = 1.0f - std::exp(-1.0f / (sampleRate * 0.080));
-    const float gainAttack = 1.0f - std::exp(-1.0f / (sampleRate * (attackMs * 0.001f)));
-    const float gainRelease = 1.0f - std::exp(-1.0f / (sampleRate * (releaseMs * 0.001f)));
+    compressorTimingCache.configure(sampleRate, attackMs, releaseMs, blockRounding);
+    const float envAttack = rateCache.envAttack;
+    const float envRelease = rateCache.envRelease;
+    const float gainAttack = compressorTimingCache.gainAttack;
+    const float gainRelease = compressorTimingCache.gainRelease;
     for (uint32_t i = 0; i < sampleCount; ++i) {
       const float level = std::fabs(ports.audio_out[i]);
       compressorEnvelope += (level - compressorEnvelope) *
@@ -1178,9 +1183,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                           portValue(ports.od_level, 0.0f));
       else
         overdrive.reset();
-      const float target = dbToLinear(*ports.amp_drive);
-      const float coeff = 1.0f - std::exp(-1.0f /
-          static_cast<float>(std::max(1.0, domainRate) * 0.010));
+      const float target = ampGainCache.get(*ports.amp_drive, blockRounding);
+      const float coeff = ampDriveRateCache.get(domainRate, blockRounding);
       for (size_t i = 0; i < count; ++i) {
         smoothedAmpDrive += (target - smoothedAmpDrive) * coeff;
         samples[i] *= smoothedAmpDrive;
@@ -1408,7 +1412,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
 
 void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
                       float* samples, size_t count, double domainRate) noexcept {
-  const float pre = dbToLinear(model->GetRecommendedInputDBAdjustment());
+  const float pre = modelInputGainCache[stage].get(
+      model->GetRecommendedInputDBAdjustment(), blockRounding);
   if (pre != 1.0f)
     for (size_t i = 0; i < count; ++i) samples[i] *= pre;
   // Cab B may already be running on a different executor. Only the callback's
@@ -1419,7 +1424,8 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
   } else {
     model->Process(samples, samples, count);
   }
-  const float post = dbToLinear(model->GetRecommendedOutputDBAdjustment());
+  const float post = modelOutputGainCache[stage].get(
+      model->GetRecommendedOutputDBAdjustment(), blockRounding);
   if (post != 1.0f)
     for (size_t i = 0; i < count; ++i) samples[i] *= post;
   if (std::fabs(stageDcRate[stage] - domainRate) > 0.5) {
@@ -1509,13 +1515,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
   const float widthTarget = std::max(0.0f, std::min(1.0f, *ports.stereo_width * 0.01f));
   const float rawCab2Db = portValue(ports.cab2_level, 0.0f);
-  const float cab2LevelTarget = rawCab2Db <= -23.95f ? 0.0f : dbToLinear(rawCab2Db);
-  const float glide10 = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate * 0.010));
-  const float chunkGlide = 1.0f - std::exp(-static_cast<float>(kEqChunk) /
-                                            static_cast<float>(sampleRate * 0.020));
-  const float desiredOutput = dbToLinear(*ports.output_level);
+  const float cab2LevelTarget = rawCab2Db <= -23.95f ? 0.0f : cab2GainCache.get(rawCab2Db, blockRounding);
+  const float glide10 = rateCache.glide10;
+  const float chunkGlide = rateCache.chunkGlide;
+  const float desiredOutput = outputGainCache.get(*ports.output_level, blockRounding);
   const float rawCabDb = *ports.cab_level;
-  const float targetCab = rawCabDb <= -23.95f ? 0.0f : dbToLinear(rawCabDb);
+  const float targetCab = rawCabDb <= -23.95f ? 0.0f : cabGainCache.get(rawCabDb, blockRounding);
   const float alignmentMs = consoleOn ? std::max(-10.0f, std::min(10.0f,
       portValue(ports.cab2_delay, 0.0f))) : 0.0f;
   const float polarityTarget = portValue(ports.cab2_polarity, 0.0f) >= 0.5f
@@ -1657,6 +1662,18 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         std::memcpy(L, cabBL.data(), n * sizeof(float));
         std::memcpy(R, cabBR.data(), n * sizeof(float));
       }
+    } else if (haveA && haveB && smoothedWidth == widthTarget) {
+      // Once settled, the original smoother is a no-op. Use one exact gain
+      // pair for the slice rather than rechecking Width for every sample.
+      widthGainCache.configure(smoothedWidth, blockRounding);
+      const float gainNear = widthGainCache.near;
+      const float gainFar = widthGainCache.far;
+      for (uint32_t i = 0; i < n; ++i) {
+        const float outL = L[i] * gainNear + cabBL[i] * gainFar;
+        const float outR = R[i] * gainFar + cabBR[i] * gainNear;
+        L[i] = outL;
+        R[i] = outR;
+      }
     } else {
       const float* BL = cabBL.data();
       const float* BR = cabBR.data();
@@ -1664,9 +1681,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         smoothedWidth += (widthTarget - smoothedWidth) * glide10;
         if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
         if (haveA && haveB) {
-          const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - smoothedWidth);
-          const float gainNear = std::cos(theta);
-          const float gainFar = std::sin(theta);
+          widthGainCache.configure(smoothedWidth, blockRounding);
+          const float gainNear = widthGainCache.near;
+          const float gainFar = widthGainCache.far;
           const float outL = L[i] * gainNear + BL[i] * gainFar;
           const float outR = R[i] * gainFar + BR[i] * gainNear;
           L[i] = outL;
@@ -1683,10 +1700,8 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     // Take it back with a low shelf scaled by the level balance; a muted or
     // polarity-inverted Cab B has no coherent sum to compensate.
     if (haveA && haveB) {
-      const float theta = spatialOn
-          ? static_cast<float>(kPi) * 0.25f * (1.0f - smoothedWidth)
-          : static_cast<float>(kPi) * 0.25f;
-      const float coherent = std::max(1.0f, std::cos(theta) + std::sin(theta));
+      widthGainCache.configure(spatialOn ? smoothedWidth : 0.0f, blockRounding);
+      const float coherent = widthGainCache.coherent;
       const float gainA = consoleOn ? smoothedCabLevel : 1.0f;
       const float gainB = consoleOn
           ? smoothedCab2Level * std::max(0.0f, smoothedCab2Polarity) : 1.0f;

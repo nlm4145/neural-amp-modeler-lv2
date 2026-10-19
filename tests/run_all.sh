@@ -65,6 +65,8 @@ echo "== tests/verify_pin_eq.cpp =="
 run_cpp c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
 echo "== tests/verify_control_work.cpp (control caching / smoothing equivalence) =="
 run_cpp c++17 /tmp/verify_control_work -Isrc tests/verify_control_work.cpp
+echo "== tests/verify_rig_dsp_cache.cpp (gain / timing / stereo width caches) =="
+run_cpp c++17 /tmp/verify_rig_dsp_cache -Isrc tests/verify_rig_dsp_cache.cpp
 echo "== tests/verify_space_fx.cpp =="
 run_cpp c++17 /tmp/verify_space_fx -Isrc tests/verify_space_fx.cpp
 echo "== tests/verify_oversample_modes.cpp =="
@@ -115,6 +117,13 @@ else
 fi
 
 # Black-box stabilization checks need only the rig library, not model files.
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "== tests/verify_low_buffer_rig.cpp (small blocks / cached controls) =="
+  run_cpp c++20 /tmp/verify_low_buffer_rig -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+    -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_low_buffer_rig.cpp \
+    -- "$RIG_SO" "${RIG_BASELINE_SO:-$RIG_SO}"
+fi
+
 echo "== tests/verify_tuner.c (tuner stabilization / 48 and 96 kHz) =="
 if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner.c \
     -o /tmp/verify_tuner; then

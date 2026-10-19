@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ttl = (ROOT / "resources/neural_amp_modeler_rig.ttl.in").read_text()
 header = (ROOT / "src/nam_rig_plugin.h").read_text()
 dsp = (ROOT / "src/nam_rig_plugin.cpp").read_text()
+cache = (ROOT / "src/rig_dsp_cache.h").read_text()
 
 ports = {
     int(index): symbol
@@ -39,7 +40,9 @@ assert "std::vector<float> postL, postR" in header, "post chain needs its own st
 assert "sideA" not in dsp and "sideB" not in dsp, (
     "Width must not scale a cabinet's side component; stereo IRs keep their image"
 )
-assert "const float theta = static_cast<float>(kPi) * 0.25f * (1.0f - smoothedWidth);" in dsp, (
+assert "* 0.25f * (1.0f - value);" in cache and (
+    "near = std::cos(theta);" in cache and "far = std::sin(theta);" in cache
+) and "widthGainCache.configure(smoothedWidth, blockRounding);" in dsp, (
     "Cab A/Cab B spread must be an equal-power pan"
 )
 assert "const float outL = L[i] * gainNear + BL[i] * gainFar;" in dsp and (

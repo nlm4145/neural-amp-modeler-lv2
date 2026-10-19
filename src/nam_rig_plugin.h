@@ -29,6 +29,7 @@
 #include "space_fx.h"
 #include "speaker_dynamics.h"
 #include "rack_controls.h"
+#include "rig_dsp_cache.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -335,6 +336,14 @@ private:
   // Rate-independent ~2 ms one-pole coefficient for the input/output trims
   // (a fixed per-sample constant would halve the time constant at 96 kHz).
   float trimSmoothCoeff = 0.01f;
+  int blockRounding = 0;
+  DbGainCache inputGainCache, outputGainCache, ampGainCache, cabGainCache, cab2GainCache;
+  // Cab B's worker exclusively owns index 3 until its synchronous wait returns.
+  std::array<DbGainCache, kStageCount> modelInputGainCache, modelOutputGainCache;
+  RigRateCache rateCache;
+  CompressorTimingCache compressorTimingCache;
+  AmpDriveRateCache ampDriveRateCache;
+  WidthGainCache widthGainCache;
   DcBlocker dcBlocker, dcBlockerR;
   std::array<DcBlocker, kStageCount> stageDc{};
   std::array<double, kStageCount> stageDcRate{};

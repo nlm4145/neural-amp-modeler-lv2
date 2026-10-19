@@ -121,6 +121,32 @@ are built ad hoc by `run_all.sh`:
 Direct C++ DSP harness compiler failures fail the suite and show diagnostics rather
 than silently skipping coverage. Accelerate-only harnesses run on macOS.
 
+### Small-buffer performance checks (macOS)
+
+The standalone phase executor now admits short blocks based on grouped work:
+below 32 native samples per phase, it requires at least 16 samples per phase
+and 64 samples per thread range. This lets 96 kHz / True 8x / 32-frame buffers
+use helpers without threading tiny low-phase-count jobs. No buffering, extra
+latency, oversampling reduction, or model quality change is involved.
+
+Stable gain conversions, compressor timing and stereo-width gains are cached;
+automation retains the original smoothing, and rate/rounding changes invalidate
+the relevant cached values. To verify and benchmark:
+
+```bash
+cmake --build build --target verify_parallel_polyphase verify_rig_dsp_cache verify_low_buffer_rig
+build/src/verify_parallel_polyphase --benchmark
+build/src/verify_rig_dsp_cache
+build/src/verify_low_buffer_rig build/src/neural_amp_modeler_rig.so /path/to/baseline/rig.so --bench
+```
+
+The before/after rig check compares audio, notifications and latency bit-for-bit
+at 48/96/192 kHz with 32/64 and irregular/oversized blocks, automated controls,
+model swaps and buffer resizes. Its optional timing uses lightweight model
+fixtures to isolate control overhead; it is not a whole-app CPU measurement.
+`RIG_BASELINE_SO=/path/to/baseline/rig.so` also enables this comparison in
+`tests/run_all.sh`; without it, that test compares two fresh current instances.
+
 Shared-host regression checks are also included: `verify_standalone_worker.cpp`
 covers FIFO byte copying, response contention and shutdown ownership;
 `verify_standalone_controls.cpp` verifies flat/segmented port binding;
