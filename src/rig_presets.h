@@ -25,6 +25,8 @@ struct RigStagePreset {
 };
 
 std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath, size_t stage);
+NSDictionary<NSNumber*, NSString*>* _Nonnull rigPortToSymbolMap();
+NSDictionary<NSString*, NSNumber*>* _Nonnull rigSymbolToPortMap();
 
 NS_ASSUME_NONNULL_BEGIN
 

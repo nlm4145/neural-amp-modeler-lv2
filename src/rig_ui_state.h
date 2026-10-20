@@ -49,9 +49,19 @@
 @end
 
 struct RigUIState {
+  static inline RigUIState*& activeState() {
+    static RigUIState* s_active = nullptr;
+    return s_active;
+  }
+
   std::shared_ptr<bool> isAlive = std::make_shared<bool>(true);
 
+  RigUIState() {
+    activeState() = this;
+  }
+
   ~RigUIState() {
+    if (activeState() == this) activeState() = nullptr;
     if (isAlive) *isAlive = false;
     [transformerPopover close];
     stopKeyEventMonitor();
@@ -261,6 +271,8 @@ struct RigUIState {
   __strong NSPopUpButton* deckSpeakerProfilePopup = nil;
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
+  __strong NSPopover* aiCopilotPopover = nil;
+  __strong NSButton* aiCopilotBtn = nil;
 
   // Tuner UI: master toggle + readout elements in Pro Studio Deck tab 0.
   __strong NSButton* tunerButton = nil;
@@ -725,6 +737,15 @@ struct RigUIState {
           (NSEventModifierFlagCommand | NSEventModifierFlagOption |
            NSEventModifierFlagControl | NSEventModifierFlagShift);
       NSString* chars = [event.charactersIgnoringModifiers lowercaseString] ?: @"";
+
+      // Cmd+K: Open AI Tone Copilot
+      if (mods == NSEventModifierFlagCommand && [chars isEqualToString:@"k"]) {
+        id ctrl = (id)selfState->uiController;
+        if (ctrl && [ctrl respondsToSelector:@selector(openAICopilot:)]) {
+          [ctrl performSelector:@selector(openAICopilot:) withObject:selfState->aiCopilotBtn];
+          return nil;
+        }
+      }
 
       // Cmd+A: Select All in active text field or text editor view
       if (mods == NSEventModifierFlagCommand &&

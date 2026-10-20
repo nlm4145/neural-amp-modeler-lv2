@@ -2,6 +2,7 @@
 #import <AuthenticationServices/AuthenticationServices.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <Security/Security.h>
+#import "rig_ai_copilot.h"
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
@@ -75,6 +76,14 @@ static NSString* stageName(NSInteger stage) {
 
 @interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate>
 @property(nonatomic, assign) RigUIState* state;
+@property(nonatomic, strong) NSPopUpButton* copilotProvPopup;
+@property(nonatomic, strong) NSComboBox* copilotModelComboBox;
+@property(nonatomic, strong) NSSecureTextField* copilotKeyField;
+@property(nonatomic, strong) NSTextField* copilotPromptInput;
+@property(nonatomic, strong) NSTextView* copilotOutputView;
+@property(nonatomic, strong) RigButton* copilotDialBtn;
+@property(nonatomic, strong) RigButton* copilotUndoBtn;
+@property(nonatomic, strong) NSProgressIndicator* copilotSpinner;
 - (void)chooseModel:(id)sender;
 - (void)clearModel:(id)sender;
 - (void)removeStageSelection:(id)sender;
@@ -136,6 +145,16 @@ static NSString* stageName(NSInteger stage) {
 - (void)propagateSlotPresetToAll:(NSMenuItem*)sender;
 - (void)markPresetModified;
 @end
+
+@interface NAMRigUIController (AICopilot)
+- (void)openAICopilot:(id)sender;
+- (void)executeCopilotDial:(id)sender;
+- (void)undoCopilotDial:(id)sender;
+- (void)copilotChipClicked:(NSButton*)sender;
+- (void)saveCopilotConfig:(id)sender;
+- (void)copilotProviderChanged:(NSPopUpButton*)sender;
+@end
+
 @implementation NAMRigUIController
 - (void)switchTab:(NSButton*)sender {
   if (!_state) return;
@@ -2050,6 +2069,310 @@ static RigButton* rigChip(NSView* parent, NSString* title, id target, SEL action
 static void centerX(NSView* v, NSView* to, CGFloat c) {
   v.translatesAutoresizingMaskIntoConstraints = NO;
   [[v.centerXAnchor constraintEqualToAnchor:to.centerXAnchor constant:c] setActive:YES];
+}
+
+@implementation NAMRigUIController (AICopilot)
+
+- (void)openAICopilot:(id)sender {
+  if (!_state) return;
+  if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
+    [_state->aiCopilotPopover close];
+    return;
+  }
+
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+
+  const CGFloat popW = 540.0;
+  const CGFloat popH = 500.0;
+  RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, popW, popH)];
+  content.wantsLayer = YES;
+
+  // Header
+  NSTextField* title = [NSTextField labelWithString:@"✨ AI Tone Copilot"];
+  title.frame = NSMakeRect(20, popH - 36, 320, 22);
+  title.font = [NSFont systemFontOfSize:16 weight:NSFontWeightBold];
+  title.textColor = rigText();
+  [content addSubview:title];
+
+  NSTextField* sub = [NSTextField labelWithString:@"Universal AI tone engineer & DSP diagnostician · ⌘K"];
+  sub.frame = NSMakeRect(20, popH - 54, 400, 16);
+  sub.font = [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
+  sub.textColor = rigDimText();
+  [content addSubview:sub];
+
+  // Provider row
+  NSTextField* provLbl = [NSTextField labelWithString:@"Provider:"];
+  provLbl.frame = NSMakeRect(20, popH - 86, 60, 18);
+  provLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  provLbl.textColor = rigText();
+  [content addSubview:provLbl];
+
+  self.copilotProvPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(82, popH - 90, 110, 24) pullsDown:NO];
+  [self.copilotProvPopup addItemsWithTitles:@[@"Gemini", @"OpenAI", @"Claude", @"Ollama", @"Custom"]];
+  self.copilotProvPopup.font = [NSFont systemFontOfSize:11];
+  [self.copilotProvPopup selectItemWithTitle:config.provider.capitalizedString ?: @"Gemini"];
+  self.copilotProvPopup.target = self;
+  self.copilotProvPopup.action = @selector(copilotProviderChanged:);
+  [content addSubview:self.copilotProvPopup];
+
+  NSTextField* modLbl = [NSTextField labelWithString:@"Model:"];
+  modLbl.frame = NSMakeRect(202, popH - 86, 44, 18);
+  modLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  modLbl.textColor = rigText();
+  [content addSubview:modLbl];
+
+  self.copilotModelComboBox = [[NSComboBox alloc] initWithFrame:NSMakeRect(250, popH - 89, 160, 24)];
+  self.copilotModelComboBox.font = [NSFont systemFontOfSize:11];
+  self.copilotModelComboBox.hasVerticalScroller = YES;
+  NSArray<NSString*>* initialModels = [RigAICopilot defaultModelsForProvider:config.provider];
+  [self.copilotModelComboBox addItemsWithObjectValues:initialModels];
+  self.copilotModelComboBox.stringValue = config.model.length ? config.model : (initialModels.firstObject ?: @"");
+  [content addSubview:self.copilotModelComboBox];
+
+  // Retrieve live models on launch asynchronously
+  __weak NSComboBox* weakModelBox = self.copilotModelComboBox;
+  [[RigAICopilot sharedCopilot] fetchModelsForProvider:config.provider
+                                     completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
+    if (liveModels.count > 0 && weakModelBox) {
+      NSString* cur = weakModelBox.stringValue;
+      [weakModelBox removeAllItems];
+      [weakModelBox addItemsWithObjectValues:liveModels];
+      weakModelBox.stringValue = cur.length ? cur : (liveModels.firstObject ?: @"");
+    }
+  }];
+
+  RigButton* saveCfg = rigButton(content, @"Save Config", self, @selector(saveCopilotConfig:), NSMakeRect(418, popH - 88, 102, 22));
+  saveCfg.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
+
+  // API Key row
+  NSTextField* keyLbl = [NSTextField labelWithString:@"API Key:"];
+  keyLbl.frame = NSMakeRect(20, popH - 116, 60, 18);
+  keyLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  keyLbl.textColor = rigText();
+  [content addSubview:keyLbl];
+
+  self.copilotKeyField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(82, popH - 118, 438, 22)];
+  self.copilotKeyField.font = [NSFont systemFontOfSize:11];
+  self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to inherit %@_API_KEY from environment", config.provider.uppercaseString];
+  self.copilotKeyField.stringValue = config.apiKey ?: @"";
+  [content addSubview:self.copilotKeyField];
+
+  // Separator
+  NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 130, popW - 40, 1)];
+  sep.boxType = NSBoxSeparator;
+  [content addSubview:sep];
+
+  // Prompt input
+  NSTextField* pLbl = [NSTextField labelWithString:@"Describe Artist, Song, or Tone Adjustment:"];
+  pLbl.frame = NSMakeRect(20, popH - 156, 350, 18);
+  pLbl.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+  pLbl.textColor = rigText();
+  [content addSubview:pLbl];
+
+  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 208, popW - 40, 48)];
+  self.copilotPromptInput.placeholderString = @"e.g. 'Mick Thomson Before I Forget, tight attack, no feedback', 'Tighten low end for drop-D', 'Why is it muddy?'";
+  self.copilotPromptInput.font = [NSFont systemFontOfSize:12];
+  self.copilotPromptInput.target = self;
+  self.copilotPromptInput.action = @selector(executeCopilotDial:);
+  [content addSubview:self.copilotPromptInput];
+
+  // Suggestion chips
+  NSArray<NSString*>* chips = @[@"Mick (Before I Forget)", @"Jim Root", @"Lamb of God", @"Kill Feedback", @"Scoop Mids"];
+  CGFloat chipX = 20;
+  for (NSString* chip in chips) {
+    RigButton* cb = rigButton(content, chip, self, @selector(copilotChipClicked:), NSMakeRect(chipX, popH - 236, 96, 20));
+    cb.font = [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular];
+    chipX += 102;
+  }
+
+  // Action Buttons
+  self.copilotDialBtn = rigButton(content, @"⚡ Dial In Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 276, 140, 30));
+  self.copilotDialBtn.primary = YES;
+  self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+
+  self.copilotUndoBtn = rigButton(content, @"↩ Undo / A-B", self, @selector(undoCopilotDial:), NSMakeRect(170, popH - 276, 110, 30));
+  self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
+  self.copilotUndoBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+
+  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(290, popH - 272, 22, 22)];
+  self.copilotSpinner.style = NSProgressIndicatorStyleSpinning;
+  self.copilotSpinner.controlSize = NSControlSizeSmall;
+  self.copilotSpinner.displayedWhenStopped = NO;
+  [content addSubview:self.copilotSpinner];
+
+  // Telemetry / Output scroll view
+  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 308)];
+  scroll.hasVerticalScroller = YES;
+  scroll.borderType = NSBezelBorder;
+  scroll.autohidesScrollers = YES;
+
+  self.copilotOutputView = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
+  self.copilotOutputView.editable = NO;
+  self.copilotOutputView.selectable = YES;
+  self.copilotOutputView.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+  self.copilotOutputView.textColor = rigText();
+  self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0];
+  self.copilotOutputView.string =
+    @"Axe FX AI Copilot Ready.\n"
+    @"• Type any tone description or question above and press Enter (or click 'Dial In Tone').\n"
+    @"• The copilot analyzes your active rig state, scans your local Tone3000 library, and applies authentic dials with feedback-prevention DSP rules.";
+  scroll.documentView = self.copilotOutputView;
+  [content addSubview:scroll];
+
+  NSPopover* pop = [[NSPopover alloc] init];
+  NSViewController* vc = [[NSViewController alloc] init];
+  vc.view = content;
+  pop.contentViewController = vc;
+  pop.behavior = NSPopoverBehaviorTransient;
+  pop.contentSize = content.frame.size;
+  _state->aiCopilotPopover = pop;
+
+  NSView* anchorView = [sender isKindOfClass:[NSView class]] ? (NSView*)sender : _state->aiCopilotBtn;
+  if (!anchorView) anchorView = _state->view;
+  [pop showRelativeToRect:anchorView.bounds ofView:anchorView preferredEdge:NSRectEdgeMaxY];
+  [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
+}
+
+- (void)copilotProviderChanged:(NSPopUpButton*)sender {
+  NSString* sel = sender.titleOfSelectedItem.lowercaseString;
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+  config.provider = sel;
+
+  [self.copilotModelComboBox removeAllItems];
+  NSArray<NSString*>* defModels = [RigAICopilot defaultModelsForProvider:sel];
+  [self.copilotModelComboBox addItemsWithObjectValues:defModels];
+  self.copilotModelComboBox.stringValue = defModels.firstObject ?: @"";
+
+  if ([sel isEqualToString:@"gemini"]) {
+    config.baseURL = @"https://generativelanguage.googleapis.com/v1beta/openai";
+  } else if ([sel isEqualToString:@"openai"]) {
+    config.baseURL = @"https://api.openai.com/v1";
+  } else if ([sel isEqualToString:@"claude"]) {
+    config.baseURL = @"https://api.anthropic.com/v1/messages";
+  } else if ([sel isEqualToString:@"ollama"]) {
+    config.baseURL = @"http://localhost:11434/v1";
+  }
+  self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to inherit %@_API_KEY from environment", sel.uppercaseString];
+
+  // Retrieve live models for newly selected provider asynchronously
+  __weak NSComboBox* weakBox = self.copilotModelComboBox;
+  [[RigAICopilot sharedCopilot] fetchModelsForProvider:sel
+                                     completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
+    if (liveModels.count > 0 && weakBox) {
+      NSString* cur = weakBox.stringValue;
+      [weakBox removeAllItems];
+      [weakBox addItemsWithObjectValues:liveModels];
+      weakBox.stringValue = [liveModels containsObject:cur] ? cur : (liveModels.firstObject ?: @"");
+    }
+  }];
+}
+
+- (void)saveCopilotConfig:(id)sender {
+  (void)sender;
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+  config.provider = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
+  config.model = self.copilotModelComboBox.stringValue;
+  config.apiKey = self.copilotKeyField.stringValue;
+  NSError* err = nil;
+  if ([config saveToDisk:&err]) {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).", config.provider, config.model];
+  } else {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Failed to save config: %@", err.localizedDescription];
+  }
+}
+
+- (void)copilotChipClicked:(NSButton*)sender {
+  NSString* t = sender.title;
+  if ([t isEqualToString:@"Mick (Before I Forget)"]) {
+    self.copilotPromptInput.stringValue = @"Mick Thomson Before I Forget tone on Rivera KR7, tight low end, zero feedback, no tube screamer pedal";
+  } else if ([t isEqualToString:@"Jim Root"]) {
+    self.copilotPromptInput.stringValue = @"Jim Root signature tone on Orange #4 head, pre-amp overdrive boost, no pedal in stage 0";
+  } else if ([t isEqualToString:@"Lamb of God"]) {
+    self.copilotPromptInput.stringValue = @"Lamb of God Laid to Rest rhythm tone on Mesa Mark IV with classic V-curve graphic EQ";
+  } else if ([t isEqualToString:@"Kill Feedback"]) {
+    self.copilotPromptInput.stringValue = @"Kill runaway feedback and microphonic noise while preserving natural note sustain and attack";
+  } else if ([t isEqualToString:@"Scoop Mids"]) {
+    self.copilotPromptInput.stringValue = @"Aggressive 90s thrash scooped mids rhythm tone, razor sharp attack and punchy lows";
+  }
+  [self executeCopilotDial:nil];
+}
+
+- (void)executeCopilotDial:(id)sender {
+  (void)sender;
+  NSString* prompt = self.copilotPromptInput.stringValue;
+  if (!prompt.length) return;
+
+  // Auto-save any edited config fields first
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+  config.provider = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
+  config.model = self.copilotModelComboBox.stringValue;
+  if (self.copilotKeyField.stringValue.length > 0) {
+    config.apiKey = self.copilotKeyField.stringValue;
+  }
+  [config saveToDisk:nil];
+
+  self.copilotDialBtn.enabled = NO;
+  [self.copilotSpinner startAnimation:nil];
+  self.copilotOutputView.string = [NSString stringWithFormat:@"Querying %@ (%@)...\nAnalyzing requested tone & calculating DSP parameters...", config.provider, config.model];
+
+  __weak NAMRigUIController* weakSelf = self;
+  [[RigAICopilot sharedCopilot] processUserPrompt:prompt
+                                        withState:_state
+                                completionHandler:^(RigAICopilotResult* res, NSError* err) {
+    if (!weakSelf) return;
+    [weakSelf.copilotSpinner stopAnimation:nil];
+    weakSelf.copilotDialBtn.enabled = YES;
+
+    if (err) {
+      weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"❌ AI Error: %@", err.localizedDescription];
+      return;
+    }
+
+    NSError* applyErr = nil;
+    [[RigAICopilot sharedCopilot] applyResult:res toState:weakSelf.state saveUndoState:YES error:&applyErr];
+    weakSelf.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
+
+    NSMutableString* msg = [NSMutableString string];
+    [msg appendFormat:@"✅ TONE DIALED IN SUCCESSFULLY!\n\n"];
+    [msg appendFormat:@"SUMMARY:\n%@\n\n", res.explanation ?: @""];
+    if (res.thought.length) {
+      [msg appendFormat:@"ENGINEERING REASONING:\n%@\n\n", res.thought];
+    }
+    if (res.ampPath.length) {
+      [msg appendFormat:@"• Loaded Amp: %@\n", res.ampPath.lastPathComponent];
+    }
+    if (res.cabPath.length) {
+      [msg appendFormat:@"• Loaded Cab: %@\n", res.cabPath.lastPathComponent];
+    }
+    if (res.controls.count > 0) {
+      [msg appendString:@"• Adjusted Controls:\n"];
+      for (NSString* k in res.controls) {
+        [msg appendFormat:@"   - %@: %@\n", k, res.controls[k]];
+      }
+    }
+    weakSelf.copilotOutputView.string = msg;
+  }];
+}
+
+- (void)undoCopilotDial:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  NSError* err = nil;
+  if ([[RigAICopilot sharedCopilot] undoLastAIApplicationToState:_state error:&err]) {
+    self.copilotOutputView.string = @"↩ Previous tone restored (Undo / A-B toggle).";
+    self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
+  } else {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Undo failed: %@", err.localizedDescription];
+  }
+}
+
+@end
+
+void openAICopilotInActiveRig() {
+  RigUIState* state = RigUIState::activeState();
+  if (state && state->uiController && [state->uiController respondsToSelector:@selector(openAICopilot:)]) {
+    [state->uiController performSelector:@selector(openAICopilot:) withObject:state->aiCopilotBtn];
+  }
 }
 
 // Mode selector buttons are built inline in addToneBrowser with per-button
@@ -4232,6 +4555,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->toneTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
     state->toneTabBtn.toolTip = @"Browse, search, and download NAM captures and cabinet IRs from Tone3000.";
 
+    state->aiCopilotBtn = rigButton(headerBar, @"✨ COPILOT", state->uiController, @selector(openAICopilot:), NSZeroRect);
+    state->aiCopilotBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [[state->aiCopilotBtn.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:6] setActive:YES];
+    [[state->aiCopilotBtn.centerYAnchor constraintEqualToAnchor:headerBar.centerYAnchor] setActive:YES];
+    [[state->aiCopilotBtn.widthAnchor constraintEqualToConstant:94] setActive:YES];
+    [[state->aiCopilotBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
+    state->aiCopilotBtn.toolTip = @"AI Tone Copilot (⌘K): Describe any artist, song, or tone adjustment in plain English.";
+
     // Rig header group (tuner, input meter, preset management, A/B compare):
     // active in RIG tab, hidden in TONE3000 tab.
     NAMRigHeaderGroup* rigGroup = [[NAMRigHeaderGroup alloc] initWithFrame:NSZeroRect];
@@ -4240,7 +4571,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     rigGroup.layer.masksToBounds = NO;
     [headerBar addSubview:rigGroup];
     state->rigHeaderGroup = rigGroup;
-    [[rigGroup.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:14] setActive:YES];
+    [[rigGroup.leadingAnchor constraintEqualToAnchor:state->aiCopilotBtn.trailingAnchor constant:14] setActive:YES];
     [[rigGroup.trailingAnchor constraintEqualToAnchor:headerBar.trailingAnchor] setActive:YES];
     [[rigGroup.topAnchor constraintEqualToAnchor:headerBar.topAnchor] setActive:YES];
     [[rigGroup.bottomAnchor constraintEqualToAnchor:headerBar.bottomAnchor] setActive:YES];

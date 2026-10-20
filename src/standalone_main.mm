@@ -38,6 +38,8 @@
 #include "standalone_worker.h"
 #include "oversample_modes.h"
 #import "rig_standalone_profiler.h"
+#import "rig_local_server.h"
+#import "rig_ai_copilot.h"
 
 extern "C" const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index);
 
@@ -2303,6 +2305,13 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   [RigStandaloneProfiler profileAllPresetsWithParentWindow:_window];
 }
 
+extern void openAICopilotInActiveRig();
+
+- (void)openAICopilotAction:(id)sender {
+  (void)sender;
+  openAICopilotInActiveRig();
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   (void)notification;
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -2342,6 +2351,13 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   profAllItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
   profAllItem.target = self;
   [appMenu addItem:profAllItem];
+
+  NSMenuItem* copilotItem = [[NSMenuItem alloc] initWithTitle:@"AI Tone Copilot…"
+                                                       action:@selector(openAICopilotAction:)
+                                                keyEquivalent:@"k"];
+  copilotItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  copilotItem.target = self;
+  [appMenu addItem:copilotItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
   [appMenu addItemWithTitle:@"Quit Axe FX"
@@ -2455,6 +2471,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   [rootContent setNeedsLayout:YES];
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
+  [[RigLocalServer sharedServer] startWithPort:48920];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -2464,6 +2481,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
   (void)notification;
+  [[RigLocalServer sharedServer] stop];
   _host.reset();
 }
 

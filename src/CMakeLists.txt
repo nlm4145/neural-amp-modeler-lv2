@@ -311,6 +311,8 @@ if (APPLE)
 		rig_presets.h rig_presets.mm
 		rig_tone_api.h rig_tone_api.mm
 		rig_tone_browser.h rig_tone_browser.mm
+		rig_ai_copilot.h rig_ai_copilot.mm
+		rig_local_server.h rig_local_server.mm
 		rig_ui_state.h)
 	add_library(neural_amp_modeler_rig_ui MODULE ${RIG_UI_SOURCES})
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)

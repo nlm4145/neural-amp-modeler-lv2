@@ -28,6 +28,10 @@ static NSDictionary<NSNumber*, NSString*>* portToSymbolMap() {
   return map;
 }
 
+NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap() {
+  return portToSymbolMap();
+}
+
 static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
   static NSDictionary<NSString*, NSNumber*>* map = nil;
   static dispatch_once_t once;
@@ -39,6 +43,10 @@ static NSDictionary<NSString*, NSNumber*>* symbolToPortMap() {
     map = [inv copy];
   });
   return map;
+}
+
+NSDictionary<NSString*, NSNumber*>* rigSymbolToPortMap() {
+  return symbolToPortMap();
 }
 
 std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath, size_t stage) {
