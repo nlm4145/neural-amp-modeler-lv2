@@ -31,11 +31,14 @@
 #import "rig_widgets.h"
 #include "rig_ui_state.h"
 
+@class ToneCardItem;
+
 // Card root view: layer-styled hover + selection states. Cheap — style
 // changes only swap layer colors, no redraw of the subtree.
 @interface RigCardView : NSView
 @property(nonatomic) BOOL hovered;
 @property(nonatomic) BOOL showsSelection;
+@property(nonatomic, weak) ToneCardItem* cardItem;
 @end
 @implementation RigCardView {
   NSTrackingArea* _hoverArea;
@@ -71,9 +74,23 @@
 }
 - (void)mouseEntered:(NSEvent*)event { self.hovered = YES; }
 - (void)mouseExited:(NSEvent*)event { self.hovered = NO; }
+- (NSView *)hitTest:(NSPoint)point {
+  NSView *hit = [super hitTest:point];
+  // If clicked inside the card and not on a button (like _favButton), route to self so whitespace clicks trigger mouseDown:
+  if (hit && ![hit isKindOfClass:[NSButton class]]) {
+    return self;
+  }
+  return hit;
+}
 - (void)mouseDown:(NSEvent*)event {
   if (self.window && [self.window.firstResponder isKindOfClass:[NSText class]]) {
     [self.window makeFirstResponder:self.superview ?: self];
+  }
+  if (_cardItem && _cardItem.browserController) {
+    NSIndexPath* path = [_cardItem.browserController.collectionView indexPathForItem:_cardItem];
+    if (path) {
+      [_cardItem.browserController selectToneAtIndex:path.item load:YES];
+    }
   }
   [super mouseDown:event];
 }
@@ -196,6 +213,7 @@ static NSString* formatParameterCount(NSInteger params) {
 }
 - (void)loadView {
   RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 320, 108)];
+  v.cardItem = self;
   v.toolTip = @"Click to load or download this tone. Right-click to view it on Tone3000.";
 
   _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(8, 8, 92, 92)];

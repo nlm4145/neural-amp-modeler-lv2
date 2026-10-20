@@ -29,6 +29,9 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 // Replaces the old flat NSBox panels.
 @interface RigPanel : NSView
 @property(nonatomic) CGFloat cornerRadius;
+@property(nonatomic) BOOL showsSelection;
+@property(nonatomic, strong) NSColor* selectionBorderColor;
+@property(nonatomic, copy) void (^onClick)(void);
 @end
 
 // A flat, dark-theme rounded button. "primary" renders with an accent fill;

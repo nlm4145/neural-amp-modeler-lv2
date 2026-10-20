@@ -230,6 +230,26 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   return self;
 }
 - (void)setCornerRadius:(CGFloat)radius { _cornerRadius = radius; self.needsDisplay = YES; }
+- (void)setShowsSelection:(BOOL)showsSelection {
+  if (_showsSelection != showsSelection) {
+    _showsSelection = showsSelection;
+    self.needsDisplay = YES;
+  }
+}
+- (NSView *)hitTest:(NSPoint)point {
+  NSView *hit = [super hitTest:point];
+  // If clicked inside panel on whitespace or on an NSImageView (artwork), return self so panel receives mouseDown:
+  if (hit && ([hit isKindOfClass:[NSImageView class]] || hit == self)) {
+    return self;
+  }
+  return hit;
+}
+- (void)mouseDown:(NSEvent*)event {
+  if (_onClick) {
+    _onClick();
+  }
+  [super mouseDown:event];
+}
 - (void)drawRect:(NSRect)dirty {
   NSRect r = NSInsetRect(self.bounds, 0.5, 0.5);
   NSBezierPath* p = [NSBezierPath bezierPathWithRoundedRect:r
@@ -238,9 +258,16 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   NSGradient* g = [[NSGradient alloc] initWithStartingColor:rigPanelBottom()
                                                 endingColor:rigPanelTop()];
   [g drawInBezierPath:p angle:90.0];
-  p.lineWidth = 1.0;
-  [rigPanelBorder() setStroke];
-  [p stroke];
+  if (_showsSelection) {
+    p.lineWidth = 1.5;
+    NSColor* selColor = _selectionBorderColor ?: [NSColor colorWithSRGBRed:1.00 green:0.86 blue:0.18 alpha:1.0];
+    [selColor setStroke];
+    [p stroke];
+  } else {
+    p.lineWidth = 1.0;
+    [rigPanelBorder() setStroke];
+    [p stroke];
+  }
 }
 @end
 

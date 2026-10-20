@@ -143,6 +143,10 @@ static NSString* stageName(NSInteger stage) {
 - (void)renameSlotPreset:(NSMenuItem*)sender;
 - (void)deleteSlotPreset:(NSMenuItem*)sender;
 - (void)propagateSlotPresetToAll:(NSMenuItem*)sender;
+- (void)selectStageCard:(NSInteger)stageIndex;
+- (void)cyclePreviousStageModel;
+- (void)cycleNextStageModel;
+- (void)cycleSelectedStageModel:(NSInteger)direction;
 - (void)markPresetModified;
 @end
 
@@ -223,6 +227,7 @@ static NSString* stageName(NSInteger stage) {
       _state->setStageModels((size_t)tag, paths);
     }
     _state->sendPath((size_t)tag, chosen.fileSystemRepresentation);
+    _state->updateThumbnailForStagePath((size_t)tag, chosen);
     [self markPresetModified];
   }
 }
@@ -1649,6 +1654,7 @@ static NSString* stageName(NSInteger stage) {
   if (path.length) {
     if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
       _state->sendPath(stage, path.fileSystemRepresentation);
+      _state->updateThumbnailForStagePath(stage, path);
     } else if (stage < _state->selectedPaths.size()) {
       _state->rememberAvailablePath(stage, path.fileSystemRepresentation);
       _state->selectedPaths[stage] = path.fileSystemRepresentation;
@@ -1656,6 +1662,60 @@ static NSString* stageName(NSInteger stage) {
       _state->displayPath(stage, path.fileSystemRepresentation);
     }
     [self markPresetModified];
+  }
+}
+
+- (void)selectStageCard:(NSInteger)stageIndex {
+  if (!_state) return;
+  _state->selectedStageIndex = stageIndex;
+  for (size_t s = 0; s < _state->stageCards.size(); ++s) {
+    if (_state->stageCards[s]) {
+      _state->stageCards[s].showsSelection = ((NSInteger)s == stageIndex);
+    }
+  }
+}
+
+- (void)cyclePreviousStageModel {
+  [self cycleSelectedStageModel:-1];
+}
+
+- (void)cycleNextStageModel {
+  [self cycleSelectedStageModel:1];
+}
+
+- (void)cycleSelectedStageModel:(NSInteger)direction {
+  if (!_state) return;
+  NSInteger stage = _state->selectedStageIndex;
+  if (stage < 0 || stage >= 3) return;
+  NSPopUpButton* picker = _state->modelPickers[(size_t)stage];
+  if (!picker || picker.numberOfItems == 0) return;
+
+  NSMutableArray<NSNumber*>* validIndices = [NSMutableArray array];
+  for (NSInteger i = 0; i < picker.numberOfItems; ++i) {
+    NSMenuItem* it = [picker itemAtIndex:i];
+    if (it.representedObject && [(NSString*)it.representedObject length] > 0) {
+      [validIndices addObject:@(i)];
+    }
+  }
+  if (validIndices.count == 0) return;
+
+  NSInteger curPickerIndex = picker.indexOfSelectedItem;
+  NSInteger validPos = -1;
+  for (NSInteger i = 0; i < (NSInteger)validIndices.count; ++i) {
+    if (validIndices[(NSUInteger)i].integerValue == curPickerIndex) {
+      validPos = i;
+      break;
+    }
+  }
+
+  NSInteger newPos = validPos + direction;
+  if (newPos < 0) newPos = 0;
+  if (newPos >= (NSInteger)validIndices.count) newPos = (NSInteger)validIndices.count - 1;
+
+  NSInteger targetIndex = validIndices[(NSUInteger)newPos].integerValue;
+  if (targetIndex != curPickerIndex) {
+    [picker selectItemAtIndex:targetIndex];
+    [self stageModelChanged:picker];
   }
 }
 
@@ -4915,6 +4975,12 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
+      __weak NAMRigUIController* weakCtrl = state->uiController;
+      box.onClick = ^{
+        if (weakCtrl) {
+          [weakCtrl selectStageCard:i];
+        }
+      };
       NSArray<NSString*>* stageTips = @[
         @"Pedal stage: dynamics and input conditioning feed the selected pedal NAM model before the amp. Right-click card to remove selection.",
         @"Amp stage: the selected NAM model, drive trim, and optional output-transformer coloration form the core amp sound. Right-click card to remove selection.",

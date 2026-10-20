@@ -106,8 +106,123 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
 @implementation RigAICopilotResult
 @end
 
+@implementation RigAIPresetTask
+
+- (NSString*)displayText {
+  NSMutableString* s = [NSMutableString string];
+  if (self.status == RigAITaskStatusInProgress) {
+    [s appendFormat:@"⚡ %@ (in progress ⏳)\n", self.summary ?: @"Custom Preset"];
+    [s appendFormat:@"  • Mode: %@ (%@)\n", self.executionMode ?: @"AI", self.model ?: @"default"];
+    [s appendString:@"  • Status: Analyzing tone request, scanning Tone3000 library, dialing DSP parameters...\n"];
+    [s appendString:@"  • Preset will automatically save to Axe FX Presets upon completion."];
+  } else if (self.status == RigAITaskStatusComplete) {
+    [s appendFormat:@"⚡ %@ (complete ✅)\n", self.summary ?: @"Custom Preset"];
+    if (self.savedPresetName.length > 0) {
+      [s appendFormat:@"  • Saved to Axe FX Presets: \"%@\"\n", self.savedPresetName];
+    }
+    if (self.ampModel.length > 0) {
+      [s appendFormat:@"  • Loaded Amp: %@\n", self.ampModel];
+    }
+    if (self.cabIR.length > 0) {
+      [s appendFormat:@"  • Loaded Cab: %@\n", self.cabIR];
+    }
+    if (self.keyDials.length > 0) {
+      [s appendFormat:@"  • Key Dials: %@\n", self.keyDials];
+    }
+    if (self.explanation.length > 0) {
+      [s appendFormat:@"  • Summary: %@\n", self.explanation];
+    }
+  } else {
+    [s appendFormat:@"❌ %@ (failed)\n", self.summary ?: @"Custom Preset"];
+    [s appendFormat:@"  • Error: %@", self.errorMessage ?: @"Dial-in failed."];
+  }
+  return s;
+}
+
+@end
+
+static NSString* stripTrailingFluff(NSString* s) {
+  if (!s.length) return @"";
+  NSString* cur = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  cur = [cur stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@".,!?:;\"'()[]{}"]];
+
+  NSArray<NSString*>* fluffPhrases = @[
+    @"with tight attack and no feedback",
+    @"with punchy low end",
+    @"with aggressive attack",
+    @"with no feedback",
+    @"with subtle chorus",
+    @"with subtle delay",
+    @"with heavy reverb",
+    @"and scoop mids",
+    @"and scooped mids",
+    @"and eliminate feedback",
+    @"and no feedback",
+    @"and tight low end",
+    @"for rhythm",
+    @"for lead",
+    @"for solos",
+    @"rhythm tone",
+    @"lead tone",
+    @"guitar tone",
+    @"album tone",
+    @"studio tone",
+    @"live tone",
+    @"second solo",
+    @"first solo",
+    @"brown sound",
+    @"sound",
+    @"tone",
+    @"preset",
+    @"vibe",
+    @"style",
+    @"settings",
+    @"setting",
+    @"album"
+  ];
+
+  BOOL changed = YES;
+  while (changed) {
+    changed = NO;
+    NSString* lower = cur.lowercaseString;
+    for (NSString* fluff in fluffPhrases) {
+      if ([lower hasSuffix:fluff]) {
+        NSUInteger newLen = cur.length - fluff.length;
+        cur = [[cur substringToIndex:newLen] stringByTrimmingCharactersInSet:
+               [NSCharacterSet characterSetWithCharactersInString:@" \t\r\n.,!?:;\"'()-/"]];
+        changed = YES;
+        break;
+      }
+    }
+  }
+  return cur;
+}
+
+static NSString* titleCasedString(NSString* s) {
+  if (!s.length) return @"";
+  NSArray<NSString*>* words = [s componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  NSMutableArray<NSString*>* titleWords = [NSMutableArray arrayWithCapacity:words.count];
+  NSSet<NSString*>* lowerWords = [NSSet setWithObjects:@"a", @"an", @"the", @"and", @"but", @"or", @"for", @"nor", @"on", @"at", @"to", @"from", @"by", @"of", @"in", nil];
+  
+  for (NSUInteger i = 0; i < words.count; ++i) {
+    NSString* w = words[i];
+    if (!w.length) continue;
+    NSString* lw = w.lowercaseString;
+    if ([w isEqualToString:w.uppercaseString] && w.length > 1 && ![lowerWords containsObject:lw]) {
+      [titleWords addObject:w];
+    } else if (i > 0 && [lowerWords containsObject:lw]) {
+      [titleWords addObject:lw];
+    } else {
+      [titleWords addObject:[lw capitalizedString]];
+    }
+  }
+  return [titleWords componentsJoinedByString:@" "];
+}
+
 @interface RigAICopilot () {
   RigPreset* _lastUndoSnapshot;
+  NSMutableArray<RigAIPresetTask*>* _sessionTasks;
+  RigAIPresetTask* _currentTask;
 }
 @property(nonatomic, assign) BOOL isProcessing;
 @end
@@ -126,8 +241,247 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
 - (instancetype)init {
   if ((self = [super init])) {
     _config = [RigAIConfig loadFromDisk];
+    _sessionTasks = [NSMutableArray array];
   }
   return self;
+}
+
+- (NSArray<RigAIPresetTask*>*)sessionTasks {
+  @synchronized(self) {
+    return [_sessionTasks copy];
+  }
+}
+
+- (RigAIPresetTask*)currentTask {
+  @synchronized(self) {
+    return _currentTask;
+  }
+}
+
+- (RigAIPresetTask*)beginPresetTaskForPrompt:(NSString*)prompt {
+  RigAIConfig* cfg = self.config;
+  NSString* provider = cfg.provider.lowercaseString;
+  NSString* apiKey = [cfg effectiveApiKey];
+  NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:provider];
+
+  RigAIPresetTask* task = [[RigAIPresetTask alloc] init];
+  task.taskId = [[NSUUID UUID] UUIDString];
+  task.prompt = prompt;
+  task.summary = [RigAICopilot summarizePromptToPresetName:prompt];
+  task.status = RigAITaskStatusInProgress;
+  task.provider = cfg.provider;
+  task.model = cfg.model ?: @"";
+  if (apiKey.length == 0 && localCLI) {
+    task.executionMode = [NSString stringWithFormat:@"Local %@", localCLI.lastPathComponent];
+  } else {
+    task.executionMode = [NSString stringWithFormat:@"Cloud %@", cfg.provider.capitalizedString];
+  }
+  task.timestamp = [NSDate date];
+
+  @synchronized(self) {
+    if (!_sessionTasks) _sessionTasks = [NSMutableArray array];
+    [_sessionTasks insertObject:task atIndex:0];
+    _currentTask = task;
+  }
+  return task;
+}
+
+- (void)completeCurrentTaskWithResult:(RigAICopilotResult*)result savedPresetName:(nullable NSString*)savedPresetName {
+  @synchronized(self) {
+    if (_currentTask) {
+      if (result.presetName.length > 0) {
+        _currentTask.summary = result.presetName;
+      }
+      _currentTask.savedPresetName = savedPresetName ?: _currentTask.summary;
+      _currentTask.ampModel = result.ampPath.lastPathComponent;
+      _currentTask.cabIR = result.cabPath.lastPathComponent;
+      _currentTask.explanation = result.explanation;
+
+      // Extract key dials summary
+      NSMutableArray<NSString*>* parts = [NSMutableArray array];
+      NSDictionary<NSString*, NSNumber*>* c = result.controls;
+      if (c[@"bass"]) [parts addObject:[NSString stringWithFormat:@"Bass %.1f", c[@"bass"].floatValue]];
+      if (c[@"mid"]) [parts addObject:[NSString stringWithFormat:@"Mid %.1f", c[@"mid"].floatValue]];
+      if (c[@"treble"]) [parts addObject:[NSString stringWithFormat:@"Treble %.1f", c[@"treble"].floatValue]];
+      if (c[@"presence"]) [parts addObject:[NSString stringWithFormat:@"Pres %.1f", c[@"presence"].floatValue]];
+      if (c[@"gate_threshold"]) [parts addObject:[NSString stringWithFormat:@"Gate %.0fdB", c[@"gate_threshold"].floatValue]];
+      if (c[@"od_enabled"].boolValue) [parts addObject:@"OD Boost on"];
+      if (c[@"compressor_enabled"].boolValue) [parts addObject:@"Comp on"];
+      if (c[@"delay_mix"].floatValue > 0.05f) [parts addObject:[NSString stringWithFormat:@"Delay %.0f%%", c[@"delay_mix"].floatValue * 100]];
+      if (c[@"reverb_mix"].floatValue > 0.05f) [parts addObject:[NSString stringWithFormat:@"Reverb %.0f%%", c[@"reverb_mix"].floatValue * 100]];
+      _currentTask.keyDials = [parts componentsJoinedByString:@", "];
+
+      _currentTask.status = RigAITaskStatusComplete;
+      _currentTask = nil;
+    }
+  }
+}
+
+- (void)failCurrentTaskWithError:(NSError*)error {
+  @synchronized(self) {
+    if (_currentTask) {
+      _currentTask.status = RigAITaskStatusFailed;
+      _currentTask.errorMessage = error.localizedDescription ?: @"Unknown error occurred.";
+      _currentTask = nil;
+    }
+  }
+}
+
+- (NSString*)sessionTasksDisplayText {
+  @synchronized(self) {
+    if (_sessionTasks.count == 0) {
+      return
+        @"Ready to dial presets.\n\n"
+        @"• Type any artist, song, or tone above (e.g. \"Metallica - Master of Puppets\", \"Lamb of God - Redneck\", \"Van Halen - 1984\") and click 'Dial In Tone'.\n"
+        @"• The AI will analyze your rig, match Tone3000 amp & cab captures, calculate authentic DSP dials, and automatically save the preset to your Axe FX Presets library.";
+    }
+
+    NSMutableString* text = [NSMutableString string];
+    for (NSUInteger i = 0; i < _sessionTasks.count; ++i) {
+      RigAIPresetTask* t = _sessionTasks[i];
+      if (i > 0) {
+        [text appendString:@"\n────────────────────────────────────────────────────────────\n\n"];
+      }
+      [text appendString:[t displayText]];
+    }
+    return text;
+  }
+}
+
+- (void)clearSessionTasks {
+  @synchronized(self) {
+    [_sessionTasks removeAllObjects];
+    _currentTask = nil;
+  }
+}
+
++ (NSString*)summarizePromptToPresetName:(NSString*)rawPrompt {
+  if (!rawPrompt.length) return @"AI Custom Tone";
+
+  NSString* trimmed = [rawPrompt stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  trimmed = [trimmed stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\"'"]];
+
+  NSArray<NSString*>* prefixes = @[
+    @"please dial in a tone like",
+    @"please dial in a tone of",
+    @"please dial in a",
+    @"please dial in",
+    @"can you dial in a tone like",
+    @"can you dial in",
+    @"can you give me that tone from",
+    @"can you give me that",
+    @"can you give me a",
+    @"can you give me",
+    @"give me that tone from",
+    @"give me that",
+    @"give me a tone like",
+    @"give me a",
+    @"give me",
+    @"gimme that",
+    @"gimme a",
+    @"gimme",
+    @"i want a tone like",
+    @"i want that",
+    @"i want a",
+    @"i want",
+    @"dial in a tone like",
+    @"dial in that",
+    @"dial in a",
+    @"dial in",
+    @"make it sound like",
+    @"sound like",
+    @"tone like",
+    @"tone of",
+    @"tone for",
+    @"preset for",
+    @"guitar tone for",
+    @"guitar sound like",
+    @"how about"
+  ];
+  
+  NSString* clean = trimmed;
+  for (NSString* pfx in prefixes) {
+    if ([clean.lowercaseString hasPrefix:pfx]) {
+      clean = [[clean substringFromIndex:pfx.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      break;
+    }
+  }
+
+  // 1. Explicit separator " - ", " : ", " / "
+  NSArray<NSString*>* seps = @[@" - ", @" : ", @": ", @" / "];
+  for (NSString* sep in seps) {
+    NSRange r = [clean rangeOfString:sep];
+    if (r.location != NSNotFound) {
+      NSString* p1 = [[clean substringToIndex:r.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      NSString* p2 = [[clean substringFromIndex:r.location + r.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      p2 = stripTrailingFluff(p2);
+      if (p1.length > 0 && p2.length > 0) {
+        return [NSString stringWithFormat:@"%@ - %@", titleCasedString(p1), titleCasedString(p2)];
+      }
+    }
+  }
+
+  // 2. " by "
+  NSRange byRange = [clean rangeOfString:@" by " options:NSCaseInsensitiveSearch];
+  if (byRange.location != NSNotFound) {
+    NSString* song = [[clean substringToIndex:byRange.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString* artist = [[clean substringFromIndex:byRange.location + byRange.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    song = stripTrailingFluff(song);
+    artist = stripTrailingFluff(artist);
+    if (song.length > 0 && artist.length > 0) {
+      return [NSString stringWithFormat:@"%@ - %@", titleCasedString(artist), titleCasedString(song)];
+    }
+  }
+
+  // 3. Known artist match
+  static NSArray<NSString*>* sKnownArtists = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    sKnownArtists = @[
+      @"Metallica", @"Megadeth", @"Slayer", @"Anthrax", @"Pantera", @"Lamb of God",
+      @"Iron Maiden", @"Judas Priest", @"Black Sabbath", @"Led Zeppelin", @"Pink Floyd",
+      @"Van Halen", @"AC/DC", @"Guns N' Roses", @"Deftones", @"Slipknot", @"Jim Root",
+      @"Mick Thomson", @"Avenged Sevenfold", @"Alice in Chains", @"Soundgarden", @"Nirvana",
+      @"Tool", @"Rammstein", @"Meshuggah", @"Periphery", @"Polyphia", @"Animals as Leaders",
+      @"Gojira", @"Dream Theater", @"Opeth", @"Stevie Ray Vaughan", @"SRV", @"Jimi Hendrix",
+      @"Eric Clapton", @"B.B. King", @"Gary Moore", @"John Mayer", @"Joe Bonamassa",
+      @"Slash", @"Ozzy Osbourne", @"Dio", @"Motörhead", @"System of a Down", @"Korn",
+      @"Disturbed", @"Killswitch Engage", @"Trivium", @"Arch Enemy", @"In Flames",
+      @"Children of Bodom", @"Mastodon", @"Sepultura", @"Kreator", @"Testament",
+      @"Cannibal Corpse", @"Death", @"Ghost", @"Dire Straits", @"The Police", @"Queen",
+      @"The Beatles", @"The Rolling Stones", @"The Who", @"Rush", @"Yes", @"Foo Fighters",
+      @"Red Hot Chili Peppers", @"Green Day", @"Blink-182", @"Paramore", @"Radiohead",
+      @"Muse", @"Smashing Pumpkins", @"Weezer", @"Rage Against the Machine", @"Audioslave",
+      @"Queens of the Stone Age", @"Arctic Monkeys", @"The White Stripes", @"Steve Vai",
+      @"Joe Satriani", @"Yngwie Malmsteen", @"Randy Rhoads", @"Zakk Wylde", @"Dimebag Darrell",
+      @"Buckethead", @"Paul Gilbert", @"Andy Timmons", @"Mateus Asato", @"Tim Henson",
+      @"Tesseract", @"Monuments", @"Intervals", @"Plini", @"Chon"
+    ];
+  });
+
+  NSString* lowerClean = clean.lowercaseString;
+  for (NSString* artist in sKnownArtists) {
+    NSString* lArtist = artist.lowercaseString;
+    NSRange artistRange = [lowerClean rangeOfString:lArtist];
+    if (artistRange.location != NSNotFound) {
+      NSString* before = [[clean substringToIndex:artistRange.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      NSString* after = [[clean substringFromIndex:artistRange.location + artistRange.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      NSString* remainder = (after.length > 0) ? after : before;
+      remainder = stripTrailingFluff(remainder);
+      if (remainder.length > 0) {
+        return [NSString stringWithFormat:@"%@ - %@", artist, titleCasedString(remainder)];
+      } else {
+        return [NSString stringWithFormat:@"%@ Tone", artist];
+      }
+    }
+  }
+
+  // 4. Fallback: Clean up prompt
+  NSString* stripped = stripTrailingFluff(clean);
+  if (stripped.length > 36) {
+    stripped = [stripped substringToIndex:36];
+  }
+  return titleCasedString(stripped);
 }
 
 - (BOOL)canUndo {
@@ -227,6 +581,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
     @"You MUST respond with a valid JSON object only (no outer markdown conversational fluff, or wrap only in ```json ... ```). "
     @"The JSON schema must match:\n"
     @"{\n"
+    @"  \"preset_name\": \"Concise preset title formatted as '<Artist> - <Song>' or '<Artist> - <Album>' (e.g. 'Metallica - Master of Puppets', 'Lamb of God - Redneck', 'Van Halen - 1984', or 'Modern High-Gain Metal Rhythm')\",\n"
     @"  \"thought\": \"Detailed audio engineering reasoning on frequency curves, gear choices, feedback prevention, and gain staging\",\n"
     @"  \"explanation\": \"Friendly 1-3 sentence summary explaining to the player what was tuned and why it achieves their requested tone\",\n"
     @"  \"amp_model\": \"Filename of the chosen amp capture from the library (or empty if unchanged)\",\n"
@@ -310,6 +665,10 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   }
 
   RigAICopilotResult* res = [[RigAICopilotResult alloc] init];
+  NSString* pName = resultJson[@"preset_name"] ?: resultJson[@"preset_title"];
+  if ([pName isKindOfClass:[NSString class]] && pName.length > 0) {
+    res.presetName = [pName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  }
   res.thought = resultJson[@"thought"] ?: @"";
   res.explanation = resultJson[@"explanation"] ?: @"Tone dialed in by AI Tone Tuning.";
   res.controls = [resultJson[@"controls"] isKindOfClass:[NSDictionary class]] ? resultJson[@"controls"] : @{};
@@ -423,12 +782,18 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:provider];
 
   if (!isOllama && apiKey.length == 0 && !localCLI) {
+    NSString* msg = [NSString stringWithFormat:@"API key not set for '%@', and no local %@ tool was detected (e.g. Antigravity 'agy', Claude CLI, or Codex). Enter an API key in AI Settings or install Antigravity/Claude/Codex.",
+                     cfg.provider, cfg.provider.capitalizedString];
+    NSError* keyErr = [NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey: msg}];
+    [self failCurrentTaskWithError:keyErr];
     if (completionHandler) {
-      NSString* msg = [NSString stringWithFormat:@"API key not set for '%@', and no local %@ tool was detected (e.g. Antigravity 'agy', Claude CLI, or Codex). Enter an API key in AI Settings or install Antigravity/Claude/Codex.",
-                       cfg.provider, cfg.provider.capitalizedString];
-      completionHandler(nil, [NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey: msg}]);
+      completionHandler(nil, keyErr);
     }
     return;
+  }
+
+  if (!_currentTask || ![_currentTask.prompt isEqualToString:userPrompt]) {
+    [self beginPresetTaskForPrompt:userPrompt];
   }
 
   self.isProcessing = YES;
@@ -623,6 +988,7 @@ static NSString* findModelInDirectory(NSString* dir, NSString* target) {
       }
       state->setStageModels(1, modelPaths);
       state->sendPath(1, cppPath.c_str());
+      state->updateThumbnailForStagePath(1, fullPath);
     }
   }
 
@@ -636,6 +1002,7 @@ static NSString* findModelInDirectory(NSString* dir, NSString* target) {
     if (fullPath) {
       std::string cppPath = fullPath.fileSystemRepresentation;
       state->sendPath(2, cppPath.c_str());
+      state->updateThumbnailForStagePath(2, fullPath);
     }
   }
 

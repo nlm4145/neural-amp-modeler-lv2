@@ -451,6 +451,7 @@ struct RigUIState {
   std::array<__strong NSButton*, 4> powerButtons{};
   std::array<__strong NSImageView*, 3> stageImages{};
   std::array<__strong RigPanel*, 3> stageCards{};
+  NSInteger selectedStageIndex = -1;
   std::array<__strong NSTextField*, 3> stageHeaderArchBadges{};
   std::array<__strong NSTextField*, 4> stageArchBadges{};
   // auto-cab is always on — no toggle or status label needed
@@ -491,6 +492,12 @@ struct RigUIState {
       if (rigHeaderGroup) rigHeaderGroup.hidden = (tab != 0);
       if (rigPane) rigPane.hidden = (tab != 0);
       if (tonePane) tonePane.hidden = (tab != 1);
+      if (tab == 1) {
+        selectedStageIndex = -1;
+        for (size_t s = 0; s < stageCards.size(); ++s) {
+          if (stageCards[s]) stageCards[s].showsSelection = NO;
+        }
+      }
     });
   }
 
@@ -819,7 +826,24 @@ struct RigUIState {
               return nil;
             }
           } else {
-            // In RIG tab: Left / Right arrows cycle rig presets
+            // In RIG tab:
+            // If a stage card (e.g. Amp Card) is selected, arrow keys cycle its models!
+            if (selfState->selectedStageIndex >= 0) {
+              id ctrl = (id)selfState->uiController;
+              if (kc == 123 || kc == 126 || ch == NSLeftArrowFunctionKey || ch == NSUpArrowFunctionKey) {
+                if ([ctrl respondsToSelector:@selector(cyclePreviousStageModel)]) {
+                  [ctrl performSelector:@selector(cyclePreviousStageModel)];
+                  return nil;
+                }
+              }
+              if (kc == 124 || kc == 125 || ch == NSRightArrowFunctionKey || ch == NSDownArrowFunctionKey) {
+                if ([ctrl respondsToSelector:@selector(cycleNextStageModel)]) {
+                  [ctrl performSelector:@selector(cycleNextStageModel)];
+                  return nil;
+                }
+              }
+            }
+            // Otherwise, Left / Right arrows cycle rig presets
             if (kc == 123 || ch == NSLeftArrowFunctionKey) {
               [(id)selfState->uiController prevPresetClicked:nil];
               return nil;
@@ -1925,6 +1949,66 @@ struct RigUIState {
         });
       }] resume];
     }
+  }
+
+  // Automatically resolves and applies the gear thumbnail for a stage from its model path.
+  void updateThumbnailForStagePath(size_t stage, NSString* modelPath) {
+    if (stage >= stageImages.size()) return;
+    if (!modelPath.length) {
+      setStageThumb(stage, nil, 0, nil);
+      return;
+    }
+
+    NSString* folder = [modelPath stringByDeletingLastPathComponent];
+    NSFileManager* fm = [NSFileManager defaultManager];
+
+    // 1. Check if folder has a Tone3000 manifest
+    NSString* manifestPath = [folder stringByAppendingPathComponent:@"_tone3000.json"];
+    if ([fm fileExistsAtPath:manifestPath]) {
+      NSData* data = [NSData dataWithContentsOfFile:manifestPath];
+      if (data) {
+        NSDictionary* root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary* toneDict = [root[@"tone"] isKindOfClass:[NSDictionary class]] ? root[@"tone"] : nil;
+        if (toneDict) {
+          NSInteger toneId = [toneDict[@"id"] respondsToSelector:@selector(integerValue)] ? [toneDict[@"id"] integerValue] : 0;
+          NSArray* images = [toneDict[@"images"] isKindOfClass:[NSArray class]] ? toneDict[@"images"] : nil;
+          NSString* imgURL = (images.count > 0 && [images[0] isKindOfClass:[NSString class]]) ? images[0] : nil;
+
+          NSString* prefix = stage == 0 ? @"pedal" : (stage == 2 || stage == 3 ? @"cab" : @"amp");
+          NSString* cacheDir = [@"~/Library/Caches/NAM Rig/NAM Rig/Tone3000 State Artwork" stringByExpandingTildeInPath];
+          NSString* cachedArtwork = [cacheDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%ld.png", prefix, (long)toneId]];
+          NSString* artworkPath = [fm fileExistsAtPath:cachedArtwork] ? cachedArtwork : nil;
+
+          setStageThumb(stage, artworkPath, toneId, imgURL);
+          return;
+        }
+      }
+    }
+
+    // 2. Check local sibling images in the same folder
+    NSString* baseWithoutExt = [modelPath stringByDeletingPathExtension];
+    NSArray<NSString*>* imageExtensions = @[@"png", @"jpg", @"jpeg", @"webp"];
+    for (NSString* ext in imageExtensions) {
+      NSString* directImg = [baseWithoutExt stringByAppendingPathExtension:ext];
+      if ([fm fileExistsAtPath:directImg]) {
+        setStageThumb(stage, directImg, 0, nil);
+        return;
+      }
+    }
+
+    NSArray<NSString*>* genericNames = @[@"artwork", @"image", @"cover", @"thumb", @"thumbnail"];
+    for (NSString* gen in genericNames) {
+      for (NSString* ext in imageExtensions) {
+        NSString* genPath = [folder stringByAppendingPathComponent:[gen stringByAppendingPathExtension:ext]];
+        if ([fm fileExistsAtPath:genPath]) {
+          setStageThumb(stage, genPath, 0, nil);
+          return;
+        }
+      }
+    }
+
+    // 3. Fallback: Revert to clean placeholder icon so stale/unrelated amp artwork is cleared
+    setStageThumb(stage, nil, 0, nil);
   }
 
   void cancelTransformerEditing() {

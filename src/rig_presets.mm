@@ -592,7 +592,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       }
       state->setStageModels(s, modelPaths);
       state->sendPath(s, path.c_str());
-      if (img.length() || toneId > 0) {
+      NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+      state->updateThumbnailForStagePath(s, nsPath);
+      if (state->selectedToneIds[s] <= 0 && state->selectedImageURLs[s].empty() && (img.length() || toneId > 0)) {
         state->setStageThumb(s, nil, toneId, [NSString stringWithUTF8String:img.c_str()]);
       }
     } else {
