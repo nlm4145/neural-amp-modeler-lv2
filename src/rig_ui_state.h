@@ -439,6 +439,7 @@ struct RigUIState {
   // auto-cab is always on — no toggle or status label needed
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
   std::array<__strong NSTextField*, kRigKnobCount> valueLabels{};
+  __strong NSView* pedalInputKnobCell = nil;
   // Editable knob value boxes: while the user is typing in one, host-driven
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
@@ -1677,6 +1678,25 @@ struct RigUIState {
             behavior, info.detailSummary, path];
   }
 
+  void updatePedalInputVisibility(bool visible) {
+    auto alive = this->isAlive;
+    auto block = ^{
+      if (!alive || !*alive) return;
+      if (pedalInputKnobCell) {
+        pedalInputKnobCell.hidden = !visible;
+        if (pedalInputKnobCell.superview) {
+          [pedalInputKnobCell.superview layoutSubtreeIfNeeded];
+        }
+      }
+      if (!visible) {
+        sendControl(4, 0.0f);
+        updateControl(4, 0.0f);
+      }
+    };
+    if ([NSThread isMainThread]) block();
+    else dispatch_async(dispatch_get_main_queue(), block);
+  }
+
   void displayPath(size_t stage, const char* path) {
     if (stage >= modelPickers.size() || !modelPickers[stage]) return;
     const std::string copy = path ? path : "";
@@ -1689,6 +1709,9 @@ struct RigUIState {
       if (stage == 2 && alive && *alive) {
         speakerCabPath = copy;
         refreshSpeakerVisualizer();
+      }
+      if (stage == 0 && alive && *alive) {
+        updatePedalInputVisibility(!copy.empty());
       }
       if (copy.empty()) {
         [picker removeAllItems];

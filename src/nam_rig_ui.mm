@@ -4562,13 +4562,26 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     RigPanel* tileBoxes[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
-    // Pedal tile displays Gate threshold and release; Input level trim is fixed at 0 dB
-    // and compressor amount lives in the dedicated Pre-Amp Compressor tone card.
-    const size_t groupSlots[3][6] = {{0, 1, 0, 0, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 0, 0, 0, 0, 0}};
-    const size_t groupCounts[3] = {2, 6, 1};
+    // Pedal tile displays Gate threshold and release, plus Input level trim when a pedal model is active.
+    const size_t groupSlots[3][6] = {{0, 1, 2, 0, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 0, 0, 0, 0, 0}};
+    const size_t groupCounts[3] = {3, 6, 1};
+
+    const CGFloat groupPad = 4.0;
+    const CGFloat knobSide = 64.0;
 
     for (size_t g = 0; g < 3; ++g) {
-      NSView* group = [[NSView alloc] initWithFrame:NSZeroRect];
+      NSView* group = nil;
+      NSStackView* pedalStack = nil;
+      if (g == 0) {
+        pedalStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
+        pedalStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        pedalStack.distribution = NSStackViewDistributionFillEqually;
+        pedalStack.spacing = 0.0;
+        pedalStack.edgeInsets = NSEdgeInsetsMake(0, groupPad, 0, groupPad);
+        group = pedalStack;
+      } else {
+        group = [[NSView alloc] initWithFrame:NSZeroRect];
+      }
       group.translatesAutoresizingMaskIntoConstraints = NO;
       [rigPane addSubview:group];
       knobGroups[g] = group;
@@ -4579,27 +4592,36 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       // 64pt. Cell width must fit the 70pt value box, so each 6-knob group
       // gets 1/6 of its tile width; spacing only separates groups, never
       // cells — knobs can't drift together no matter how wide the window is.
-      // The 2-knob pedal group keeps roomier cells for the same knob size.
-      const CGFloat groupPad = 4.0;
-      const CGFloat knobSide = 64.0;
+      // The pedal group uses an NSStackView: 2 knobs when no pedal model is chosen,
+      // revealing Input trim when a pedal model is active.
       NSView* prev = nil;
       for (size_t gi = 0; gi < groupCounts[g]; ++gi) {
         const size_t slot = groupSlots[g][gi];
         const size_t k = kRigKnobDisplayOrder[slot];
         NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
         cell.translatesAutoresizingMaskIntoConstraints = NO;
-        [group addSubview:cell];
-        [[cell.topAnchor constraintEqualToAnchor:group.topAnchor] setActive:YES];
-        [[cell.bottomAnchor constraintEqualToAnchor:group.bottomAnchor] setActive:YES];
-        if (prev) {
-          [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:0] setActive:YES];
-          [[cell.widthAnchor constraintEqualToAnchor:prev.widthAnchor] setActive:YES];
+        if (pedalStack) {
+          [pedalStack addArrangedSubview:cell];
+          [[cell.topAnchor constraintEqualToAnchor:pedalStack.topAnchor] setActive:YES];
+          [[cell.bottomAnchor constraintEqualToAnchor:pedalStack.bottomAnchor] setActive:YES];
+          if (kRigKnobPorts[k] == 4) {
+            state->pedalInputKnobCell = cell;
+            cell.hidden = state->selectedPaths[0].empty() ? YES : NO;
+          }
         } else {
-          [[cell.leadingAnchor constraintEqualToAnchor:group.leadingAnchor constant:groupPad] setActive:YES];
+          [group addSubview:cell];
+          [[cell.topAnchor constraintEqualToAnchor:group.topAnchor] setActive:YES];
+          [[cell.bottomAnchor constraintEqualToAnchor:group.bottomAnchor] setActive:YES];
+          if (prev) {
+            [[cell.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:0] setActive:YES];
+            [[cell.widthAnchor constraintEqualToAnchor:prev.widthAnchor] setActive:YES];
+          } else {
+            [[cell.leadingAnchor constraintEqualToAnchor:group.leadingAnchor constant:groupPad] setActive:YES];
+          }
+          prev = cell;
+          if (gi == groupCounts[g] - 1)
+            [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor constant:-groupPad] setActive:YES];
         }
-        prev = cell;
-        if (gi == groupCounts[g] - 1)
-          [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor constant:-groupPad] setActive:YES];
 
         state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k],
                                   mins[k], maxes[k],

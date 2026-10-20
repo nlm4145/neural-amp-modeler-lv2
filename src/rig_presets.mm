@@ -441,7 +441,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
     if (port == 4) {
-      p->_controls[4] = 0.0f;
+      if (!state->selectedPaths[0].empty()) {
+        const float val = state->knobs[k] ? state->knobs[k].floatValue : 0.0f;
+        p->_controls[4] = val;
+      } else {
+        p->_controls[4] = 0.0f;
+      }
       continue;
     }
     const float val = state->knobs[k] ? state->knobs[k].floatValue : kRigKnobDefaults[k];
@@ -545,8 +550,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
     if (port == 4) {
-      state->sendControl(4, 0.0f);
-      state->updateControl(4, 0.0f);
+      const bool hasPedal = !_stages[0].path.empty();
+      auto it = _controls.find(port);
+      const float val = (hasPedal && it != _controls.end()) ? it->second : 0.0f;
+      state->sendControl(4, val);
+      state->updateControl(4, val);
       continue;
     }
     auto it = _controls.find(port);
