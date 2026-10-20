@@ -150,9 +150,10 @@ static NSString* stageName(NSInteger stage) {
 - (void)openAICopilot:(id)sender;
 - (void)executeCopilotDial:(id)sender;
 - (void)undoCopilotDial:(id)sender;
-- (void)copilotChipClicked:(NSButton*)sender;
 - (void)saveCopilotConfig:(id)sender;
 - (void)copilotProviderChanged:(NSPopUpButton*)sender;
+- (void)refreshCopilotModelsAction:(id)sender;
+- (void)copilotKeyFieldAction:(id)sender;
 @end
 
 @implementation NAMRigUIController
@@ -2167,38 +2168,29 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [content addSubview:pLbl];
 
   self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 208, popW - 40, 48)];
-  self.copilotPromptInput.placeholderString = @"e.g. 'Mick Thomson Before I Forget, tight attack, no feedback', 'Tighten low end for drop-D', 'Why is it muddy?'";
+  self.copilotPromptInput.placeholderString = @"e.g. 'Tight high-gain metal rhythm with punchy low end', 'Warm vintage blues lead with subtle delay', 'Eliminate feedback and rumble'";
   self.copilotPromptInput.font = [NSFont systemFontOfSize:12];
   self.copilotPromptInput.target = self;
   self.copilotPromptInput.action = @selector(executeCopilotDial:);
   [content addSubview:self.copilotPromptInput];
 
-  // Suggestion chips
-  NSArray<NSString*>* chips = @[@"Mick (Before I Forget)", @"Jim Root", @"Lamb of God", @"Kill Feedback", @"Scoop Mids"];
-  CGFloat chipX = 20;
-  for (NSString* chip in chips) {
-    RigButton* cb = rigButton(content, chip, self, @selector(copilotChipClicked:), NSMakeRect(chipX, popH - 236, 96, 20));
-    cb.font = [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular];
-    chipX += 102;
-  }
-
   // Action Buttons
-  self.copilotDialBtn = rigButton(content, @"⚡ Dial In Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 276, 140, 30));
+  self.copilotDialBtn = rigButton(content, @"⚡ Dial In Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 250, 140, 30));
   self.copilotDialBtn.primary = YES;
   self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
 
-  self.copilotUndoBtn = rigButton(content, @"↩ Undo / A-B", self, @selector(undoCopilotDial:), NSMakeRect(170, popH - 276, 110, 30));
+  self.copilotUndoBtn = rigButton(content, @"↩ Undo / A-B", self, @selector(undoCopilotDial:), NSMakeRect(170, popH - 250, 110, 30));
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
   self.copilotUndoBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
 
-  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(290, popH - 272, 22, 22)];
+  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(290, popH - 246, 22, 22)];
   self.copilotSpinner.style = NSProgressIndicatorStyleSpinning;
   self.copilotSpinner.controlSize = NSControlSizeSmall;
   self.copilotSpinner.displayedWhenStopped = NO;
   [content addSubview:self.copilotSpinner];
 
   // Telemetry / Output scroll view
-  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 308)];
+  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 280)];
   scroll.hasVerticalScroller = YES;
   scroll.borderType = NSBezelBorder;
   scroll.autohidesScrollers = YES;
@@ -2293,22 +2285,6 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   } else {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Failed to save config: %@", err.localizedDescription];
   }
-}
-
-- (void)copilotChipClicked:(NSButton*)sender {
-  NSString* t = sender.title;
-  if ([t isEqualToString:@"Mick (Before I Forget)"]) {
-    self.copilotPromptInput.stringValue = @"Mick Thomson Before I Forget tone on Rivera KR7, tight low end, zero feedback, no tube screamer pedal";
-  } else if ([t isEqualToString:@"Jim Root"]) {
-    self.copilotPromptInput.stringValue = @"Jim Root signature tone on Orange #4 head, pre-amp overdrive boost, no pedal in stage 0";
-  } else if ([t isEqualToString:@"Lamb of God"]) {
-    self.copilotPromptInput.stringValue = @"Lamb of God Laid to Rest rhythm tone on Mesa Mark IV with classic V-curve graphic EQ";
-  } else if ([t isEqualToString:@"Kill Feedback"]) {
-    self.copilotPromptInput.stringValue = @"Kill runaway feedback and microphonic noise while preserving natural note sustain and attack";
-  } else if ([t isEqualToString:@"Scoop Mids"]) {
-    self.copilotPromptInput.stringValue = @"Aggressive 90s thrash scooped mids rhythm tone, razor sharp attack and punchy lows";
-  }
-  [self executeCopilotDial:nil];
 }
 
 - (void)executeCopilotDial:(id)sender {
