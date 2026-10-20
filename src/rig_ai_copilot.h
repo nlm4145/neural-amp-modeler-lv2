@@ -67,6 +67,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)fetchModelsForProvider:(NSString*)provider
              completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler;
 
+- (void)fetchModelsForProvider:(NSString*)provider
+                        apiKey:(nullable NSString*)apiKey
+             completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler;
+
 @end
 
 NS_ASSUME_NONNULL_END

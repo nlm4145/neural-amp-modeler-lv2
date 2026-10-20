@@ -30,7 +30,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   RigAIConfig* c = [[RigAIConfig alloc] init];
   c.provider = @"gemini";
   c.apiKey = @"";
-  c.model = @"gemini-2.5-flash";
+  c.model = @"gemini-3.8-flash";
   c.baseURL = @"https://generativelanguage.googleapis.com/v1beta/openai";
   c.temperature = 0.2f;
   return c;
@@ -53,7 +53,10 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   RigAIConfig* c = [[RigAIConfig alloc] init];
   c.provider = dict[@"provider"] ?: @"gemini";
   c.apiKey = dict[@"api_key"] ?: @"";
-  c.model = dict[@"model"] ?: @"gemini-2.5-flash";
+  c.model = dict[@"model"] ?: @"gemini-3.8-flash";
+  if ([c.model isEqualToString:@"gemini-2.5-flash"]) {
+    c.model = @"gemini-3.8-flash";
+  }
   c.baseURL = dict[@"base_url"] ?: @"https://generativelanguage.googleapis.com/v1beta/openai";
   NSNumber* temp = dict[@"temperature"];
   c.temperature = temp ? temp.floatValue : 0.2f;
@@ -64,7 +67,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   NSDictionary* dict = @{
     @"provider": self.provider ?: @"gemini",
     @"api_key": self.apiKey ?: @"",
-    @"model": self.model ?: @"gemini-2.5-flash",
+    @"model": self.model ?: @"gemini-3.8-flash",
     @"base_url": self.baseURL ?: @"",
     @"temperature": @(self.temperature)
   };
@@ -304,12 +307,12 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
     [request setValue:apiKey forHTTPHeaderField:@"x-api-key"];
     [request setValue:@"2023-06-01" forHTTPHeaderField:@"anthropic-version"];
     reqBody = @{
-      @"model": cfg.model ?: @"claude-3-7-sonnet-20250219",
+      @"model": cfg.model ?: @"claude-sonnet-5-5",
       @"system": systemPrompt,
       @"messages": @[
         @{@"role": @"user", @"content": userMessage}
       ],
-      @"max_tokens": @1200,
+      @"max_tokens": @4096,
       @"temperature": @(cfg.temperature)
     };
   } else {
@@ -318,7 +321,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
       [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
     }
     reqBody = @{
-      @"model": cfg.model ?: @"gemini-2.5-flash",
+      @"model": cfg.model ?: @"gemini-3.8-flash",
       @"messages": @[
         @{@"role": @"system", @"content": systemPrompt},
         @{@"role": @"user", @"content": userMessage}
@@ -515,14 +518,23 @@ static NSString* findModelInDirectory(NSString* dir, NSString* target) {
   NSString* p = provider.lowercaseString;
   if ([p isEqualToString:@"gemini"]) {
     return @[
+      @"gemini-3.8-flash",
+      @"gemini-3.8-pro",
+      @"gemini-3.5-flash",
+      @"gemini-3.5-pro",
+      @"gemini-3.1-pro",
+      @"gemini-3.0-flash",
       @"gemini-2.5-flash",
       @"gemini-2.5-pro",
-      @"gemini-2.0-flash",
-      @"gemini-1.5-flash",
-      @"gemini-1.5-pro"
+      @"gemini-2.0-flash"
     ];
   } else if ([p isEqualToString:@"openai"]) {
     return @[
+      @"gpt-6.1-sol",
+      @"gpt-6-astra",
+      @"gpt-6-luna",
+      @"sol-6.1",
+      @"astra",
       @"gpt-4o",
       @"gpt-4o-mini",
       @"o3-mini",
@@ -531,6 +543,10 @@ static NSString* findModelInDirectory(NSString* dir, NSString* target) {
     ];
   } else if ([p isEqualToString:@"claude"]) {
     return @[
+      @"claude-sonnet-5-5",
+      @"claude-opus-5-5",
+      @"claude-fable-5-1",
+      @"claude-fable-5",
       @"claude-3-7-sonnet-20250219",
       @"claude-3-5-sonnet-20241022",
       @"claude-3-5-haiku-20241022",
@@ -549,85 +565,167 @@ static NSString* findModelInDirectory(NSString* dir, NSString* target) {
 
 - (void)fetchModelsForProvider:(NSString*)provider
              completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler {
+  [self fetchModelsForProvider:provider apiKey:nil completionHandler:completionHandler];
+}
+
+- (void)fetchModelsForProvider:(NSString*)provider
+                        apiKey:(nullable NSString*)explicitKey
+             completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler {
   NSString* p = provider.lowercaseString;
-  if ([p isEqualToString:@"claude"]) {
-    if (completionHandler) completionHandler([RigAICopilot defaultModelsForProvider:p], nil);
-    return;
-  }
+  NSArray<NSString*>* fallbackList = [RigAICopilot defaultModelsForProvider:p];
 
   RigAIConfig* cfg = self.config;
-  NSString* apiKey = [cfg effectiveApiKey];
+  NSString* apiKey = (explicitKey.length > 0) ? explicitKey : [cfg effectiveApiKey];
 
   NSString* endpoint = nil;
-  if ([p isEqualToString:@"ollama"]) {
+  NSMutableURLRequest* req = nil;
+
+  if ([p isEqualToString:@"claude"]) {
+    if (!apiKey.length) {
+      if (completionHandler) completionHandler(fallbackList, nil);
+      return;
+    }
+    endpoint = @"https://api.anthropic.com/v1/models?limit=100";
+    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
+    req.HTTPMethod = @"GET";
+    req.timeoutInterval = 8.0;
+    [req setValue:apiKey forHTTPHeaderField:@"x-api-key"];
+    [req setValue:@"2023-06-01" forHTTPHeaderField:@"anthropic-version"];
+  } else if ([p isEqualToString:@"gemini"]) {
+    if (!apiKey.length) {
+      if (completionHandler) completionHandler(fallbackList, nil);
+      return;
+    }
+    // Google Gemini API models endpoint with key parameter & pageSize=100
+    NSString* encKey = [apiKey stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSString* urlStr = [NSString stringWithFormat:@"https://generativelanguage.googleapis.com/v1beta/models?key=%@&pageSize=100", encKey];
+    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
+    req.HTTPMethod = @"GET";
+    req.timeoutInterval = 8.0;
+  } else if ([p isEqualToString:@"openai"]) {
+    if (!apiKey.length) {
+      if (completionHandler) completionHandler(fallbackList, nil);
+      return;
+    }
+    endpoint = @"https://api.openai.com/v1/models";
+    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
+    req.HTTPMethod = @"GET";
+    req.timeoutInterval = 8.0;
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
+  } else if ([p isEqualToString:@"ollama"]) {
     NSString* base = cfg.baseURL.length ? cfg.baseURL : @"http://localhost:11434/v1";
     if ([base hasSuffix:@"/chat/completions"]) base = [base stringByDeletingLastPathComponent];
     if ([base hasSuffix:@"/"]) base = [base substringToIndex:base.length - 1];
     endpoint = [base stringByAppendingString:@"/models"];
-  } else if ([p isEqualToString:@"gemini"]) {
-    endpoint = @"https://generativelanguage.googleapis.com/v1beta/openai/models";
-  } else if ([p isEqualToString:@"openai"]) {
-    endpoint = @"https://api.openai.com/v1/models";
+    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
+    req.HTTPMethod = @"GET";
+    req.timeoutInterval = 4.0;
   } else {
-    NSString* base = cfg.baseURL.length ? cfg.baseURL : @"";
-    if ([base hasSuffix:@"/chat/completions"]) base = [base stringByDeletingLastPathComponent];
-    if ([base hasSuffix:@"/"]) base = [base substringToIndex:base.length - 1];
-    endpoint = [base stringByAppendingString:@"/models"];
-  }
-
-  if (!endpoint.length) {
-    if (completionHandler) completionHandler([RigAICopilot defaultModelsForProvider:p], nil);
+    if (completionHandler) completionHandler(fallbackList, nil);
     return;
-  }
-
-  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
-  req.HTTPMethod = @"GET";
-  req.timeoutInterval = 8.0;
-  if (apiKey.length > 0) {
-    [req setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
   }
 
   NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:req
       completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
         if (error || !data) {
           dispatch_async(dispatch_get_main_queue(), ^{
-            if (completionHandler) completionHandler([RigAICopilot defaultModelsForProvider:p], error);
+            if (completionHandler) completionHandler(fallbackList, error);
           });
           return;
         }
 
         NSError* jsonErr = nil;
         NSDictionary* json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonErr];
-        NSMutableArray<NSString*>* modelIds = [NSMutableArray array];
+        if (![json isKindOfClass:[NSDictionary class]]) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (completionHandler) completionHandler(fallbackList, jsonErr);
+          });
+          return;
+        }
 
-        if ([json isKindOfClass:[NSDictionary class]]) {
-          NSArray* dataArr = json[@"data"];
-          if ([dataArr isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* item in dataArr) {
-              if ([item isKindOfClass:[NSDictionary class]] && item[@"id"]) {
-                NSString* mid = [item[@"id"] description];
-                if ([p isEqualToString:@"gemini"]) {
-                  if ([mid containsString:@"gemini"]) [modelIds addObject:mid];
-                } else if ([p isEqualToString:@"openai"]) {
-                  if ([mid hasPrefix:@"gpt-"] || [mid hasPrefix:@"o1"] || [mid hasPrefix:@"o3"] || [mid hasPrefix:@"chatgpt-"]) {
-                    [modelIds addObject:mid];
-                  }
-                } else {
-                  [modelIds addObject:mid];
-                }
+        // Parse either "data" array (OpenAI / Anthropic / Ollama) or "models" array (Google native Gemini)
+        NSArray* items = json[@"data"];
+        if (![items isKindOfClass:[NSArray class]]) {
+          items = json[@"models"];
+        }
+
+        NSMutableArray<NSDictionary*>* discoveredItems = [NSMutableArray array];
+
+        if ([items isKindOfClass:[NSArray class]]) {
+          for (NSDictionary* item in items) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+            NSString* mid = item[@"id"] ?: item[@"name"];
+            if (!mid || ![mid isKindOfClass:[NSString class]]) continue;
+
+            // Strip "models/" prefix if returned by Google
+            if ([mid hasPrefix:@"models/"]) {
+              mid = [mid substringFromIndex:7];
+            }
+
+            NSString* lower = mid.lowercaseString;
+            if ([p isEqualToString:@"gemini"]) {
+              if ([lower containsString:@"embedding"] || [lower containsString:@"aqa"] ||
+                  [lower containsString:@"imagen"] || [lower containsString:@"learnlm"]) {
+                continue;
               }
+              if ([lower containsString:@"gemini"]) {
+                [discoveredItems addObject:@{@"id": mid, @"created": @0}];
+              }
+            } else if ([p isEqualToString:@"openai"]) {
+              if ([lower containsString:@"whisper"] || [lower containsString:@"tts"] ||
+                  [lower containsString:@"dall-e"] || [lower containsString:@"embedding"] ||
+                  [lower containsString:@"moderation"] || [lower containsString:@"babbage"] ||
+                  [lower containsString:@"davinci"] || [lower containsString:@"canary"]) {
+                continue;
+              }
+              NSNumber* created = item[@"created"];
+              [discoveredItems addObject:@{@"id": mid, @"created": created ?: @0}];
+            } else if ([p isEqualToString:@"claude"]) {
+              if ([lower containsString:@"claude"]) {
+                [discoveredItems addObject:@{@"id": mid, @"created": @0}];
+              }
+            } else {
+              [discoveredItems addObject:@{@"id": mid, @"created": @0}];
             }
           }
         }
 
-        [modelIds sortUsingSelector:@selector(compare:)];
+        // Sort discovered items:
+        // If created timestamp is present (OpenAI), sort by timestamp descending (newest releases first).
+        // Otherwise sort descending using natural numeric version comparison (e.g. 5.5 > 5.1 > 3.7; 3.8 > 3.5 > 2.5).
+        [discoveredItems sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+          NSNumber* tA = a[@"created"];
+          NSNumber* tB = b[@"created"];
+          if (tA && tB && tA.doubleValue > 0 && tB.doubleValue > 0 && ![tA isEqualToNumber:tB]) {
+            return [tB compare:tA];
+          }
+          NSString* sA = a[@"id"];
+          NSString* sB = b[@"id"];
+          return [sB compare:sA options:NSNumericSearch | NSCaseInsensitiveSearch];
+        }];
+
+        // Live priority merge:
+        // Place live discovered models at the top (newest first).
+        // Then append any curated flagship models not returned in the account's query.
+        NSMutableArray<NSString*>* merged = [NSMutableArray array];
+        for (NSDictionary* dict in discoveredItems) {
+          NSString* mid = dict[@"id"];
+          if (![merged containsObject:mid]) {
+            [merged addObject:mid];
+          }
+        }
+        for (NSString* f in fallbackList) {
+          if (![merged containsObject:f]) {
+            [merged addObject:f];
+          }
+        }
+
+        if (merged.count == 0) {
+          merged = [NSMutableArray arrayWithArray:fallbackList];
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-          if (modelIds.count > 0) {
-            if (completionHandler) completionHandler(modelIds, nil);
-          } else {
-            if (completionHandler) completionHandler([RigAICopilot defaultModelsForProvider:p], nil);
-          }
+          if (completionHandler) completionHandler(merged, nil);
         });
       }];
   [task resume];

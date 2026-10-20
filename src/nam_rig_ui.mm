@@ -2107,7 +2107,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   provLbl.textColor = rigText();
   [content addSubview:provLbl];
 
-  self.copilotProvPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(82, popH - 90, 110, 24) pullsDown:NO];
+  self.copilotProvPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(82, popH - 90, 100, 24) pullsDown:NO];
   [self.copilotProvPopup addItemsWithTitles:@[@"Gemini", @"OpenAI", @"Claude", @"Ollama", @"Custom"]];
   self.copilotProvPopup.font = [NSFont systemFontOfSize:11];
   [self.copilotProvPopup selectItemWithTitle:config.provider.capitalizedString ?: @"Gemini"];
@@ -2116,12 +2116,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [content addSubview:self.copilotProvPopup];
 
   NSTextField* modLbl = [NSTextField labelWithString:@"Model:"];
-  modLbl.frame = NSMakeRect(202, popH - 86, 44, 18);
+  modLbl.frame = NSMakeRect(188, popH - 86, 44, 18);
   modLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   modLbl.textColor = rigText();
   [content addSubview:modLbl];
 
-  self.copilotModelComboBox = [[NSComboBox alloc] initWithFrame:NSMakeRect(250, popH - 89, 160, 24)];
+  self.copilotModelComboBox = [[NSComboBox alloc] initWithFrame:NSMakeRect(234, popH - 89, 146, 24)];
   self.copilotModelComboBox.font = [NSFont systemFontOfSize:11];
   self.copilotModelComboBox.hasVerticalScroller = YES;
   NSArray<NSString*>* initialModels = [RigAICopilot defaultModelsForProvider:config.provider];
@@ -2129,17 +2129,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotModelComboBox.stringValue = config.model.length ? config.model : (initialModels.firstObject ?: @"");
   [content addSubview:self.copilotModelComboBox];
 
-  // Retrieve live models on launch asynchronously
-  __weak NSComboBox* weakModelBox = self.copilotModelComboBox;
-  [[RigAICopilot sharedCopilot] fetchModelsForProvider:config.provider
-                                     completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
-    if (liveModels.count > 0 && weakModelBox) {
-      NSString* cur = weakModelBox.stringValue;
-      [weakModelBox removeAllItems];
-      [weakModelBox addItemsWithObjectValues:liveModels];
-      weakModelBox.stringValue = cur.length ? cur : (liveModels.firstObject ?: @"");
-    }
-  }];
+  RigButton* refreshBtn = rigButton(content, @"↻", self, @selector(refreshCopilotModelsAction:), NSMakeRect(384, popH - 88, 28, 22));
+  refreshBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+  refreshBtn.toolTip = @"Fetch latest models from provider API";
 
   RigButton* saveCfg = rigButton(content, @"Save Config", self, @selector(saveCopilotConfig:), NSMakeRect(418, popH - 88, 102, 22));
   saveCfg.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
@@ -2155,7 +2147,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotKeyField.font = [NSFont systemFontOfSize:11];
   self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to inherit %@_API_KEY from environment", config.provider.uppercaseString];
   self.copilotKeyField.stringValue = config.apiKey ?: @"";
+  self.copilotKeyField.target = self;
+  self.copilotKeyField.action = @selector(copilotKeyFieldAction:);
   [content addSubview:self.copilotKeyField];
+
+  // Query models on popover opening
+  [self refreshCopilotModelsUI];
 
   // Separator
   NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 130, popW - 40, 1)];
@@ -2233,6 +2230,32 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
 }
 
+- (void)refreshCopilotModelsAction:(id)sender {
+  (void)sender;
+  [self refreshCopilotModelsUI];
+}
+
+- (void)copilotKeyFieldAction:(id)sender {
+  (void)sender;
+  [self refreshCopilotModelsUI];
+}
+
+- (void)refreshCopilotModelsUI {
+  NSString* prov = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
+  NSString* key = self.copilotKeyField.stringValue;
+  __weak NSComboBox* weakBox = self.copilotModelComboBox;
+  [[RigAICopilot sharedCopilot] fetchModelsForProvider:prov
+                                                apiKey:key
+                                     completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
+    if (liveModels.count > 0 && weakBox) {
+      NSString* cur = weakBox.stringValue;
+      [weakBox removeAllItems];
+      [weakBox addItemsWithObjectValues:liveModels];
+      weakBox.stringValue = [liveModels containsObject:cur] ? cur : (liveModels.firstObject ?: @"");
+    }
+  }];
+}
+
 - (void)copilotProviderChanged:(NSPopUpButton*)sender {
   NSString* sel = sender.titleOfSelectedItem.lowercaseString;
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
@@ -2254,17 +2277,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }
   self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to inherit %@_API_KEY from environment", sel.uppercaseString];
 
-  // Retrieve live models for newly selected provider asynchronously
-  __weak NSComboBox* weakBox = self.copilotModelComboBox;
-  [[RigAICopilot sharedCopilot] fetchModelsForProvider:sel
-                                     completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
-    if (liveModels.count > 0 && weakBox) {
-      NSString* cur = weakBox.stringValue;
-      [weakBox removeAllItems];
-      [weakBox addItemsWithObjectValues:liveModels];
-      weakBox.stringValue = [liveModels containsObject:cur] ? cur : (liveModels.firstObject ?: @"");
-    }
-  }];
+  [self refreshCopilotModelsUI];
 }
 
 - (void)saveCopilotConfig:(id)sender {
@@ -2275,7 +2288,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.apiKey = self.copilotKeyField.stringValue;
   NSError* err = nil;
   if ([config saveToDisk:&err]) {
-    self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).", config.provider, config.model];
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).\nRefreshing models list...", config.provider, config.model];
+    [self refreshCopilotModelsUI];
   } else {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Failed to save config: %@", err.localizedDescription];
   }
