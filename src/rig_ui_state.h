@@ -40,6 +40,11 @@
 @class NAMRigUIController;
 @class ToneBrowserController;
 
+@protocol ToneBrowserCycling <NSObject>
+- (void)selectPreviousTone;
+- (void)selectNextTone;
+@end
+
 @interface NSObject (NAMRigPresetShortcuts)
 - (void)saveCurrentPreset:(id)sender;
 - (void)savePresetAs:(id)sender;
@@ -795,19 +800,34 @@ struct RigUIState {
         return nil;
       }
 
-      // Left / Right arrows move up / down in preset selection when not editing text
+      // Left / Right / Up / Down arrows
       if (mods == 0 && win == selfState->view.window) {
         BOOL isEditingText = [win.firstResponder isKindOfClass:[NSText class]];
         if (!isEditingText) {
           const unsigned short kc = event.keyCode;
           const unichar ch = chars.length > 0 ? [chars characterAtIndex:0] : 0;
-          if (kc == 123 || ch == NSLeftArrowFunctionKey) {
-            [(id)selfState->uiController prevPresetClicked:nil];
-            return nil;
-          }
-          if (kc == 124 || ch == NSRightArrowFunctionKey) {
-            [(id)selfState->uiController nextPresetClicked:nil];
-            return nil;
+          if (selfState->activeTab == 1 && selfState->browserController) {
+            // In TONE3000 tab: arrow keys cycle through tone cards!
+            // Left (123) or Up (126) -> Previous tone
+            if (kc == 123 || kc == 126 || ch == NSLeftArrowFunctionKey || ch == NSUpArrowFunctionKey) {
+              [(id<ToneBrowserCycling>)selfState->browserController selectPreviousTone];
+              return nil;
+            }
+            // Right (124) or Down (125) -> Next tone
+            if (kc == 124 || kc == 125 || ch == NSRightArrowFunctionKey || ch == NSDownArrowFunctionKey) {
+              [(id<ToneBrowserCycling>)selfState->browserController selectNextTone];
+              return nil;
+            }
+          } else {
+            // In RIG tab: Left / Right arrows cycle rig presets
+            if (kc == 123 || ch == NSLeftArrowFunctionKey) {
+              [(id)selfState->uiController prevPresetClicked:nil];
+              return nil;
+            }
+            if (kc == 124 || ch == NSRightArrowFunctionKey) {
+              [(id)selfState->uiController nextPresetClicked:nil];
+              return nil;
+            }
           }
         }
       }

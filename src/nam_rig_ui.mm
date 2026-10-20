@@ -2146,7 +2146,14 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
   self.copilotKeyField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(82, popH - 118, 438, 22)];
   self.copilotKeyField.font = [NSFont systemFontOfSize:11];
-  self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to inherit %@_API_KEY from environment", config.provider.uppercaseString];
+  NSString* localInitCLI = [RigAICopilot detectLocalCLIForProvider:config.provider];
+  if (localInitCLI) {
+    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to use local %@, or enter API key",
+      [config.provider isEqualToString:@"gemini"] ? @"Antigravity (agy)" :
+      ([config.provider isEqualToString:@"claude"] ? @"Claude CLI" : @"Codex CLI")];
+  } else {
+    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key (or set in environment)", config.provider.uppercaseString];
+  }
   self.copilotKeyField.stringValue = config.apiKey ?: @"";
   self.copilotKeyField.target = self;
   self.copilotKeyField.action = @selector(copilotKeyFieldAction:);
@@ -2267,7 +2274,14 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   } else if ([sel isEqualToString:@"ollama"]) {
     config.baseURL = @"http://localhost:11434/v1";
   }
-  self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to inherit %@_API_KEY from environment", sel.uppercaseString];
+  NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:sel];
+  if (localCLI) {
+    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to use local %@, or enter API key",
+      [sel isEqualToString:@"gemini"] ? @"Antigravity (agy)" :
+      ([sel isEqualToString:@"claude"] ? @"Claude CLI" : @"Codex CLI")];
+  } else {
+    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key (or set in environment)", sel.uppercaseString];
+  }
 
   [self refreshCopilotModelsUI];
 }
@@ -2303,7 +2317,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
   self.copilotDialBtn.enabled = NO;
   [self.copilotSpinner startAnimation:nil];
-  self.copilotOutputView.string = [NSString stringWithFormat:@"Querying %@ (%@)...\nAnalyzing requested tone & calculating DSP parameters...", config.provider, config.model];
+
+  NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:config.provider];
+  if (config.apiKey.length > 0) {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Connecting to cloud %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model];
+  } else if (localCLI) {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Delegating to local %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", localCLI.lastPathComponent, config.model];
+  } else {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Querying %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model];
+  }
 
   __weak NAMRigUIController* weakSelf = self;
   [[RigAICopilot sharedCopilot] processUserPrompt:prompt
@@ -2525,14 +2547,18 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES;
   scroll.toolTip = @"Scrollable Tone3000 results. More online results load automatically near the bottom.";
 
-  controller.collectionView = [[NSCollectionView alloc] initWithFrame:scroll.bounds];
-  controller.collectionView.collectionViewLayout = grid;
-  controller.collectionView.backgroundColors = @[[NSColor clearColor]];
-  controller.collectionView.dataSource = controller;
-  controller.collectionView.delegate = controller;
-  controller.collectionView.selectable = YES;
-  controller.collectionView.toolTip = @"Click a tone card to load its local models or download its available models. Right-click a card to view it on Tone3000.";
-  [controller.collectionView registerClass:[ToneCardItem class] forItemWithIdentifier:@"ToneCard"];
+  RigToneCollectionView *colView = [[RigToneCollectionView alloc] initWithFrame:scroll.bounds];
+  colView.toneController = controller;
+  colView.collectionViewLayout = grid;
+  colView.backgroundColors = @[[NSColor clearColor]];
+  colView.dataSource = controller;
+  colView.delegate = controller;
+  colView.selectable = YES;
+  colView.allowsEmptySelection = NO;
+  colView.allowsMultipleSelection = NO;
+  colView.toolTip = @"Click a tone card to load its local models or download its available models. Right-click a card to view it on Tone3000.";
+  [colView registerClass:[ToneCardItem class] forItemWithIdentifier:@"ToneCard"];
+  controller.collectionView = colView;
 
   scroll.documentView = controller.collectionView;
   // Infinite scroll: observe the scrollview's bounds change (no delegate

@@ -241,6 +241,169 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   return sys;
 }
 
++ (nullable NSString*)detectLocalCLIForProvider:(NSString*)provider {
+  NSString* p = provider.lowercaseString;
+  NSString* toolName = nil;
+  if ([p isEqualToString:@"gemini"]) {
+    toolName = @"agy";
+  } else if ([p isEqualToString:@"claude"]) {
+    toolName = @"claude";
+  } else if ([p isEqualToString:@"openai"]) {
+    toolName = @"codex";
+  }
+  if (!toolName) return nil;
+
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* home = NSHomeDirectory();
+  NSArray<NSString*>* searchPaths = @[
+    [NSString stringWithFormat:@"%@/.local/bin/%@", home, toolName],
+    [NSString stringWithFormat:@"/opt/homebrew/bin/%@", toolName],
+    [NSString stringWithFormat:@"/usr/local/bin/%@", toolName],
+    [NSString stringWithFormat:@"/usr/bin/%@", toolName]
+  ];
+  for (NSString* sp in searchPaths) {
+    if ([fm fileExistsAtPath:sp]) return sp;
+  }
+  return nil;
+}
+
+- (nullable RigAICopilotResult*)parseCopilotResponseContent:(NSString*)content error:(NSError**)error {
+  if (!content.length) {
+    if (error) *error = [NSError errorWithDomain:@"RigAICopilot" code:-3 userInfo:@{NSLocalizedDescriptionKey: @"Empty content from AI response."}];
+    return nil;
+  }
+
+  // Strip ```json ... ``` wrapper if present
+  NSString* cleanJson = [content stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSRange jsonStart = [cleanJson rangeOfString:@"```json"];
+  if (jsonStart.location == NSNotFound) {
+    jsonStart = [cleanJson rangeOfString:@"```"];
+  }
+  if (jsonStart.location != NSNotFound) {
+    NSUInteger afterCode = jsonStart.location + jsonStart.length;
+    NSRange nlRange = [cleanJson rangeOfString:@"\n" options:0 range:NSMakeRange(afterCode, cleanJson.length - afterCode)];
+    NSUInteger contentStart = (nlRange.location != NSNotFound) ? nlRange.location + 1 : afterCode;
+    NSRange endFence = [cleanJson rangeOfString:@"```" options:0 range:NSMakeRange(contentStart, cleanJson.length - contentStart)];
+    if (endFence.location != NSNotFound) {
+      cleanJson = [cleanJson substringWithRange:NSMakeRange(contentStart, endFence.location - contentStart)];
+    }
+  }
+
+  // Find opening '{' and closing '}' to ignore incidental terminal logs or chat wrapping
+  NSRange openBrace = [cleanJson rangeOfString:@"{"];
+  NSRange closeBrace = [cleanJson rangeOfString:@"}" options:NSBackwardsSearch];
+  if (openBrace.location != NSNotFound && closeBrace.location != NSNotFound && closeBrace.location > openBrace.location) {
+    cleanJson = [cleanJson substringWithRange:NSMakeRange(openBrace.location, closeBrace.location - openBrace.location + 1)];
+  }
+
+  cleanJson = [cleanJson stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSData* cleanData = [cleanJson dataUsingEncoding:NSUTF8StringEncoding];
+  NSError* jsonErr = nil;
+  NSDictionary* resultJson = cleanData ? [NSJSONSerialization JSONObjectWithData:cleanData options:0 error:&jsonErr] : nil;
+  if (![resultJson isKindOfClass:[NSDictionary class]]) {
+    if (error) {
+      NSString* preview = cleanJson.length > 200 ? [cleanJson substringToIndex:200] : cleanJson;
+      NSString* msg = [NSString stringWithFormat:@"Failed to parse JSON result: %@", preview];
+      *error = [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: msg}];
+    }
+    return nil;
+  }
+
+  RigAICopilotResult* res = [[RigAICopilotResult alloc] init];
+  res.thought = resultJson[@"thought"] ?: @"";
+  res.explanation = resultJson[@"explanation"] ?: @"Tone dialed in by AI Tone Tuning.";
+  res.controls = [resultJson[@"controls"] isKindOfClass:[NSDictionary class]] ? resultJson[@"controls"] : @{};
+  res.ampPath = resultJson[@"amp_model"] ?: resultJson[@"amp_path"];
+  res.cabPath = resultJson[@"cab_ir"] ?: resultJson[@"cab_path"];
+  res.slotPresets = resultJson[@"slot_presets"];
+  res.rawJson = resultJson;
+  return res;
+}
+
+- (void)executeLocalCLI:(NSString*)cliPath
+               provider:(NSString*)provider
+            fullPrompt:(NSString*)fullPrompt
+                 model:(NSString*)model
+     completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler {
+  __weak RigAICopilot* weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSTask* task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:cliPath];
+
+    NSMutableArray<NSString*>* args = [NSMutableArray array];
+    NSString* toolName = cliPath.lastPathComponent.lowercaseString;
+
+    if ([toolName isEqualToString:@"agy"]) {
+      [args addObject:@"-p"];
+      [args addObject:fullPrompt];
+      [args addObject:@"--disable-slash-commands"];
+      [args addObject:@"--dangerously-skip-permissions"];
+      [args addObject:@"--output-format"];
+      [args addObject:@"text"];
+    } else if ([toolName isEqualToString:@"claude"]) {
+      [args addObject:@"-p"];
+      [args addObject:fullPrompt];
+    } else if ([toolName isEqualToString:@"codex"]) {
+      [args addObject:@"exec"];
+      if (model.length > 0 && ![model containsString:@"gpt-6"]) {
+        [args addObject:@"-m"];
+        [args addObject:model];
+      }
+    }
+
+    task.arguments = args;
+
+    NSMutableDictionary* env = [[NSProcessInfo processInfo].environment mutableCopy];
+    NSString* existingPath = env[@"PATH"] ?: @"/usr/bin:/bin:/usr/sbin:/sbin";
+    NSString* extraPaths = [NSString stringWithFormat:@"%@/.local/bin:/opt/homebrew/bin:/usr/local/bin", NSHomeDirectory()];
+    env[@"PATH"] = [NSString stringWithFormat:@"%@:%@", extraPaths, existingPath];
+    task.environment = env;
+
+    NSPipe* outPipe = [NSPipe pipe];
+    NSPipe* inPipe = [NSPipe pipe];
+    task.standardOutput = outPipe;
+    task.standardError = outPipe;
+    if ([toolName isEqualToString:@"codex"]) {
+      task.standardInput = inPipe;
+    }
+
+    NSError* launchErr = nil;
+    if (![task launchAndReturnError:&launchErr]) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        weakSelf.isProcessing = NO;
+        if (completionHandler) completionHandler(nil, launchErr);
+      });
+      return;
+    }
+
+    if ([toolName isEqualToString:@"codex"]) {
+      NSData* inputData = [fullPrompt dataUsingEncoding:NSUTF8StringEncoding];
+      [inPipe.fileHandleForWriting writeData:inputData];
+      [inPipe.fileHandleForWriting closeFile];
+    }
+
+    NSData* outputData = [outPipe.fileHandleForReading readDataToEndOfFile];
+    [task waitUntilExit];
+
+    NSString* outputStr = [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding] ?: @"";
+    NSError* parseErr = nil;
+    RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:outputStr error:&parseErr];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      weakSelf.isProcessing = NO;
+      if (res) {
+        if (completionHandler) completionHandler(res, nil);
+      } else {
+        if (completionHandler) {
+          NSString* errDetail = (outputStr.length > 0) ? outputStr : (parseErr.localizedDescription ?: [NSString stringWithFormat:@"%@ returned no output", toolName]);
+          NSError* err = [NSError errorWithDomain:@"RigAICopilot" code:-6 userInfo:@{NSLocalizedDescriptionKey: errDetail}];
+          completionHandler(nil, err);
+        }
+      }
+    });
+  });
+}
+
 - (void)processUserPrompt:(NSString*)userPrompt
                 withState:(nullable RigUIState*)state
         completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler {
@@ -257,11 +420,12 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   NSString* apiKey = [cfg effectiveApiKey];
   NSString* provider = cfg.provider.lowercaseString;
   BOOL isOllama = [provider isEqualToString:@"ollama"];
+  NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:provider];
 
-  if (!isOllama && apiKey.length == 0) {
+  if (!isOllama && apiKey.length == 0 && !localCLI) {
     if (completionHandler) {
-      NSString* msg = [NSString stringWithFormat:@"API key not set for provider '%@'. Set it in AI Settings or via %@_API_KEY environment variable.",
-                       cfg.provider, cfg.provider.uppercaseString];
+      NSString* msg = [NSString stringWithFormat:@"API key not set for '%@', and no local %@ tool was detected (e.g. Antigravity 'agy', Claude CLI, or Codex). Enter an API key in AI Settings or install Antigravity/Claude/Codex.",
+                       cfg.provider, cfg.provider.capitalizedString];
       completionHandler(nil, [NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey: msg}]);
     }
     return;
@@ -295,6 +459,17 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   NSString* userMessage = [NSString stringWithFormat:
     @"USER REQUEST: %@\n\nCURRENT RIG STATE CONTEXT:\n%@",
     userPrompt, contextStr];
+
+  // If no API key is set, but local CLI is available -> dispatch directly to local CLI!
+  if (!isOllama && apiKey.length == 0 && localCLI) {
+    NSString* fullPrompt = [NSString stringWithFormat:@"%@\n\n%@", systemPrompt, userMessage];
+    [self executeLocalCLI:localCLI
+                 provider:provider
+               fullPrompt:fullPrompt
+                    model:cfg.model
+        completionHandler:completionHandler];
+    return;
+  }
 
   NSString* endpoint = [cfg effectiveEndpointURL];
   NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
@@ -379,42 +554,9 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
             }
           }
 
-          if (!content.length) {
-            if (completionHandler) {
-              completionHandler(nil, [NSError errorWithDomain:@"RigAICopilot" code:-3 userInfo:@{NSLocalizedDescriptionKey: @"Empty content from AI response."}]);
-            }
-            return;
-          }
-
-          // Strip ```json ... ``` wrapper if present
-          NSString* cleanJson = [content stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-          if ([cleanJson hasPrefix:@"```"]) {
-            NSScanner* scanner = [NSScanner scannerWithString:cleanJson];
-            [scanner scanString:@"```json" intoString:NULL] || [scanner scanString:@"```" intoString:NULL];
-            NSString* inside = nil;
-            [scanner scanUpToString:@"```" intoString:&inside];
-            if (inside.length) cleanJson = [inside stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-          }
-
-          NSData* cleanData = [cleanJson dataUsingEncoding:NSUTF8StringEncoding];
-          NSDictionary* resultJson = [NSJSONSerialization JSONObjectWithData:cleanData options:0 error:nil];
-          if (![resultJson isKindOfClass:[NSDictionary class]]) {
-            if (completionHandler) {
-              completionHandler(nil, [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to parse JSON result: %@", cleanJson]}]);
-            }
-            return;
-          }
-
-          RigAICopilotResult* res = [[RigAICopilotResult alloc] init];
-          res.thought = resultJson[@"thought"] ?: @"";
-          res.explanation = resultJson[@"explanation"] ?: @"Tone adjusted by AI Tone Tuning.";
-          res.controls = [resultJson[@"controls"] isKindOfClass:[NSDictionary class]] ? resultJson[@"controls"] : @{};
-          res.ampPath = resultJson[@"amp_model"] ?: resultJson[@"amp_path"];
-          res.cabPath = resultJson[@"cab_ir"] ?: resultJson[@"cab_path"];
-          res.slotPresets = resultJson[@"slot_presets"];
-          res.rawJson = resultJson;
-
-          if (completionHandler) completionHandler(res, nil);
+          NSError* finalErr = nil;
+          RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:content error:&finalErr];
+          if (completionHandler) completionHandler(res, finalErr);
         });
       }];
 

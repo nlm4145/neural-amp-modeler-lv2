@@ -40,7 +40,15 @@ struct RigUIState;
 NSString* artworkForTone(NSInteger toneId, NSInteger stage);
 ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate* modified);
 
-@interface ToneBrowserController : NSObject <NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate>
+#include "rig_ui_state.h"
+
+@class ToneBrowserController;
+
+@interface RigToneCollectionView : NSCollectionView
+@property(nonatomic, weak) ToneBrowserController* toneController;
+@end
+
+@interface ToneBrowserController : NSObject <NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate, ToneBrowserCycling>
 @property(nonatomic, assign) RigUIState* state;
 @property(nonatomic, strong) NSMutableArray<ToneItem*>* allItems;
 @property(nonatomic, strong) NSArray<ToneItem*>* visibleItems;
@@ -96,6 +104,10 @@ ToneItem* toneItem(NSDictionary* tone, NSArray<NSString*>* models, NSDate* modif
 @property(nonatomic, copy) NSString* activeTextQuery;     // active text search filter
 @property(nonatomic) NSInteger previewGeneration;
 @property(nonatomic, strong) NSURLSessionDataTask* previewTask;
+- (void)selectToneAtIndex:(NSInteger)index load:(BOOL)load;
+- (void)selectPreviousTone;
+- (void)selectNextTone;
+- (void)loadToneItem:(ToneItem*)item;
 - (void)loadMoreSearchResults;
 - (NSArray<NSString*>*)searchPathsForPrefix:(NSString*)prefix page:(NSInteger)page arch:(NSString*)arch;
 - (BOOL)toneItem:(ToneItem*)item matchesArchFilter:(NSString*)arch;

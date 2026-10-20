@@ -51,9 +51,11 @@
 }
 - (void)refreshStyle {
   self.layer.backgroundColor = (_hovered ? rigRaised() : rigPanelBG()).CGColor;
-  NSColor* border = _showsSelection ? rigAccent()
+  NSColor* yellowBorder = [NSColor colorWithSRGBRed:1.00 green:0.86 blue:0.18 alpha:1.0];
+  NSColor* border = _showsSelection ? yellowBorder
       : (_hovered ? [rigAccent() colorWithAlphaComponent:0.5] : rigPanelBorder());
   self.layer.borderColor = border.CGColor;
+  self.layer.borderWidth = _showsSelection ? 1.5 : 1.0;
 }
 - (void)setHovered:(BOOL)hovered { _hovered = hovered; [self refreshStyle]; }
 - (void)setShowsSelection:(BOOL)shows { _showsSelection = shows; [self refreshStyle]; }
@@ -69,6 +71,44 @@
 }
 - (void)mouseEntered:(NSEvent*)event { self.hovered = YES; }
 - (void)mouseExited:(NSEvent*)event { self.hovered = NO; }
+- (void)mouseDown:(NSEvent*)event {
+  if (self.window && [self.window.firstResponder isKindOfClass:[NSText class]]) {
+    [self.window makeFirstResponder:self.superview ?: self];
+  }
+  [super mouseDown:event];
+}
+@end
+
+@implementation RigToneCollectionView
+- (BOOL)acceptsFirstResponder {
+  return YES;
+}
+- (void)keyDown:(NSEvent*)event {
+  NSEventModifierFlags mods = event.modifierFlags &
+      (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+       NSEventModifierFlagControl | NSEventModifierFlagShift);
+  if (mods == 0) {
+    const unsigned short kc = event.keyCode;
+    NSString* chars = event.charactersIgnoringModifiers ?: @"";
+    const unichar ch = chars.length > 0 ? [chars characterAtIndex:0] : 0;
+
+    // Left (123) or Up (126) -> Previous tone
+    if (kc == 123 || kc == 126 || ch == NSLeftArrowFunctionKey || ch == NSUpArrowFunctionKey) {
+      if (_toneController) {
+        [_toneController selectPreviousTone];
+        return;
+      }
+    }
+    // Right (124) or Down (125) -> Next tone
+    if (kc == 124 || kc == 125 || ch == NSRightArrowFunctionKey || ch == NSDownArrowFunctionKey) {
+      if (_toneController) {
+        [_toneController selectNextTone];
+        return;
+      }
+    }
+  }
+  [super keyDown:event];
+}
 @end
 
 // Shared image cache so tone cards don't re-read artwork from disk on every layout.
@@ -2513,6 +2553,9 @@ static void saveParamCache(void) {
   ToneCardItem *card = [collectionView makeItemWithIdentifier:@"ToneCard" forIndexPath:indexPath];
   card.browserController = self;
   card.representedObject = self.visibleItems[indexPath.item];
+  BOOL isSelected = [collectionView.selectionIndexPaths containsObject:indexPath];
+  card.selected = isSelected;
+  ((RigCardView *)card.view).showsSelection = isSelected;
   __weak ToneBrowserController *weakSelf = self;
   card.onFavToggle = ^(ToneItem *item) {
     [weakSelf toggleFavoriteFromCard:item];
@@ -2545,10 +2588,8 @@ static void saveParamCache(void) {
   }
 }
 
-- (void)collectionView:(NSCollectionView *)collectionView didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
-  NSIndexPath *path = indexPaths.anyObject;
-  if (!path || path.item >= (NSInteger)self.visibleItems.count) return;
-  ToneItem *item = self.visibleItems[path.item];
+- (void)loadToneItem:(ToneItem*)item {
+  if (!item) return;
   if (item.local) {
     [self showModelsForItem:item andLoad:YES];
     NSInteger expectedCount = 0;
@@ -2572,6 +2613,76 @@ static void saveParamCache(void) {
   }
   // Not favorited and not local: preview in rig without saving to permanent library.
   [self previewTone:item withArch:self.selectedArch];
+}
+
+- (void)collectionView:(NSCollectionView *)collectionView didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
+  NSIndexPath *path = indexPaths.anyObject;
+  if (!path || path.item >= (NSInteger)self.visibleItems.count) return;
+
+  if (collectionView.window && collectionView.window.firstResponder != collectionView) {
+    [collectionView.window makeFirstResponder:collectionView];
+  }
+
+  for (NSCollectionViewItem *it in collectionView.visibleItems) {
+    if ([it isKindOfClass:[ToneCardItem class]]) {
+      NSIndexPath *itemPath = [collectionView indexPathForItem:it];
+      BOOL isSel = itemPath && [itemPath isEqual:path];
+      it.selected = isSel;
+      ((RigCardView *)it.view).showsSelection = isSel;
+    }
+  }
+
+  ToneItem *item = self.visibleItems[path.item];
+  [self loadToneItem:item];
+}
+
+- (void)selectToneAtIndex:(NSInteger)index load:(BOOL)load {
+  if (self.visibleItems.count == 0) return;
+  if (index < 0) index = 0;
+  if (index >= (NSInteger)self.visibleItems.count) {
+    index = (NSInteger)self.visibleItems.count - 1;
+  }
+
+  NSIndexPath *indexPath = [NSIndexPath indexPathForItem:index inSection:0];
+  NSSet<NSIndexPath *> *selection = [NSSet setWithObject:indexPath];
+  [self.collectionView setSelectionIndexPaths:selection];
+  [self.collectionView scrollToItemsAtIndexPaths:selection
+                                 scrollPosition:NSCollectionViewScrollPositionNearestHorizontalEdge |
+                                                NSCollectionViewScrollPositionNearestVerticalEdge];
+
+  for (NSCollectionViewItem *it in self.collectionView.visibleItems) {
+    if ([it isKindOfClass:[ToneCardItem class]]) {
+      NSIndexPath *itemPath = [self.collectionView indexPathForItem:it];
+      BOOL isSel = itemPath && [itemPath isEqual:indexPath];
+      it.selected = isSel;
+      ((RigCardView *)it.view).showsSelection = isSel;
+    }
+  }
+
+  ToneItem *item = self.visibleItems[index];
+  if (load) {
+    [self loadToneItem:item];
+  }
+}
+
+- (void)selectPreviousTone {
+  if (self.visibleItems.count == 0) return;
+  NSIndexPath *cur = self.collectionView.selectionIndexPaths.anyObject;
+  NSInteger curIndex = cur ? cur.item : 0;
+  NSInteger newIndex = curIndex - 1;
+  if (newIndex < 0) newIndex = 0;
+  [self selectToneAtIndex:newIndex load:YES];
+}
+
+- (void)selectNextTone {
+  if (self.visibleItems.count == 0) return;
+  NSIndexPath *cur = self.collectionView.selectionIndexPaths.anyObject;
+  NSInteger curIndex = cur ? cur.item : -1;
+  NSInteger newIndex = curIndex + 1;
+  if (newIndex >= (NSInteger)self.visibleItems.count) {
+    newIndex = (NSInteger)self.visibleItems.count - 1;
+  }
+  [self selectToneAtIndex:newIndex load:YES];
 }
 
 - (void)fetchModelsForToneId:(NSInteger)toneId arch:(NSString*)arch page:(NSInteger)page accumulated:(NSMutableArray*)models completion:(void (^)(NSArray*))done {
