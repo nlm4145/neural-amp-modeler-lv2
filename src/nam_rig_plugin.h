@@ -197,7 +197,7 @@ public:
     float* power_tube_character; // in: port 81, added character (0..100%)
     float* mid_push;             // in: port 82, pre-amp midrange bell (0..100%)
     std::array<float*, kPinEqPortCount> pin_eq; // in: ports 83..178, graph pin EQ bands
-    float* od_drive;             // in: port 179, Sculpt overdrive drive (0..100%, 0 = off)
+    float* od_drive;             // in: port 179, Sculpt overdrive drive (0..100%, 0 = distortionless boost)
     float* od_tone;              // in: port 180, Sculpt overdrive tone (0..100%)
     float* od_level;             // in: port 181, Sculpt overdrive level (dB)
     float* compressor_attack;    // in: port 182, attack time (ms, 1..100)

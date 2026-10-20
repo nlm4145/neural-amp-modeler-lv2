@@ -1,5 +1,5 @@
 // RigAICopilot — Universal AI Tone Copilot for Axe FX.
-// Platform-independent: supports OpenAI, Google Gemini, Anthropic Claude, and local Ollama.
+// macOS UI integration supporting OpenAI-compatible APIs, Gemini, Claude, and Ollama.
 #pragma once
 
 #import <Foundation/Foundation.h>
@@ -41,9 +41,12 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy) NSString* model;       // e.g. @"gemini-2.5-flash", @"gpt-4o", @"claude-3-7-sonnet-20250219", @"llama3.3"
 @property(nonatomic, copy) NSString* baseURL;     // e.g. @"https://generativelanguage.googleapis.com/v1beta/openai", @"https://api.openai.com/v1"
 @property(nonatomic) float temperature;
+@property(nonatomic) BOOL allowLocalCLI; // Explicit opt-in; never bypass CLI permissions.
 
 + (instancetype)defaultConfig;
 + (instancetype)loadFromDisk;
++ (NSString*)defaultBaseURLForProvider:(NSString*)provider;
++ (NSString*)storedApiKeyForProvider:(NSString*)provider;
 - (BOOL)saveToDisk:(NSError**)error;
 - (NSString*)effectiveApiKey;
 - (NSString*)effectiveEndpointURL;
@@ -65,6 +68,7 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 
 @property(nonatomic, strong) RigAIConfig* config;
 @property(nonatomic, readonly) BOOL isProcessing;
+- (void)cancelProcessing;
 
 // Active session preset tasks list
 @property(nonatomic, readonly, strong) NSArray<RigAIPresetTask*>* sessionTasks;
@@ -92,8 +96,11 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
             toState:(RigUIState*)state
       saveUndoState:(BOOL)saveUndo
               error:(NSError**)error;
+// Waits for engine path acknowledgements; restores the prior rig if loading fails.
+- (void)applyResult:(RigAICopilotResult*)result toState:(RigUIState*)state
+  completionHandler:(void (^)(NSError* _Nullable error))completionHandler;
 
-// Restores the snapshot captured prior to the last applied AI result.
+// Exchanges the current rig with the last snapshot (repeatable A/B, same live instance).
 - (BOOL)undoLastAIApplicationToState:(RigUIState*)state error:(NSError**)error;
 @property(nonatomic, readonly) BOOL canUndo;
 

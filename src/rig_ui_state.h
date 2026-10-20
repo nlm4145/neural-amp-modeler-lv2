@@ -86,6 +86,9 @@ struct RigUIState {
   LV2_URID patchProperty = 0;
   LV2_URID patchValue = 0;
   std::array<LV2_URID, 4> pathURIDs{};
+  // Engine acknowledgements, not optimistic UI selections. Used for AI load verification.
+  std::array<std::string, 4> confirmedPaths{};
+  std::array<uint64_t, 4> pathResponseSerial{};
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
@@ -461,7 +464,7 @@ struct RigUIState {
   // Editable knob value boxes: while the user is typing in one, host-driven
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
-  std::array<__strong NSPopUpButton*, 4> modelPickers{};  // per-stage model selector in each tile
+  std::array<__strong RigPopUpButton*, 4> modelPickers{};  // per-stage model selector in each tile
   LV2UI_Resize* hostResize = nullptr;
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
@@ -496,6 +499,9 @@ struct RigUIState {
         selectedStageIndex = -1;
         for (size_t s = 0; s < stageCards.size(); ++s) {
           if (stageCards[s]) stageCards[s].showsSelection = NO;
+        }
+        for (size_t s = 0; s < modelPickers.size(); ++s) {
+          if (modelPickers[s]) modelPickers[s].showsSelection = NO;
         }
       }
     });
@@ -2230,12 +2236,14 @@ struct RigUIState {
     }
     if ((port >= 7 && port <= 9) || port == 47) {
       const size_t slot = port == 47 ? 3 : port - 7;
-      dispatch_async(dispatch_get_main_queue(), ^{
+      auto updatePower = ^{
         if (!alive || !*alive) return;
         if (!powerButtons[slot]) return;
         powerButtons[slot].state = value >= 0.5f;
         powerButtons[slot].needsDisplay = YES;
-      });
+      };
+      if ([NSThread isMainThread]) updatePower();
+      else dispatch_async(dispatch_get_main_queue(), updatePower);
       return;
     }
     if (port == 20 || port == 21) {   // per-stage oversample mode (0..7)
@@ -2243,7 +2251,7 @@ struct RigUIState {
       if (popup) {
         const int mode = (int)(value + 0.5f);
         const int idx = NAMRig::oversampleMenuIndexFromMode(mode);
-        dispatch_async(dispatch_get_main_queue(), ^{
+        auto updateOversample = ^{
           if (!alive || !*alive) return;
           if (idx >= 0 && idx < popup.itemArray.count)
             [popup selectItemAtIndex:idx];
@@ -2251,13 +2259,15 @@ struct RigUIState {
           NSString* selected = popup.selectedItem.toolTip ?: @"";
           popup.toolTip = [NSString stringWithFormat:
               @"Sets %@-stage oversampling. %@", role, selected];
-        });
+        };
+        if ([NSThread isMainThread]) updateOversample();
+        else dispatch_async(dispatch_get_main_queue(), updateOversample);
       }
       return;
     }
     if (port == 24) {
       const int idx = NAMRig::decodeIrNormalization(value) - 1;
-      dispatch_async(dispatch_get_main_queue(), ^{
+      auto updateNormalization = ^{
         if (!alive || !*alive) return;
         if (irNormPopup) {
           [irNormPopup selectItemAtIndex:idx];
@@ -2266,7 +2276,9 @@ struct RigUIState {
               @"Sets WAV impulse-response gain handling. Changes glide smoothly. %@",
               selected];
         }
-      });
+      };
+      if ([NSThread isMainThread]) updateNormalization();
+      else dispatch_async(dispatch_get_main_queue(), updateNormalization);
       return;
     }
     if (port == 30) {

@@ -7,6 +7,7 @@
 #include "pin_eq.h"
 #include "rack_controls.h"
 #include "transformer_controls.h"
+#include "rig_control_contract.h"
 
 namespace NAMRig {
 

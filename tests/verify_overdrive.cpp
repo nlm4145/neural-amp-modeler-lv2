@@ -28,9 +28,9 @@ double level(const std::vector<float>& y, double hz, double rate) {
 }
 
 std::vector<float> run(std::vector<float> x, double rate, float drive, float tone,
-                       float levelDb) {
+                       float levelDb, bool enabled = true) {
   Overdrive od;
-  od.process(x.data(), x.size(), rate, drive, tone, levelDb);
+  od.process(x.data(), x.size(), rate, drive, tone, levelDb, enabled);
   return x;
 }
 
@@ -42,27 +42,50 @@ void check(bool ok, const char* label) {
 }  // namespace
 
 int main() {
-  // ---- Drive 0 is an exact bypass, whatever Tone and Level say. ----
+  // ---- Tone card OFF is an exact bypass, whatever Drive, Tone and Level say. ----
   for (double rate : {48000.0, 384000.0}) {
     const auto x = sine(440.0, 0.3, rate, 4096);
-    check(run(x, rate, 0.0f, 0.0f, 12.0f) == x, "Drive 0 is bit-exact (Tone/Level ignored)");
-    check(run(x, rate, NAN, 50.0f, 0.0f) == x, "non-finite Drive falls back to bypass");
+    check(run(x, rate, 50.0f, 50.0f, 12.0f, false) == x, "Tone card OFF is bit-exact (Drive/Tone/Level ignored)");
+    check(run(x, rate, 0.0f, 0.0f, 12.0f, false) == x, "Tone card OFF with Drive 0 is bit-exact");
   }
 
-  // ---- Turning Drive back to 0 fades out and returns to exact bypass. ----
+  // ---- Drive 0 with card ON is an active, distortionless boost (Level and Tone apply, no clipping). ----
+  {
+    const double rate = 96000.0;
+    const size_t n = 96000;
+    const auto x = sine(440.0, 0.2, rate, n);
+    const auto unity = run(x, rate, 0.0f, 100.0f, 0.0f, true);
+    const auto boosted = run(x, rate, 0.0f, 100.0f, 6.0f, true);
+    const double unityLvl = level(unity, 440.0, rate);
+    const double boostLvl = level(boosted, 440.0, rate);
+    check(std::fabs(20.0 * std::log10(boostLvl / unityLvl) - 6.0) < 0.05,
+          "Drive 0 level +6 dB provides 6 dB boost");
+
+    // Pure distortionless boost: no clipping harmonics (H3 and H2 negligible).
+    const double h3 = level(boosted, 1320.0, rate) / boostLvl;
+    const double h2 = level(boosted, 880.0, rate) / boostLvl;
+    check(h3 < 1.0e-4 && h2 < 1.0e-4, "Drive 0 is distortionless (no harmonics added)");
+
+    Overdrive od;
+    auto a = sine(440.0, 0.2, rate, 9600);
+    od.process(a.data(), a.size(), rate, 0.0f, 50.0f, 6.0f, true);
+    check(od.active(), "Drive 0 remains active when tone card is ON");
+  }
+
+  // ---- Turning tone card OFF fades out and returns to exact bypass. ----
   {
     const double rate = 96000.0;
     Overdrive od;
     auto a = sine(440.0, 0.3, rate, 9600);
-    od.process(a.data(), a.size(), rate, 60.0f, 50.0f, 0.0f);
-    check(od.active(), "engaged after Drive > 0");
+    od.process(a.data(), a.size(), rate, 60.0f, 50.0f, 0.0f, true);
+    check(od.active(), "engaged while tone card is ON");
     auto b = sine(440.0, 0.3, rate, 96000);
-    od.process(b.data(), b.size(), rate, 0.0f, 50.0f, 0.0f);
-    check(!od.active(), "fades out and resets after Drive returns to 0");
+    od.process(b.data(), b.size(), rate, 60.0f, 50.0f, 0.0f, false);
+    check(!od.active(), "fades out and resets after tone card is turned OFF");
     const auto c = sine(440.0, 0.3, rate, 4096);
     auto d = c;
-    od.process(d.data(), d.size(), rate, 0.0f, 50.0f, 0.0f);
-    check(d == c, "bit-exact again after the fade-out");
+    od.process(d.data(), d.size(), rate, 60.0f, 50.0f, 0.0f, false);
+    check(d == c, "bit-exact again after turning card OFF");
   }
 
   // ---- Engaging does not jump: the first samples stay near the dry input. ----

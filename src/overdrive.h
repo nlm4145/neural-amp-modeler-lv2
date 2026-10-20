@@ -20,7 +20,9 @@ namespace NAMRig {
 // (51p across 51k + Drive), g = (51k + Drive) / 4.7k. Bass never reaches the
 // clipper, which is why a TS tightens the amp and keeps the pick attack.
 // Tone is a 6 dB/oct treble roll-off swept 700 Hz..8.4 kHz, Level a dB trim.
-// Drive 0 is an exact bypass; Tone and Level only apply while it is engaged.
+// Bypassed when the Pre-Amp Boost card is toggled off. At Drive 0%, it operates
+// as a distortionless clean boost through Tone and Level; higher Drive settings
+// add symmetric soft-clipping saturation.
 class Overdrive {
  public:
   static constexpr float kToneDefault = 50.0f;
@@ -36,14 +38,14 @@ class Overdrive {
   bool active() const noexcept { return smoothOn_ > 0.0f; }
 
   void process(float* samples, size_t count, double rate, float driveAmount,
-               float toneAmount, float levelDb) noexcept {
-    const float driveTarget = std::isfinite(driveAmount)
-        ? std::clamp(driveAmount * 0.01f, 0.0f, 1.0f) : 0.0f;
-    const float onTarget = driveTarget > 0.0f ? 1.0f : 0.0f;
+               float toneAmount, float levelDb, bool enabled = true) noexcept {
+    const float onTarget = enabled ? 1.0f : 0.0f;
     if (onTarget == 0.0f && smoothOn_ <= 0.0f) {
       reset();
       return;
     }
+    const float driveTarget = std::isfinite(driveAmount)
+        ? std::clamp(driveAmount * 0.01f, 0.0f, 1.0f) : 0.0f;
     const float toneTarget = std::isfinite(toneAmount)
         ? std::clamp(toneAmount * 0.01f, 0.0f, 1.0f) : kToneDefault * 0.01f;
     const float levelTarget = std::isfinite(levelDb)
@@ -61,7 +63,7 @@ class Overdrive {
           std::exp(-static_cast<double>(n) / (std::max(1.0, rate) * 0.010)));
       const float onStart = smoothOn_;
       glide(smoothOn_, onTarget, smooth);
-      if (onTarget > 0.0f) glide(smoothDrive_, driveTarget, smooth);
+      glide(smoothDrive_, driveTarget, smooth);
       glide(smoothTone_, toneTarget, smooth);
       glide(smoothLevel_, levelTarget, smooth);
 
@@ -79,7 +81,7 @@ class Overdrive {
         const double x = s[i];
         bass_ += hpK * (x - bass_);
         lp_ += lpK * ((x - bass_) - lp_);
-        const double pedal = x + clip(g * lp_);
+        const double pedal = x + smoothDrive_ * clip(g * lp_);
         tone_ += toneK * (pedal - tone_);
         s[i] = static_cast<float>(x + on * (tone_ * level - x));
       }

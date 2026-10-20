@@ -312,6 +312,7 @@ if (APPLE)
 		rig_tone_api.h rig_tone_api.mm
 		rig_tone_browser.h rig_tone_browser.mm
 		rig_ai_copilot.h rig_ai_copilot.mm
+		rig_ai_support.h rig_ai_support.mm
 		rig_local_server.h rig_local_server.mm
 		rig_ui_state.h)
 	add_library(neural_amp_modeler_rig_ui MODULE ${RIG_UI_SOURCES})

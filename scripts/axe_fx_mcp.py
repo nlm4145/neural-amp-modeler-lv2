@@ -13,42 +13,63 @@ Zero external dependencies (uses standard Python 3 urllib and json).
 
 import sys
 import json
+import os
+import socket
+from pathlib import Path
 import urllib.request
 import urllib.error
 import urllib.parse
 
 AXE_FX_API_BASE = "http://127.0.0.1:48920/api/v1"
 
+def request_headers():
+    token = os.environ.get("AXE_FX_API_TOKEN")
+    if not token:
+        try:
+            token = (Path.home() / "Library/Application Support/Axe FX/local-api-token").read_text().strip()
+        except OSError:
+            raise ValueError("Local API token not found. Start Axe FX or set AXE_FX_API_TOKEN.")
+    return {"Authorization": f"Bearer {token}", "User-Agent": "AxeFX-MCP/1.0"}
+
+def fetch_json(url, payload=None, timeout=10):
+    try:
+        headers = request_headers()
+        data = None if payload is None else json.dumps(payload, allow_nan=False).encode("utf-8")
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(result, dict):
+                return {"error": "Axe FX returned a non-object response."}
+            if result.get("status") == "error":
+                result["error"] = result.get("message", "Axe FX request failed.")
+            return result
+    except urllib.error.HTTPError as error:
+        try:
+            detail = json.loads(error.read().decode("utf-8")).get("message", str(error))
+        except (ValueError, UnicodeError):
+            detail = str(error)
+        return {"error": f"Axe FX HTTP {error.code}: {detail}"}
+    except (urllib.error.URLError, socket.timeout, OSError, ValueError, UnicodeError) as error:
+        return {"error": f"Axe FX request failed: {error}"}
+
 def http_get(endpoint, params=None):
     url = f"{AXE_FX_API_BASE}/{endpoint}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "AxeFX-MCP/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        return {
-            "error": f"Failed to connect to Axe FX: {e}. Ensure the Axe FX standalone app is running."
-        }
+    return fetch_json(url)
 
 def http_post(endpoint, payload):
     url = f"{AXE_FX_API_BASE}/{endpoint}"
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", "User-Agent": "AxeFX-MCP/1.0"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        return {
-            "error": f"Failed to connect to Axe FX: {e}. Ensure the Axe FX standalone app is running."
-        }
+    return fetch_json(url, payload, timeout=85 if endpoint == "ai/prompt" else 15)
 
 TOOLS = [
+    {
+        "name": "axe_fx_get_control_schema",
+        "description": "Read valid control names, ranges, ENGINE units and enum IDs before adjusting knobs. Percentages are 0..100; EQ trims are dB, neutral 0.",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
     {
         "name": "axe_fx_ping",
         "description": "Check if the Axe FX standalone application is running and accessible.",
@@ -170,8 +191,8 @@ TOOLS = [
                 },
                 "apply": {
                     "type": "boolean",
-                    "description": "Whether to immediately apply the suggested settings to the live running rig (default true).",
-                    "default": True
+                    "description": "Whether to apply the suggestion to the live rig. Default false: preview first.",
+                    "default": False
                 }
             },
             "required": ["prompt"]
@@ -180,6 +201,10 @@ TOOLS = [
 ]
 
 def handle_tool_call(tool_name, arguments):
+    if not isinstance(arguments, dict):
+        return {"error": "Tool arguments must be an object."}
+    if tool_name == "axe_fx_get_control_schema":
+        return http_get("controls/schema")
     if tool_name == "axe_fx_ping":
         return http_get("ping")
 
@@ -215,7 +240,7 @@ def handle_tool_call(tool_name, arguments):
 
     elif tool_name == "axe_fx_ask_copilot":
         prompt = arguments.get("prompt", "")
-        apply = arguments.get("apply", True)
+        apply = arguments.get("apply", False)
         return http_post("ai/prompt", {"prompt": prompt, "apply": apply})
 
     else:
@@ -249,12 +274,19 @@ def main():
             continue
         try:
             req = json.loads(line)
-        except Exception as e:
+        except (ValueError, UnicodeError):
+            send_error(None, -32700, "Invalid JSON")
             continue
 
+        if not isinstance(req, dict):
+            send_error(None, -32600, "Request must be an object")
+            continue
         req_id = req.get("id")
         method = req.get("method")
         params = req.get("params", {})
+        if not isinstance(params, dict):
+            send_error(req_id, -32602, "params must be an object")
+            continue
 
         if method == "initialize":
             send_response(req_id, {
@@ -288,7 +320,7 @@ def main():
                         "text": text_repr
                     }
                 ],
-                "isError": "error" in result_data
+                "isError": "error" in result_data or result_data.get("status") == "error"
             })
 
         elif method == "ping":

@@ -84,6 +84,11 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) RigButton* copilotDialBtn;
 @property(nonatomic, strong) RigButton* copilotUndoBtn;
 @property(nonatomic, strong) NSProgressIndicator* copilotSpinner;
+@property(nonatomic, strong) NSTextField* copilotURLField;
+@property(nonatomic, strong) NSButton* copilotLocalCLIButton;
+@property(nonatomic, strong) RigButton* copilotApplyBtn;
+@property(nonatomic, strong) RigButton* copilotCancelBtn;
+@property(nonatomic, strong) RigAICopilotResult* copilotProposal;
 - (void)chooseModel:(id)sender;
 - (void)clearModel:(id)sender;
 - (void)removeStageSelection:(id)sender;
@@ -158,6 +163,8 @@ static NSString* stageName(NSInteger stage) {
 - (void)copilotProviderChanged:(NSPopUpButton*)sender;
 - (void)refreshCopilotModelsAction:(id)sender;
 - (void)copilotKeyFieldAction:(id)sender;
+- (void)applyCopilotProposal:(id)sender;
+- (void)cancelCopilotRequest:(id)sender;
 @end
 
 @implementation NAMRigUIController
@@ -189,6 +196,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)chooseModel:(id)sender {
   NSInteger tag = [sender respondsToSelector:@selector(tag)] ? [sender tag] : -1;
   if (!_state || tag < 0 || tag > 3) return;
+  [self selectStageCard:tag];
   NSOpenPanel* panel = [NSOpenPanel openPanel];
   panel.title = [NSString stringWithFormat:@"Choose %@ NAM Model",
                  @[@"a Pedal", @"an Amp", @"a Cab", @"a Cab B"][(NSUInteger)tag]];
@@ -734,6 +742,9 @@ static NSString* stageName(NSInteger stage) {
       : sender.floatValue;
   // A manual Output change while tuner-muted takes over from the saved level.
   if (sender.tag == 5) _state->tunerMuted = false;
+  if (sender.tag == 47) {
+    [self selectStageCard:3];
+  }
   _state->sendControl((uint32_t)sender.tag, value);
   _state->updateControl((uint32_t)sender.tag, value);
   [self markPresetModified];
@@ -1647,9 +1658,10 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)stageModelChanged:(NSPopUpButton*)sender {
   if (!_state) return;
+  const size_t stage = (size_t)sender.tag;
+  [self selectStageCard:(NSInteger)stage];
   NSMenuItem* item = sender.selectedItem;
   NSString* path = item.representedObject;
-  const size_t stage = (size_t)sender.tag;
   sender.toolTip = _state->modelPickerTooltip(stage, path);
   if (path.length) {
     if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -1668,10 +1680,24 @@ static NSString* stageName(NSInteger stage) {
 - (void)selectStageCard:(NSInteger)stageIndex {
   if (!_state) return;
   _state->selectedStageIndex = stageIndex;
+  // Stage cards (0 = Pedal, 1 = Amp, 2 = Cab)
   for (size_t s = 0; s < _state->stageCards.size(); ++s) {
     if (_state->stageCards[s]) {
-      _state->stageCards[s].showsSelection = ((NSInteger)s == stageIndex);
+      // Cab card (stage index 2 in stageCards) NEVER shows a whole-card selection border!
+      // Only Pedal (0) or Amp (1) show whole-card selection border.
+      if (s < 2) {
+        _state->stageCards[s].showsSelection = ((NSInteger)s == stageIndex);
+      } else {
+        _state->stageCards[s].showsSelection = NO;
+      }
     }
+  }
+  // Selection for the Cab feature is applied directly to the individual dropdowns (Cab A = 2, Cab B = 3)
+  if (_state->modelPickers[2]) {
+    _state->modelPickers[2].showsSelection = (stageIndex == 2);
+  }
+  if (_state->modelPickers[3]) {
+    _state->modelPickers[3].showsSelection = (stageIndex == 3);
   }
 }
 
@@ -1686,7 +1712,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)cycleSelectedStageModel:(NSInteger)direction {
   if (!_state) return;
   NSInteger stage = _state->selectedStageIndex;
-  if (stage < 0 || stage >= 3) return;
+  if (stage < 0 || stage >= 4) return;
   NSPopUpButton* picker = _state->modelPickers[(size_t)stage];
   if (!picker || picker.numberOfItems == 0) return;
 
@@ -2144,7 +2170,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
 
   const CGFloat popW = 540.0;
-  const CGFloat popH = 500.0;
+  const CGFloat popH = 570.0;
   RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, popW, popH)];
   content.wantsLayer = YES;
 
@@ -2155,7 +2181,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   title.textColor = rigText();
   [content addSubview:title];
 
-  NSTextField* sub = [NSTextField labelWithString:@"Universal AI tone engineer & DSP diagnostician · ⌘K"];
+  NSTextField* sub = [NSTextField labelWithString:@"Preview a tone starting point, then apply & save · ⌘K"];
   sub.frame = NSMakeRect(20, popH - 54, 400, 16);
   sub.font = [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
   sub.textColor = rigDimText();
@@ -2218,23 +2244,36 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotKeyField.target = self;
   self.copilotKeyField.action = @selector(copilotKeyFieldAction:);
   [content addSubview:self.copilotKeyField];
+  self.copilotURLField = [[NSTextField alloc] initWithFrame:NSMakeRect(82, popH - 146, 438, 22)];
+  self.copilotURLField.stringValue = config.baseURL ?: @"";
+  self.copilotURLField.placeholderString = @"HTTPS API URL or loopback Ollama URL";
+  self.copilotURLField.font = [NSFont systemFontOfSize:11];
+  [content addSubview:self.copilotURLField];
+  NSTextField* urlLabel = [NSTextField labelWithString:@"API URL:"];
+  urlLabel.frame = NSMakeRect(20, popH - 144, 60, 18);
+  urlLabel.textColor = rigText();
+  [content addSubview:urlLabel];
+  self.copilotLocalCLIButton = [NSButton checkboxWithTitle:@"Allow local CLI (uses its permissions; may access local tools)" target:nil action:nil];
+  self.copilotLocalCLIButton.frame = NSMakeRect(20, popH - 172, 500, 22);
+  self.copilotLocalCLIButton.state = config.allowLocalCLI ? NSControlStateValueOn : NSControlStateValueOff;
+  [content addSubview:self.copilotLocalCLIButton];
 
   // Query models on popover opening
   [self refreshCopilotModelsUI];
 
   // Separator
-  NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 130, popW - 40, 1)];
+  NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 182, popW - 40, 1)];
   sep.boxType = NSBoxSeparator;
   [content addSubview:sep];
 
   // Prompt input
   NSTextField* pLbl = [NSTextField labelWithString:@"Describe Artist, Song, or Tone Adjustment:"];
-  pLbl.frame = NSMakeRect(20, popH - 156, 350, 18);
+  pLbl.frame = NSMakeRect(20, popH - 206, 350, 18);
   pLbl.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
   pLbl.textColor = rigText();
   [content addSubview:pLbl];
 
-  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 208, popW - 40, 48)];
+  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 258, popW - 40, 48)];
   self.copilotPromptInput.placeholderString = @"e.g. 'Tight high-gain metal rhythm with punchy low end', 'Warm vintage blues lead with subtle delay', 'Eliminate feedback and rumble'";
   self.copilotPromptInput.font = [NSFont systemFontOfSize:12];
   self.copilotPromptInput.target = self;
@@ -2242,22 +2281,27 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [content addSubview:self.copilotPromptInput];
 
   // Action Buttons
-  self.copilotDialBtn = rigButton(content, @"⚡ Dial In Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 250, 140, 30));
+  self.copilotDialBtn = rigButton(content, @"Preview Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 300, 110, 30));
   self.copilotDialBtn.primary = YES;
+  self.copilotDialBtn.enabled = ![RigAICopilot sharedCopilot].isProcessing;
   self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
 
-  self.copilotUndoBtn = rigButton(content, @"↩ Undo / A-B", self, @selector(undoCopilotDial:), NSMakeRect(170, popH - 250, 110, 30));
+  self.copilotApplyBtn = rigButton(content, @"Apply & Save", self, @selector(applyCopilotProposal:), NSMakeRect(140, popH - 300, 110, 30));
+  self.copilotApplyBtn.enabled = self.copilotProposal != nil;
+  self.copilotUndoBtn = rigButton(content, @"A/B Toggle", self, @selector(undoCopilotDial:), NSMakeRect(260, popH - 300, 100, 30));
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
   self.copilotUndoBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
 
-  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(290, popH - 246, 22, 22)];
+  self.copilotCancelBtn = rigButton(content, @"Cancel", self, @selector(cancelCopilotRequest:), NSMakeRect(370, popH - 300, 80, 30));
+  self.copilotCancelBtn.enabled = [RigAICopilot sharedCopilot].isProcessing;
+  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(470, popH - 296, 22, 22)];
   self.copilotSpinner.style = NSProgressIndicatorStyleSpinning;
   self.copilotSpinner.controlSize = NSControlSizeSmall;
   self.copilotSpinner.displayedWhenStopped = NO;
   [content addSubview:self.copilotSpinner];
 
   // Telemetry / Output scroll view
-  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 280)];
+  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 330)];
   scroll.hasVerticalScroller = YES;
   scroll.borderType = NSBezelBorder;
   scroll.autohidesScrollers = YES;
@@ -2270,8 +2314,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0];
   self.copilotOutputView.string =
     @"Axe FX AI Tone Tuning Ready.\n"
-    @"• Type any tone description or question above and press Enter (or click 'Dial In Tone').\n"
-    @"• AI Tone Tuning analyzes your active rig state, scans your local Tone3000 library, and applies authentic dials with feedback-prevention DSP rules.";
+    @"• Describe a tone, then Preview Tone. Nothing changes until you choose Apply & Save.\n"
+    @"• The AI receives current rig controls and a local model shortlist—not your audio. Suggestions are starting points; pickup level and playback matter.\n"
+    @"• API keys are stored in Keychain. Local CLI use requires explicit opt-in.";
   scroll.documentView = self.copilotOutputView;
   [content addSubview:scroll];
 
@@ -2303,14 +2348,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSString* prov = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
   NSString* key = self.copilotKeyField.stringValue;
   __weak NSComboBox* weakBox = self.copilotModelComboBox;
+  __weak NAMRigUIController* weakSelf = self;
   [[RigAICopilot sharedCopilot] fetchModelsForProvider:prov
                                                 apiKey:key
                                      completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
-    if (liveModels.count > 0 && weakBox) {
+    if (liveModels.count > 0 && weakBox && [weakSelf.copilotProvPopup.titleOfSelectedItem.lowercaseString isEqual:prov]) {
       NSString* cur = weakBox.stringValue;
       [weakBox removeAllItems];
       [weakBox addItemsWithObjectValues:liveModels];
-      weakBox.stringValue = [liveModels containsObject:cur] ? cur : (liveModels.firstObject ?: @"");
+      weakBox.stringValue = cur.length ? cur : (liveModels.firstObject ?: @"");
     }
   }];
 }
@@ -2319,6 +2365,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSString* sel = sender.titleOfSelectedItem.lowercaseString;
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
   config.provider = sel;
+  config.apiKey = [RigAIConfig storedApiKeyForProvider:sel];
+  self.copilotKeyField.stringValue = config.apiKey;
 
   [self.copilotModelComboBox removeAllItems];
   NSArray<NSString*>* defModels = [RigAICopilot defaultModelsForProvider:sel];
@@ -2334,6 +2382,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   } else if ([sel isEqualToString:@"ollama"]) {
     config.baseURL = @"http://localhost:11434/v1";
   }
+  else config.baseURL = @"";
+  self.copilotURLField.stringValue = config.baseURL;
+  self.copilotProposal = nil;
+  self.copilotApplyBtn.enabled = NO;
   NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:sel];
   if (localCLI) {
     self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to use local %@, or enter API key",
@@ -2352,6 +2404,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.provider = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
   config.model = self.copilotModelComboBox.stringValue;
   config.apiKey = self.copilotKeyField.stringValue;
+  config.baseURL = self.copilotURLField.stringValue;
+  config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
   NSError* err = nil;
   if ([config saveToDisk:&err]) {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).\nRefreshing models list...", config.provider, config.model];
@@ -2364,22 +2418,28 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 - (void)executeCopilotDial:(id)sender {
   (void)sender;
   NSString* prompt = self.copilotPromptInput.stringValue;
-  if (!prompt.length) return;
+  if (!prompt.length || !_state) return;
 
   // Auto-save any edited config fields first
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
   config.provider = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
   config.model = self.copilotModelComboBox.stringValue;
-  if (self.copilotKeyField.stringValue.length > 0) {
-    config.apiKey = self.copilotKeyField.stringValue;
+  config.apiKey = self.copilotKeyField.stringValue;
+  config.baseURL = self.copilotURLField.stringValue;
+  config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
+  NSError* configError = nil;
+  if (![config saveToDisk:&configError]) {
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Could not save AI settings securely: %@", configError.localizedDescription]; return;
   }
-  [config saveToDisk:nil];
+  self.copilotProposal = nil;
+  self.copilotApplyBtn.enabled = NO;
+  self.copilotCancelBtn.enabled = YES;
 
   self.copilotDialBtn.enabled = NO;
   [self.copilotSpinner startAnimation:nil];
 
-  NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:config.provider];
-  if (config.apiKey.length > 0) {
+  NSString* localCLI = config.allowLocalCLI ? [RigAICopilot detectLocalCLIForProvider:config.provider] : nil;
+  if (config.effectiveApiKey.length > 0) {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Connecting to cloud %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model];
   } else if (localCLI) {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Delegating to local %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", localCLI.lastPathComponent, config.model];
@@ -2388,36 +2448,39 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }
 
   __weak NAMRigUIController* weakSelf = self;
+  auto alive = _state->isAlive;
   [[RigAICopilot sharedCopilot] processUserPrompt:prompt
                                         withState:_state
                                 completionHandler:^(RigAICopilotResult* res, NSError* err) {
-    if (!weakSelf) return;
+    if (!weakSelf || !alive || !*alive) return;
     [weakSelf.copilotSpinner stopAnimation:nil];
     weakSelf.copilotDialBtn.enabled = YES;
+    weakSelf.copilotCancelBtn.enabled = NO;
 
     if (err) {
       weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"❌ AI Error: %@", err.localizedDescription];
       return;
     }
 
-    NSError* applyErr = nil;
-    [[RigAICopilot sharedCopilot] applyResult:res toState:weakSelf.state saveUndoState:YES error:&applyErr];
-    weakSelf.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
+    if (!res) { weakSelf.copilotOutputView.string = @"No tone proposal returned."; return; }
+    weakSelf.copilotProposal = res;
+    weakSelf.copilotApplyBtn.enabled = YES;
+    [[RigAICopilot sharedCopilot] completeCurrentTaskWithResult:res savedPresetName:nil];
 
     NSMutableString* msg = [NSMutableString string];
-    [msg appendFormat:@"✅ TONE DIALED IN SUCCESSFULLY!\n\n"];
+    [msg appendString:@"TONE PREVIEW — rig unchanged. Choose Apply & Save to use this proposal.\n\n"];
     [msg appendFormat:@"SUMMARY:\n%@\n\n", res.explanation ?: @""];
     if (res.thought.length) {
       [msg appendFormat:@"ENGINEERING REASONING:\n%@\n\n", res.thought];
     }
     if (res.ampPath.length) {
-      [msg appendFormat:@"• Loaded Amp: %@\n", res.ampPath.lastPathComponent];
+      [msg appendFormat:@"• Proposed Amp: %@\n", res.ampPath];
     }
     if (res.cabPath.length) {
-      [msg appendFormat:@"• Loaded Cab: %@\n", res.cabPath.lastPathComponent];
+      [msg appendFormat:@"• Proposed Cab: %@\n", res.cabPath];
     }
     if (res.controls.count > 0) {
-      [msg appendString:@"• Adjusted Controls:\n"];
+      [msg appendString:@"• Proposed Controls (engine units):\n"];
       for (NSString* k in res.controls) {
         [msg appendFormat:@"   - %@: %@\n", k, res.controls[k]];
       }
@@ -2426,12 +2489,61 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }];
 }
 
+- (void)cancelCopilotRequest:(id)sender {
+  [[RigAICopilot sharedCopilot] cancelProcessing];
+}
+
+- (void)applyCopilotProposal:(id)sender {
+  if (!_state || !self.copilotProposal) return;
+  RigAICopilot* copilot = [RigAICopilot sharedCopilot];
+  if (copilot.isProcessing) return;
+  RigAICopilotResult* proposal = self.copilotProposal;
+  NSString* prompt = self.copilotPromptInput.stringValue;
+  auto alive = _state->isAlive;
+  RigUIState* state = _state;
+  self.copilotApplyBtn.enabled = NO;
+  self.copilotDialBtn.enabled = NO;
+  self.copilotUndoBtn.enabled = NO;
+  self.copilotCancelBtn.enabled = NO;
+  [self.copilotSpinner startAnimation:nil];
+  [copilot beginPresetTaskForPrompt:prompt];
+  __weak NAMRigUIController* weakSelf = self;
+  [copilot applyResult:proposal toState:state completionHandler:^(NSError* error) {
+    [weakSelf.copilotSpinner stopAnimation:nil];
+    weakSelf.copilotDialBtn.enabled = YES;
+    if (!alive || !*alive || error) {
+      NSError* failure = error ?: [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"Rig closed."}];
+      [copilot failCurrentTaskWithError:failure];
+      weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"Could not apply tone: %@", failure.localizedDescription];
+      return;
+    }
+    RigPresetManager* manager = state->presetManager;
+    [manager rescanPresets];
+    NSString* base = proposal.presetName.length ? proposal.presetName : [RigAICopilot summarizePromptToPresetName:prompt];
+    base = [base stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+    base = [base stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+    NSString* name = [manager uniquePresetNameForBase:base.length ? base : @"AI Custom Tone"];
+    NSError* saveError = nil;
+    BOOL saved = [manager savePresetNamed:name fromState:state error:&saveError];
+    if (saved) {
+      [copilot completeCurrentTaskWithResult:proposal savedPresetName:name];
+      state->updatePresetDisplayTitle();
+      weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"Tone applied and saved as '%@'.\n%@\nUse A/B Toggle to compare with the previous rig.", name, proposal.explanation];
+    } else {
+      [copilot failCurrentTaskWithError:saveError ?: [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"Preset save failed."}]];
+      weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"Tone applied, but preset was NOT saved: %@. Use A/B to restore if needed.", saveError.localizedDescription ?: @"Save failed"];
+    }
+    weakSelf.copilotProposal = nil;
+    weakSelf.copilotUndoBtn.enabled = copilot.canUndo;
+  }];
+}
+
 - (void)undoCopilotDial:(id)sender {
   (void)sender;
   if (!_state) return;
   NSError* err = nil;
   if ([[RigAICopilot sharedCopilot] undoLastAIApplicationToState:_state error:&err]) {
-    self.copilotOutputView.string = @"↩ Previous tone restored (Undo / A-B toggle).";
+    self.copilotOutputView.string = @"A/B switched. Click again to return to the other tone (saved preset is unchanged).";
     self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
   } else {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Undo failed: %@", err.localizedDescription];
@@ -4812,9 +4924,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Reverb pre-delay. Sets the time gap (0-100 ms) before the reverb tail begins. Keeps your initial pick attack and note definition clear and upfront before the ambient reverb blooms.",
       @"Amount of added tube-inspired character. Changes clipping knee, headroom and asymmetry in the shared power-stage engine. 0% preserves the existing power-stage response. The captured amp's original tubes are not removed.",
       @"Mid push (pre-amp). Overdrive-style midrange bell (750 Hz, up to +9 dB) before the NAM amp model, like a Tube Screamer or tight boost. Pair with Input EQ and a little Drive to stand in for a separate overdrive capture. 0% is exact bypass.",
-      @"Overdrive drive (pre-amp, Tube Screamer-style). Clips only the mids above 720 Hz with a soft diode pair and mixes the clean signal back, so bass stays tight and pick attack survives. Sits in front of the amp like a pedal, ahead of Amp Drive. Low drive with Level up is the classic boost into a high-gain amp. 0% is exact bypass.",
-      @"Overdrive tone. Treble roll-off after the clipper, from dark (700 Hz) to bright (8.4 kHz). Shown on the Sculpt graph. Only applies while OD Drive is on.",
-      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder. Shown on the Sculpt graph. Only applies while OD Drive is on.",
+      @"Overdrive drive (pre-amp, Tube Screamer-style). Clips only the mids above 720 Hz with a soft diode pair and mixes the clean signal back, so bass stays tight and pick attack survives. Sits in front of the amp like a pedal, ahead of Amp Drive. At 0%, acts as a distortionless clean boost.",
+      @"Overdrive tone. Treble roll-off after the clipper, from dark (700 Hz) to bright (8.4 kHz). Shown on the Sculpt graph.",
+      @"Overdrive level. Output of the overdrive into the amp, -12 to +12 dB. Raise it to hit the amp harder with clean or saturated boost. Shown on the Sculpt graph.",
       @"Attack time for the pre-model compressor (1 to 100 ms). Faster attack clamps pick transients sooner; slower attack lets the transient through for more snap.",
       @"Release time for the pre-model compressor (10 to 1000 ms). Faster release gives a breathing, lively response; slower release yields smooth sustain.",
       @"Post-cab stereo compression before delay and reverb. Amount lowers threshold, raises ratio and adds makeup gain. Both channels share gain reduction to preserve the stereo image. 0% is exact bypass; independent of pre-amp compression.",
@@ -4976,11 +5088,27 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (NSInteger i = 0; i < 3; ++i) {
       RigPanel* box = addPanel(boxRow, NSMakeRect(0, 0, 100, 100));
       __weak NAMRigUIController* weakCtrl = state->uiController;
-      box.onClick = ^{
-        if (weakCtrl) {
-          [weakCtrl selectStageCard:i];
-        }
-      };
+      if (i < 2) {
+        box.onClick = ^{
+          if (weakCtrl) {
+            [weakCtrl selectStageCard:i];
+          }
+        };
+      } else {
+        // Cabinet stage card (i == 2):
+        // Do NOT apply the selection border to the whole card!
+        // Instead, clicking inside selects Cab A or Cab B dropdown based on horizontal click location.
+        box.onClickWithEvent = ^(NSEvent* event, RigPanel* pnl) {
+          if (weakCtrl && pnl) {
+            NSPoint loc = [pnl convertPoint:event.locationInWindow fromView:nil];
+            if (loc.x >= pnl.bounds.size.width * 0.5) {
+              [weakCtrl selectStageCard:3];
+            } else {
+              [weakCtrl selectStageCard:2];
+            }
+          }
+        };
+      }
       NSArray<NSString*>* stageTips = @[
         @"Pedal stage: dynamics and input conditioning feed the selected pedal NAM model before the amp. Right-click card to remove selection.",
         @"Amp stage: the selected NAM model, drive trim, and optional output-transformer coloration form the core amp sound. Right-click card to remove selection.",
@@ -5127,8 +5255,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       // state->effectsPopover, state->speakerPopover, state->ampAdvancedPopover
 
       // The dropdown is the tile's model control/display — always visible.
-      state->modelPickers[(size_t)i] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-      NSPopUpButton* mp = state->modelPickers[(size_t)i];
+      state->modelPickers[(size_t)i] = [[RigPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+      RigPopUpButton* mp = state->modelPickers[(size_t)i];
+      mp.wantsLayer = YES;
+      mp.layer.cornerRadius = 4.0;
+      mp.onClick = ^{
+        if (weakCtrl) {
+          [weakCtrl selectStageCard:i];
+        }
+      };
       mp.translatesAutoresizingMaskIntoConstraints = NO;
       mp.controlSize = NSControlSizeSmall;
       mp.tag = (NSInteger)i;
@@ -5167,8 +5302,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [[browseA.widthAnchor constraintEqualToConstant:26] setActive:YES];
         [[browseA.heightAnchor constraintEqualToConstant:23] setActive:YES];
 
-        NSPopUpButton* mpB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+        RigPopUpButton* mpB = [[RigPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         state->modelPickers[3] = mpB;
+        mpB.wantsLayer = YES;
+        mpB.layer.cornerRadius = 4.0;
+        mpB.onClick = ^{
+          if (weakCtrl) {
+            [weakCtrl selectStageCard:3];
+          }
+        };
         mpB.translatesAutoresizingMaskIntoConstraints = NO;
         mpB.controlSize = NSControlSizeSmall;
         mpB.tag = 3;
@@ -5363,9 +5505,18 @@ void portEvent(LV2UI_Handle handle,
   if (!property || property->type != state->atomURID || !value) return;
   const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
   if (value->type == state->atomPath && value->size > 0) {
-    for (size_t i = 0; i < state->pathURIDs.size(); ++i)
-      if (propertyId == state->pathURIDs[i])
-        state->displayPath(i, reinterpret_cast<const char*>(value + 1));
+    const char* path = reinterpret_cast<const char*>(value + 1);
+    if (!memchr(path, '\0', value->size)) return;
+    std::string confirmed(path);
+    auto alive = state->isAlive;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
+      for (size_t i = 0; i < state->pathURIDs.size(); ++i) if (propertyId == state->pathURIDs[i]) {
+        state->confirmedPaths[i] = confirmed;
+        ++state->pathResponseSerial[i];
+        state->displayPath(i, confirmed.c_str());
+      }
+    });
     return;
   }
   // Tuner updates: patch:Set floats — note (MIDI number, -1 = none) and cents.

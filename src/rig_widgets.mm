@@ -234,6 +234,9 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   if (_showsSelection != showsSelection) {
     _showsSelection = showsSelection;
     self.needsDisplay = YES;
+    if (self.layer) {
+      [self.layer setNeedsDisplay];
+    }
   }
 }
 - (NSView *)hitTest:(NSPoint)point {
@@ -245,7 +248,9 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   return hit;
 }
 - (void)mouseDown:(NSEvent*)event {
-  if (_onClick) {
+  if (_onClickWithEvent) {
+    _onClickWithEvent(event, self);
+  } else if (_onClick) {
     _onClick();
   }
   [super mouseDown:event];
@@ -266,6 +271,39 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   } else {
     p.lineWidth = 1.0;
     [rigPanelBorder() setStroke];
+    [p stroke];
+  }
+}
+@end
+
+// ---- RigPopUpButton ----
+
+@implementation RigPopUpButton
+- (void)setShowsSelection:(BOOL)showsSelection {
+  if (_showsSelection != showsSelection) {
+    _showsSelection = showsSelection;
+    self.needsDisplay = YES;
+    if (self.layer) {
+      [self.layer setNeedsDisplay];
+    }
+  }
+}
+
+- (void)mouseDown:(NSEvent*)event {
+  if (_onClick) {
+    _onClick();
+  }
+  [super mouseDown:event];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  [super drawRect:dirtyRect];
+  if (_showsSelection) {
+    NSRect r = NSInsetRect(self.bounds, 1.0, 1.0);
+    NSBezierPath* p = [NSBezierPath bezierPathWithRoundedRect:r xRadius:4.0 yRadius:4.0];
+    p.lineWidth = 1.5;
+    NSColor* selColor = _selectionBorderColor ?: [NSColor colorWithSRGBRed:1.00 green:0.86 blue:0.18 alpha:1.0];
+    [selColor setStroke];
     [p stroke];
   }
 }
@@ -1760,8 +1798,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const int kSatSteps = 50;
   for (int s = 0; s <= kSatSteps; ++s) {
     const double x = -1.0 + 2.0 * ((double)s / (double)kSatSteps);
-    const double clipped = x + NAMRig::Overdrive::clip(g * x * 0.15);
-    const double maxOut = 1.0 + NAMRig::Overdrive::clip(g * 0.15);
+    const double clipped = x + driveNorm * NAMRig::Overdrive::clip(g * x * 0.15);
+    const double maxOut = 1.0 + driveNorm * NAMRig::Overdrive::clip(g * 0.15);
     const double yNorm = (maxOut > 0.0) ? std::clamp(clipped / maxOut, -1.0, 1.0) : x;
     const NSPoint pt = NSMakePoint(lPad + ((x + 1.0) * 0.5) * lPlotW, lMidY + yNorm * (lPlotH * 0.45));
     if (s == 0) [satCurve moveToPoint:pt];

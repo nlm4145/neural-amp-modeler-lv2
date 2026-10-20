@@ -32,6 +32,14 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port);
 @property(nonatomic) BOOL showsSelection;
 @property(nonatomic, strong) NSColor* selectionBorderColor;
 @property(nonatomic, copy) void (^onClick)(void);
+@property(nonatomic, copy) void (^onClickWithEvent)(NSEvent* event, RigPanel* panel);
+@end
+
+// Dropdown popup button with optional selection highlight border and click callback.
+@interface RigPopUpButton : NSPopUpButton
+@property(nonatomic) BOOL showsSelection;
+@property(nonatomic, strong) NSColor* selectionBorderColor;
+@property(nonatomic, copy) void (^onClick)(void);
 @end
 
 // A flat, dark-theme rounded button. "primary" renders with an accent fill;

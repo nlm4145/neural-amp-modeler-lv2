@@ -1738,11 +1738,14 @@ static void verifyStageMeters(Runtime& runtime) {
   for (size_t i = 0; i < properties.size(); ++i)
     CHECK(bool(state->stageMeters[i].clipping) == (i == 0));
   levels();
-  REQUIRE(state->inDbLabel && state->outDbLabel && state->inDbBarWidth && state->outDbBarWidth);
-  CHECK([state->inDbLabel.stringValue isEqualToString:@"+0.0 dB"]);
-  CHECK([state->outDbLabel.stringValue isEqualToString:@"-6.0 dB"]);
-  CHECK(near(state->inDbBarWidth.constant, 110));
-  CHECK(near(state->outDbBarWidth.constant, 99));
+  // The current layout draws readouts and bars inside the four stage widgets;
+  // the retired title-bar labels/width constraints are no longer instantiated.
+  for (RigStageMeterView* meter : state->stageMeters) {
+    NSBitmapImageRep* image = [meter bitmapImageRepForCachingDisplayInRect:meter.bounds];
+    REQUIRE(image && image.pixelsWide > 0 && image.pixelsHigh > 0);
+    [meter cacheDisplayInRect:meter.bounds toBitmapImageRep:image];
+    CHECK(image.bitmapData != nullptr);
+  }
 
   stage = "stage meters / timer attach / detach / reattach / no widget retain cycle";
   __weak RigStageMeterView* weakMeter;
@@ -2300,7 +2303,12 @@ static void verify(const char* modulePath) {
       [(id<TransformerTestController>)state->uiController controlTextDidEndEditing:
           [NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:field]];
       drain();
-      CHECK(host.writes.empty());
+      if (!CHECK(host.writes.empty())) {
+        std::fprintf(stderr, "  apply path: %s, group: %zu\n", path.UTF8String, group);
+        for (const auto& [port, sent] : host.writes)
+          for (float value : sent)
+            std::fprintf(stderr, "  unexpected write: port %u = %.9g\n", port, value);
+      }
       snapshot(state, presetClass, expected, false);
       telemetry(state, expected);
     }

@@ -236,8 +236,8 @@ for required_audio_sym in (
     assert required_audio_sym in standalone_mm, f"standalone_main.mm missing {required_audio_sym}"
 
 assert '@"CAB A LVL"' in ui_mm, "knobNames[8] must be labeled CAB A LVL"
-assert "const size_t groupCounts[3] = {2, 6, 1};" in ui_mm, \
-    "Pedal card has 2 knobs (Gate threshold/release), amp has 6, cab has 1 (OUTPUT)"
+assert "const size_t groupCounts[3] = {3, 6, 1};" in ui_mm, \
+    "Pedal card has up to 3 knobs (Gate threshold/release + Input trim), amp has 6, cab has 1 (OUTPUT)"
 plugin_cpp = (ROOT / "src" / "nam_rig_plugin.cpp").read_text()
 assert "if (haveA && consoleOn) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
     "cab_level (CAB A LVL) must scale Cab A independently before blending with Cab B"

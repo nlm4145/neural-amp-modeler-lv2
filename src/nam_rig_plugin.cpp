@@ -1176,13 +1176,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                         float* samples, size_t count, double domainRate) {
     if (stage == 1) {
       // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
-      const bool odOn = portValue(ports.od_enabled, 1.0f) >= 0.5f;
-      if (odOn)
-        overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
-                          portValue(ports.od_tone, Overdrive::kToneDefault),
-                          portValue(ports.od_level, 0.0f));
-      else
-        overdrive.reset();
+      const bool odOn = portValue(ports.od_enabled, 0.0f) >= 0.5f;
+      overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
+                        portValue(ports.od_tone, Overdrive::kToneDefault),
+                        portValue(ports.od_level, 0.0f), odOn);
       const float target = ampGainCache.get(*ports.amp_drive, blockRounding);
       const float coeff = ampDriveRateCache.get(domainRate, blockRounding);
       for (size_t i = 0; i < count; ++i) {

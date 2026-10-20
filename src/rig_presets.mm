@@ -449,12 +449,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
     if (port == 4) {
-      if (!state->selectedPaths[0].empty()) {
-        const float val = state->knobs[k] ? state->knobs[k].floatValue : 0.0f;
-        p->_controls[4] = val;
-      } else {
-        p->_controls[4] = 0.0f;
-      }
+      p->_controls[4] = state->knobs[k] ? state->knobs[k].floatValue : 0.0f;
       continue;
     }
     const float val = state->knobs[k] ? state->knobs[k].floatValue : kRigKnobDefaults[k];
@@ -467,6 +462,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[9] = p->_stages[2].enabled ? 1.0f : 0.0f;
   p->_controls[47] = p->_stages[3].enabled ? 1.0f : 0.0f;
   p->_controls[59] = state->cab2PolarityInverted ? 1.0f : 0.0f;
+  p->_controls[NAMRig::kCompressorEnabledPort] = state->compressorEnabled;
+  p->_controls[NAMRig::kOverdriveEnabledPort] = state->boostEnabled;
   p->_controls[NAMRig::kPostCompressorEnabledPort] = state->postCompressorEnabled;
   p->_controls[20] = p->_stages[0].oversample;
   p->_controls[21] = p->_stages[1].oversample;
@@ -515,6 +512,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   const float postEnabled = postEnabledIt != _controls.end() ? postEnabledIt->second : 1.0f;
   state->sendControl(NAMRig::kPostCompressorEnabledPort, postEnabled);
   state->updateControl(NAMRig::kPostCompressorEnabledPort, postEnabled);
+  for (const uint32_t port : {NAMRig::kCompressorEnabledPort, NAMRig::kOverdriveEnabledPort}) {
+    auto it = _controls.find(port);
+    const float enabled = it != _controls.end() ? it->second : 1.0f;
+    state->sendControl(port, enabled);
+    state->updateControl(port, enabled);
+  }
   state->sendControl(20, _stages[0].oversample);
   state->updateControl(20, _stages[0].oversample);
   state->sendControl(21, _stages[1].oversample);
@@ -558,9 +561,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
     if (port == 4) {
-      const bool hasPedal = !_stages[0].path.empty();
       auto it = _controls.find(port);
-      const float val = (hasPedal && it != _controls.end()) ? it->second : 0.0f;
+      const float val = it != _controls.end() ? it->second : 0.0f;
       state->sendControl(4, val);
       state->updateControl(4, val);
       continue;

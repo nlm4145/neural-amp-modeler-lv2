@@ -59,6 +59,49 @@ heavily saturated amp capture already compresses the signal.
 
 ## Testing
 
+### AI Tone Tuning (macOS rig UI and standalone)
+
+Open **AI Tone Tuning** with **⌘K**. Choose a provider, model and API URL,
+describe your tone, then click **Preview Tone**. Preview does not change the rig.
+**Apply & Save** validates the proposal, waits for engine model-load acknowledgements,
+and saves a uniquely named preset without overwriting an existing one. **A/B Toggle**
+exchanges it with the prior rig; it does not alter the saved preset file.
+
+The assistant receives your current rig settings and at most 48 installed-model
+candidates from `~/Music/Tone3000 Library`, using `_tone3000.json` metadata where
+available. It does not receive audio. Artist tones are starting points, not verified
+reproductions. Full-rig captures require cabinet stages to be bypassed.
+
+API keys are stored per provider in macOS Keychain; legacy plaintext keys are
+migrated only after Keychain accepts them. Local CLI fallback is **off by default**
+and requires explicit opt-in. It retains CLI permissions; Claude tools are disabled
+and Codex runs read-only. Provider requests have a 60-second deadline and can be
+cancelled. Use HTTPS endpoints, or HTTP on loopback for Ollama/local servers.
+
+The standalone local API binds to `127.0.0.1:48920`, rejects browser origins, and
+requires a bearer token stored with mode `0600` in
+`~/Library/Application Support/Axe FX/local-api-token`. `scripts/axe_fx_mcp.py`
+reads this token automatically, or uses `AXE_FX_API_TOKEN`. External clients must
+send `Authorization: Bearer <token>`. Read `/api/v1/controls/schema` before writing
+controls: percentages use **0–100**, EQ trims use **dB with 0 neutral**, and enum IDs
+must match the schema. MCP AI requests default to preview (`apply: false`).
+
+The control reference is generated from the shipped LV2 definitions. After changing
+`resources/neural_amp_modeler_rig.ttl.in`, run:
+
+```bash
+python3 scripts/generate_rig_control_contract.py
+python3 tests/test_ai_tone.py
+RIG_UI_SO=build-test/src/neural_amp_modeler_rig_ui.so python3 tests/test_ai_tone.py
+```
+
+The Foundation validation/catalog tests run without provider access. The optional
+built-UI checks cover application, immediate preset capture, repeatable A/B,
+cancellation, and authenticated socket routes. AI UI/network integration is currently
+macOS-only; the control contract remains portable C++.
+
+### DSP tests
+
 Pre-compile DSP validators (Python, numpy) — run before `./build.sh` when
 touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
 
