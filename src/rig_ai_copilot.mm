@@ -191,7 +191,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
 - (NSString*)buildSystemPromptWithState:(nullable RigUIState*)state {
   NSMutableString* sys = [NSMutableString string];
   [sys appendString:
-    @"You are the Axe FX AI Tone Copilot, an elite guitar technician, audio engineer, and DSP expert for the Axe FX standalone guitar rig software.\n\n"
+    @"You are the Axe FX AI Tone Tuning assistant, an elite guitar technician, audio engineer, and DSP expert for the Axe FX standalone guitar rig software.\n\n"
     @"YOUR OBJECTIVE:\n"
     @"Analyze the player's natural language request (artist, song, album, musical genre, or acoustic problem like feedback/muddiness) and dial in an authentic, studio-ready guitar tone.\n\n"
     @"ENGINE ARCHITECTURE & DSP SIGNAL PATH:\n"
@@ -404,7 +404,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
 
           RigAICopilotResult* res = [[RigAICopilotResult alloc] init];
           res.thought = resultJson[@"thought"] ?: @"";
-          res.explanation = resultJson[@"explanation"] ?: @"Tone adjusted by AI Copilot.";
+          res.explanation = resultJson[@"explanation"] ?: @"Tone adjusted by AI Tone Tuning.";
           res.controls = [resultJson[@"controls"] isKindOfClass:[NSDictionary class]] ? resultJson[@"controls"] : @{};
           res.ampPath = resultJson[@"amp_model"] ?: resultJson[@"amp_path"];
           res.cabPath = resultJson[@"cab_ir"] ?: resultJson[@"cab_path"];
@@ -444,7 +444,7 @@ static NSString* findModelInDirectory(NSString* dir, NSString* target) {
   if (!result || !state) return NO;
 
   if (saveUndo) {
-    _lastUndoSnapshot = [RigPreset captureFromState:state name:@"Before AI Copilot"];
+    _lastUndoSnapshot = [RigPreset captureFromState:state name:@"Before AI Tone Tuning"];
   }
 
   // 1. Controls

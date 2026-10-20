@@ -2088,7 +2088,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   content.wantsLayer = YES;
 
   // Header
-  NSTextField* title = [NSTextField labelWithString:@"✨ AI Tone Copilot"];
+  NSTextField* title = [NSTextField labelWithString:@"✨ AI Tone Tuning"];
   title.frame = NSMakeRect(20, popH - 36, 320, 22);
   title.font = [NSFont systemFontOfSize:16 weight:NSFontWeightBold];
   title.textColor = rigText();
@@ -2213,9 +2213,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotOutputView.textColor = rigText();
   self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0];
   self.copilotOutputView.string =
-    @"Axe FX AI Copilot Ready.\n"
+    @"Axe FX AI Tone Tuning Ready.\n"
     @"• Type any tone description or question above and press Enter (or click 'Dial In Tone').\n"
-    @"• The copilot analyzes your active rig state, scans your local Tone3000 library, and applies authentic dials with feedback-prevention DSP rules.";
+    @"• AI Tone Tuning analyzes your active rig state, scans your local Tone3000 library, and applies authentic dials with feedback-prevention DSP rules.";
   scroll.documentView = self.copilotOutputView;
   [content addSubview:scroll];
 
@@ -4555,15 +4555,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->toneTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
     state->toneTabBtn.toolTip = @"Browse, search, and download NAM captures and cabinet IRs from Tone3000.";
 
-    state->aiCopilotBtn = rigButton(headerBar, @"✨ COPILOT", state->uiController, @selector(openAICopilot:), NSZeroRect);
+    state->aiCopilotBtn = rigButton(headerBar, @"✨ AI Tone Tuning", state->uiController, @selector(openAICopilot:), NSZeroRect);
     state->aiCopilotBtn.translatesAutoresizingMaskIntoConstraints = NO;
     [[state->aiCopilotBtn.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:6] setActive:YES];
     [[state->aiCopilotBtn.centerYAnchor constraintEqualToAnchor:headerBar.centerYAnchor] setActive:YES];
-    [[state->aiCopilotBtn.widthAnchor constraintEqualToConstant:94] setActive:YES];
+    [[state->aiCopilotBtn.widthAnchor constraintEqualToConstant:140] setActive:YES];
     [[state->aiCopilotBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
-    state->aiCopilotBtn.toolTip = @"AI Tone Copilot (⌘K): Describe any artist, song, or tone adjustment in plain English.";
+    state->aiCopilotBtn.toolTip = @"AI Tone Tuning (⌘K): Describe any artist, song, or tone adjustment in plain English.";
 
-    // Rig header group (tuner, input meter, preset management, A/B compare):
+    // Rig header group (tuner, preset management, A/B compare):
     // active in RIG tab, hidden in TONE3000 tab.
     NAMRigHeaderGroup* rigGroup = [[NAMRigHeaderGroup alloc] initWithFrame:NSZeroRect];
     rigGroup.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4576,132 +4576,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[rigGroup.topAnchor constraintEqualToAnchor:headerBar.topAnchor] setActive:YES];
     [[rigGroup.bottomAnchor constraintEqualToAnchor:headerBar.bottomAnchor] setActive:YES];
 
-    // Input level meter (always visible in rig header): dBFS readout + bar.
-    NSView* mp = [[NSView alloc] initWithFrame:NSZeroRect];
-    mp.wantsLayer = YES;
-    mp.layer.backgroundColor = rigPanelBG().CGColor;
-    mp.layer.cornerRadius = 8;
-    mp.layer.borderWidth = 1.0;
-    mp.layer.borderColor = rigPanelBorder().CGColor;
-    mp.translatesAutoresizingMaskIntoConstraints = NO;
-    [rigGroup addSubview:mp];
-    mp.toolTip = @"Raw input level meter before the gate, trims, and model stages.";
-    [[mp.leadingAnchor constraintEqualToAnchor:rigGroup.leadingAnchor] setActive:YES];
-    [[mp.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[mp.widthAnchor constraintEqualToConstant:120] setActive:YES];
-    [[mp.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    NSTextField* dbL = addLabel(mp, @"  —  dB", NSZeroRect,
-                                [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
-                                rigDimText(), NSTextAlignmentCenter);
-    dbL.translatesAutoresizingMaskIntoConstraints = NO;
-    state->inDbLabel = dbL;
-    dbL.toolTip = @"Raw input peak level in dBFS, measured before all processing.";
-    [[dbL.leadingAnchor constraintEqualToAnchor:mp.leadingAnchor constant:4] setActive:YES];
-    [[dbL.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
-    [[dbL.widthAnchor constraintEqualToConstant:44] setActive:YES];
-
-    // Track: dark slot; the fill bar width is set at update time (-60..0 dB).
-    NSView* slot = [[NSView alloc] initWithFrame:NSZeroRect];
-    slot.wantsLayer = YES;
-    slot.layer.backgroundColor = rigRaised().CGColor;
-    slot.layer.cornerRadius = 2;
-    slot.translatesAutoresizingMaskIntoConstraints = NO;
-    [mp addSubview:slot];
-    slot.toolTip = @"Raw input peak meter from -60 to 0 dBFS. Orange indicates a hot input; red indicates clipping risk.";
-    [[slot.leadingAnchor constraintEqualToAnchor:dbL.trailingAnchor constant:4] setActive:YES];
-    [[slot.trailingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:-6] setActive:YES];
-    [[slot.centerYAnchor constraintEqualToAnchor:mp.centerYAnchor] setActive:YES];
-    [[slot.heightAnchor constraintEqualToConstant:8] setActive:YES];
-
-    NSView* fill = [[NSView alloc] initWithFrame:NSZeroRect];
-    fill.wantsLayer = YES;
-    fill.layer.backgroundColor = rigAccent().CGColor;
-    fill.layer.cornerRadius = 2;
-    fill.translatesAutoresizingMaskIntoConstraints = NO;
-    [slot addSubview:fill];
-    fill.toolTip = @"Raw input peak meter from -60 to 0 dBFS. Orange indicates a hot input; red indicates clipping risk.";
-    [[fill.leadingAnchor constraintEqualToAnchor:slot.leadingAnchor] setActive:YES];
-    [[fill.centerYAnchor constraintEqualToAnchor:slot.centerYAnchor] setActive:YES];
-    [[fill.heightAnchor constraintEqualToConstant:8] setActive:YES];
-    NSLayoutConstraint* fillW =
-        [NSLayoutConstraint constraintWithItem:fill
-                                     attribute:NSLayoutAttributeWidth
-                                     relatedBy:NSLayoutRelationEqual
-                                        toItem:nil
-                                     attribute:NSLayoutAttributeNotAnAttribute
-                                    multiplier:1.0
-                                      constant:0];
-    fillW.active = YES;
-    state->inDbBar = fill;
-    state->inDbBarWidth = fillW;
-
-    // Output level meter (post-effects combined peak)
-    NSView* outMp = [[NSView alloc] initWithFrame:NSZeroRect];
-    outMp.wantsLayer = YES;
-    outMp.layer.backgroundColor = rigPanelBG().CGColor;
-    outMp.layer.cornerRadius = 8;
-    outMp.layer.borderWidth = 1.0;
-    outMp.layer.borderColor = rigPanelBorder().CGColor;
-    outMp.translatesAutoresizingMaskIntoConstraints = NO;
-    [rigGroup addSubview:outMp];
-    outMp.toolTip = @"Master output peak meter (combined L/R). Red indicates digital clipping.";
-    [[outMp.leadingAnchor constraintEqualToAnchor:mp.trailingAnchor constant:8] setActive:YES];
-    [[outMp.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[outMp.widthAnchor constraintEqualToConstant:120] setActive:YES];
-    [[outMp.heightAnchor constraintEqualToConstant:24] setActive:YES];
-
-    NSTextField* outDbL = addLabel(outMp, @"  —  dB", NSZeroRect,
-                                   [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
-                                   rigDimText(), NSTextAlignmentCenter);
-    outDbL.translatesAutoresizingMaskIntoConstraints = NO;
-    state->outDbLabel = outDbL;
-    outDbL.toolTip = @"Master output peak level in dBFS.";
-    [[outDbL.leadingAnchor constraintEqualToAnchor:outMp.leadingAnchor constant:4] setActive:YES];
-    [[outDbL.centerYAnchor constraintEqualToAnchor:outMp.centerYAnchor] setActive:YES];
-    [[outDbL.widthAnchor constraintEqualToConstant:44] setActive:YES];
-
-    NSView* outSlot = [[NSView alloc] initWithFrame:NSZeroRect];
-    outSlot.wantsLayer = YES;
-    outSlot.layer.backgroundColor = rigRaised().CGColor;
-    outSlot.layer.cornerRadius = 2;
-    outSlot.translatesAutoresizingMaskIntoConstraints = NO;
-    [outMp addSubview:outSlot];
-    outSlot.toolTip = @"Master output peak meter from -60 to 0 dBFS.";
-    [[outSlot.leadingAnchor constraintEqualToAnchor:outDbL.trailingAnchor constant:4] setActive:YES];
-    [[outSlot.trailingAnchor constraintEqualToAnchor:outMp.trailingAnchor constant:-6] setActive:YES];
-    [[outSlot.centerYAnchor constraintEqualToAnchor:outMp.centerYAnchor] setActive:YES];
-    [[outSlot.heightAnchor constraintEqualToConstant:8] setActive:YES];
-
-    NSView* outFill = [[NSView alloc] initWithFrame:NSZeroRect];
-    outFill.wantsLayer = YES;
-    outFill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.20 green:0.80 blue:0.95 alpha:1.0].CGColor;
-    outFill.layer.cornerRadius = 2;
-    outFill.translatesAutoresizingMaskIntoConstraints = NO;
-    [outSlot addSubview:outFill];
-    outFill.toolTip = @"Master output peak meter from -60 to 0 dBFS.";
-    [[outFill.leadingAnchor constraintEqualToAnchor:outSlot.leadingAnchor] setActive:YES];
-    [[outFill.centerYAnchor constraintEqualToAnchor:outSlot.centerYAnchor] setActive:YES];
-    [[outFill.heightAnchor constraintEqualToConstant:8] setActive:YES];
-    NSLayoutConstraint* outFillW =
-        [NSLayoutConstraint constraintWithItem:outFill
-                                     attribute:NSLayoutAttributeWidth
-                                     relatedBy:NSLayoutRelationEqual
-                                        toItem:nil
-                                     attribute:NSLayoutAttributeNotAnAttribute
-                                    multiplier:1.0
-                                      constant:0];
-    outFillW.active = YES;
-    state->outDbBar = outFill;
-    state->outDbBarWidth = outFillW;
-
     // Preset management controls: [ ◀ ] [ Preset: Name ▾ ] [ ▶ ] [ SAVE ]
     RigButton* prevPresetBtn = rigButton(rigGroup, @"◀", state->uiController,
                                          @selector(prevPresetClicked:), NSZeroRect);
     prevPresetBtn.toolTip = @"Switch to the previous preset (Left Arrow ←).";
     prevPresetBtn.translatesAutoresizingMaskIntoConstraints = NO;
     state->prevPresetBtn = prevPresetBtn;
-    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:outMp.trailingAnchor constant:12] setActive:YES];
+    [[prevPresetBtn.leadingAnchor constraintEqualToAnchor:rigGroup.leadingAnchor] setActive:YES];
     [[prevPresetBtn.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[prevPresetBtn.widthAnchor constraintEqualToConstant:24] setActive:YES];
     [[prevPresetBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];

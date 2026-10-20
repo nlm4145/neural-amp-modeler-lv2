@@ -738,7 +738,7 @@ struct RigUIState {
            NSEventModifierFlagControl | NSEventModifierFlagShift);
       NSString* chars = [event.charactersIgnoringModifiers lowercaseString] ?: @"";
 
-      // Cmd+K: Open AI Tone Copilot
+      // Cmd+K: Open AI Tone Tuning
       if (mods == NSEventModifierFlagCommand && [chars isEqualToString:@"k"]) {
         id ctrl = (id)selfState->uiController;
         if (ctrl && [ctrl respondsToSelector:@selector(openAICopilot:)]) {

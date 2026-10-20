@@ -2352,7 +2352,7 @@ extern void openAICopilotInActiveRig();
   profAllItem.target = self;
   [appMenu addItem:profAllItem];
 
-  NSMenuItem* copilotItem = [[NSMenuItem alloc] initWithTitle:@"AI Tone Copilot…"
+  NSMenuItem* copilotItem = [[NSMenuItem alloc] initWithTitle:@"AI Tone Tuning…"
                                                        action:@selector(openAICopilotAction:)
                                                 keyEquivalent:@"k"];
   copilotItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
@@ -2471,7 +2471,13 @@ extern void openAICopilotInActiveRig();
   [rootContent setNeedsLayout:YES];
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
-  [[RigLocalServer sharedServer] startWithPort:48920];
+  // Developer Local API (for local CLI tool development / testing).
+  // Disabled by default for distribution safety so no localhost ports are opened on end-user machines.
+  BOOL enableDevAPI = [[NSProcessInfo processInfo].environment[@"AXE_FX_DEV_API"] boolValue] ||
+                      [[NSUserDefaults standardUserDefaults] boolForKey:@"EnableLocalDevAPI"];
+  if (enableDevAPI) {
+    [[RigLocalServer sharedServer] startWithPort:48920];
+  }
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -2481,7 +2487,9 @@ extern void openAICopilotInActiveRig();
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
   (void)notification;
-  [[RigLocalServer sharedServer] stop];
+  if ([[RigLocalServer sharedServer] isRunning]) {
+    [[RigLocalServer sharedServer] stop];
+  }
   _host.reset();
 }
 
