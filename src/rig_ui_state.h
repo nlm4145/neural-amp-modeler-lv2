@@ -214,11 +214,11 @@ struct RigUIState {
   bool cab2PolarityInverted = false;
 
   void selectDeckTab(NSInteger index) {
-    const NSInteger prevTab = activeDeckTab;
-    activeDeckTab = index;
     auto alive = this->isAlive;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    auto select = ^{
       if (!alive || !*alive) return;
+      const NSInteger prevTab = activeDeckTab;
+      activeDeckTab = index;
       for (NSInteger i = 0; i < (NSInteger)deckTabButtons.count; ++i) {
         RigButton* b = deckTabButtons[(NSUInteger)i];
         b.state = (i == index) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -266,7 +266,12 @@ struct RigUIState {
         }
         if (tunerNeedle) tunerNeedle.hidden = YES;
       }
-    });
+    };
+    // Keep the selected tab, visible pane and tuner routing in one transaction.
+    // Main-thread clicks must not wait for a later run-loop drain; background
+    // requests still serialize their complete transitions on the main queue.
+    if ([NSThread isMainThread]) select();
+    else dispatch_async(dispatch_get_main_queue(), select);
   }
 
   // Per-stage oversample mode dropdowns (ports 20/21: None / True 2x / 4x / 8x / 16x).
@@ -357,8 +362,9 @@ struct RigUIState {
 
   // Redraw the input meter: instant attack on peaks, 30 fps smooth decay.
   void updateInputDbDisplay(float newDb) {
+    if (!std::isfinite(newDb)) return;
     auto alive = this->isAlive;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    auto update = ^{
       if (!alive || !*alive) return;
       const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
       if (newDb > lastInputDb || (now - lastInputDbUiTime >= kMeterUiIntervalSec)) {
@@ -379,7 +385,9 @@ struct RigUIState {
           applyInputDbDisplayNow();
         });
       }
-    });
+    };
+    if ([NSThread isMainThread]) update();
+    else dispatch_async(dispatch_get_main_queue(), update);
   }
 
   void updateStageMeter(size_t stage, float db) {
@@ -417,8 +425,9 @@ struct RigUIState {
 
   // Redraw the output meter: instant attack on peaks, 30 fps smooth decay.
   void updateOutputDbDisplay(float newDb) {
+    if (!std::isfinite(newDb)) return;
     auto alive = this->isAlive;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    auto update = ^{
       if (!alive || !*alive) return;
       const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
       if (newDb > lastOutputDb || (now - lastOutputDbUiTime >= kMeterUiIntervalSec)) {
@@ -439,7 +448,9 @@ struct RigUIState {
           applyOutputDbDisplayNow();
         });
       }
-    });
+    };
+    if ([NSThread isMainThread]) update();
+    else dispatch_async(dispatch_get_main_queue(), update);
   }
 
   void updateOutputDbDisplay() {
@@ -1759,10 +1770,8 @@ struct RigUIState {
           [pedalInputKnobCell.superview layoutSubtreeIfNeeded];
         }
       }
-      if (!visible) {
-        sendControl(4, 0.0f);
-        updateControl(4, 0.0f);
-      }
+      // Rendering a path (including a host echo or deferred preset refresh)
+      // must not write controls or erase the recalled pedal input trim.
     };
     if ([NSThread isMainThread]) block();
     else dispatch_async(dispatch_get_main_queue(), block);

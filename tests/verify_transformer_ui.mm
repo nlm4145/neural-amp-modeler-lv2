@@ -752,6 +752,33 @@ static void verifyTunerDeck(Runtime& runtime, Host& host) {
   CHECK([state->tunerCentsLabel.stringValue containsString:@"SHARP"]);
 }
 
+static void verifyDeckTabSelection(Runtime& runtime, Host& host) {
+  RigUIState* state = runtime.state;
+  stage = "deck tab selection / immediate visibility and serialized background requests";
+  testedPort = -1;
+  auto selected = [&](NSInteger tab) {
+    CHECK(state->activeDeckTab == tab);
+    for (NSUInteger i = 0; i < state->deckTabPanes.count; ++i) {
+      CHECK(bool(state->deckTabPanes[i].hidden) == ((NSInteger)i != tab));
+      CHECK(state->deckTabButtons[i].state == ((NSInteger)i == tab
+          ? NSControlStateValueOn : NSControlStateValueOff));
+    }
+  };
+  host.writes.clear();
+  for (NSInteger tab : {4, 1, 2, 3, 2}) {
+    state->selectDeckTab(tab);
+    selected(tab); // No run-loop pump: the main-thread transaction is immediate.
+  }
+  CHECK(host.writes.empty());
+  std::thread selection([&] {
+    for (NSInteger tab : {4, 1, 2}) state->selectDeckTab(tab);
+  });
+  selection.join();
+  drain();
+  selected(2);
+  CHECK(host.writes.empty());
+}
+
 static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) {
   using namespace NAMRig;
   RigUIState* state = runtime.state;
@@ -783,14 +810,19 @@ static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) 
   constexpr std::array<NSInteger, kRackCount> tabs = {4, 4, 4, 2, 1, 2, 3, 3, 2};
   for (size_t i = 0; i < kRackCount; ++i) {
     state->selectDeckTab(tabs[i]);
+    CHECK(!state->deckTabPanes[(NSUInteger)tabs[i]].hidden);
     drain();
     [runtime.window.contentView layoutSubtreeIfNeeded];
     RigButton* button = state->rackButtons[i];
     REQUIRE(button);
+    testedPort = button.tag;
     CHECK(button.tag == (NSInteger)(kRackControlFirstPort + i));
     CHECK(button.target == (id)state->uiController);
     CHECK(button.action == NSSelectorFromString(@"controlChanged:"));
-    CHECK(button.isEnabled && !button.isHiddenOrHasHiddenAncestor);
+    if (!CHECK(button.isEnabled && !button.isHiddenOrHasHiddenAncestor)) {
+      std::fprintf(stderr, "  rack index: %zu, port: %ld, tab: %ld, active tab: %ld, enabled: %d\n",
+                   i, (long)button.tag, (long)tabs[i], (long)state->activeDeckTab, (int)button.isEnabled);
+    }
     CHECK(button.frame.size.width > 0 && button.frame.size.height > 0);
     RigPreset* before = [presetClass captureFromState:state name:@"Before Toggle"];
     for (float enabled : {0.0f, 1.0f}) {
@@ -1590,6 +1622,53 @@ static void verifyPostCompressor(Runtime& runtime, Host& host, Class presetClass
   [state->userSlotPresets[@"post_compressor"] removeObjectForKey:@"Test Stereo"];
 }
 
+static void verifyPedalInputVisibility(Runtime& runtime, Host& host, Class presetClass) {
+  RigUIState* state = runtime.state;
+  stage = "pedal input visibility / display refresh must not reset recalled gain";
+  testedPort = 4;
+  REQUIRE(state->pedalInputKnobCell);
+  const float gain = 3.25f;
+  runtime.descriptor->port_event(state, 4, sizeof(gain), 0, &gain);
+  drain();
+  host.writes.clear();
+  state->displayPath(0, "");
+  state->displayPath(0, "");
+  drain();
+  CHECK(state->pedalInputKnobCell.hidden);
+  CHECK(host.writes.empty());
+  CHECK(near(state->currentPortValueForSlot(4), gain));
+
+  // Exercise the exported host-notification path as well as direct refreshes.
+  LV2_Atom_Forge forge;
+  lv2_atom_forge_init(&forge, state->map);
+  alignas(LV2_Atom_Object) uint8_t buffer[128]{};
+  lv2_atom_forge_set_buffer(&forge, buffer, sizeof(buffer));
+  LV2_Atom_Forge_Frame frame;
+  REQUIRE(lv2_atom_forge_object(&forge, &frame, 0, state->patchSet));
+  lv2_atom_forge_key(&forge, state->patchProperty);
+  lv2_atom_forge_urid(&forge, state->pathURIDs[0]);
+  lv2_atom_forge_key(&forge, state->patchValue);
+  lv2_atom_forge_path(&forge, "", 1);
+  lv2_atom_forge_pop(&forge, &frame);
+  const auto* atom = reinterpret_cast<const LV2_Atom*>(buffer);
+  runtime.descriptor->port_event(state, 1, lv2_atom_total_size(atom), state->eventTransfer, buffer);
+  drain();
+  CHECK(host.writes.empty());
+  CHECK(near(state->currentPortValueForSlot(4), gain));
+
+  RigPreset* recalled = [presetClass captureFromState:state name:@"Hidden Pedal Input"];
+  CHECK(near([recalled controlForPort:4], gain));
+  [recalled applyToState:state];
+  CHECK(near(state->currentPortValueForSlot(4), gain));
+  host.writes.clear();
+  drain();
+  CHECK(host.writes.empty());
+  CHECK(near(state->currentPortValueForSlot(4), gain));
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+  host.writes.clear();
+}
+
 static void verifyStageMeters(Runtime& runtime) {
   RigUIState* state = runtime.state;
   testedPort = -1;
@@ -1647,6 +1726,12 @@ static void verifyStageMeters(Runtime& runtime) {
     runtime.descriptor->port_event(state, 1, lv2_atom_total_size(atom), state->eventTransfer, buffer);
   };
   std::array<float, 4> expected = {-35, -45, -55, -65};
+  auto coherent = ^{
+    const float last[] = {state->lastInputDb, state->lastPreAmpDb,
+                          state->lastPostAmpDb, state->lastOutputDb};
+    for (size_t i = 0; i < state->stageMeters.size(); ++i)
+      CHECK(near(state->stageMeters[i].levelDb, last[i]));
+  };
   auto levels = [&] {
     const float last[] = {state->lastInputDb, state->lastPreAmpDb,
                           state->lastPostAmpDb, state->lastOutputDb};
@@ -1667,6 +1752,9 @@ static void verifyStageMeters(Runtime& runtime) {
     for (size_t j = 0; j < i; ++j) CHECK(properties[i] != properties[j]);
     notify(i, expected[i]);
   }
+  // Run immediately after delivery blocks but before any nested dispatches.
+  // Widget levels and logical telemetry must advance in the same transaction.
+  dispatch_async(dispatch_get_main_queue(), coherent);
   drain();
   levels();
   for (size_t i = 0; i < properties.size(); ++i) {
@@ -2416,6 +2504,7 @@ static void verify(const char* modulePath) {
   CHECK(state->transformerProfile == Transformer::kCaptured);
   telemetry(state, expected);
   [state->transformerPopover close];
+  verifyDeckTabSelection(runtime, host);
   verifyRackSwitches(runtime, host, presetClass);
   verifyPowerTube(runtime, host, presetClass);
   verifyPinEditors(runtime, host, presetClass);
@@ -2423,6 +2512,7 @@ static void verify(const char* modulePath) {
   verifyCompressorPreAmp(runtime, host, presetClass);
   verifyPostCompressor(runtime, host, presetClass);
   verifyTunerDeck(runtime, host);
+  verifyPedalInputVisibility(runtime, host, presetClass);
   verifyStageMeters(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
