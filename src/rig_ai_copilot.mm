@@ -38,6 +38,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   c.baseURL = @"https://generativelanguage.googleapis.com/v1beta/openai";
   c.temperature = 0.2f;
   c.allowLocalCLI = NO;
+  c.sendAudio = NO;
   return c;
 }
 
@@ -85,6 +86,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   NSNumber* temp = dict[@"temperature"];
   c.temperature = [temp isKindOfClass:NSNumber.class] && std::isfinite(temp.floatValue) ? std::clamp(temp.floatValue, 0.0f, 1.0f) : 0.2f;
   c.allowLocalCLI = [dict[@"allow_local_cli"] isKindOfClass:NSNumber.class] && [dict[@"allow_local_cli"] boolValue];
+  c.sendAudio = [dict[@"send_audio"] isKindOfClass:NSNumber.class] && [dict[@"send_audio"] boolValue];
   // Migrate a legacy plaintext key only after Keychain accepts it. Do not lose credentials on failure.
   if ([dict[@"api_key"] isKindOfClass:NSString.class] && [dict[@"api_key"] length]) {
     c.apiKey = dict[@"api_key"];
@@ -128,6 +130,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
     @"model": self.model ?: @"gemini-2.5-flash",
     @"base_url": self.baseURL ?: @"",
     @"allow_local_cli": @(self.allowLocalCLI),
+    @"send_audio": @(self.sendAudio),
     @"temperature": @(self.temperature)
   };
   NSData* data = [NSJSONSerialization dataWithJSONObject:dict options:NSJSONWritingPrettyPrinted error:error];
@@ -147,6 +150,14 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
     return env[@"ANTHROPIC_API_KEY"] ?: @"";
   }
   return @"";
+}
+
+- (BOOL)canSendAudio {
+  if (!self.effectiveApiKey.length) return NO; // Local CLI is text-only here.
+  NSString* model = self.model.lowercaseString;
+  if ([self.provider isEqual:@"gemini"]) return [model hasPrefix:@"gemini-"];
+  if ([self.provider isEqual:@"openai"]) return [model hasPrefix:@"gpt-"] && [model containsString:@"audio"];
+  return NO;
 }
 
 - (NSString*)effectiveEndpointURL {
@@ -564,6 +575,10 @@ static NSString* titleCasedString(NSString* s) {
 }
 
 - (NSString*)buildSystemPromptWithState:(nullable RigUIState*)state {
+  return [self buildSystemPromptWithState:state hasAudio:NO];
+}
+
+- (NSString*)buildSystemPromptWithState:(nullable RigUIState*)state hasAudio:(BOOL)hasAudio {
   NSMutableString* sys = [NSMutableString string];
   [sys appendString:
     @"You are the Axe FX tone assistant. Suggest a conservative, playable starting point, not a guaranteed artist-tone reproduction.\n"
@@ -577,7 +592,27 @@ static NSString* titleCasedString(NSString* s) {
     @"An includes_cab capture already contains a cabinet: disable Cab A/B when choosing it. Prefer amp-only plus IR when flexibility is requested.\n"
     @"For adjustment requests preserve unmentioned controls, models, pedal and Cab B. For a new tone disable unwanted old pedal/Cab B/effects explicitly. Enable the corresponding rack switch when changing a bypassed effect.\n"
     @"The gate is before compression: compression can raise low-level noise but cannot generate signal from exact silence. Do not promise to eliminate acoustic feedback without measurements. Avoid universal gate thresholds that cut off quiet notes.\n"
-    @"Do not change input/output level or oversampling unless needed and explained. No audio is provided; acknowledge uncertainty about pickup level, tuning, playback and tone similarity.\n"
+  ];
+  if (hasAudio) {
+    [sys appendString:
+      @"AUDIO RIFF EVALUATION GUIDELINES:\n"
+      @"An audio clip and/or acoustic telemetry (RMS, peak, crest factor, spectral balance) of the player's guitar riff is provided.\n"
+      @"- Only claim to have heard clips when labeled audio attachments were actually supplied. Telemetry alone does not establish an exact tone match. Broad filter estimates are NOT exact disjoint bands.\n"
+      @"- Raw DI is before all app processing. Use DI for input dynamics/noise/clipping, processed audio for the rig's sound. Do not infer pickup model, interface gain, or acoustic feedback from output metrics. Never normalize DI before reamping.\n"
+      @"- Guided segments describe expected playing, not automatically recognized technique. Compare attacks, sustains and muted gaps separately; a low note's fundamental is not automatically excess bass.\n"
+      @"- A target reference is separate from the player's riff. Never EQ guitar to match bass/drums/mastering in a full mix. Artist/song text alone is a stylistic target, not an audio reference.\n"
+      @"- Recording-time settings explain recorded output; current/base settings define the requested edit. Do not attribute an old recording to newly changed controls. Same-DI candidate measurements are useful but not proof of perceptual similarity.\n"
+      @"- Low-End & Flub: If palm-mutes are audibly too boomy, cautiously reduce bass or raise an input/cab high-pass, respecting guitar tuning.\n"
+      @"- Midrange Contour: If boxy or nasal (350-600 Hz), scoop mids slightly (-1 to -3 dB). If buried or lacking attack, boost mid (+1 to +3 dB) or engage od_enabled with moderate od_drive (10..25) and od_tone (55..70) to tighten the pick attack.\n"
+      @"- High-End Fizz vs Cut: If audibly harsh, soften treble/presence or LOWER cab_high_cut; do not remove useful pick attack automatically.\n"
+      @"- Dynamics & Gate: Use raw-DI muted-string levels and quiet-note decay to guide the upstream gate, not wet RMS. Only use controls in the reference. Preserve DI/input gain calibration unless explicitly justified.\n"
+    ];
+  } else {
+    [sys appendString:
+      @"Do not change input/output level or oversampling unless needed and explained. No audio is provided; acknowledge uncertainty about pickup level, tuning, playback and tone similarity.\n"
+    ];
+  }
+  [sys appendString:
     @"CONTROL REFERENCE (generated from shipped LV2 definitions):\n"
   ];
   [sys appendString:rigAIControlReference()];
@@ -768,6 +803,77 @@ static NSString* titleCasedString(NSString* s) {
 - (void)processUserPrompt:(NSString*)userPrompt
                 withState:(nullable RigUIState*)state
         completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler {
+  [self processUserPrompt:userPrompt
+                audioData:nil
+            audioMimeType:nil
+         audioDescription:nil
+                withState:state
+        completionHandler:completionHandler];
+}
+
+- (void)processUserPrompt:(NSString*)userPrompt
+                 audioData:(nullable NSData*)audioData
+            audioMimeType:(nullable NSString*)audioMimeType
+         audioDescription:(nullable NSString*)audioDescription
+                withState:(nullable RigUIState*)state
+        completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler {
+  NSArray* clips = audioData.length ? @[@{@"label":@"Player's processed riff", @"data":audioData, @"mime":audioMimeType ?: @"audio/wav"}] : @[];
+  [self processUserPrompt:userPrompt audioClips:clips audioDescription:audioDescription basePreset:nil withState:state completionHandler:completionHandler];
+}
+
++ (NSDictionary*)contextForPreset:(RigPreset*)preset compact:(BOOL)compact {
+  NSMutableDictionary* controls = [NSMutableDictionary dictionary];
+  for (const auto& kv : preset.allControls) {
+    const auto* c = NAMRig::rigControlContract(kv.first);
+    const char* sym = NAMRig::rigControlSymbol(kv.first);
+    if (sym && (!compact || !c || kv.second != c->defaultValue)) controls[@(sym)] = @(kv.second);
+  }
+  NSMutableArray* stages = [NSMutableArray array];
+  for (size_t s = 0; s < 4; ++s) {
+    const auto* stage = [preset stageAtIndex:s];
+    [stages addObject:@{@"role":@(stage->role.c_str()), @"path":@(stage->path.c_str())}];
+  }
+  return @{@"name":preset.name ?: @"Rig", @"controls":controls, @"stages":stages,
+      @"omitted_controls":compact ? @"shipped control-reference defaults" : @"none"};
+}
+
++ (RigPreset*)presetForResult:(RigAICopilotResult*)result base:(RigPreset*)base error:(NSError**)error {
+  if (!rigAIValidateControls(result.controls, error)) return nil;
+  RigPreset* preset = [RigPreset defaultPreset];
+  for (const auto& c : NAMRig::kRigControlContracts) [preset setControl:c.port value:c.defaultValue];
+  for (const auto& kv : base.allControls) [preset setControl:kv.first value:kv.second];
+  for (size_t s = 0; s < 4; ++s) *[preset stageAtIndex:s] = *[base stageAtIndex:s];
+  preset.slotPresets = [base.slotPresets mutableCopy];
+  preset.name = result.presetName ?: @"Candidate";
+  NSDictionary* symbols = rigSymbolToPortMap();
+  for (NSString* symbol in result.controls) [preset setControl:[symbols[symbol] unsignedIntValue] value:[result.controls[symbol] floatValue]];
+  NSString* root = [self libraryRootPath];
+  for (size_t s : {size_t(1), size_t(2)}) {
+    NSString* requested = s == 1 ? result.ampPath : result.cabPath;
+    if (!requested.length) continue;
+    NSString* path = rigAIResolveModel(root, requested, s, error);
+    if (!path) return nil;
+    [preset stageAtIndex:s]->path = path.fileSystemRepresentation;
+  }
+  if (rigAIModelIncludesCab(@([preset stageAtIndex:1]->path.c_str())) &&
+      ([preset controlForPort:9] >= .5 || [preset controlForPort:47] >= .5)) {
+    if (error) *error = [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:@"Full-rig captures require Cab A/B disabled."}];
+    return nil;
+  }
+  const uint32_t enables[] = {7, 8, 9, 47};
+  for (size_t s = 0; s < 4; ++s) [preset stageAtIndex:s]->enabled = [preset controlForPort:enables[s]] >= .5;
+  [preset stageAtIndex:0]->oversample = [preset controlForPort:20];
+  [preset stageAtIndex:1]->oversample = [preset controlForPort:21];
+  [preset stageAtIndex:1]->transformer = [preset controlForPort:30];
+  [preset stageAtIndex:2]->irNormalization = [preset controlForPort:24];
+  preset.speakerProfile = [preset controlForPort:42];
+  return preset;
+}
+
+- (void)processUserPrompt:(NSString*)userPrompt audioClips:(NSArray<NSDictionary*>*)clips
+          audioDescription:(NSString*)audioDescription basePreset:(RigPreset*)basePreset
+                 withState:(RigUIState*)state
+         completionHandler:(void (^)(RigAICopilotResult*, NSError*))completionHandler {
   NSAssert(NSThread.isMainThread, @"Capture rig state on main thread");
   if (self.isProcessing || self.isApplying) {
     if (completionHandler) {
@@ -778,9 +884,9 @@ static NSString* titleCasedString(NSString* s) {
     return;
   }
 
-  if (![userPrompt isKindOfClass:NSString.class] || !userPrompt.length || userPrompt.length > 8192) {
+  if (![userPrompt isKindOfClass:NSString.class] || !userPrompt.length || userPrompt.length > 8192 || audioDescription.length > 32768) {
     if (completionHandler) completionHandler(nil, [NSError errorWithDomain:@"RigAICopilot" code:-2
-        userInfo:@{NSLocalizedDescriptionKey: @"Enter a tone request of at most 8192 characters."}]);
+        userInfo:@{NSLocalizedDescriptionKey: @"Use a request up to 8192 characters and audio context up to 32768 characters."}]);
     return;
   }
   RigAIConfig* cfg = [RigAIConfig new]; // Immutable-for-this-request copy of editable config.
@@ -790,6 +896,7 @@ static NSString* titleCasedString(NSString* s) {
   cfg.apiKey = self.config.effectiveApiKey;
   cfg.temperature = self.config.temperature;
   cfg.allowLocalCLI = self.config.allowLocalCLI;
+  cfg.sendAudio = self.config.sendAudio;
   NSString* apiKey = [cfg effectiveApiKey];
   NSString* provider = cfg.provider.lowercaseString;
   BOOL isOllama = [provider isEqualToString:@"ollama"];
@@ -818,39 +925,43 @@ static NSString* titleCasedString(NSString* s) {
   });
 
   // Capture current rig state as JSON context
-  NSMutableDictionary* stateContext = [NSMutableDictionary dictionary];
-  if (state) {
-    RigPreset* current = [RigPreset captureFromState:state name:@"Current Rig"];
-    stateContext[@"current_preset"] = state->presetManager.currentPresetName ?: @"Custom";
-    NSMutableDictionary* ctrlMap = [NSMutableDictionary dictionary];
-    for (const auto& kv : current.allControls) {
-      const char* sym = NAMRig::rigControlSymbol(kv.first);
-      if (sym && sym[0]) {
-        ctrlMap[[NSString stringWithUTF8String:sym]] = @(kv.second);
-      }
-    }
-    stateContext[@"current_controls"] = ctrlMap;
-    const auto* ampStage = [current stageAtIndex:1];
-    const auto* cabStage = [current stageAtIndex:2];
-    stateContext[@"current_amp"] = ampStage ? [NSString stringWithUTF8String:ampStage->path.c_str()] : @"";
-    stateContext[@"current_cab"] = cabStage ? [NSString stringWithUTF8String:cabStage->path.c_str()] : @"";
-    const auto* pedalStage = [current stageAtIndex:0];
-    const auto* cabBStage = [current stageAtIndex:3];
-    stateContext[@"current_pedal"] = pedalStage ? [NSString stringWithUTF8String:pedalStage->path.c_str()] : @"";
-    stateContext[@"current_cab_b"] = cabBStage ? [NSString stringWithUTF8String:cabBStage->path.c_str()] : @"";
-  }
+  RigPreset* current = basePreset ?: (state ? [RigPreset captureFromState:state name:@"Current Rig"] : nil);
+  NSDictionary* stateContext = current ? [[self class] contextForPreset:current compact:YES] : @{};
 
   NSData* contextData = [NSJSONSerialization dataWithJSONObject:stateContext options:0 error:nil];
   NSString* contextStr = contextData ? [[NSString alloc] initWithData:contextData encoding:NSUTF8StringEncoding] : @"{}";
 
-  NSString* systemPrompt = [self buildSystemPromptWithState:state];
-  NSString* userMessage = [NSString stringWithFormat:
+  NSArray* attachments = cfg.sendAudio && cfg.canSendAudio ? clips : @[];
+  // Fixed count/byte budget. Refuse oversized inputs rather than silently uploading them.
+  size_t audioBytes = 0;
+  for (NSDictionary* clip in attachments) {
+    if (![clip isKindOfClass:NSDictionary.class] || ![clip[@"data"] isKindOfClass:NSData.class] ||
+        ![clip[@"label"] isKindOfClass:NSString.class] || ![clip[@"mime"] isEqual:@"audio/wav"]) {
+      [self finishRequest:requestID result:nil error:[NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey:@"Audio clips need a label, WAV MIME type, and audio data."}]];
+      return;
+    }
+    audioBytes += [clip[@"data"] length];
+  }
+  if (attachments.count > 4 || audioBytes > 40 * 1024 * 1024) {
+    [self finishRequest:requestID result:nil error:[NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey:@"Audio attachments exceed the 40 MB/four-clip budget. Use telemetry-only mode."}]];
+    return;
+  }
+  const BOOL hasAudio = attachments.count || audioDescription.length;
+  NSString* systemPrompt = [self buildSystemPromptWithState:state hasAudio:hasAudio];
+
+  NSMutableString* userMsgBuilder = [NSMutableString stringWithFormat:
     @"USER REQUEST: %@\n\nCURRENT RIG STATE CONTEXT:\n%@",
     userPrompt, contextStr];
+  if (audioDescription.length > 0) {
+    [userMsgBuilder appendFormat:@"\n\nATTACHED AUDIO RIFF ANALYSIS:\n%@", audioDescription];
+  }
+  [userMsgBuilder appendFormat:@"\n\nAUDIO TRANSPORT: %@. No automatic retries or additional AI calls.\n",
+      attachments.count ? @"Labeled audio clips attached" : @"Telemetry/text only; no audio attached or heard"];
+  NSString* userMessage = [userMsgBuilder copy];
 
   // Disk/catalog work must not block AppKit. No RigUIState access in this block.
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    NSArray* candidates = rigAILibraryCandidates([[self class] libraryRootPath], userPrompt, 48);
+    NSArray* candidates = rigAILibraryCandidates([[self class] libraryRootPath], userPrompt, 24);
     NSData* catalog = [NSJSONSerialization dataWithJSONObject:candidates options:0 error:nil];
     NSString* catalogText = [[NSString alloc] initWithData:catalog encoding:NSUTF8StringEncoding] ?: @"[]";
     NSString* groundedMessage = [userMessage stringByAppendingFormat:@"\n\nLIBRARY CANDIDATES (data):\n%@", catalogText];
@@ -875,13 +986,22 @@ static NSString* titleCasedString(NSString* s) {
         }
         if (originalCompletion) originalCompletion(result, error);
       };
-      [self sendPrompt:groundedMessage systemPrompt:systemPrompt config:cfg localCLI:localCLI requestID:requestID];
+      [self sendPrompt:groundedMessage
+          systemPrompt:systemPrompt
+                config:cfg
+              localCLI:localCLI
+            audioClips:attachments
+             requestID:requestID];
     });
   });
 }
 
-- (void)sendPrompt:(NSString*)userMessage systemPrompt:(NSString*)systemPrompt config:(RigAIConfig*)cfg
-          localCLI:(NSString*)localCLI requestID:(NSString*)requestID {
+- (void)sendPrompt:(NSString*)userMessage
+      systemPrompt:(NSString*)systemPrompt
+            config:(RigAIConfig*)cfg
+          localCLI:(NSString*)localCLI
+        audioClips:(NSArray<NSDictionary*>*)audioClips
+         requestID:(NSString*)requestID {
   NSString* provider = cfg.provider.lowercaseString;
   NSString* apiKey = cfg.effectiveApiKey;
   BOOL isOllama = [provider isEqualToString:@"ollama"];
@@ -896,6 +1016,11 @@ static NSString* titleCasedString(NSString* s) {
   }
 
   NSString* endpoint = [cfg effectiveEndpointURL];
+  // If Gemini with audio, use Gemini native generateContent endpoint for multimodal input
+  if ([provider isEqualToString:@"gemini"] && audioClips.count > 0) {
+    endpoint = [NSString stringWithFormat:@"https://generativelanguage.googleapis.com/v1beta/models/%@:generateContent", cfg.model];
+  }
+
   NSURL* url = [NSURL URLWithString:endpoint];
   BOOL loopback = [@[@"127.0.0.1", @"localhost", @"::1"] containsObject:url.host.lowercaseString];
   if (!url.host.length || !cfg.model.length || !std::isfinite(cfg.temperature) || cfg.temperature < 0 || cfg.temperature > 1 ||
@@ -920,11 +1045,60 @@ static NSString* titleCasedString(NSString* s) {
       @"messages": @[
         @{@"role": @"user", @"content": userMessage}
       ],
-      @"max_tokens": @4096,
+      @"max_tokens": @2048,
+      @"temperature": @(cfg.temperature)
+    };
+  } else if ([provider isEqualToString:@"gemini"] && audioClips.count > 0) {
+    if (apiKey.length > 0) {
+      [request setValue:apiKey forHTTPHeaderField:@"x-goog-api-key"];
+      [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
+    }
+    NSMutableArray* parts = [NSMutableArray arrayWithObject:@{@"text":userMessage}];
+    for (NSDictionary* clip in audioClips) {
+      [parts addObject:@{@"text":clip[@"label"]}];
+      [parts addObject:@{@"inline_data":@{@"mime_type":clip[@"mime"] ?: @"audio/wav",
+          @"data":[clip[@"data"] base64EncodedStringWithOptions:0]}}];
+    }
+    reqBody = @{
+      @"system_instruction": @{
+        @"parts": @[@{@"text": systemPrompt}]
+      },
+      @"contents": @[
+        @{
+          @"role": @"user",
+          @"parts": parts
+        }
+      ],
+      @"generationConfig": @{
+        @"response_mime_type": @"application/json",
+        @"temperature": @(cfg.temperature),
+        @"maxOutputTokens": @2048
+      }
+    };
+  } else if ([provider isEqualToString:@"openai"] && audioClips.count > 0) {
+    if (apiKey.length > 0) {
+      [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
+    }
+    NSMutableArray* parts = [NSMutableArray arrayWithObject:@{@"type":@"text", @"text":userMessage}];
+    for (NSDictionary* clip in audioClips) {
+      [parts addObject:@{@"type":@"text", @"text":clip[@"label"]}];
+      [parts addObject:@{@"type":@"input_audio", @"input_audio":@{@"format":@"wav",
+          @"data":[clip[@"data"] base64EncodedStringWithOptions:0]}}];
+    }
+    reqBody = @{
+      @"model": cfg.model,
+      @"messages": @[
+        @{@"role": @"system", @"content": systemPrompt},
+        @{
+          @"role": @"user",
+          @"content": parts
+        }
+      ],
+      @"max_tokens": @2048,
       @"temperature": @(cfg.temperature)
     };
   } else {
-    // OpenAI, Gemini, Ollama, Groq, DeepSeek
+    // OpenAI, Gemini (text), Ollama, Groq, DeepSeek
     if (apiKey.length > 0) {
       [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
     }
@@ -935,8 +1109,16 @@ static NSString* titleCasedString(NSString* s) {
         @{@"role": @"user", @"content": userMessage}
       ],
       @"response_format": @{@"type": @"json_object"},
+      @"max_tokens": @2048,
       @"temperature": @(cfg.temperature)
     };
+  }
+
+  if ([provider isEqual:@"openai"]) {
+    NSMutableDictionary* body = [reqBody mutableCopy];
+    [body removeObjectForKey:@"max_tokens"];
+    body[@"max_completion_tokens"] = @2048;
+    reqBody = body;
   }
 
   NSError* jsonErr = nil;
@@ -981,6 +1163,17 @@ static NSString* titleCasedString(NSString* s) {
               if ([block isKindOfClass:NSDictionary.class] && [block[@"type"] isEqual:@"text"] &&
                   [block[@"text"] isKindOfClass:NSString.class]) [text appendString:block[@"text"]];
             content = text;
+          } else if ([respDict[@"candidates"] isKindOfClass:NSArray.class]) {
+            NSArray* cands = respDict[@"candidates"];
+            if (cands.count > 0 && [cands[0] isKindOfClass:NSDictionary.class]) {
+              id cContent = cands[0][@"content"];
+              if ([cContent isKindOfClass:NSDictionary.class]) {
+                NSArray* parts = cContent[@"parts"];
+                if ([parts isKindOfClass:NSArray.class] && parts.count > 0 && [parts[0] isKindOfClass:NSDictionary.class]) {
+                  content = parts[0][@"text"];
+                }
+              }
+            }
           } else {
             NSArray* choices = respDict[@"choices"];
             if ([choices isKindOfClass:[NSArray class]] && choices.count > 0) {
@@ -1024,11 +1217,13 @@ static NSString* titleCasedString(NSString* s) {
   if (result.ampPath.length && !ampPath) return NO;
   NSString* cabPath = result.cabPath.length ? rigAIResolveModel(root, result.cabPath, 2, error) : nil;
   if (result.cabPath.length && !cabPath) return NO;
-  NSString* effectiveAmp = ampPath ?: [NSString stringWithUTF8String:state->selectedPaths[1].c_str()];
+  NSString* effectiveAmp = result.proposedPreset ? @([result.proposedPreset stageAtIndex:1]->path.c_str()) :
+      (ampPath ?: [NSString stringWithUTF8String:state->selectedPaths[1].c_str()]);
   RigPreset* before = [RigPreset captureFromState:state name:@"Before AI Tone Tuning"];
   if (rigAIModelIncludesCab(effectiveAmp)) {
-    float cabEnabled = result.controls[@"cab_enabled"] ? result.controls[@"cab_enabled"].floatValue : [before controlForPort:9];
-    float cabBEnabled = result.controls[@"cab2_enabled"] ? result.controls[@"cab2_enabled"].floatValue : [before controlForPort:47];
+    RigPreset* effective = result.proposedPreset ?: before;
+    float cabEnabled = result.controls[@"cab_enabled"] ? result.controls[@"cab_enabled"].floatValue : [effective controlForPort:9];
+    float cabBEnabled = result.controls[@"cab2_enabled"] ? result.controls[@"cab2_enabled"].floatValue : [effective controlForPort:47];
     if (cabEnabled >= 0.5f || cabBEnabled >= 0.5f) {
       if (error) *error = [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:
           @"This full-rig capture already includes a cabinet. Disable Cab A and B or select an amp-only capture."}];
@@ -1039,6 +1234,13 @@ static NSString* titleCasedString(NSString* s) {
   if (saveUndo) {
     _lastUndoSnapshot = before;
     _undoOwner = state->isAlive;
+  }
+
+  if (result.proposedPreset) {
+    // Apply the auditioned frozen base, not controls changed since the request.
+    [result.proposedPreset applyToState:state];
+    state->markModified();
+    return YES;
   }
 
   // 1. Controls
@@ -1115,9 +1317,10 @@ static NSString* titleCasedString(NSString* s) {
   }
   BOOL ready = YES;
   BOOL failed = NO;
-  for (size_t stage : {size_t(1), size_t(2)}) {
-    NSString* path = stage == 1 ? result.ampPath : result.cabPath;
-    if (!path.length) continue;
+  for (size_t stage = 0; stage < 4; ++stage) {
+    NSString* path = result.proposedPreset ? @([result.proposedPreset stageAtIndex:stage]->path.c_str()) :
+        (stage == 1 ? result.ampPath : (stage == 2 ? result.cabPath : nil));
+    if (!result.proposedPreset && !path.length) continue;
     if (state->selectedPaths[stage] != path.fileSystemRepresentation) {
       completion([NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:
           @"Model selection changed during application. No preset was saved; your newer selection was preserved."}]);

@@ -40,6 +40,8 @@
 #import "rig_standalone_profiler.h"
 #import "rig_local_server.h"
 #import "rig_ai_copilot.h"
+#import "rig_riff_recorder.h"
+#import "rig_riff_renderer.h"
 
 extern "C" const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index);
 
@@ -593,6 +595,9 @@ class StandaloneHost {
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
       return fail(error, @"The rig worker could not be started.");
+    [RigRiffRecorder sharedRecorder].renderHandler = ^NSData*(RigPreset* preset, NSData* di, double rate, NSError** renderError) {
+      return rigRenderDI(preset, di, rate, renderError);
+    };
 
     parentLV2Feature_ = {LV2_UI__parent, (__bridge void*)parent};
     mapUILV2Feature_ = {LV2_URID__map, &mapFeature_};
@@ -1230,6 +1235,8 @@ class StandaloneHost {
     resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
     plugin_->process(frames, cabinetDeadline);
     collectNotifications();
+    rigRiffRecorderPushPair(input_.data(), output_.data(), outputR_.data(), frames, sampleRate_,
+        static_cast<uint32_t>(std::max(0.0f, controls_[29 - 4])));
 
     // The block peak only drives the animated amp icons; skip the scan while
     // neither icon is on screen (the main thread publishes that flag).

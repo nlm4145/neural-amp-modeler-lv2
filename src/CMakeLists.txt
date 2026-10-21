@@ -268,6 +268,17 @@ if (APPLE)
 	find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 	find_library(COREIMAGE_FRAMEWORK CoreImage REQUIRED)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
+	add_executable(verify_riff_recorder EXCLUDE_FROM_ALL
+		../tests/verify_riff_recorder.mm rig_riff_recorder.mm)
+	target_include_directories(verify_riff_recorder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_link_libraries(verify_riff_recorder PRIVATE ${COCOA_FRAMEWORK})
+	target_compile_options(verify_riff_recorder PRIVATE -fobjc-arc -UNDEBUG)
+	add_executable(verify_riff_renderer EXCLUDE_FROM_ALL ../tests/verify_riff_renderer.mm
+		rig_riff_renderer.mm nam_rig_plugin.cpp wav_ir.cpp oversample.cpp cabinet_worker.cpp dsp_accel.cpp)
+	target_include_directories(verify_riff_renderer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+	target_compile_options(verify_riff_renderer PRIVATE -fobjc-arc -UNDEBUG -Wno-incomplete-implementation)
+	target_link_libraries(verify_riff_renderer PRIVATE NeuralAudio ${COCOA_FRAMEWORK} ${ACCELERATE_FRAMEWORK})
 	add_executable(verify_low_buffer_rig EXCLUDE_FROM_ALL ../tests/verify_low_buffer_rig.cpp)
 	target_include_directories(verify_low_buffer_rig PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 		../deps/lv2/include ../deps/NeuralAudio ../deps/NeuralAudio/deps/RTNeural/modules/json)
@@ -314,6 +325,7 @@ if (APPLE)
 		rig_ai_copilot.h rig_ai_copilot.mm
 		rig_ai_support.h rig_ai_support.mm
 		rig_local_server.h rig_local_server.mm
+		rig_riff_recorder.h rig_riff_recorder.mm
 		rig_ui_state.h)
 	add_library(neural_amp_modeler_rig_ui MODULE ${RIG_UI_SOURCES})
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
@@ -332,6 +344,7 @@ if (APPLE)
 		find_library(AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
 		add_executable(axe_fx_standalone MACOSX_BUNDLE
 			standalone_main.mm
+			rig_riff_renderer.h rig_riff_renderer.mm
 			standalone_worker.cpp standalone_worker.h standalone_controls.h
 			cabinet_worker.cpp cabinet_worker.h
 			nam_rig_plugin.cpp nam_rig_plugin.h

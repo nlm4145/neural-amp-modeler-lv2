@@ -59,6 +59,14 @@ heavily saturated amp capture already compresses the signal.
 
 ## Testing
 
+Focused local audio checks (no provider requests):
+
+```bash
+cmake --build build --target verify_riff_recorder verify_riff_renderer
+build/src/verify_riff_recorder
+build/src/verify_riff_renderer # optionally pass a .nam path for a short model smoke test
+```
+
 ### AI Tone Tuning (macOS rig UI and standalone)
 
 Open **AI Tone Tuning** with **⌘K**. Choose a provider, model and API URL,
@@ -67,10 +75,46 @@ describe your tone, then click **Preview Tone**. Preview does not change the rig
 and saves a uniquely named preset without overwriting an existing one. **A/B Toggle**
 exchanges it with the prior rig; it does not alter the saved preset file.
 
-The assistant receives your current rig settings and at most 48 installed-model
+Choose **Modify current preset** (load your saved preset first), **Build from scratch**,
+or **Refine last proposal**. The base is frozen for each request; applying a proposal
+refuses to overwrite live edits made since that request.
+
+In the macOS **standalone app**, **Record Riff** captures the raw mono DI before all
+app processing and the full stereo rig output simultaneously, for up to 20 seconds.
+It retains the recording-time preset and optional tuning/pickup/interface metadata.
+DI float samples remain unnormalized for replay; PCM24 WAVs are used for audition/upload.
+External pedals and interface gain are still part of the input, not inferred by the AI.
+
+**Guided 20s take** prompts: 0–2s muted strings (volume unchanged), 2–6s chugs,
+6–10s ringing power chords, 10–15s soft/hard low/high single notes, and 15–20s
+sustain/decay. These are expected segments, not automatically detected techniques.
+For clean/lead tones, substitute representative arpeggios/notes or disable guidance.
+Analysis reports DI/output dynamics, clipping, and broad frequency-filter estimates;
+it is not a precise spectrum match. Avoid changing rig settings during a take.
+
+After **Preview Tone**, click **Render DI A/B** to render that same DI through the
+baseline and candidate with separate production-engine instances, locally and without
+changing the live rig. Choose **Baseline (matched)** / **Candidate (matched)** and
+**Play** to audition RMS-matched, peak-safe clips. Engine latency is compensated;
+two seconds of effect tail are included (long tails can be truncated). Refine with
+your listening feedback and another explicit **Preview Tone** request. No automatic
+AI loop or retry spends tokens. Takes and auditions are session-local, not preset files.
+
+**Load WAV…** imports a player's processed riff; **Target WAV…** separately imports
+an isolated-guitar or full-mix reference. Imports accept mono/stereo PCM16/24/32 or
+float32 WAV at 22.05–192 kHz, max 40 MB, using the first 20 seconds. A full mix must
+not be treated as isolated guitar EQ. The LV2 UI supports import/text tuning; live
+paired capture and DI rendering require the standalone app.
+
+The assistant receives compact rig settings and at most 24 installed-model
 candidates from `~/Music/Tone3000 Library`, using `_tone3000.json` metadata where
-available. It does not receive audio. Artist tones are starting points, not verified
-reproductions. Full-rig captures require cabinet stages to be bypassed.
+available. **Telemetry-only is the default** to reduce cost. **Upload audio** is an
+explicit opt-in for Gemini models or OpenAI GPT audio-input models (ordinary GPT-4o
+is not assumed audio-capable); Claude, Ollama/custom and local CLI receive text only.
+Uploads label DI, processed output, and target separately. Candidate feedback stays
+local telemetry. Requests cap output at 2048 tokens and audio at four clips / 40 MB;
+provider/model availability may still vary. Artist tones are starting points, not
+verified reproductions. Full-rig captures require cabinet stages to be bypassed.
 
 API keys are stored per provider in macOS Keychain; legacy plaintext keys are
 migrated only after Keychain accepts them. Local CLI fallback is **off by default**

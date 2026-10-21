@@ -147,6 +147,27 @@ int main(int argc, char** argv) {
     CHECK(completions == 1);
     // Saving with an empty key must never put plaintext secrets in JSON (isolated Keychain account).
     RigAIConfig* config = [configClass defaultConfig];
+    CHECK(!config.sendAudio && !config.canSendAudio);
+    config.apiKey = @"test-only"; config.provider = @"openai"; config.model = @"gpt-4o";
+    CHECK(!config.canSendAudio);
+    config.model = @"gpt-4o-audio-preview"; CHECK(config.canSendAudio);
+    config.provider = @"claude"; CHECK(!config.canSendAudio);
+    config.provider = @"gemini"; config.model = @"gemini-2.5-flash"; CHECK(config.canSendAudio);
+    config.apiKey = @"";
+    RigPreset* base = [presetClass defaultPreset];
+    [base setControl:12 value:-4];
+    RigAICopilotResult* candidate = [NSClassFromString(@"RigAICopilotResult") new];
+    candidate.controls = @{@"mid":@2, @"cab_enabled":@0};
+    RigPreset* composed = [copilotClass presetForResult:candidate base:base error:&error];
+    CHECK(composed && [composed controlForPort:12] == -4 && [composed controlForPort:13] == 2);
+    CHECK(![composed stageAtIndex:2]->enabled);
+    [base setControl:12 value:3]; CHECK([composed controlForPort:12] == -4);
+    CHECK([[copilotClass contextForPreset:composed compact:YES][@"controls"][@"bass"] floatValue] == -4);
+    candidate.proposedPreset = composed;
+    CHECK([copilot applyResult:candidate toState:&state saveUndoState:YES error:&error]);
+    RigPreset* recalled = [presetClass captureFromState:&state name:@"Frozen proposal"];
+    CHECK([recalled controlForPort:12] == -4 && [recalled controlForPort:13] == 2);
+    CHECK(![recalled stageAtIndex:2]->enabled);
     config.provider = @"custom"; config.baseURL = @"http://127.0.0.1:11434/v1";
     CHECK([config saveToDisk:&error]);
     NSDictionary* saved = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:configPath] options:0 error:nil];

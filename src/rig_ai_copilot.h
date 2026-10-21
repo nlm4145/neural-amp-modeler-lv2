@@ -7,6 +7,7 @@
 #ifdef __OBJC__
 
 struct RigUIState;
+@class RigPreset;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -42,6 +43,8 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy) NSString* baseURL;     // e.g. @"https://generativelanguage.googleapis.com/v1beta/openai", @"https://api.openai.com/v1"
 @property(nonatomic) float temperature;
 @property(nonatomic) BOOL allowLocalCLI; // Explicit opt-in; never bypass CLI permissions.
+@property(nonatomic) BOOL sendAudio; // Explicit opt-in; telemetry-only by default to limit cost.
+- (BOOL)canSendAudio; // Conservative model/transport capability check.
 
 + (instancetype)defaultConfig;
 + (instancetype)loadFromDisk;
@@ -61,6 +64,7 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy, nullable) NSString* cabPath;
 @property(nonatomic, strong, nullable) NSDictionary<NSString*, NSString*>* slotPresets;
 @property(nonatomic, strong, nullable) NSDictionary* rawJson;
+@property(nonatomic, strong, nullable) RigPreset* proposedPreset; // Frozen base + validated proposal
 @end
 
 @interface RigAICopilot : NSObject
@@ -87,6 +91,26 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 // Sends a user prompt (e.g. "Mick Thomson Before I Forget rhythm, tight attack, no feedback")
 // along with the live rig state and library context to the configured LLM.
 - (void)processUserPrompt:(NSString*)userPrompt
+                withState:(nullable RigUIState*)state
+        completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler;
+
+// Clips are dictionaries with label/data/mime keys. At most DI, processed,
+// reference, and candidate. No uploads unless config.sendAudio && canSendAudio.
+- (void)processUserPrompt:(NSString*)userPrompt
+               audioClips:(NSArray<NSDictionary*>*)clips
+          audioDescription:(nullable NSString*)description
+                basePreset:(nullable RigPreset*)basePreset
+                 withState:(nullable RigUIState*)state
+         completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler;
+
++ (NSDictionary*)contextForPreset:(RigPreset*)preset compact:(BOOL)compact;
++ (nullable RigPreset*)presetForResult:(RigAICopilotResult*)result base:(RigPreset*)base error:(NSError**)error;
+
+// Sends a user prompt along with optional recorded audio (e.g. riff WAV clip) and live rig state to the configured LLM.
+- (void)processUserPrompt:(NSString*)userPrompt
+                audioData:(nullable NSData*)audioData
+            audioMimeType:(nullable NSString*)audioMimeType
+         audioDescription:(nullable NSString*)audioDescription
                 withState:(nullable RigUIState*)state
         completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler;
 

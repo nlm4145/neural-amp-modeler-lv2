@@ -3,6 +3,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #import <Security/Security.h>
 #import "rig_ai_copilot.h"
+#import "rig_riff_recorder.h"
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
@@ -89,6 +90,22 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) RigButton* copilotApplyBtn;
 @property(nonatomic, strong) RigButton* copilotCancelBtn;
 @property(nonatomic, strong) RigAICopilotResult* copilotProposal;
+@property(nonatomic, strong) RigButton* copilotRecordBtn;
+@property(nonatomic, strong) RigButton* copilotPlayBtn;
+@property(nonatomic, strong) RigButton* copilotClearBtn;
+@property(nonatomic, strong) RigButton* copilotImportBtn;
+@property(nonatomic, strong) NSTextField* copilotRiffStatusLabel;
+@property(nonatomic, strong) NSProgressIndicator* copilotRiffLevelBar;
+@property(nonatomic, strong) NSTimer* copilotRiffTimer;
+@property(nonatomic, strong) NSButton* copilotSendAudioButton;
+@property(nonatomic, strong) NSButton* copilotGuidedButton;
+@property(nonatomic, strong) NSPopUpButton* copilotTrackPopup;
+@property(nonatomic, strong) NSPopUpButton* copilotModePopup;
+@property(nonatomic, strong) NSTextField* copilotGuitarInfo;
+@property(nonatomic, strong) RigButton* copilotRenderBtn;
+@property(nonatomic, strong) RigPreset* copilotBasePreset;
+@property(nonatomic, strong) NSDictionary* copilotBaseContext;
+@property(nonatomic, strong) NSDictionary* copilotAuditionContext;
 - (void)chooseModel:(id)sender;
 - (void)clearModel:(id)sender;
 - (void)removeStageSelection:(id)sender;
@@ -165,6 +182,14 @@ static NSString* stageName(NSInteger stage) {
 - (void)copilotKeyFieldAction:(id)sender;
 - (void)applyCopilotProposal:(id)sender;
 - (void)cancelCopilotRequest:(id)sender;
+- (void)toggleCopilotRecordRiff:(id)sender;
+- (void)playCopilotRiff:(id)sender;
+- (void)clearCopilotRiff:(id)sender;
+- (void)importCopilotRiff:(id)sender;
+- (void)updateCopilotRiffUI;
+- (void)renderCopilotDI:(id)sender;
+- (void)importCopilotReference:(id)sender;
+- (void)clearCopilotReference:(id)sender;
 @end
 
 @implementation NAMRigUIController
@@ -2163,6 +2188,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 - (void)openAICopilot:(id)sender {
   if (!_state) return;
   if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
+    [self.copilotRiffTimer invalidate];
+    self.copilotRiffTimer = nil;
+    [[RigRiffRecorder sharedRecorder] stopRecording];
+    [[RigRiffRecorder sharedRecorder] stopPlayback];
     [_state->aiCopilotPopover close];
     return;
   }
@@ -2170,7 +2199,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
 
   const CGFloat popW = 540.0;
-  const CGFloat popH = 570.0;
+  const CGFloat popH = 810.0;
   RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, popW, popH)];
   content.wantsLayer = YES;
 
@@ -2261,47 +2290,115 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   // Query models on popover opening
   [self refreshCopilotModelsUI];
 
-  // Separator
+  // Separator 1
   NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 182, popW - 40, 1)];
   sep.boxType = NSBoxSeparator;
   [content addSubview:sep];
 
+  // --- AUDIO RIFF SECTION ---
+  NSTextField* riffHeader = [NSTextField labelWithString:@"🎸 Audio Riff for Tone Tuning (Optional):"];
+  riffHeader.frame = NSMakeRect(20, popH - 204, 380, 18);
+  riffHeader.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+  riffHeader.textColor = rigText();
+  [content addSubview:riffHeader];
+
+  self.copilotRecordBtn = rigButton(content, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(20, popH - 236, 110, 26));
+  self.copilotRecordBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
+  self.copilotRecordBtn.toolTip = @"Record up to 20 seconds of paired raw DI and full stereo rig output";
+
+  self.copilotPlayBtn = rigButton(content, @"▶ Play", self, @selector(playCopilotRiff:), NSMakeRect(136, popH - 236, 68, 26));
+  self.copilotPlayBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  self.copilotPlayBtn.enabled = NO;
+
+  self.copilotClearBtn = rigButton(content, @"✕ Clear", self, @selector(clearCopilotRiff:), NSMakeRect(210, popH - 236, 64, 26));
+  self.copilotClearBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  self.copilotClearBtn.enabled = NO;
+
+  self.copilotImportBtn = rigButton(content, @"Load WAV…", self, @selector(importCopilotRiff:), NSMakeRect(280, popH - 236, 88, 26));
+  self.copilotImportBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  self.copilotImportBtn.toolTip = @"Import your processed riff. Use Target WAV for a separate reference.";
+
+  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(376, popH - 231, 144, 16)];
+  self.copilotRiffLevelBar.minValue = 0.0;
+  self.copilotRiffLevelBar.maxValue = 1.0;
+  self.copilotRiffLevelBar.indeterminate = NO;
+  self.copilotRiffLevelBar.doubleValue = 0.0;
+  [content addSubview:self.copilotRiffLevelBar];
+
+  self.copilotRiffStatusLabel = [NSTextField labelWithString:@"No riff recorded. Play 5-10s to let AI evaluate attack, mud, and fizz."];
+  self.copilotRiffStatusLabel.frame = NSMakeRect(22, popH - 258, popW - 44, 16);
+  self.copilotRiffStatusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+  self.copilotRiffStatusLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightRegular];
+  self.copilotRiffStatusLabel.textColor = rigDimText();
+  [content addSubview:self.copilotRiffStatusLabel];
+
+  self.copilotGuidedButton = [NSButton checkboxWithTitle:@"Guided 20s take" target:nil action:nil];
+  self.copilotGuidedButton.frame = NSMakeRect(20, popH - 288, 150, 22);
+  self.copilotGuidedButton.state = NSControlStateValueOn;
+  self.copilotGuidedButton.toolTip = @"Muted strings → chugs → chords → soft/hard notes → sustain. Substitute representative playing for clean/lead tones.";
+  [content addSubview:self.copilotGuidedButton];
+  self.copilotTrackPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(175, popH - 288, 160, 24)];
+  [self.copilotTrackPopup addItemsWithTitles:@[@"Recorded output", @"Raw DI", @"Baseline (matched)", @"Candidate (matched)", @"Target reference"]];
+  [content addSubview:self.copilotTrackPopup];
+  self.copilotRenderBtn = rigButton(content, @"Render DI A/B", self, @selector(renderCopilotDI:), NSMakeRect(345, popH - 288, 175, 24));
+  self.copilotRenderBtn.toolTip = @"Render the same DI through baseline and proposal locally. No AI call, no live rig changes.";
+  rigButton(content, @"Target WAV…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 112, 24));
+  rigButton(content, @"Clear target", self, @selector(clearCopilotReference:), NSMakeRect(138, popH - 316, 100, 24));
+  self.copilotSendAudioButton = [NSButton checkboxWithTitle:@"Upload audio (extra cost; supported models only)" target:nil action:nil];
+  self.copilotSendAudioButton.frame = NSMakeRect(245, popH - 316, 280, 24);
+  self.copilotSendAudioButton.font = [NSFont systemFontOfSize:10];
+  self.copilotSendAudioButton.state = config.sendAudio ? NSControlStateValueOn : NSControlStateValueOff;
+  [content addSubview:self.copilotSendAudioButton];
+  self.copilotGuitarInfo = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 344, 500, 24)];
+  self.copilotGuitarInfo.placeholderString = @"Optional: tuning, pickup, interface gain / external pedals";
+  self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
+  [content addSubview:self.copilotGuitarInfo];
+  self.copilotModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, popH - 372, 500, 24)];
+  [self.copilotModePopup addItemsWithTitles:@[@"Modify current preset (load your saved preset first)", @"Build from scratch (neutral base; live rig unchanged until Apply)", @"Refine last proposal (same base as the DI audition)"]];
+  [content addSubview:self.copilotModePopup];
+  const CGFloat captureOffset = 120;
+
+  // Separator 2
+  NSBox* sep2 = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 272 - captureOffset, popW - 40, 1)];
+  sep2.boxType = NSBoxSeparator;
+  [content addSubview:sep2];
+
   // Prompt input
   NSTextField* pLbl = [NSTextField labelWithString:@"Describe Artist, Song, or Tone Adjustment:"];
-  pLbl.frame = NSMakeRect(20, popH - 206, 350, 18);
+  pLbl.frame = NSMakeRect(20, popH - 294 - captureOffset, 350, 18);
   pLbl.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
   pLbl.textColor = rigText();
   [content addSubview:pLbl];
 
-  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 258, popW - 40, 48)];
-  self.copilotPromptInput.placeholderString = @"e.g. 'Tight high-gain metal rhythm with punchy low end', 'Warm vintage blues lead with subtle delay', 'Eliminate feedback and rumble'";
+  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 344 - captureOffset, popW - 40, 46)];
+  self.copilotPromptInput.placeholderString = @"e.g. 'Tighten low-end chug and reduce fizz', 'Warm vintage blues lead', or 'Match this riff to Master of Puppets'";
   self.copilotPromptInput.font = [NSFont systemFontOfSize:12];
   self.copilotPromptInput.target = self;
   self.copilotPromptInput.action = @selector(executeCopilotDial:);
   [content addSubview:self.copilotPromptInput];
 
   // Action Buttons
-  self.copilotDialBtn = rigButton(content, @"Preview Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 300, 110, 30));
+  self.copilotDialBtn = rigButton(content, @"Preview Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 384 - captureOffset, 110, 30));
   self.copilotDialBtn.primary = YES;
   self.copilotDialBtn.enabled = ![RigAICopilot sharedCopilot].isProcessing;
   self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
 
-  self.copilotApplyBtn = rigButton(content, @"Apply & Save", self, @selector(applyCopilotProposal:), NSMakeRect(140, popH - 300, 110, 30));
+  self.copilotApplyBtn = rigButton(content, @"Apply & Save", self, @selector(applyCopilotProposal:), NSMakeRect(140, popH - 384 - captureOffset, 110, 30));
   self.copilotApplyBtn.enabled = self.copilotProposal != nil;
-  self.copilotUndoBtn = rigButton(content, @"A/B Toggle", self, @selector(undoCopilotDial:), NSMakeRect(260, popH - 300, 100, 30));
+  self.copilotUndoBtn = rigButton(content, @"A/B Toggle", self, @selector(undoCopilotDial:), NSMakeRect(260, popH - 384 - captureOffset, 100, 30));
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
   self.copilotUndoBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
 
-  self.copilotCancelBtn = rigButton(content, @"Cancel", self, @selector(cancelCopilotRequest:), NSMakeRect(370, popH - 300, 80, 30));
+  self.copilotCancelBtn = rigButton(content, @"Cancel", self, @selector(cancelCopilotRequest:), NSMakeRect(370, popH - 384 - captureOffset, 80, 30));
   self.copilotCancelBtn.enabled = [RigAICopilot sharedCopilot].isProcessing;
-  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(470, popH - 296, 22, 22)];
+  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(470, popH - 380 - captureOffset, 22, 22)];
   self.copilotSpinner.style = NSProgressIndicatorStyleSpinning;
   self.copilotSpinner.controlSize = NSControlSizeSmall;
   self.copilotSpinner.displayedWhenStopped = NO;
   [content addSubview:self.copilotSpinner];
 
   // Telemetry / Output scroll view
-  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 330)];
+  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 414 - captureOffset)];
   scroll.hasVerticalScroller = YES;
   scroll.borderType = NSBezelBorder;
   scroll.autohidesScrollers = YES;
@@ -2314,11 +2411,16 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0];
   self.copilotOutputView.string =
     @"Axe FX AI Tone Tuning Ready.\n"
-    @"• Describe a tone, then Preview Tone. Nothing changes until you choose Apply & Save.\n"
-    @"• The AI receives current rig controls and a local model shortlist—not your audio. Suggestions are starting points; pickup level and playback matter.\n"
-    @"• API keys are stored in Keychain. Local CLI use requires explicit opt-in.";
+    @"• Record captures raw DI + stereo output. Guided take: muted strings → chugs → chords → soft/hard notes → sustain/decay.\n"
+    @"• Keep tuning, pickup and interface gain consistent. Raw DI is never normalized before rendering.\n"
+    @"• Target WAV is separate: identify isolated guitar vs full mix. Artist/song names are stylistic targets, not exact references.\n"
+    @"• Telemetry-only by default. Audio uploads require Gemini or an OpenAI audio-input model; other paths receive measurements only.\n"
+    @"• Render DI A/B locally, then choose Baseline/Candidate and Play for level-matched auditions. Refine with another explicit Preview Tone request—no automatic paid calls.\n"
+    @"• Choose Preview Tone to generate parameters. Nothing changes in your live rig until you click Apply & Save.";
   scroll.documentView = self.copilotOutputView;
   [content addSubview:scroll];
+
+  [self updateCopilotRiffUI];
 
   NSPopover* pop = [[NSPopover alloc] init];
   NSViewController* vc = [[NSViewController alloc] init];
@@ -2406,6 +2508,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.apiKey = self.copilotKeyField.stringValue;
   config.baseURL = self.copilotURLField.stringValue;
   config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
+  config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;
   NSError* err = nil;
   if ([config saveToDisk:&err]) {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).\nRefreshing models list...", config.provider, config.model];
@@ -2419,6 +2522,14 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   (void)sender;
   NSString* prompt = self.copilotPromptInput.stringValue;
   if (!prompt.length || !_state) return;
+  RigRiffRecorder* recorder = [RigRiffRecorder sharedRecorder];
+  if (recorder.isRecording || recorder.isRendering) {
+    self.copilotOutputView.string = @"Stop recording or wait for DI rendering before requesting a tone."; return;
+  }
+  RigPreset* previousProposal = self.copilotProposal.proposedPreset;
+  if (self.copilotModePopup.indexOfSelectedItem == 2 && !previousProposal) {
+    self.copilotOutputView.string = @"Generate a proposal first, or select Modify current / Build from scratch."; return;
+  }
 
   // Auto-save any edited config fields first
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
@@ -2427,6 +2538,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.apiKey = self.copilotKeyField.stringValue;
   config.baseURL = self.copilotURLField.stringValue;
   config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
+  config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;
   NSError* configError = nil;
   if (![config saveToDisk:&configError]) {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Could not save AI settings securely: %@", configError.localizedDescription]; return;
@@ -2439,17 +2551,59 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [self.copilotSpinner startAnimation:nil];
 
   NSString* localCLI = config.allowLocalCLI ? [RigAICopilot detectLocalCLIForProvider:config.provider] : nil;
+  RigPreset* live = [RigPreset captureFromState:_state name:_state->presetManager.currentPresetName ?: @"Current rig"];
+  self.copilotBaseContext = [RigAICopilot contextForPreset:live compact:NO];
+  self.copilotBasePreset = self.copilotModePopup.indexOfSelectedItem == 1 ? [RigPreset defaultPreset] :
+      (self.copilotModePopup.indexOfSelectedItem == 2 ? previousProposal : live);
+  NSMutableString* desc = [NSMutableString string];
+  [desc appendFormat:@"REQUEST MODE: %@. The supplied base preset defines what will be applied; do not assume the live rig is that base.\n",
+      self.copilotModePopup.titleOfSelectedItem];
+  if (recorder.recordedWavData.length) {
+    [desc appendFormat:@"PLAYER TAKE:\n%@\n", recorder.audioAnalysisSummary];
+    if (recorder.recordingPreset) {
+      NSData* data = [NSJSONSerialization dataWithJSONObject:[RigAICopilot contextForPreset:recorder.recordingPreset compact:YES] options:0 error:nil];
+      [desc appendFormat:@"RECORDING-TIME RIG (not necessarily current): %@\n", [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]];
+    }
+    [desc appendFormat:@"RECORDING-TIME PLAYER METADATA: %@\n", recorder.recordingMetadata];
+  }
+  if (recorder.referenceWavData.length) [desc appendFormat:@"%@\n", recorder.referenceAnalysis];
+  if (recorder.candidateAnalysis.length) {
+    [desc appendFormat:@"PREVIOUS DI AUDITION (not the current rig):\n%@\n", recorder.candidateAnalysis];
+    if (self.copilotAuditionContext) {
+      NSData* data = [NSJSONSerialization dataWithJSONObject:self.copilotAuditionContext options:0 error:nil];
+      [desc appendFormat:@"AUDITIONED CANDIDATE SETTINGS: %@\n", [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]];
+    }
+  }
+  if (self.copilotGuitarInfo.stringValue.length) [desc appendFormat:@"PLAYER CONTEXT NOW: %@\n", self.copilotGuitarInfo.stringValue];
+  NSMutableArray* clips = [NSMutableArray array];
+  auto attach = [&](NSString* label, NSData* data) {
+    if (data.length) [clips addObject:@{@"label":label, @"data":data, @"mime":@"audio/wav"}];
+  };
+  attach(@"PLAYER RAW DI: before all app processing, not normalized", recorder.recordedDIWavData);
+  attach(@"PLAYER PROCESSED OUTPUT: recording-time rig", recorder.recordedWavData);
+  attach(@"TARGET REFERENCE: see isolated/full-mix label in analysis", recorder.referenceWavData);
+  // Keep uploads to three short clips. Candidate feedback is telemetry, locally generated.
+  NSString* audioNote = config.sendAudio && config.canSendAudio
+      ? @"\nAudio upload enabled: labeled short clips + telemetry (extra provider cost)."
+      : @"\nTelemetry-only: no audio uploaded. Gemini / OpenAI audio-input models can optionally receive clips.";
+  [recorder invalidatePreview];
+  [self updateCopilotRiffUI];
+
   if (config.effectiveApiKey.length > 0) {
-    self.copilotOutputView.string = [NSString stringWithFormat:@"Connecting to cloud %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model];
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Connecting to cloud %@ (%@)...%@\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model, audioNote];
   } else if (localCLI) {
-    self.copilotOutputView.string = [NSString stringWithFormat:@"Delegating to local %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", localCLI.lastPathComponent, config.model];
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Delegating to local %@ (%@)...%@\nAnalyzing tone request & calculating DSP parameters...", localCLI.lastPathComponent, config.model, audioNote];
   } else {
-    self.copilotOutputView.string = [NSString stringWithFormat:@"Querying %@ (%@)...\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model];
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Querying %@ (%@)...%@\nAnalyzing tone request & calculating DSP parameters...", config.provider, config.model, audioNote];
   }
 
   __weak NAMRigUIController* weakSelf = self;
   auto alive = _state->isAlive;
+  RigPreset* base = self.copilotBasePreset;
   [[RigAICopilot sharedCopilot] processUserPrompt:prompt
+                                        audioClips:clips
+                                  audioDescription:desc.length ? desc : nil
+                                        basePreset:base
                                         withState:_state
                                 completionHandler:^(RigAICopilotResult* res, NSError* err) {
     if (!weakSelf || !alive || !*alive) return;
@@ -2459,10 +2613,16 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
     if (err) {
       weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"❌ AI Error: %@", err.localizedDescription];
+      [weakSelf updateCopilotRiffUI];
       return;
     }
 
     if (!res) { weakSelf.copilotOutputView.string = @"No tone proposal returned."; return; }
+    NSError* presetError = nil;
+    res.proposedPreset = [RigAICopilot presetForResult:res base:base error:&presetError];
+    if (!res.proposedPreset) {
+      weakSelf.copilotOutputView.string = [NSString stringWithFormat:@"Invalid proposal: %@", presetError.localizedDescription]; return;
+    }
     weakSelf.copilotProposal = res;
     weakSelf.copilotApplyBtn.enabled = YES;
     [[RigAICopilot sharedCopilot] completeCurrentTaskWithResult:res savedPresetName:nil];
@@ -2486,7 +2646,198 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       }
     }
     weakSelf.copilotOutputView.string = msg;
+    [weakSelf updateCopilotRiffUI];
   }];
+}
+
+- (void)toggleCopilotRecordRiff:(id)sender {
+  (void)sender;
+  RigRiffRecorder* recorder = [RigRiffRecorder sharedRecorder];
+  if (recorder.isRecording) {
+    [recorder stopRecording];
+    [self.copilotRiffTimer invalidate];
+    self.copilotRiffTimer = nil;
+    [self updateCopilotRiffUI];
+  } else {
+    if (!_state || [RigAICopilot sharedCopilot].isProcessing || recorder.isRendering) return;
+    for (size_t s = 0; s < 4; ++s) {
+      if (_state->selectedPaths[s] != _state->confirmedPaths[s]) {
+        self.copilotOutputView.string = @"Wait for model loading to finish before recording a paired take."; return;
+      }
+    }
+    [recorder startRecordingGuided:self.copilotGuidedButton.state == NSControlStateValueOn];
+    recorder.recordingPreset = [RigPreset captureFromState:_state name:_state->presetManager.currentPresetName ?: @"Recorded rig"];
+    recorder.recordingMetadata = @{@"player_context":self.copilotGuitarInfo.stringValue ?: @"unknown",
+        @"hardware_input_gain":@"unknown unless supplied by player", @"captured_at":NSDate.date.description};
+    self.copilotProposal = nil; self.copilotApplyBtn.enabled = NO;
+    self.copilotAuditionContext = nil;
+    if (self.copilotModePopup.indexOfSelectedItem == 2) [self.copilotModePopup selectItemAtIndex:0];
+    self.copilotRenderBtn.enabled = NO; self.copilotDialBtn.enabled = NO;
+    self.copilotRecordBtn.title = @"■ Stop (0:00)";
+    self.copilotPlayBtn.enabled = NO;
+    self.copilotClearBtn.enabled = NO;
+    self.copilotRiffStatusLabel.stringValue = @"Recording riff... play your guitar now!";
+    self.copilotRiffStatusLabel.textColor = [NSColor systemRedColor];
+
+    __weak NAMRigUIController* weakSelf = self;
+    self.copilotRiffTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer* timer) {
+      if (!weakSelf) { [timer invalidate]; return; }
+      RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+      RigUIState* state = weakSelf.state;
+      if (state && *state->isAlive && r.recordingPreset) {
+        NSDictionary* before = [RigAICopilot contextForPreset:r.recordingPreset compact:NO];
+        NSDictionary* now = [RigAICopilot contextForPreset:[RigPreset captureFromState:state name:r.recordingPreset.name] compact:NO];
+        if (![before isEqual:now]) {
+          NSMutableDictionary* metadata = [r.recordingMetadata mutableCopy];
+          metadata[@"warning"] = @"Rig changed during this take; processed audio may not correspond to the starting snapshot. Record again for reliable analysis.";
+          r.recordingMetadata = metadata;
+        }
+      }
+      if (!r.isRecording) {
+        [r stopRecording]; // Finalize even when the audio callback reached the limit.
+        [timer invalidate];
+        weakSelf.copilotRiffTimer = nil;
+        [weakSelf updateCopilotRiffUI];
+        return;
+      }
+      weakSelf.copilotRecordBtn.title = [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration];
+      weakSelf.copilotRiffLevelBar.doubleValue = r.currentPeakLevel;
+      weakSelf.copilotRiffStatusLabel.stringValue = r.guidance;
+    }];
+  }
+}
+
+- (void)playCopilotRiff:(id)sender {
+  (void)sender;
+  RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+  if (r.isPlaying) {
+    [r stopPlayback];
+  } else {
+    NSArray* tracks = @[@"processed", @"di", @"baseline", @"candidate", @"reference"];
+    NSInteger i = self.copilotTrackPopup.indexOfSelectedItem;
+    [r playTrack:tracks[i >= 0 ? i : 0]];
+  }
+  [self updateCopilotRiffUI];
+}
+
+- (void)clearCopilotRiff:(id)sender {
+  (void)sender;
+  [self.copilotRiffTimer invalidate];
+  self.copilotRiffTimer = nil;
+  [[RigRiffRecorder sharedRecorder] clearRecording];
+  self.copilotProposal = nil; self.copilotApplyBtn.enabled = NO;
+  self.copilotAuditionContext = nil;
+  if (self.copilotModePopup.indexOfSelectedItem == 2) [self.copilotModePopup selectItemAtIndex:0];
+  [self updateCopilotRiffUI];
+}
+
+- (void)importCopilotRiff:(id)sender {
+  (void)sender;
+  if ([RigRiffRecorder sharedRecorder].isRecording || [RigRiffRecorder sharedRecorder].isRendering) return;
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = NO;
+  panel.allowedFileTypes = @[@"wav", @"WAV"];
+  __weak NAMRigUIController* weakSelf = self;
+  [panel beginWithCompletionHandler:^(NSInteger result) {
+    if (result == NSModalResponseOK && panel.URL) {
+      NSError* err = nil;
+      if ([[RigRiffRecorder sharedRecorder] loadAudioFromURL:panel.URL error:&err]) {
+        weakSelf.copilotProposal = nil; weakSelf.copilotApplyBtn.enabled = NO;
+        weakSelf.copilotAuditionContext = nil;
+        if (weakSelf.copilotModePopup.indexOfSelectedItem == 2) [weakSelf.copilotModePopup selectItemAtIndex:0];
+        [weakSelf updateCopilotRiffUI];
+      } else {
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = @"Could not load audio file";
+        alert.informativeText = err.localizedDescription ?: @"Invalid audio file.";
+        [alert runModal];
+      }
+    }
+  }];
+}
+
+- (void)updateCopilotRiffUI {
+  RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+  self.copilotRecordBtn.title = r.isRecording ? [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration] : @"● Record Riff";
+  self.copilotRiffLevelBar.doubleValue = r.isRecording ? r.currentPeakLevel : 0.0;
+  self.copilotRenderBtn.enabled = r.renderHandler && r.recordedDIFrames.length && self.copilotProposal && !r.isRendering && !r.isRecording;
+  self.copilotDialBtn.enabled = !r.isRecording && !r.isRendering && ![RigAICopilot sharedCopilot].isProcessing;
+  self.copilotImportBtn.enabled = !r.isRecording && !r.isRendering;
+  self.copilotRecordBtn.enabled = r.renderHandler && !r.isRendering && ![RigAICopilot sharedCopilot].isProcessing;
+  self.copilotRecordBtn.toolTip = r.renderHandler ? @"Capture raw DI + stereo output before/after the full rig" : @"Paired recording is available in the standalone app. Import a processed WAV here.";
+  NSArray* available = @[@(r.recordedWavData.length > 0), @(r.recordedDIWavData.length > 0),
+      @(r.baselineWavData.length > 0), @(r.candidateWavData.length > 0), @(r.referenceWavData.length > 0)];
+  self.copilotTrackPopup.autoenablesItems = NO;
+  for (NSUInteger i = 0; i < available.count; ++i) [self.copilotTrackPopup itemAtIndex:i].enabled = [available[i] boolValue];
+  NSInteger selected = self.copilotTrackPopup.indexOfSelectedItem;
+  if (selected < 0 || ![available[selected] boolValue]) {
+    for (NSUInteger i = 0; i < available.count; ++i) if ([available[i] boolValue]) { [self.copilotTrackPopup selectItemAtIndex:i]; break; }
+  }
+  if (r.isRecording) {
+    self.copilotRiffStatusLabel.stringValue = r.guidance;
+    self.copilotPlayBtn.enabled = NO; self.copilotClearBtn.enabled = NO; return;
+  }
+  if (r.recordedWavData.length > 0 || r.referenceWavData.length > 0) {
+    self.copilotPlayBtn.enabled = YES;
+    self.copilotClearBtn.enabled = YES;
+    self.copilotPlayBtn.title = r.isPlaying ? @"❚❚ Stop" : @"▶ Play";
+    self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
+      @"%@ %.1fs · Peak %.1f dBFS · %@",
+      r.recordedDIFrames.length ? @"DI + output" : @"Output only", r.recordedDuration, r.peakDbfs,
+      r.referenceWavData.length ? @"target attached" : @"no target"];
+    self.copilotRiffStatusLabel.textColor = [NSColor systemGreenColor];
+  } else {
+    self.copilotPlayBtn.enabled = NO;
+    self.copilotClearBtn.enabled = NO;
+    self.copilotPlayBtn.title = @"▶ Play";
+    self.copilotRiffStatusLabel.stringValue = @"No take. Record paired DI/output or request a text-only starting point.";
+    self.copilotRiffStatusLabel.textColor = rigDimText();
+  }
+}
+
+- (void)importCopilotReference:(id)sender {
+  RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+  if (r.isRecording || r.isRendering) return;
+  NSOpenPanel* panel = [NSOpenPanel openPanel]; panel.allowedFileTypes = @[@"wav"];
+  panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
+  __weak NAMRigUIController* weakSelf = self;
+  [panel beginWithCompletionHandler:^(NSInteger response) {
+    if (response != NSModalResponseOK || !panel.URL) return;
+    NSAlert* kind = [NSAlert new]; kind.messageText = @"What does this target contain?";
+    kind.informativeText = @"A full mix includes bass, drums, or other instruments and must not be treated as isolated guitar EQ. First 20 seconds are used.";
+    [kind addButtonWithTitle:@"Full mix"]; [kind addButtonWithTitle:@"Isolated guitar"]; [kind addButtonWithTitle:@"Cancel"];
+    NSInteger choice = [kind runModal]; if (choice == NSAlertThirdButtonReturn) return;
+    NSError* error = nil;
+    if (![r loadReferenceFromURL:panel.URL fullMix:choice == NSAlertFirstButtonReturn error:&error])
+      weakSelf.copilotOutputView.string = error.localizedDescription;
+    else weakSelf.copilotOutputView.string = r.referenceAnalysis;
+    [weakSelf updateCopilotRiffUI];
+  }];
+}
+- (void)clearCopilotReference:(id)sender {
+  [[RigRiffRecorder sharedRecorder] clearReference]; [self updateCopilotRiffUI];
+}
+- (void)renderCopilotDI:(id)sender {
+  if (!self.copilotProposal.proposedPreset || !self.copilotBasePreset) return;
+  RigRiffRecorder* recorder = [RigRiffRecorder sharedRecorder];
+  self.copilotAuditionContext = [RigAICopilot contextForPreset:self.copilotProposal.proposedPreset compact:YES];
+  if (recorder.recordingMetadata[@"warning"]) {
+    self.copilotOutputView.string = @"Rig changed during the take. Record a new paired take before comparing presets."; return;
+  }
+  self.copilotOutputView.string = @"Rendering baseline and candidate from the same raw DI locally. Live rig unchanged; no AI request.";
+  __weak NAMRigUIController* weakSelf = self;
+  [recorder renderBaseline:self.copilotBasePreset candidate:self.copilotProposal.proposedPreset completion:^(NSError* error) {
+    weakSelf.copilotOutputView.string = error ? error.localizedDescription :
+        [recorder.candidateAnalysis stringByAppendingString:@"\nChoose Baseline/Candidate in the track menu and Play. Describe what needs changing and press Preview Tone for one explicit refinement request."];
+    if (!error) {
+      [weakSelf.copilotTrackPopup selectItemAtIndex:3];
+      [weakSelf.copilotModePopup selectItemAtIndex:2];
+    }
+    [weakSelf updateCopilotRiffUI];
+  }];
+  [self updateCopilotRiffUI];
 }
 
 - (void)cancelCopilotRequest:(id)sender {
@@ -2497,6 +2848,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (!_state || !self.copilotProposal) return;
   RigAICopilot* copilot = [RigAICopilot sharedCopilot];
   if (copilot.isProcessing) return;
+  if ([RigRiffRecorder sharedRecorder].isRecording || [RigRiffRecorder sharedRecorder].isRendering) return;
+  if (self.copilotBaseContext && ![self.copilotBaseContext isEqual:[RigAICopilot contextForPreset:[RigPreset captureFromState:_state name:_state->presetManager.currentPresetName ?: @"Current rig"] compact:NO]]) {
+    self.copilotOutputView.string = @"Your live rig changed after the request. Preview Tone again so the proposal does not overwrite newer edits."; return;
+  }
   RigAICopilotResult* proposal = self.copilotProposal;
   NSString* prompt = self.copilotPromptInput.stringValue;
   auto alive = _state->isAlive;
@@ -2535,6 +2890,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     }
     weakSelf.copilotProposal = nil;
     weakSelf.copilotUndoBtn.enabled = copilot.canUndo;
+    [weakSelf.copilotModePopup selectItemAtIndex:0];
+    [weakSelf updateCopilotRiffUI];
   }];
 }
 
