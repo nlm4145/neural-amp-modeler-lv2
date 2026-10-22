@@ -306,7 +306,7 @@ static NSString* titleCasedString(NSString* s) {
 - (void)reportProgress:(NSString*)message;
 @end
 
-static const NSUInteger kRigAICatalogLimit = 96;
+static const NSUInteger kRigAICatalogLimit = 48;
 
 @implementation RigAICopilot
 
@@ -954,6 +954,149 @@ static const NSUInteger kRigAICatalogLimit = 96;
   return preset;
 }
 
+- (NSArray<NSDictionary*>*)rankCandidatesWithJev:(NSArray<NSDictionary*>*)candidates prompt:(NSString*)prompt {
+  if (candidates.count <= 12 || prompt.length == 0) return candidates;
+
+  NSString* home = NSHomeDirectory();
+  NSString* configPath = [home stringByAppendingPathComponent:@".quicksilver/config.json"];
+  NSString* envKey = [NSProcessInfo processInfo].environment[@"JEV_API_KEY"] ?: [NSProcessInfo processInfo].environment[@"TYPESAFE_API_KEY"];
+  if (!envKey.length && ![[NSFileManager defaultManager] fileExistsAtPath:configPath]) {
+    return candidates;
+  }
+
+  NSString* jevExec = nil;
+  NSArray<NSString*>* searchPaths = @[
+    [home stringByAppendingPathComponent:@".local/bin/jev"],
+    [home stringByAppendingPathComponent:@".local/bin/qs"],
+    @"/opt/homebrew/bin/jev",
+    @"/usr/local/bin/jev"
+  ];
+  for (NSString* p in searchPaths) {
+    if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) {
+      jevExec = p;
+      break;
+    }
+  }
+  if (!jevExec) {
+    NSString* scriptPath = [home stringByAppendingPathComponent:@".claude/skills/quicksilver/scripts/qs.mjs"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:scriptPath]) {
+      jevExec = scriptPath;
+    }
+  }
+  if (!jevExec) return candidates;
+
+  NSMutableString* jsonl = [NSMutableString string];
+  for (NSDictionary* item in candidates) {
+    NSString* path = item[@"path"] ?: @"";
+    NSString* title = item[@"title"] ?: @"";
+    NSString* desc = item[@"description"] ?: @"";
+    NSString* gear = item[@"gear"] ?: @"";
+    NSString* tags = item[@"tags"] ?: @"";
+    NSString* capture = item[@"capture_name"] ?: @"";
+    NSString* text = [NSString stringWithFormat:@"%@ %@ | %@ | %@ | %@ | %@", title, capture, gear, tags, desc, path.lastPathComponent];
+    NSDictionary* entry = @{@"id": path, @"text": text};
+    NSData* d = [NSJSONSerialization dataWithJSONObject:entry options:0 error:nil];
+    if (d) {
+      NSString* line = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+      if (line) [jsonl appendFormat:@"%@\n", line];
+    }
+  }
+
+  NSTask* task = [[NSTask alloc] init];
+  if ([jevExec hasSuffix:@".mjs"] || [jevExec hasSuffix:@".js"]) {
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/env"];
+    task.arguments = @[@"node", jevExec, @"rank", prompt, @"--items", @"-", @"--json"];
+  } else {
+    task.executableURL = [NSURL fileURLWithPath:jevExec];
+    task.arguments = @[@"rank", prompt, @"--items", @"-", @"--json"];
+  }
+
+  NSPipe* inPipe = [NSPipe pipe];
+  NSPipe* outPipe = [NSPipe pipe];
+  NSPipe* errPipe = [NSPipe pipe];
+  task.standardInput = inPipe;
+  task.standardOutput = outPipe;
+  task.standardError = errPipe;
+  task.currentDirectoryURL = [NSURL fileURLWithPath:NSTemporaryDirectory()];
+
+  NSMutableDictionary* env = [[NSProcessInfo processInfo].environment mutableCopy];
+  NSString* existingPath = env[@"PATH"] ?: @"/usr/bin:/bin:/usr/sbin:/sbin";
+  env[@"PATH"] = [NSString stringWithFormat:@"%@/.local/bin:/opt/homebrew/bin:/usr/local/bin:%@", home, existingPath];
+  task.environment = env;
+
+  NSError* launchErr = nil;
+  if (![task launchAndReturnError:&launchErr]) return candidates;
+
+  NSData* inData = [jsonl dataUsingEncoding:NSUTF8StringEncoding];
+  [inPipe.fileHandleForWriting writeData:inData error:nil];
+  [inPipe.fileHandleForWriting closeAndReturnError:nil];
+
+  NSMutableData* outData = [NSMutableData data];
+  const NSTimeInterval start = [NSDate timeIntervalSinceReferenceDate];
+  while (task.isRunning && ([NSDate timeIntervalSinceReferenceDate] - start < 3.0)) {
+    NSData* chunk = [outPipe.fileHandleForReading availableData];
+    if (chunk.length) [outData appendData:chunk];
+    [NSThread sleepForTimeInterval:0.02];
+  }
+  if (task.isRunning) {
+    [task terminate];
+    return candidates;
+  }
+  NSData* rest = [outPipe.fileHandleForReading readDataToEndOfFile];
+  if (rest.length) [outData appendData:rest];
+
+  [outPipe.fileHandleForReading closeAndReturnError:nil];
+  [errPipe.fileHandleForReading closeAndReturnError:nil];
+
+  if (task.terminationStatus != 0 || outData.length == 0) return candidates;
+
+  NSArray* rankedArray = [NSJSONSerialization JSONObjectWithData:outData options:0 error:nil];
+  if (![rankedArray isKindOfClass:[NSArray class]] || rankedArray.count == 0) return candidates;
+
+  NSMutableDictionary<NSString*, NSDictionary*>* candidateMap = [NSMutableDictionary dictionaryWithCapacity:candidates.count];
+  for (NSDictionary* c in candidates) {
+    if (c[@"path"]) candidateMap[c[@"path"]] = c;
+  }
+
+  const NSUInteger stageCaps[3] = {4, 8, 8};
+  NSUInteger stageCounts[3] = {0, 0, 0};
+  NSMutableArray* filtered = [NSMutableArray arrayWithCapacity:20];
+  NSMutableSet* seen = [NSMutableSet set];
+
+  for (id row in rankedArray) {
+    if (![row isKindOfClass:[NSDictionary class]]) continue;
+    NSString* itemId = row[@"id"];
+    NSDictionary* item = itemId ? candidateMap[itemId] : nil;
+    if (!item || [seen containsObject:itemId]) continue;
+
+    NSUInteger stage = [item[@"stage"] unsignedIntegerValue];
+    if (stage < 3 && stageCounts[stage] < stageCaps[stage]) {
+      stageCounts[stage]++;
+      [seen addObject:itemId];
+      [filtered addObject:item];
+    }
+  }
+
+  for (NSDictionary* item in candidates) {
+    NSUInteger stage = [item[@"stage"] unsignedIntegerValue];
+    if (stage < 3 && stageCounts[stage] < 2 && ![seen containsObject:item[@"path"]]) {
+      stageCounts[stage]++;
+      [seen addObject:item[@"path"]];
+      [filtered addObject:item];
+    }
+  }
+
+  if (filtered.count >= 4) {
+    const NSTimeInterval duration = [NSDate timeIntervalSinceReferenceDate] - start;
+    NSUInteger savedCount = candidates.count - filtered.count;
+    [self reportProgress:[NSString stringWithFormat:@"Jev: Semantically ranked candidate models in %.2f s (pruned %lu entries to save tokens).",
+        duration, (unsigned long)savedCount]];
+    return filtered;
+  }
+
+  return candidates;
+}
+
 - (void)processUserPrompt:(NSString*)userPrompt audioClips:(NSArray<NSDictionary*>*)clips
           audioDescription:(NSString*)audioDescription basePreset:(RigPreset*)basePreset
                  withState:(RigUIState*)state
@@ -1077,6 +1220,12 @@ static const NSUInteger kRigAICatalogLimit = 96;
       } else if (fetch.statusMessage.length) {
         [self reportProgress:fetch.statusMessage];
       }
+    }
+
+    // Fast System One (Jev) semantic ranking to prune tokens if available locally
+    NSArray* jevFiltered = [self rankCandidatesWithJev:candidates prompt:userPrompt];
+    if (jevFiltered.count > 0) {
+      candidates = jevFiltered;
     }
 
     NSUInteger offered[3] = {};
