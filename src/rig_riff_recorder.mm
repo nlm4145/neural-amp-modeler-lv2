@@ -195,14 +195,29 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 - (BOOL)isRecording { return g_recording.load(std::memory_order_acquire); }
 - (float)currentPeakLevel { return g_peak.load(); }
 - (NSTimeInterval)recordedDuration { return _pending ? g_frames.load() / g_rate.load() : _recordedDuration; }
++ (NSArray<NSDictionary*>*)guidedPlan {
+  return @[
+    @{@"start": @0, @"end": @2, @"label": @"Muted strings", @"instruction": @"Mute the strings with your fretting hand. Keep the guitar volume up. This captures the noise floor."},
+    @{@"start": @2, @"end": @6, @"label": @"Chugs", @"instruction": @"Palm-muted low-string chugs with short gaps between them."},
+    @{@"start": @6, @"end": @10, @"label": @"Power chords", @"instruction": @"Unmuted power chords. Let each chord ring."},
+    @{@"start": @10, @"end": @15, @"label": @"Single notes", @"instruction": @"Low then high single notes. Pick softly first, then firmly."},
+    @{@"start": @15, @"end": @20, @"label": @"Sustain", @"instruction": @"Hold one note or bend and let it fade out naturally."},
+  ];
+}
+- (BOOL)isGuided { return _guided; }
+- (NSInteger)guidedSegmentIndex {
+  if (!_guided) return -1;
+  const double t = self.recordedDuration;
+  NSArray* plan = [RigRiffRecorder guidedPlan];
+  for (NSUInteger i = 0; i < plan.count; ++i)
+    if (t < [plan[i][@"end"] doubleValue]) return (NSInteger)i;
+  return (NSInteger)plan.count - 1;
+}
 - (NSString*)guidance {
   if (!_guided) return @"Play a representative riff; include soft/hard picking and a note that fades.";
-  double t = self.recordedDuration;
-  if (t < 2) return @"0–2s: mute strings, guitar volume unchanged (noise floor)";
-  if (t < 6) return @"2–6s: palm-muted low-string chugs with gaps";
-  if (t < 10) return @"6–10s: unmuted power chords; let them ring";
-  if (t < 15) return @"10–15s: low/high single notes, picked softly then firmly";
-  return @"15–20s: sustain a note/bend and let it fade naturally";
+  NSArray* plan = [RigRiffRecorder guidedPlan];
+  NSDictionary* segment = plan[(NSUInteger)std::max<NSInteger>(0, self.guidedSegmentIndex)];
+  return [NSString stringWithFormat:@"%@–%@s: %@", segment[@"start"], segment[@"end"], segment[@"instruction"]];
 }
 - (void)startRecording { [self startRecordingGuided:NO]; }
 - (void)startRecordingGuided:(BOOL)guided {

@@ -62,6 +62,7 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, strong) NSDictionary<NSString*, NSNumber*>* controls;
 @property(nonatomic, copy, nullable) NSString* ampPath;
 @property(nonatomic, copy, nullable) NSString* cabPath;
+@property(nonatomic, copy, nullable) NSString* pedalPath; // Catalog path, "none" to remove, or empty if unchanged
 @property(nonatomic, strong, nullable) NSDictionary<NSString*, NSString*>* slotPresets;
 @property(nonatomic, strong, nullable) NSDictionary* rawJson;
 @property(nonatomic, strong, nullable) RigPreset* proposedPreset; // Frozen base + validated proposal
@@ -73,6 +74,9 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, strong) RigAIConfig* config;
 @property(nonatomic, readonly) BOOL isProcessing;
 - (void)cancelProcessing;
+
+// Human-readable progress lines (catalog, request, response, apply steps). Called on the main thread.
+@property(nonatomic, copy, nullable) void (^progressHandler)(NSString* message);
 
 // Active session preset tasks list
 @property(nonatomic, readonly, strong) NSArray<RigAIPresetTask*>* sessionTasks;

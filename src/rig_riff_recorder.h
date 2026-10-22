@@ -55,6 +55,11 @@ typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
 @property (nonatomic, copy) NSDictionary* recordingMetadata;
 @property (nonatomic, readonly) NSUInteger latencyFrames;
 @property (nonatomic, readonly, copy) NSString* guidance;
+// Guided-take segments: @{@"start", @"end" (seconds), @"label", @"instruction"} in playing order.
++ (NSArray<NSDictionary*>*)guidedPlan;
+// Zero-based index of the guided segment that contains the current recording time, or -1.
+@property (nonatomic, readonly) NSInteger guidedSegmentIndex;
+@property (nonatomic, readonly) BOOL isGuided;
 @property (nonatomic, readonly, nullable) NSData* referenceWavData;
 @property (nonatomic, readonly, copy) NSString* referenceAnalysis;
 @property (nonatomic, copy, nullable) RigRiffRenderHandler renderHandler;

@@ -464,6 +464,7 @@ struct RigUIState {
   std::array<__strong NSTextField*, 4> pathLabels{};
   std::array<__strong NSButton*, 4> powerButtons{};
   std::array<__strong NSImageView*, 3> stageImages{};
+  std::array<uint64_t, 3> stageThumbGeneration{};
   std::array<__strong RigPanel*, 3> stageCards{};
   NSInteger selectedStageIndex = -1;
   std::array<__strong NSTextField*, 3> stageHeaderArchBadges{};
@@ -1394,8 +1395,10 @@ struct RigUIState {
     if (stage >= pathURIDs.size() || !path) return;
     // Remember + persist the selection so it survives a UI/instance recreation.
     rememberAvailablePath(stage, path);
+    // A different model never inherits the previous model's artwork metadata;
+    // callers that know the new artwork set it again right after this call.
+    if (path[0] == '\0' || selectedPaths[stage] != path) { selectedImageURLs[stage].clear(); selectedToneIds[stage] = 0; }
     selectedPaths[stage] = path;
-    if (path[0] == '\0') { selectedImageURLs[stage].clear(); selectedToneIds[stage] = 0; }  // clearing a model clears its thumb
     persistSelectedPaths();
     const size_t length = std::strlen(path) + 1;
     std::vector<uint8_t> buffer(length + 256);
@@ -1900,9 +1903,18 @@ struct RigUIState {
   //   3. the tone's online `imageURL` (downloaded async),
   //   4. a generic placeholder SF Symbol.
   // A placeholder is shown immediately; the real image swaps in when available.
+  void clearStageThumbMetadata(size_t stage) {
+    if (stage >= selectedImageURLs.size()) return;
+    if (selectedImageURLs[stage].empty() && selectedToneIds[stage] == 0) return;
+    selectedImageURLs[stage].clear();
+    selectedToneIds[stage] = 0;
+    persistSelectedPaths();
+  }
+
   void setStageThumb(size_t stage, NSString* artworkPath, NSInteger toneId, NSString* imageURL) {
     if (stage >= stageImages.size() || !stageImages[stage]) return;
     const size_t s = stage;
+    const uint64_t generation = ++stageThumbGeneration[s];
 
     // Persist thumbnail metadata so it survives an instance recreation. Only do
     // this when real artwork data is present — placeholder calls (all nil/0),
@@ -1915,6 +1927,7 @@ struct RigUIState {
 
     // Fallback placeholder first so the well is never empty.
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (stageThumbGeneration[s] != generation) return;
       NSImage* icon = [NSImage imageWithSystemSymbolName:placeholderSymbolForStage(s)
                                   accessibilityDescription:nil];
       icon = [icon imageWithSymbolConfiguration:
@@ -1939,6 +1952,7 @@ struct RigUIState {
 
     if (image) {
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (stageThumbGeneration[s] != generation) return;
         stageImages[s].imageScaling = NSImageScaleProportionallyUpOrDown;
         stageImages[s].image = image;
       });
@@ -1958,7 +1972,7 @@ struct RigUIState {
         NSImage* downloaded = [[NSImage alloc] initWithData:data];
         if (!downloaded || downloaded.size.width <= 0 || downloaded.size.height <= 0) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-          if (!iv) return;
+          if (!iv || stageThumbGeneration[s] != generation) return;
           iv.imageScaling = NSImageScaleProportionallyUpOrDown;
           iv.image = downloaded;
         });
@@ -1970,6 +1984,7 @@ struct RigUIState {
   void updateThumbnailForStagePath(size_t stage, NSString* modelPath) {
     if (stage >= stageImages.size()) return;
     if (!modelPath.length) {
+      clearStageThumbMetadata(stage);
       setStageThumb(stage, nil, 0, nil);
       return;
     }
@@ -2023,6 +2038,7 @@ struct RigUIState {
     }
 
     // 3. Fallback: Revert to clean placeholder icon so stale/unrelated amp artwork is cleared
+    clearStageThumbMetadata(stage);
     setStageThumb(stage, nil, 0, nil);
   }
 

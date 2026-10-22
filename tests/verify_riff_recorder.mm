@@ -72,6 +72,37 @@ int main() {
     assert(recorder.recordedWavData == nil);
     assert(recorder.recordedDuration == 0.0);
 
+    // Guided plan: five contiguous segments covering 0–20 s, each with an instruction.
+    NSArray<NSDictionary*>* plan = [RigRiffRecorder guidedPlan];
+    assert(plan.count == 5);
+    double cursor = 0;
+    for (NSDictionary* segment in plan) {
+      assert([segment[@"start"] doubleValue] == cursor);
+      assert([segment[@"end"] doubleValue] > cursor);
+      assert([segment[@"label"] length] > 0 && [segment[@"instruction"] length] > 0);
+      cursor = [segment[@"end"] doubleValue];
+    }
+    assert(cursor == 20);
+    (void)cursor;
+
+    // Segment tracking follows the live recording time.
+    [recorder startRecordingGuided:YES];
+    assert(recorder.isGuided && recorder.guidedSegmentIndex == 0);
+    assert([recorder.guidance containsString:plan[0][@"instruction"]]);
+    std::fill(left.begin(), left.end(), .1f);
+    for (uint32_t i = 0; i < uint32_t(srate * 3); i += blockSize)
+      rigRiffRecorderPushPair(left.data(), left.data(), left.data(), blockSize, srate, 0);
+    assert(recorder.guidedSegmentIndex == 1);
+    assert([recorder.guidance hasPrefix:@"2–6s: "]);
+    for (uint32_t i = 0; i < uint32_t(srate * 14); i += blockSize)
+      rigRiffRecorderPushPair(left.data(), left.data(), left.data(), blockSize, srate, 0);
+    assert(recorder.guidedSegmentIndex == 4);
+    [recorder clearRecording];
+    [recorder startRecordingGuided:NO];
+    assert(!recorder.isGuided && recorder.guidedSegmentIndex == -1);
+    assert([recorder.guidance containsString:@"representative riff"]);
+    [recorder clearRecording];
+
     // Pair identity, live duration, clipping before PCM clamping, and auto-finalization.
     [recorder startRecordingGuided:YES];
     std::fill(left.begin(), left.end(), 1.25f);

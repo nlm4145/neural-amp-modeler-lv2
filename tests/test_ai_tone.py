@@ -35,7 +35,8 @@ class ToneTests(unittest.TestCase):
             root = temp / "library"
             for relative in ["Amp/A/clean.nam", "Amp/B/clean.nam", "Amp/C/unique.nam",
                              "Amp/Full/capture.nam", "Full Rig/Combo/rig.nam",
-                             "Cab/CabA/mic.wav", "Cabinet/Legacy/old.wav", "Cab/Nam/cab.nam"]:
+                             "Cab/CabA/mic.wav", "Cabinet/Legacy/old.wav", "Cab/Nam/cab.nam",
+                             "Pedal/TS/ts9.nam"]:
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("fixture")
@@ -43,7 +44,7 @@ class ToneTests(unittest.TestCase):
             (temp / "outside.nam").write_text("outside")
             (root / "Amp/A/outside.nam").symlink_to(temp / "outside.nam")
             (root / "Amp/A/_tone3000.json").write_text(json.dumps({"tone": {
-                "title": "Boutique Clean", "description": "warm clean boutique", "gear": "amp"},
+                "title": "Boutique Clean", "description": "warm   clean\nboutique", "gear": "amp"},
                 "downloads": [{"local_filename": "clean.nam", "original_model": {"name": "Clean capture"}}]}))
             (root / "Amp/Full/_tone3000.json").write_text(json.dumps({"tone": {"gear": "amp-cab"}}))
             binary = temp / "verify-ai"

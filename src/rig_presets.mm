@@ -596,8 +596,13 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       state->sendPath(s, path.c_str());
       NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
       state->updateThumbnailForStagePath(s, nsPath);
-      if (state->selectedToneIds[s] <= 0 && state->selectedImageURLs[s].empty() && (img.length() || toneId > 0)) {
-        state->setStageThumb(s, nil, toneId, [NSString stringWithUTF8String:img.c_str()]);
+      // Stored artwork metadata is trusted only when the model folder itself proves the tone
+      // identity; otherwise stale metadata captured from an unrelated rig would follow this preset.
+      NSString* folder = nsPath.stringByDeletingLastPathComponent;
+      const BOOL previewOfSameTone = toneId > 0 && [folder containsString:@"/PreviewCache/"] &&
+          folder.lastPathComponent.integerValue == toneId;
+      if (state->selectedToneIds[s] <= 0 && state->selectedImageURLs[s].empty() && previewOfSameTone) {
+        state->setStageThumb(s, nil, toneId, img.length() ? [NSString stringWithUTF8String:img.c_str()] : nil);
       }
     } else {
       state->setStageModels(s, @[]);

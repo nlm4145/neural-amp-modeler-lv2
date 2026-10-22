@@ -71,9 +71,16 @@ build/src/verify_riff_renderer # optionally pass a .nam path for a short model s
 
 Open **AI Tone Tuning** with **⌘K**. Choose a provider, model and API URL,
 describe your tone, then click **Preview Tone**. Preview does not change the rig.
-**Apply & Save** validates the proposal, waits for engine model-load acknowledgements,
-and saves a uniquely named preset without overwriting an existing one. **A/B Toggle**
-exchanges it with the prior rig; it does not alter the saved preset file.
+The text area is a timestamped activity log for every provider path (cloud API,
+local CLI, Ollama/custom): catalog size, request size and endpoint, HTTP status,
+elapsed time, token usage when reported, parse result, each model load, engine
+acknowledgement, and the saved preset file. Every run ends with an explicit
+`✅ DONE` or `❌ FAILED` line. After a preview the **Save as** field shows the exact
+preset name **Apply & Save** will create; edit it before applying. **Apply & Save**
+validates the proposal, waits for engine model-load acknowledgements, and saves
+that preset without overwriting an existing one (a ` Copy N` suffix is added when
+the name is taken). **A/B Toggle** exchanges it with the prior rig; it does not
+alter the saved preset file.
 
 Choose **Modify current preset** (load your saved preset first), **Build from scratch**,
 or **Refine last proposal**. The base is frozen for each request; applying a proposal
@@ -85,9 +92,12 @@ It retains the recording-time preset and optional tuning/pickup/interface metada
 DI float samples remain unnormalized for replay; PCM24 WAVs are used for audition/upload.
 External pedals and interface gain are still part of the input, not inferred by the AI.
 
-**Guided 20s take** prompts: 0–2s muted strings (volume unchanged), 2–6s chugs,
-6–10s ringing power chords, 10–15s soft/hard low/high single notes, and 15–20s
-sustain/decay. These are expected segments, not automatically detected techniques.
+**Record Riff** starts with a three-second countdown (one beep per second) so both
+hands can be on the guitar. A **Guided 20s take** prints the full plan in the log, then
+announces each step with a beep, the instruction, the seconds left and the next step:
+0–2s muted strings (volume unchanged), 2–6s chugs, 6–10s ringing power chords,
+10–15s soft/hard low/high single notes, and 15–20s sustain/decay. The take stops by
+itself at 20 s. These are expected segments, not automatically detected techniques.
 For clean/lead tones, substitute representative arpeggios/notes or disable guidance.
 Analysis reports DI/output dynamics, clipping, and broad frequency-filter estimates;
 it is not a precise spectrum match. Avoid changing rig settings during a take.
@@ -106,9 +116,15 @@ float32 WAV at 22.05–192 kHz, max 40 MB, using the first 20 seconds. A full mi
 not be treated as isolated guitar EQ. The LV2 UI supports import/text tuning; live
 paired capture and DI rendering require the standalone app.
 
-The assistant receives compact rig settings and at most 24 installed-model
-candidates from `~/Music/Tone3000 Library`, using `_tone3000.json` metadata where
-available. **Telemetry-only is the default** to reduce cost. **Upload audio** is an
+The assistant receives compact rig settings and a catalog of up to 96 installed
+pedal, amp and cab models from `~/Music/Tone3000 Library`, using `_tone3000.json`
+metadata where available. The catalog states whether it is the complete library or a
+ranked excerpt; the log shows how many models were offered per stage. The AI may
+select a pedal, amp and cab, set `pedal_model` to `none` to drop a pedal capture, or
+set `cab_ir` to `none` only together with an amp capture that includes its cabinet. The
+prompt tells it that the base preset's gear is only a starting point: an artist, song,
+genre or era request must pick fitting gear from the catalog rather than keep whatever
+cab or pedal is currently loaded. **Telemetry-only is the default** to reduce cost. **Upload audio** is an
 explicit opt-in for Gemini models or OpenAI GPT audio-input models (ordinary GPT-4o
 is not assumed audio-capable); Claude, Ollama/custom and local CLI receive text only.
 Uploads label DI, processed output, and target separately. Candidate feedback stays

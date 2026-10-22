@@ -67,7 +67,7 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   }
   NSDictionary* dict = object;
   for (NSString* key in @[@"preset_name", @"preset_title", @"thought", @"explanation",
-                         @"amp_model", @"amp_path", @"cab_ir", @"cab_path"]) {
+                         @"amp_model", @"amp_path", @"cab_ir", @"cab_path", @"pedal_model", @"pedal_path"]) {
     if (dict[key] && ![dict[key] isKindOfClass:NSString.class]) {
       fail(error, [NSString stringWithFormat:@"%@ must be a string, not null or another type.", key]); return nil;
     }
@@ -84,8 +84,18 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   result.controls = dict[@"controls"];
   result.ampPath = dict[@"amp_model"] ?: dict[@"amp_path"];
   result.cabPath = dict[@"cab_ir"] ?: dict[@"cab_path"];
+  result.pedalPath = dict[@"pedal_model"] ?: dict[@"pedal_path"];
+  if (rigAIIsNoneModel(result.ampPath)) {
+    fail(error, @"amp_model cannot be 'none'; choose a catalog amp or leave it unchanged."); return nil;
+  }
   result.rawJson = dict;
   return result;
+}
+
+BOOL rigAIIsNoneModel(NSString* target) {
+  if (![target isKindOfClass:NSString.class]) return NO;
+  NSString* trimmed = [target.lowercaseString stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  return [trimmed isEqualToString:@"none"] || [trimmed isEqualToString:@"remove"] || [trimmed isEqualToString:@"bypass"];
 }
 
 static NSDictionary* manifestForPath(NSString* path) {
@@ -129,13 +139,20 @@ static BOOL categoryMatches(NSString* relative, NSUInteger stage) {
 }
 
 NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, NSUInteger limit) {
+  NSUInteger totals[3] = {};
+  return rigAILibraryCandidatesWithTotals(root, query, limit, totals);
+}
+
+NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotals(NSString* root, NSString* query, NSUInteger limit,
+                                                        NSUInteger totals[3]) {
   NSMutableArray* items = [NSMutableArray array];
   NSArray* tokens = [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
   NSDirectoryEnumerator* en = [NSFileManager.defaultManager enumeratorAtPath:root];
   NSMutableDictionary* manifests = [NSMutableDictionary dictionary];
+  for (NSUInteger s = 0; s < 3; ++s) totals[s] = 0;
   for (NSString* relative in en) {
-    NSUInteger stage = categoryMatches(relative, 1) ? 1 : categoryMatches(relative, 2) ? 2 : 0;
-    if (!stage) continue;
+    NSUInteger stage = categoryMatches(relative, 1) ? 1 : categoryMatches(relative, 2) ? 2 : categoryMatches(relative, 0) ? 0 : NSNotFound;
+    if (stage == NSNotFound) continue;
     NSString* path = [root stringByAppendingPathComponent:relative];
     if (!regularFileInside(root, path)) continue;
     NSString* folder = path.stringByDeletingLastPathComponent;
@@ -144,11 +161,18 @@ NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, 
     NSDictionary* tone = [manifest[@"tone"] isKindOfClass:NSDictionary.class] ? manifest[@"tone"] : @{};
     NSString* gear = [tone[@"gear"] isKindOfClass:NSString.class] ? [tone[@"gear"] lowercaseString] : @"";
     BOOL includesCab = [relative.pathComponents containsObject:@"Full Rig"] || [gear isEqual:@"amp-cab"] || [gear isEqual:@"full-rig"];
+    ++totals[stage];
     NSMutableDictionary* item = [@{@"path": relative, @"stage": @(stage),
                                   @"includes_cab": @(stage == 1 && includesCab)} mutableCopy];
     for (NSString* key in @[@"title", @"description", @"gear", @"tags"]) {
       id value = tone[key];
-      if ([value isKindOfClass:NSString.class]) item[key] = [value substringToIndex:std::min<NSUInteger>([value length], 400)];
+      if ([value isKindOfClass:NSString.class]) {
+        NSArray<NSString*>* words = [[value componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+        NSString* text = [words componentsJoinedByString:@" "];
+        const NSUInteger cap = [key isEqualToString:@"description"] ? 240 : 120;
+        item[key] = [text substringToIndex:std::min<NSUInteger>(text.length, cap)];
+      }
     }
     NSArray* downloads = [manifest[@"downloads"] isKindOfClass:NSArray.class] ? manifest[@"downloads"] : @[];
     for (id entry in downloads) {
@@ -166,14 +190,19 @@ NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, 
     NSComparisonResult score = [b[@"score"] compare:a[@"score"]];
     return score == NSOrderedSame ? [a[@"path"] compare:b[@"path"]] : score;
   }];
-  // Balanced shortlist: neither a huge amp family nor cab pack can crowd out the other stage.
+  // Balanced shortlist: neither a huge amp family nor cab pack can crowd out the other stages.
+  // Pedals get a small share; amps and cabs split the rest.
   NSMutableArray* selected = [NSMutableArray array];
   NSMutableDictionary* packCounts = [NSMutableDictionary dictionary];
   NSUInteger counts[3] = {};
+  NSUInteger caps[3] = {0, 0, 0};
+  caps[0] = totals[0] ? std::max<NSUInteger>(2, limit / 6) : 0;
+  caps[0] = std::min(caps[0], limit);
+  caps[1] = caps[2] = (limit - caps[0] + 1) / 2;
   for (NSMutableDictionary* item in items) {
     NSUInteger stage = [item[@"stage"] unsignedIntegerValue];
     NSString* pack = [item[@"path"] stringByDeletingLastPathComponent];
-    if (counts[stage] >= (limit + 1) / 2 || [packCounts[pack] unsignedIntegerValue] >= 2) continue;
+    if (counts[stage] >= caps[stage] || [packCounts[pack] unsignedIntegerValue] >= 3) continue;
     ++counts[stage];
     packCounts[pack] = @([packCounts[pack] unsignedIntegerValue] + 1);
     [item removeObjectForKey:@"score"];
@@ -184,8 +213,15 @@ NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, 
   for (NSMutableDictionary* item in items) {
     NSUInteger stage = [item[@"stage"] unsignedIntegerValue];
     if (selected.count >= limit) break;
-    if (counts[stage] >= (limit + 1) / 2 || [selected containsObject:item]) continue;
+    if (counts[stage] >= caps[stage] || [selected containsObject:item]) continue;
     ++counts[stage];
+    [item removeObjectForKey:@"score"];
+    [selected addObject:item];
+  }
+  // Remaining room goes to any stage so a small library is always listed completely.
+  for (NSMutableDictionary* item in items) {
+    if (selected.count >= limit) break;
+    if ([selected containsObject:item]) continue;
     [item removeObjectForKey:@"score"];
     [selected addObject:item];
   }

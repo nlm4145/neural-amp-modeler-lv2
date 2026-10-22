@@ -141,9 +141,33 @@ int main(int argc, char** argv) {
     [controller setValue:proposal forKey:@"copilotProposal"];
     [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
     CHECK([state.presetManager.presetNames containsObject:@"AI Test"]);
+    NSString* log = [[controller valueForKey:@"copilotOutputView"] string];
+    CHECK([log containsString:@"APPLY & SAVE started → target preset 'AI Test'"]);
+    CHECK([log containsString:@"✅ DONE — preset 'AI Test'"] && [log containsString:@"AI Test.json"]);
     [controller setValue:proposal forKey:@"copilotProposal"];
     [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
     CHECK(state.presetManager.presetNames.count >= 3);
+    CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"✅ DONE — preset 'AI Test Copy'"]);
+    // The Save as field names the preset exactly, and shows the final unique name after saving.
+    NSTextField* nameField = [NSTextField new]; nameField.stringValue = @"  Mellencamp - Jack & Diane ";
+    [controller setValue:nameField forKey:@"copilotPresetNameField"];
+    [controller setValue:proposal forKey:@"copilotProposal"];
+    [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
+    CHECK([state.presetManager.presetNames containsObject:@"Mellencamp - Jack & Diane"]);
+    CHECK([nameField.stringValue isEqual:@"Mellencamp - Jack & Diane"]);
+    [controller setValue:nil forKey:@"copilotPresetNameField"];
+    // Progress lines reach the handler during application.
+    NSMutableArray<NSString*>* progress = [NSMutableArray array];
+    copilot.progressHandler = ^(NSString* line) { [progress addObject:line]; };
+    RigAICopilotResult* direct = [NSClassFromString(@"RigAICopilotResult") new];
+    direct.controls = @{@"mid": @1};
+    CHECK([copilot applyResult:direct toState:&state saveUndoState:NO error:nil]);
+    CHECK(progress.count == 1 && [progress.firstObject containsString:@"Applying 1 control changes"]);
+    direct.ampPath = @"none";
+    error = nil;
+    CHECK(![copilot applyResult:direct toState:&state saveUndoState:NO error:&error] && error);
+    direct.ampPath = nil;
+    copilot.progressHandler = nil;
     RigUIState other;
     CHECK(![copilot undoLastAIApplicationToState:&other error:nil]);
     state.activeState() = &state;
@@ -172,6 +196,18 @@ int main(int argc, char** argv) {
     RigPreset* composed = [copilotClass presetForResult:candidate base:base error:&error];
     CHECK(composed && [composed controlForPort:12] == -4 && [composed controlForPort:13] == 2);
     CHECK(![composed stageAtIndex:2]->enabled);
+    // "none" removes a pedal capture and switches the Pedal stage off.
+    [base stageAtIndex:0]->path = "/somewhere/Pedal/Old/old.nam";
+    [base stageAtIndex:0]->toneId = 42;
+    [base setControl:7 value:1];
+    RigAICopilotResult* noPedal = [NSClassFromString(@"RigAICopilotResult") new];
+    noPedal.controls = @{}; noPedal.pedalPath = @"none";
+    RigPreset* withoutPedal = [copilotClass presetForResult:noPedal base:base error:&error];
+    CHECK(withoutPedal && [withoutPedal stageAtIndex:0]->path.empty() && [withoutPedal stageAtIndex:0]->toneId == 0);
+    CHECK([withoutPedal controlForPort:7] == 0 && ![withoutPedal stageAtIndex:0]->enabled);
+    noPedal.pedalPath = @"Pedal/Missing/x.nam";
+    CHECK(![copilotClass presetForResult:noPedal base:base error:nil]);
+    [base stageAtIndex:0]->path.clear(); [base stageAtIndex:0]->toneId = 0;
     [base setControl:12 value:3]; CHECK([composed controlForPort:12] == -4);
     CHECK([[copilotClass contextForPreset:composed compact:YES][@"controls"][@"bass"] floatValue] == -4);
     candidate.proposedPreset = composed;
