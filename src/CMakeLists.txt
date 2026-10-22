@@ -57,7 +57,7 @@ set(NA_SOURCES ../deps/NeuralAudio/NeuralAudio/NeuralModel.h)
 
 add_library(neural_amp_modeler SHARED ${SOURCES} ${NA_SOURCES})
 
-set(RIG_SOURCES nam_rig_lv2.cpp
+set(RIG_CORE_SOURCES
 	cabinet_worker.cpp cabinet_worker.h
 	nam_rig_plugin.cpp
 	nam_rig_plugin.h
@@ -73,7 +73,24 @@ set(RIG_SOURCES nam_rig_lv2.cpp
 	speaker_dynamics.h
 	space_fx.h)
 
-add_library(neural_amp_modeler_rig SHARED ${RIG_SOURCES} ${NA_SOURCES})
+add_library(rig_dsp_core OBJECT ${RIG_CORE_SOURCES} ${NA_SOURCES})
+set_target_properties(rig_dsp_core PROPERTIES
+	POSITION_INDEPENDENT_CODE ON
+	CXX_VISIBILITY_PRESET hidden
+)
+if (APPLE)
+	target_compile_options(rig_dsp_core PRIVATE -mmacosx-version-min=11.0)
+endif()
+target_include_directories(rig_dsp_core PUBLIC
+	${CMAKE_CURRENT_SOURCE_DIR}
+	../deps/NeuralAudio
+	../deps/lv2/include
+	../deps/denormal
+	../deps/NeuralAudio/deps/RTNeural/modules/json)
+
+set(RIG_SOURCES nam_rig_lv2.cpp ${RIG_CORE_SOURCES})
+
+add_library(neural_amp_modeler_rig SHARED nam_rig_lv2.cpp $<TARGET_OBJECTS:rig_dsp_core> ${NA_SOURCES})
 
 target_include_directories(neural_amp_modeler PUBLIC ../deps/NeuralAudio)
 target_include_directories(neural_amp_modeler PUBLIC ../deps/lv2/include)
@@ -185,8 +202,14 @@ if (NOT APPLE)
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include/pffft
 	)
+	target_link_libraries(rig_dsp_core PRIVATE pffft)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE pffft)
 	target_link_libraries(nam_bench PRIVATE pffft)
+	target_include_directories(rig_dsp_core PUBLIC
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies
+		${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio/deps/RTNeural/modules/json
+	)
 	target_include_directories(neural_amp_modeler_rig PUBLIC
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/pffft/include
 		${CMAKE_CURRENT_SOURCE_DIR}/../deps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies
@@ -198,6 +221,7 @@ endif()
 
 if (WIN32)
 	target_compile_definitions(neural_amp_modeler PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+	target_compile_definitions(rig_dsp_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PFFFT_STATIC_DEFINE)
 	target_compile_definitions(neural_amp_modeler_rig PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PFFFT_STATIC_DEFINE)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE winmm avrt ole32)
 
@@ -231,12 +255,7 @@ if (WIN32)
 			win32_asio.h
 			win32_ui_view.h win32_ui_view.cpp
 			win32_presets.h win32_presets.cpp
-			cabinet_worker.cpp cabinet_worker.h
-			nam_rig_plugin.cpp nam_rig_plugin.h
-			dsp_accel.cpp dsp_accel.h
-			wav_ir.cpp wav_ir.h
-			oversample.cpp oversample.h oversample_modes.h
-			amp_advanced.h output_transformer.h speaker_dynamics.h space_fx.h
+			$<TARGET_OBJECTS:rig_dsp_core>
 		)
 		target_compile_definitions(axe_fx_standalone PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PFFFT_STATIC_DEFINE)
 		target_include_directories(axe_fx_standalone PRIVATE
@@ -274,7 +293,7 @@ if (APPLE)
 	target_link_libraries(verify_riff_recorder PRIVATE ${COCOA_FRAMEWORK})
 	target_compile_options(verify_riff_recorder PRIVATE -fobjc-arc -UNDEBUG)
 	add_executable(verify_riff_renderer EXCLUDE_FROM_ALL ../tests/verify_riff_renderer.mm
-		rig_riff_renderer.mm nam_rig_plugin.cpp wav_ir.cpp oversample.cpp cabinet_worker.cpp dsp_accel.cpp)
+		rig_riff_renderer.mm $<TARGET_OBJECTS:rig_dsp_core>)
 	target_include_directories(verify_riff_renderer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
 	target_compile_options(verify_riff_renderer PRIVATE -fobjc-arc -UNDEBUG -Wno-incomplete-implementation)
@@ -296,8 +315,7 @@ if (APPLE)
 	target_link_libraries(verify_parallel_polyphase PRIVATE
 		NeuralAudio Threads::Threads ${ACCELERATE_FRAMEWORK})
 	add_executable(verify_parallel_cabs EXCLUDE_FROM_ALL
-		../tests/verify_parallel_cabs.cpp nam_rig_plugin.cpp wav_ir.cpp
-		oversample.cpp cabinet_worker.cpp dsp_accel.cpp)
+		../tests/verify_parallel_cabs.cpp $<TARGET_OBJECTS:rig_dsp_core>)
 	target_include_directories(verify_parallel_cabs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
 	target_link_libraries(verify_parallel_cabs PRIVATE NeuralAudio ${ACCELERATE_FRAMEWORK})
@@ -328,7 +346,14 @@ if (APPLE)
 		rig_local_server.h rig_local_server.mm
 		rig_riff_recorder.h rig_riff_recorder.mm
 		rig_ui_state.h)
-	add_library(neural_amp_modeler_rig_ui MODULE ${RIG_UI_SOURCES})
+	add_library(rig_ui_core OBJECT ${RIG_UI_SOURCES})
+	set_target_properties(rig_ui_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+	target_include_directories(rig_ui_core PRIVATE
+		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal
+		../deps/NeuralAudio/deps/RTNeural/modules/json)
+	target_compile_options(rig_ui_core PRIVATE -fobjc-arc -mmacosx-version-min=11.0)
+
+	add_library(neural_amp_modeler_rig_ui MODULE $<TARGET_OBJECTS:rig_ui_core>)
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
 	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
@@ -347,14 +372,9 @@ if (APPLE)
 			standalone_main.mm
 			rig_riff_renderer.h rig_riff_renderer.mm
 			standalone_worker.cpp standalone_worker.h standalone_controls.h
-			cabinet_worker.cpp cabinet_worker.h
-			nam_rig_plugin.cpp nam_rig_plugin.h
-			dsp_accel.cpp dsp_accel.h
-			wav_ir.cpp wav_ir.h
-			oversample.cpp oversample.h oversample_modes.h
-			amp_advanced.h output_transformer.h speaker_dynamics.h space_fx.h
 			rig_standalone_profiler.h rig_standalone_profiler.mm
-			${RIG_UI_SOURCES}
+			$<TARGET_OBJECTS:rig_dsp_core>
+			$<TARGET_OBJECTS:rig_ui_core>
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.icns
 			${CMAKE_SOURCE_DIR}/resources/AxeFX.png)
 		set_source_files_properties(

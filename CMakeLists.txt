@@ -10,6 +10,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	if (NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+		set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment version")
+	endif()
 	include_directories(SYSTEM /usr/local/include)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	link_libraries( "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9.0>>:-lstdc++fs>" )
@@ -27,15 +30,15 @@ add_subdirectory(src)
 
 # create neural_amp_modeler.lv2
 add_custom_target(copy_binaries ALL
-	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
-	COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:neural_amp_modeler>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:neural_amp_modeler_rig>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
 	DEPENDS neural_amp_modeler neural_amp_modeler_rig
 )
 
 if (APPLE)
 	add_custom_target(copy_ui ALL
-		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
-		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:neural_amp_modeler_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:neural_amp_modeler_rig_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
 		DEPENDS neural_amp_modeler_ui neural_amp_modeler_rig_ui
 	)
 	set(NAM_UI_SEE_ALSO ",<neural_amp_modeler_ui.ttl>")
@@ -44,7 +47,7 @@ if (APPLE)
 	configure_file(resources/neural_amp_modeler_rig_ui.ttl.in neural_amp_modeler.lv2/neural_amp_modeler_rig_ui.ttl)
 elseif (WIN32)
 	add_custom_target(copy_ui ALL
-		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:neural_amp_modeler_rig_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:neural_amp_modeler_rig_ui>" "${CMAKE_BINARY_DIR}/neural_amp_modeler.lv2/"
 		DEPENDS neural_amp_modeler_rig_ui
 	)
 	set(NAM_UI_SEE_ALSO "")

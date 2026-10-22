@@ -87,6 +87,10 @@ JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 PARALLEL_MODELS=ON
 PARALLEL_CABS=OFF
 SMART_BYPASS=OFF
+CACHED_PARALLEL_MODELS=""
+CACHED_PARALLEL_CABS=""
+CACHED_SMART_BYPASS=""
+CACHE_HAS_BUILD_RULES=0
 # Read only known boolean entries, never execute cache contents as shell code.
 if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
   while IFS='=' read -r key value; do
@@ -96,11 +100,23 @@ if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
       *) continue ;;
     esac
     case "$key" in
-      AXE_FX_PARALLEL_MODELS_DEFAULT:BOOL) PARALLEL_MODELS="$value" ;;
-      AXE_FX_PARALLEL_CABS_DEFAULT:BOOL) PARALLEL_CABS="$value" ;;
-      SMART_BYPASS_ENABLED:BOOL) SMART_BYPASS="$value" ;;
+      AXE_FX_PARALLEL_MODELS_DEFAULT:BOOL)
+        PARALLEL_MODELS="$value"
+        CACHED_PARALLEL_MODELS="$value"
+        ;;
+      AXE_FX_PARALLEL_CABS_DEFAULT:BOOL)
+        PARALLEL_CABS="$value"
+        CACHED_PARALLEL_CABS="$value"
+        ;;
+      SMART_BYPASS_ENABLED:BOOL)
+        SMART_BYPASS="$value"
+        CACHED_SMART_BYPASS="$value"
+        ;;
     esac
   done < "$BUILD_DIR/CMakeCache.txt"
+  if [[ -f "$BUILD_DIR/Makefile" || -f "$BUILD_DIR/build.ninja" ]]; then
+    CACHE_HAS_BUILD_RULES=1
+  fi
 fi
 PARALLEL_MODELS="${BUILD_PARALLEL_MODELS-$PARALLEL_MODELS}"
 PARALLEL_MODELS="${PROCESSING_FLAG:-$PARALLEL_MODELS}"
@@ -201,7 +217,17 @@ fi
 
 echo "== 1/5 Configuring: cmake -S $REPO_DIR -B $BUILD_DIR (Release)"
 mkdir -p "$BUILD_DIR"
-cmake "${CMAKE_ARGS[@]}"
+NEED_CONFIGURE=1
+if (( CACHE_HAS_BUILD_RULES )) && [[ "$CACHED_SMART_BYPASS" == "$SMART_BYPASS" ]]; then
+  if (( ! IS_MACOS )) || [[ "$CACHED_PARALLEL_MODELS" == "$PARALLEL_MODELS" && "$CACHED_PARALLEL_CABS" == "$PARALLEL_CABS" ]]; then
+    NEED_CONFIGURE=0
+  fi
+fi
+if (( NEED_CONFIGURE )); then
+  cmake "${CMAKE_ARGS[@]}"
+else
+  echo "   (Reusing existing CMake configuration; incremental build enabled)"
+fi
 
 echo "== 2/5 Building plugin and standalone simultaneously (-j$JOBS)"
 cmake --build "$BUILD_DIR" -j"$JOBS"

@@ -1720,13 +1720,18 @@ static const NSUInteger kRigAICatalogLimit = 48;
     NSString* path = result.proposedPreset ? @([result.proposedPreset stageAtIndex:stage]->path.c_str()) :
         (stage == 0 ? result.pedalPath : (stage == 1 ? result.ampPath : (stage == 2 ? result.cabPath : nil)));
     if (!result.proposedPreset && !path.length) continue;
-    if (state->selectedPaths[stage] != path.fileSystemRepresentation) {
+    const std::string targetPath = path.length ? std::string(path.fileSystemRepresentation) : std::string();
+    if (state->selectedPaths[stage] != targetPath) {
       completion([NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:
           @"Model selection changed during application. No preset was saved; your newer selection was preserved."}]);
       return;
     }
-    if (state->pathResponseSerial[stage] <= serials[stage]) { ready = NO; continue; }
-    if (state->confirmedPaths[stage] != path.fileSystemRepresentation) { failed = YES; break; }
+    if (state->pathResponseSerial[stage] <= serials[stage]) {
+      if (state->confirmedPaths[stage] == targetPath) continue;
+      ready = NO;
+      continue;
+    }
+    if (state->confirmedPaths[stage] != targetPath) { failed = YES; break; }
   }
   if (failed || (!ready && deadline.timeIntervalSinceNow <= 0)) {
     [self reportProgress:failed ? @"Engine rejected a requested model; restoring the previous rig." :
@@ -1755,6 +1760,23 @@ static const NSUInteger kRigAICatalogLimit = 48;
   const auto serials = state->pathResponseSerial;
   NSError* error = nil;
   if (![self applyResult:result toState:state saveUndoState:YES error:&error]) { completionHandler(error); return; }
+
+  BOOL needsAsyncModelWait = NO;
+  for (size_t stage = 0; stage < 4; ++stage) {
+    NSString* path = result.proposedPreset ? @([result.proposedPreset stageAtIndex:stage]->path.c_str()) :
+        (stage == 0 ? result.pedalPath : (stage == 1 ? result.ampPath : (stage == 2 ? result.cabPath : nil)));
+    if (!result.proposedPreset && !path.length) continue;
+    const std::string targetPath = path.length ? std::string(path.fileSystemRepresentation) : std::string();
+    if (state->pathResponseSerial[stage] <= serials[stage] && state->confirmedPaths[stage] != targetPath) {
+      needsAsyncModelWait = YES;
+      break;
+    }
+  }
+  if (!needsAsyncModelWait) {
+    completionHandler(nil);
+    return;
+  }
+
   self.isApplying = YES;
   [self reportProgress:@"Waiting for the engine to acknowledge model loads (up to 10 s)…"];
   [self waitForPaths:result state:state alive:state->isAlive serials:serials before:before

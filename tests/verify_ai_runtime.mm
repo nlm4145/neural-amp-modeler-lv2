@@ -129,6 +129,31 @@ int main(int argc, char** argv) {
     CHECK(confirmedLoad);
     result.ampPath = nil;
     state.selectedPaths[1].clear();
+    state.confirmedPaths[1].clear();
+    // Build-from-scratch proposals carry a full proposedPreset where unused stages (e.g. pedal, cab B)
+    // have empty paths that match the engine's already-empty confirmedPaths without a new serial bump.
+    {
+      RigPreset* scratchBase = [presetClass defaultPreset];
+      RigAICopilotResult* scratchProposal = [NSClassFromString(@"RigAICopilotResult") new];
+      scratchProposal.presetName = @"Scratch Test";
+      scratchProposal.pedalPath = @"none";
+      scratchProposal.ampPath = @"Amp/Test/broken.nam";
+      scratchProposal.controls = @{@"bass": @0.5, @"pedal_enabled": @0};
+      scratchProposal.proposedPreset = [copilotClass presetForResult:scratchProposal base:scratchBase error:&error];
+      CHECK(scratchProposal.proposedPreset && !error);
+      __block BOOL scratchDone = NO;
+      [copilot applyResult:scratchProposal toState:&state completionHandler:^(NSError* failure) {
+        CHECK(!failure);
+        scratchDone = YES;
+      }];
+      CHECK(!scratchDone);
+      // Only stage 1 (amp) changed from empty to a file; stages 0, 2, 3 remain empty (confirmedPaths == "").
+      state.confirmedPaths[1] = model.fileSystemRepresentation; ++state.pathResponseSerial[1];
+      drain();
+      CHECK(scratchDone);
+      state.selectedPaths[1].clear();
+      state.confirmedPaths[1].clear();
+    }
     // Exercise the real UI Apply & Save action and unique-name collision handling.
     state.presetManager = [managerClass sharedManager];
     id controller = [NSClassFromString(@"NAMRigUIController") new];

@@ -1853,9 +1853,12 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     const CGFloat baseW = 1520.0;
     const CGFloat baseH = 980.0;
 
-    const CGFloat hostX = std::max<CGFloat>(0.0, std::floor((availW - baseW) / 2.0));
-    const CGFloat hostY = std::max<CGFloat>(0.0, availH - baseH);
-    _pluginHostView.frame = NSMakeRect(hostX, hostY, baseW, baseH);
+    const CGFloat scale = std::max<CGFloat>(1.0, std::min<CGFloat>(availW / baseW, availH / baseH));
+    const CGFloat scaledW = std::floor(baseW * scale);
+    const CGFloat scaledH = std::floor(baseH * scale);
+    const CGFloat hostX = std::max<CGFloat>(0.0, std::floor((availW - scaledW) / 2.0));
+    const CGFloat hostY = std::max<CGFloat>(0.0, std::floor((availH - scaledH) / 2.0));
+    _pluginHostView.frame = NSMakeRect(hostX, hostY, scaledW, scaledH);
   }
   for (NSView* sub in self.subviews) {
     for (NSView* child in sub.subviews) {

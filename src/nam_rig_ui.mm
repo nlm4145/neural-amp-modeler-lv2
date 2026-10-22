@@ -3459,7 +3459,9 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
 @interface NAMRigRootView : NSView
 @property (nonatomic, strong) NSView* headerBar;
+@property (nonatomic, weak) NSView* rigContent;
 - (void)layoutHeaderInHostWindow;
+- (void)layoutRigContent;
 @end
 
 @implementation NAMRigRootView
@@ -3477,16 +3479,39 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   } else {
     [self layoutHeaderInHostWindow];
   }
+  [self layoutRigContent];
 }
 
 - (void)setFrame:(NSRect)frame {
   [super setFrame:frame];
   [self layoutHeaderInHostWindow];
+  [self layoutRigContent];
 }
 
 - (void)layout {
   [super layout];
   [self layoutHeaderInHostWindow];
+  [self layoutRigContent];
+}
+
+- (void)layoutRigContent {
+  if (!_rigContent) return;
+  const CGFloat baseW = 1520.0;
+  const CGFloat baseH = 980.0;
+  const CGFloat w = self.bounds.size.width;
+  const CGFloat h = self.bounds.size.height;
+  if (w <= 0.0 || h <= 0.0) return;
+
+  const CGFloat scale = std::max<CGFloat>(1.0, std::min<CGFloat>(w / baseW, h / baseH));
+  _rigContent.layer.anchorPoint = CGPointMake(0, 0);
+  _rigContent.layer.affineTransform = CGAffineTransformMakeScale(scale, scale);
+
+  const CGFloat scaledW = std::floor(baseW * scale);
+  const CGFloat scaledH = std::floor(baseH * scale);
+  const CGFloat originX = std::max<CGFloat>(0.0, std::floor((w - scaledW) / 2.0));
+  const CGFloat originY = std::max<CGFloat>(0.0, std::floor((h - scaledH) / 2.0));
+  [_rigContent setFrame:NSMakeRect(originX, originY, baseW, baseH)];
+  [_rigContent setNeedsDisplay:YES];
 }
 
 - (void)setHidden:(BOOL)hidden {
@@ -5408,6 +5433,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     content.layer.anchorPoint = CGPointMake(0, 0);
     [state->view addSubview:content];
     state->rigContent = content;
+    rootView.rigContent = content;
 
     state->uiController = [[NAMRigUIController alloc] init];
     state->uiController.state = state;

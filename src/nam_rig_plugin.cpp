@@ -622,8 +622,11 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       if (propertyId == uris.stagePath[i]) {
         const Stage stage = static_cast<Stage>(i);
         const int mode = desiredStageMode(i);
-        scheduleModelLoad(stage, reinterpret_cast<const char*>(path + 1),
-                          path->size - 1, mode);
+        const char* p = reinterpret_cast<const char*>(path + 1);
+        const size_t len = strnlen(p, path->size);
+        if (len < path->size) {
+          scheduleModelLoad(stage, p, len, mode);
+        }
         break;
       }
     }
