@@ -85,7 +85,7 @@ class ToneTests(unittest.TestCase):
             req = request.call_args.args[0]
             self.assertEqual(req.get_header("Authorization"), "Bearer test-only")
             self.assertFalse(json.loads(req.data)["apply"])
-            self.assertEqual(request.call_args.kwargs["timeout"], 85)
+            self.assertEqual(request.call_args.kwargs["timeout"], 135)
         with patch.dict(os.environ, {"AXE_FX_API_TOKEN": "test-only"}), \
                 patch.object(mcp.urllib.request, "urlopen", side_effect=urllib.error.HTTPError(
                     "url", 400, "Bad", {}, io.BytesIO(b'{"message":"Invalid bass"}'))):

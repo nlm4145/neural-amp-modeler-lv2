@@ -36,7 +36,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   RigAIConfig* c = [[RigAIConfig alloc] init];
   c.provider = @"gemini";
   c.apiKey = @"";
-  c.model = @"gemini-2.5-flash";
+  c.model = @"gemini-3.8-flash";
   c.baseURL = @"https://generativelanguage.googleapis.com/v1beta/openai";
   c.temperature = 0.2f;
   c.allowLocalCLI = NO;
@@ -129,7 +129,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   }
   NSDictionary* dict = @{
     @"provider": self.provider ?: @"gemini",
-    @"model": self.model ?: @"gemini-2.5-flash",
+    @"model": self.model ?: @"gemini-3.8-flash",
     @"base_url": self.baseURL ?: @"",
     @"allow_local_cli": @(self.allowLocalCLI),
     @"send_audio": @(self.sendAudio),
@@ -702,6 +702,16 @@ static const NSUInteger kRigAICatalogLimit = 96;
 }
 
 - (void)cancelProcessing {
+  [self cancelProcessingWithReason:@"AI request cancelled by user."];
+}
+
+- (void)timeoutProcessingForRequestID:(NSString*)requestID timeoutSeconds:(NSTimeInterval)seconds {
+  if (![self.requestID isEqualToString:requestID]) return;
+  NSString* msg = [NSString stringWithFormat:@"AI request timed out after %.0f s.", seconds];
+  [self cancelProcessingWithReason:msg];
+}
+
+- (void)cancelProcessingWithReason:(NSString*)reason {
   NSAssert(NSThread.isMainThread, @"Cancel on main thread");
   if (!self.isProcessing) return;
   [self.networkTask cancel];
@@ -713,7 +723,7 @@ static const NSUInteger kRigAICatalogLimit = 96;
     });
   }
   NSError* error = [NSError errorWithDomain:@"RigAICopilot" code:NSUserCancelledError
-      userInfo:@{NSLocalizedDescriptionKey: @"AI request cancelled or timed out."}];
+      userInfo:@{NSLocalizedDescriptionKey: reason}];
   [self finishRequest:self.requestID result:nil error:error];
 }
 
@@ -735,6 +745,12 @@ static const NSUInteger kRigAICatalogLimit = 96;
     if ([toolName isEqualToString:@"agy"]) {
       [args addObject:@"-p"];
       [args addObject:fullPrompt];
+      NSString* agyModel = model.length ? model : @"gemini-3.8-flash";
+      if ([agyModel hasPrefix:@"gemini-2"] || [agyModel hasPrefix:@"gemini-1"] || [agyModel containsString:@"flash-lite"]) {
+        agyModel = @"gemini-3.8-flash";
+      }
+      [args addObject:@"--model"];
+      [args addObject:agyModel];
       [args addObject:@"--disable-slash-commands"];
       [args addObject:@"--dangerously-skip-permissions"];
       [args addObject:@"--output-format"];
@@ -772,6 +788,7 @@ static const NSUInteger kRigAICatalogLimit = 96;
     NSPipe* inPipe = [NSPipe pipe];
     task.standardOutput = outPipe;
     task.standardError = errPipe;
+    task.standardInput = [NSFileHandle fileHandleWithNullDevice];
     NSMutableData* errData = [NSMutableData data];
     errPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle* handle) {
       NSData* d = [handle availableData];
@@ -834,6 +851,8 @@ static const NSUInteger kRigAICatalogLimit = 96;
     RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:outputStr error:&parseErr];
 
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (![weakSelf.requestID isEqualToString:requestID]) return;
+
       NSError* error = nil;
       const NSTimeInterval elapsed = weakSelf.requestStartedAt ? -weakSelf.requestStartedAt.timeIntervalSinceNow : 0;
       [weakSelf reportProgress:[NSString stringWithFormat:@"%@ exited with status %d after %.1f s (%.1f KB output).",
@@ -993,8 +1012,11 @@ static const NSUInteger kRigAICatalogLimit = 96;
   NSString* requestID = NSUUID.UUID.UUIDString;
   self.requestID = requestID;
   self.pendingCompletion = completionHandler;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-    if ([self.requestID isEqualToString:requestID]) [self cancelProcessing];
+  const NSTimeInterval timeoutSeconds = localCLI ? 120.0 : 75.0;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if ([self.requestID isEqualToString:requestID]) {
+      [self timeoutProcessingForRequestID:requestID timeoutSeconds:timeoutSeconds];
+    }
   });
 
   // Capture current rig state as JSON context
@@ -1153,12 +1175,13 @@ static const NSUInteger kRigAICatalogLimit = 96;
   if (!isOllama && apiKey.length == 0 && localCLI) {
     NSString* fullPrompt = [NSString stringWithFormat:@"%@\n\n%@", systemPrompt, userMessage];
     self.requestStartedAt = NSDate.date;
-    [self reportProgress:[NSString stringWithFormat:@"Launching local CLI %@ (model %@) with a %.1f KB prompt; waiting for its answer (60 s limit)…",
-        localCLI, cfg.model.length ? cfg.model : @"default", fullPrompt.length / 1024.0]];
+    NSString* effectiveModel = cfg.model.length ? cfg.model : @"gemini-3.8-flash";
+    [self reportProgress:[NSString stringWithFormat:@"Launching local CLI %@ (model %@) with a %.1f KB prompt; waiting for its answer (120 s limit)…",
+        localCLI, effectiveModel, fullPrompt.length / 1024.0]];
     [self executeLocalCLI:localCLI
                  provider:provider
                fullPrompt:fullPrompt
-                    model:cfg.model
+                    model:effectiveModel
         completionHandler:nil];
     return;
   }
@@ -1180,7 +1203,7 @@ static const NSUInteger kRigAICatalogLimit = 96;
   }
   NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = @"POST";
-  request.timeoutInterval = 55.0;
+  request.timeoutInterval = 70.0;
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
 
   NSDictionary* reqBody = nil;
@@ -1277,7 +1300,7 @@ static const NSUInteger kRigAICatalogLimit = 96;
   }
 
   self.requestStartedAt = NSDate.date;
-  [self reportProgress:[NSString stringWithFormat:@"POST %@ → %@ (model %@, %.1f KB JSON%@); waiting for the reply (60 s limit)…",
+  [self reportProgress:[NSString stringWithFormat:@"POST %@ → %@ (model %@, %.1f KB JSON%@); waiting for the reply (75 s limit)…",
       url.host, url.path, cfg.model, request.HTTPBody.length / 1024.0,
       audioClips.count ? [NSString stringWithFormat:@", %lu audio clip(s)", (unsigned long)audioClips.count] : @", text only"]];
   __weak RigAICopilot* weakSelf = self;

@@ -594,7 +594,7 @@ static NSString* tokenFilePath() {
     }];
 
     BOOL completed = NO;
-    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:75];
+    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:130];
     while (!_shouldStop && deadline.timeIntervalSinceNow > 0) {
       if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC)) == 0) { completed = YES; break; }
     }

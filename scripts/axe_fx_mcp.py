@@ -62,7 +62,7 @@ def http_get(endpoint, params=None):
 
 def http_post(endpoint, payload):
     url = f"{AXE_FX_API_BASE}/{endpoint}"
-    return fetch_json(url, payload, timeout=85 if endpoint == "ai/prompt" else 15)
+    return fetch_json(url, payload, timeout=135 if endpoint == "ai/prompt" else 15)
 
 TOOLS = [
     {
