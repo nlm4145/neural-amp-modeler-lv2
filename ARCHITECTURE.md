@@ -17,19 +17,26 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/output_transformer.h` | Optional post-power-stage/pre-cab output-transformer profiles: bandwidth, flux-domain core saturation (leaky integrator → saturator → inverse), asymmetry, voicing, high leakage resonance |
 | `src/speaker_dynamics.h` | Speaker impedance curve (low resonance + rising voice-coil inductance, both scaled down by Negative Feedback), Thump, excursion compression (lowers the resonance Q), low-band-only Speaker Drive |
 | `src/space_fx.h` | `AlignDelay` (cabinet alignment), `StereoDelay` (damped, soft-limited feedback), `PlateReverb` (Dattorro tank + diffused early-reflection cluster for Room) |
-| `src/nam_rig_ui.mm` | LV2 UI glue: `RigUIState` (via `rig_ui_state.h`), `NAMRigUIController`, layout/zoom, `instantiate`/`portEvent` |
+| `src/dynamics.h` | Pre-amp dynamics: expander noise gate, one-knob studio compressor, and transient shaper / studio limiter |
+| `src/overdrive.h` | Built-in analog overdrive / boost voices (Mid Drive, Clean Boost, K-Style, Fuzz/Rectified, Tight Metal, etc.) before Pedal NAM |
+| `src/pin_eq.h` | 64-pin interactive graphic/custom EQ curve processor (Pre-Amp and Post-Amp Pin EQ slots) |
+| `src/oversample.{h,cpp}`, `src/oversample_modes.h`, `src/polyphase_worker.h` | Multi-rate polyphase FIR/IIR oversampling (Off, 2x, 4x, 8x, Eco/True cascades) and background worker state |
+| `src/cabinet_worker.{h,cpp}`, `src/ir_normalization.h` | Dual-slot cabinet blending, phase alignment, mic/room modeling, and IR loudness/peak normalization |
+| `src/dsp_accel.{h,cpp}`, `src/rig_dsp_cache.h` | SIMD/Accelerate helpers and thread-safe DSP model/IR cache |
+| `src/nam_rig_ui.mm` | macOS LV2 & standalone UI: `NAMRigUIController`, AI Copilot drawer (`AICopilot` category), Tone3000 browser tab, header bar, Studio Pro Deck (`addLowerStudioDeck`), LV2 UI descriptor |
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
 | `src/rig_widgets.{h,mm}` | Shared custom controls: `RigKnob` (arc knob), `RigPanel` (gradient panel), `RigButton`, ImageIO thumbnail decode helpers. Used by BOTH UI targets |
 | `src/rig_knobs.{h,cpp}` | `kRigKnobPorts` / `kRigKnobDisplayOrder` (display order = signal chain, not port order) |
-| `src/rack_controls.h` | Shared nine-rack order, enable port symbols, slot keys, and enabled defaults |
-| `src/rig_control_metadata.h` | Shared preset port-to-symbol metadata; native serialization adapters retain their existing coverage |
-| `src/win32_control_defaults.h` | Allocation-free Windows preset/host defaults; macOS defaults remain independent |
-| `src/standalone_controls.h` | Initialization-only binding of native host control-storage ranges to the asserted DSP port layout |
-| `src/standalone_worker.{h,cpp}` | Shared LV2 worker request/response queues and shutdown draining for both standalone hosts |
-| `src/power_tube_controls.h` | Tube-inspired profile parameters and appended control ports |
-| `src/rig_tone_api.{h,mm}` | Tone3000 API base URL, OAuth/PKCE, keychain sessions, gear/stage mapping |
-| `src/rig_tone_browser.{h,mm}` | Tone Explorer: `ToneItem`, `ToneCardItem`, `ToneBrowserController` (search pagination, disk cache, downloads, favorites) |
+| `src/rack_controls.h`, `src/power_tube_controls.h`, `src/transformer_controls.h` | Shared nine-rack order/enable ports, tube-inspired profile parameters, and output-transformer profile definitions |
+| `src/rig_control_contract.h`, `src/rig_control_metadata.h` | Auto-generated canonical port/knob/enum schema (`scripts/generate_rig_control_contract.py`) and preset port-to-symbol metadata |
+| `src/rig_presets.{h,mm}` | Factory and user rig preset serialization, stage-card presets, and Studio Pro Deck slot presets (`slot-presets.json`) |
+| `src/rig_ai_copilot.{h,mm}`, `src/rig_ai_support.{h,mm}`, `src/rig_ai_model_catalog.{h,mm}` | AI Tone Copilot: multi-provider LLM client (Gemini/OpenAI/Anthropic/Ollama/local `agy`/`claude`/`codex`), `jev` candidate ranking, strict JSON parser/clamping, and local library catalog scanner |
+| `src/rig_riff_recorder.{h,mm}`, `src/rig_riff_renderer.{h,mm}` | Live DI + processed stereo take recorder, spectral/loudness audio telemetry analyzer, and offline A/B candidate renderer |
+| `src/rig_local_server.{h,mm}`, `scripts/axe_fx_mcp.py` | Local HTTP JSON control server (`127.0.0.1:49162`) and Python stdio MCP bridge for external agent control |
+| `src/standalone_main.mm`, `src/standalone_controls.h`, `src/standalone_worker.{h,cpp}` | macOS CoreAudio/CoreMIDI standalone host (`Axe FX.app`), control port binding, and LV2 worker queue |
+| `src/standalone_main_win32.cpp`, `src/nam_rig_win32_ui.cpp`, `src/win32_*.{h,cpp}` | Windows WASAPI standalone host, Win32 UI, preset serialization, and allocation-free control defaults |
+| `src/rig_tone_api.{h,mm}`, `src/rig_tone_browser.{h,mm}` | Tone3000 API client (OAuth/PKCE, keychain sessions) and Tone Explorer UI (search pagination, disk cache, downloads, favorites) |
 
 ## Port map (rig plugin) — APPEND-ONLY, never renumber
 

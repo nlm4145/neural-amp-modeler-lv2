@@ -2464,16 +2464,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotOutputView.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
   self.copilotOutputView.textColor = rigText();
   self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0];
-  self.copilotOutputView.string =
-    @"Axe FX AI Tone Tuning Ready.\n"
-    @"• Record captures raw DI + stereo output. Guided take: muted strings → chugs → chords → soft/hard notes → sustain/decay.\n"
-    @"• Keep tuning, pickup and interface gain consistent. Raw DI is never normalized before rendering.\n"
-    @"• Target WAV is separate: identify isolated guitar vs full mix. Artist/song names are stylistic targets, not exact references.\n"
-    @"• Telemetry-only by default. Audio uploads require Gemini or an OpenAI audio-input model; other paths receive measurements only.\n"
-    @"• Render DI A/B locally, then choose Baseline/Candidate and Play for level-matched auditions. Refine with another explicit Preview Tone request—no automatic paid calls.\n"
-    @"• Choose Preview Tone to generate parameters. Nothing changes in your live rig until you click Apply & Save.\n"
-    @"• This box becomes a timestamped activity log: request, reply, parse, model loads, engine confirmation, saved file. Every run ends with ✅ DONE or ❌ FAILED.\n"
-    @"• After a preview, the Save as field shows the exact preset name Apply & Save will create. Edit it if you like.";
+  self.copilotOutputView.string = @"";
   self.copilotLogBase = nil;
   scroll.documentView = self.copilotOutputView;
   [content addSubview:scroll];
