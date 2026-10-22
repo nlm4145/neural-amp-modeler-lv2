@@ -79,6 +79,9 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, assign) RigUIState* state;
 @property(nonatomic, strong) NSPopUpButton* copilotProvPopup;
 @property(nonatomic, strong) NSComboBox* copilotModelComboBox;
+@property(nonatomic, strong) RigButton* copilotModelsRefreshBtn;
+@property(nonatomic, strong) NSTextField* copilotModelsStatus;
+@property(nonatomic) NSUInteger copilotModelsRequestSerial;
 @property(nonatomic, strong) NSSecureTextField* copilotKeyField;
 @property(nonatomic, strong) NSTextField* copilotPromptInput;
 @property(nonatomic, strong) NSTextView* copilotOutputView;
@@ -180,6 +183,10 @@ static NSString* stageName(NSInteger stage) {
 - (void)copilotProviderChanged:(NSPopUpButton*)sender;
 - (void)refreshCopilotModelsAction:(id)sender;
 - (void)copilotKeyFieldAction:(id)sender;
+- (void)copilotLocalCLIToggled:(id)sender;
+- (void)updateCopilotProviderControlsForProvider:(NSString*)provider;
+- (void)refreshCopilotModelsUI;
+- (void)refreshCopilotModelsUIForced:(BOOL)force;
 - (void)applyCopilotProposal:(id)sender;
 - (void)cancelCopilotRequest:(id)sender;
 - (void)toggleCopilotRecordRiff:(id)sender;
@@ -789,6 +796,10 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 - (void)controlTextDidEndEditing:(NSNotification*)obj {
+  if (obj.object == self.copilotKeyField || obj.object == self.copilotURLField) {
+    [self refreshCopilotModelsUI];
+    return;
+  }
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
@@ -2188,6 +2199,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 - (void)openAICopilot:(id)sender {
   if (!_state) return;
   if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
+    ++self.copilotModelsRequestSerial;
     [self.copilotRiffTimer invalidate];
     self.copilotRiffTimer = nil;
     [[RigRiffRecorder sharedRecorder] stopRecording];
@@ -2226,7 +2238,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotProvPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(82, popH - 90, 100, 24) pullsDown:NO];
   [self.copilotProvPopup addItemsWithTitles:@[@"Gemini", @"OpenAI", @"Claude", @"Ollama", @"Custom"]];
   self.copilotProvPopup.font = [NSFont systemFontOfSize:11];
-  [self.copilotProvPopup selectItemWithTitle:config.provider.capitalizedString ?: @"Gemini"];
+  for (NSMenuItem* item in self.copilotProvPopup.itemArray)
+    if ([item.title.lowercaseString isEqual:config.provider.lowercaseString]) [self.copilotProvPopup selectItem:item];
   self.copilotProvPopup.target = self;
   self.copilotProvPopup.action = @selector(copilotProviderChanged:);
   [content addSubview:self.copilotProvPopup];
@@ -2240,7 +2253,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotModelComboBox = [[NSComboBox alloc] initWithFrame:NSMakeRect(234, popH - 89, 146, 24)];
   self.copilotModelComboBox.font = [NSFont systemFontOfSize:11];
   self.copilotModelComboBox.hasVerticalScroller = YES;
-  NSArray<NSString*>* initialModels = [RigAICopilot defaultModelsForProvider:config.provider];
+  self.copilotModelComboBox.delegate = self;
+  self.copilotModelComboBox.numberOfVisibleItems = 12;
+  NSArray<NSString*>* initialModels = [[RigAICopilot sharedCopilot] availableModelsForProvider:config.provider apiKey:nil baseURL:nil];
   [self.copilotModelComboBox addItemsWithObjectValues:initialModels];
   self.copilotModelComboBox.stringValue = config.model.length ? config.model : (initialModels.firstObject ?: @"");
   [content addSubview:self.copilotModelComboBox];
@@ -2248,6 +2263,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   RigButton* refreshBtn = rigButton(content, @"↻", self, @selector(refreshCopilotModelsAction:), NSMakeRect(384, popH - 88, 28, 22));
   refreshBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
   refreshBtn.toolTip = @"Fetch latest models from provider API";
+  self.copilotModelsRefreshBtn = refreshBtn;
 
   RigButton* saveCfg = rigButton(content, @"Save Config", self, @selector(saveCopilotConfig:), NSMakeRect(418, popH - 88, 102, 22));
   saveCfg.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
@@ -2261,37 +2277,40 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
   self.copilotKeyField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(82, popH - 118, 438, 22)];
   self.copilotKeyField.font = [NSFont systemFontOfSize:11];
-  NSString* localInitCLI = [RigAICopilot detectLocalCLIForProvider:config.provider];
-  if (localInitCLI) {
-    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to use local %@, or enter API key",
-      [config.provider isEqualToString:@"gemini"] ? @"Antigravity (agy)" :
-      ([config.provider isEqualToString:@"claude"] ? @"Claude CLI" : @"Codex CLI")];
-  } else {
-    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key (or set in environment)", config.provider.uppercaseString];
-  }
   self.copilotKeyField.stringValue = config.apiKey ?: @"";
   self.copilotKeyField.target = self;
   self.copilotKeyField.action = @selector(copilotKeyFieldAction:);
+  self.copilotKeyField.delegate = self;
   [content addSubview:self.copilotKeyField];
   self.copilotURLField = [[NSTextField alloc] initWithFrame:NSMakeRect(82, popH - 146, 438, 22)];
   self.copilotURLField.stringValue = config.baseURL ?: @"";
   self.copilotURLField.placeholderString = @"HTTPS API URL or loopback Ollama URL";
   self.copilotURLField.font = [NSFont systemFontOfSize:11];
+  self.copilotURLField.delegate = self;
+  self.copilotURLField.target = self;
+  self.copilotURLField.action = @selector(copilotKeyFieldAction:);
   [content addSubview:self.copilotURLField];
   NSTextField* urlLabel = [NSTextField labelWithString:@"API URL:"];
   urlLabel.frame = NSMakeRect(20, popH - 144, 60, 18);
   urlLabel.textColor = rigText();
   [content addSubview:urlLabel];
-  self.copilotLocalCLIButton = [NSButton checkboxWithTitle:@"Allow local CLI (uses its permissions; may access local tools)" target:nil action:nil];
+  self.copilotLocalCLIButton = [NSButton checkboxWithTitle:@"" target:self action:@selector(copilotLocalCLIToggled:)];
   self.copilotLocalCLIButton.frame = NSMakeRect(20, popH - 172, 500, 22);
-  self.copilotLocalCLIButton.state = config.allowLocalCLI ? NSControlStateValueOn : NSControlStateValueOff;
   [content addSubview:self.copilotLocalCLIButton];
+  [self updateCopilotProviderControlsForProvider:config.provider];
+
+  self.copilotModelsStatus = [NSTextField labelWithString:@""];
+  self.copilotModelsStatus.frame = NSMakeRect(20, popH - 184, 500, 12);
+  self.copilotModelsStatus.font = [NSFont systemFontOfSize:9];
+  self.copilotModelsStatus.textColor = rigDimText();
+  self.copilotModelsStatus.lineBreakMode = NSLineBreakByTruncatingTail;
+  [content addSubview:self.copilotModelsStatus];
 
   // Query models on popover opening
   [self refreshCopilotModelsUI];
 
   // Separator 1
-  NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 182, popW - 40, 1)];
+  NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 186, popW - 40, 1)];
   sep.boxType = NSBoxSeparator;
   [content addSubview:sep];
 
@@ -2438,7 +2457,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 - (void)refreshCopilotModelsAction:(id)sender {
   (void)sender;
-  [self refreshCopilotModelsUI];
+  [self refreshCopilotModelsUIForced:YES];
 }
 
 - (void)copilotKeyFieldAction:(id)sender {
@@ -2447,19 +2466,42 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 }
 
 - (void)refreshCopilotModelsUI {
+  [self refreshCopilotModelsUIForced:NO];
+}
+
+- (void)comboBoxWillPopUp:(NSNotification*)notification {
+  if (notification.object == self.copilotModelComboBox) [self refreshCopilotModelsUI];
+}
+
+- (void)refreshCopilotModelsUIForced:(BOOL)force {
   NSString* prov = self.copilotProvPopup.titleOfSelectedItem.lowercaseString;
   NSString* key = self.copilotKeyField.stringValue;
+  NSString* baseURL = self.copilotURLField.stringValue;
+  NSUInteger serial = ++self.copilotModelsRequestSerial;
+  self.copilotModelsStatus.stringValue = @"Checking available models…";
+  self.copilotModelsRefreshBtn.enabled = NO;
   __weak NSComboBox* weakBox = self.copilotModelComboBox;
   __weak NAMRigUIController* weakSelf = self;
   [[RigAICopilot sharedCopilot] fetchModelsForProvider:prov
-                                                apiKey:key
-                                     completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
-    if (liveModels.count > 0 && weakBox && [weakSelf.copilotProvPopup.titleOfSelectedItem.lowercaseString isEqual:prov]) {
+                                                 apiKey:key
+                                                baseURL:baseURL forceRefresh:force
+                                      completionHandler:^(NSArray<NSString*>* liveModels, NSError* err) {
+    NAMRigUIController* controller = weakSelf;
+    if (!controller || controller.copilotModelsRequestSerial != serial || controller.copilotModelComboBox != weakBox) return;
+    controller.copilotModelsRefreshBtn.enabled = YES;
+    if (![controller.copilotProvPopup.titleOfSelectedItem.lowercaseString isEqual:prov] ||
+        ![controller.copilotKeyField.stringValue isEqual:key] || ![controller.copilotURLField.stringValue isEqual:baseURL]) return;
+    if (liveModels.count > 0 && weakBox) {
       NSString* cur = weakBox.stringValue;
       [weakBox removeAllItems];
       [weakBox addItemsWithObjectValues:liveModels];
       weakBox.stringValue = cur.length ? cur : (liveModels.firstObject ?: @"");
     }
+    NSString* status = err ? [NSString stringWithFormat:@"%@%@", liveModels.count ? @"" : @"Keeping starter/current options. ", err.localizedDescription] :
+        [NSString stringWithFormat:@"%lu available models · checked hourly · ↻ forces refresh", (unsigned long)liveModels.count];
+    controller.copilotModelsStatus.stringValue = status;
+    controller.copilotModelsStatus.toolTip = status;
+    weakBox.toolTip = status;
   }];
 }
 
@@ -2471,7 +2513,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotKeyField.stringValue = config.apiKey;
 
   [self.copilotModelComboBox removeAllItems];
-  NSArray<NSString*>* defModels = [RigAICopilot defaultModelsForProvider:sel];
+  NSArray<NSString*>* defModels = [[RigAICopilot sharedCopilot] availableModelsForProvider:sel apiKey:config.apiKey
+      baseURL:[RigAIConfig defaultBaseURLForProvider:sel]];
   [self.copilotModelComboBox addItemsWithObjectValues:defModels];
   self.copilotModelComboBox.stringValue = defModels.firstObject ?: @"";
 
@@ -2488,16 +2531,56 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotURLField.stringValue = config.baseURL;
   self.copilotProposal = nil;
   self.copilotApplyBtn.enabled = NO;
+  [self updateCopilotProviderControlsForProvider:sel];
+  [self refreshCopilotModelsUI];
+}
+
+- (void)updateCopilotProviderControlsForProvider:(NSString*)prov {
+  NSString* sel = prov.lowercaseString;
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
   NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:sel];
-  if (localCLI) {
-    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Leave empty to use local %@, or enter API key",
-      [sel isEqualToString:@"gemini"] ? @"Antigravity (agy)" :
-      ([sel isEqualToString:@"claude"] ? @"Claude CLI" : @"Codex CLI")];
+  NSString* cliDisplayName = [sel isEqualToString:@"gemini"] ? @"Antigravity (agy)" :
+      ([sel isEqualToString:@"claude"] ? @"Claude" :
+      ([sel isEqualToString:@"openai"] ? @"Codex" : nil));
+
+  if ([sel isEqualToString:@"ollama"]) {
+    self.copilotLocalCLIButton.enabled = NO;
+    self.copilotLocalCLIButton.title = @"Direct HTTP connection (no local CLI needed)";
+    self.copilotLocalCLIButton.state = NSControlStateValueOff;
+    self.copilotKeyField.placeholderString = @"API key not required for local Ollama";
+  } else if ([sel isEqualToString:@"custom"]) {
+    self.copilotLocalCLIButton.enabled = NO;
+    self.copilotLocalCLIButton.title = @"Direct HTTP connection (no local CLI needed)";
+    self.copilotLocalCLIButton.state = NSControlStateValueOff;
+    self.copilotKeyField.placeholderString = @"Enter API key if required by endpoint (optional)";
+  } else if (localCLI) {
+    self.copilotLocalCLIButton.enabled = YES;
+    self.copilotLocalCLIButton.title = [NSString stringWithFormat:@"Allow local %@ CLI (uses its permissions; may access local tools)", cliDisplayName ?: sel];
+    self.copilotLocalCLIButton.state = config.allowLocalCLI ? NSControlStateValueOn : NSControlStateValueOff;
+    if (config.allowLocalCLI) {
+      self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Using local %@ (leave empty, or enter API key)",
+        cliDisplayName ?: @"CLI"];
+    } else {
+      self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key, or check \"Allow local %@\" below",
+        sel.uppercaseString,
+        [sel isEqualToString:@"gemini"] ? @"agy" :
+        ([sel isEqualToString:@"claude"] ? @"claude" : @"codex")];
+    }
   } else {
+    self.copilotLocalCLIButton.enabled = NO;
+    self.copilotLocalCLIButton.title = [NSString stringWithFormat:@"Allow local %@ CLI (not found in ~/.local/bin or PATH)", cliDisplayName ?: sel];
+    self.copilotLocalCLIButton.state = NSControlStateValueOff;
     self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key (or set in environment)", sel.uppercaseString];
   }
+}
 
-  [self refreshCopilotModelsUI];
+- (void)copilotLocalCLIToggled:(id)sender {
+  (void)sender;
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+  config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
+  NSError* err = nil;
+  [config saveToDisk:&err];
+  [self updateCopilotProviderControlsForProvider:config.provider];
 }
 
 - (void)saveCopilotConfig:(id)sender {
@@ -2511,8 +2594,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;
   NSError* err = nil;
   if ([config saveToDisk:&err]) {
-    self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).\nRefreshing models list...", config.provider, config.model];
-    [self refreshCopilotModelsUI];
+    self.copilotOutputView.string = [NSString stringWithFormat:@"Configuration saved for provider '%@' (model: %@).", config.provider, config.model];
+    [self refreshCopilotModelsUIForced:YES];
   } else {
     self.copilotOutputView.string = [NSString stringWithFormat:@"Failed to save config: %@", err.localizedDescription];
   }

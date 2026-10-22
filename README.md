@@ -122,6 +122,25 @@ and requires explicit opt-in. It retains CLI permissions; Claude tools are disab
 and Codex runs read-only. Provider requests have a 60-second deadline and can be
 cancelled. Use HTTPS endpoints, or HTTP on loopback for Ollama/local servers.
 
+The **Model** dropdown discovers models from the selected provider's API when you
+open the tuner, switch providers, or finish editing the API key/URL. Opening the
+dropdown checks for an update too. Successful lists are cached for one hour; **↻**
+forces a fresh lookup. Gemini and Claude pagination is followed, Ollama lists
+installed models, and **Custom** supports OpenAI-compatible `/models` endpoints.
+Known image/embedding/realtime-only models are excluded from cloud tone-tuning
+options. New models appear automatically without updating the app.
+
+Your current model ID is never changed by a refresh, and you can type an ID manually.
+Discovery errors appear below the settings (hover for the full message); the last
+successful list remains usable offline. Without a cached list, starter options remain
+available but are not confirmed for your account. Without a provider API key, the
+dropdown instead refreshes the provider's public official model catalog daily and
+labels it as unverified for your account. An API key is needed for account-specific
+availability; CLI login alone does not authorize that API.
+Model caches are separated by endpoint and credential fingerprint and contain no API
+keys. Discovery makes model-list requests only, never tone-generation or audio-upload
+requests.
+
 The standalone local API binds to `127.0.0.1:48920`, rejects browser origins, and
 requires a bearer token stored with mode `0600` in
 `~/Library/Application Support/Axe FX/local-api-token`. `scripts/axe_fx_mcp.py`

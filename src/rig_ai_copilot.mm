@@ -8,6 +8,7 @@
 #include <memory>
 #import <Security/Security.h>
 #import "rig_ai_support.h"
+#import "rig_ai_model_catalog.h"
 
 #import "rig_control_metadata.h"
 #import "rig_presets.h"
@@ -708,20 +709,27 @@ static NSString* titleCasedString(NSString* s) {
 
     NSMutableArray<NSString*>* args = [NSMutableArray array];
     NSString* toolName = cliPath.lastPathComponent.lowercaseString;
+    NSString* codexOutputFile = nil;
 
     if ([toolName isEqualToString:@"agy"]) {
       [args addObject:@"-p"];
       [args addObject:fullPrompt];
       [args addObject:@"--disable-slash-commands"];
+      [args addObject:@"--dangerously-skip-permissions"];
       [args addObject:@"--output-format"];
       [args addObject:@"text"];
     } else if ([toolName isEqualToString:@"claude"]) {
       [args addObject:@"-p"];
       [args addObject:fullPrompt];
+      if (model.length > 0) {
+        [args addObject:@"--model"];
+        [args addObject:model];
+      }
       [args addObjectsFromArray:@[@"--tools", @"", @"--output-format", @"text"]];
     } else if ([toolName isEqualToString:@"codex"]) {
+      codexOutputFile = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"axe_fx_codex_%@.json", NSUUID.UUID.UUIDString]];
       [args addObject:@"exec"];
-      [args addObjectsFromArray:@[@"--sandbox", @"read-only", @"--skip-git-repo-check"]];
+      [args addObjectsFromArray:@[@"--sandbox", @"read-only", @"--skip-git-repo-check", @"-o", codexOutputFile]];
       if (model.length > 0) {
         [args addObject:@"-m"];
         [args addObject:model];
@@ -743,8 +751,13 @@ static NSString* titleCasedString(NSString* s) {
     NSPipe* inPipe = [NSPipe pipe];
     task.standardOutput = outPipe;
     task.standardError = errPipe;
-    // Drain stderr independently so diagnostics cannot fill a pipe or corrupt response JSON.
-    errPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle* handle) { [handle availableData]; };
+    NSMutableData* errData = [NSMutableData data];
+    errPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle* handle) {
+      NSData* d = [handle availableData];
+      if (d.length && errData.length < 4096) {
+        [errData appendData:d];
+      }
+    };
     if ([toolName isEqualToString:@"codex"]) {
       task.standardInput = inPipe;
     }
@@ -788,13 +801,33 @@ static NSString* titleCasedString(NSString* s) {
 
     [outPipe.fileHandleForReading closeAndReturnError:nil];
     [errPipe.fileHandleForReading closeAndReturnError:nil];
-    NSString* outputStr = [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding] ?: @"";
+    NSString* outputStr = nil;
+    if (codexOutputFile && [[NSFileManager defaultManager] fileExistsAtPath:codexOutputFile]) {
+      outputStr = [NSString stringWithContentsOfFile:codexOutputFile encoding:NSUTF8StringEncoding error:nil];
+      [[NSFileManager defaultManager] removeItemAtPath:codexOutputFile error:nil];
+    }
+    if (!outputStr.length) {
+      outputStr = [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding] ?: @"";
+    }
     NSError* parseErr = nil;
     RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:outputStr error:&parseErr];
 
     dispatch_async(dispatch_get_main_queue(), ^{
-      NSError* error = task.terminationStatus != 0 ? [NSError errorWithDomain:@"RigAICopilot" code:-6
-          userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"%@ exited with status %d. Check CLI authentication and permissions.", toolName, task.terminationStatus]}] : parseErr;
+      NSError* error = nil;
+      if (task.terminationStatus != 0) {
+        NSString* errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding];
+        if (!errStr.length) {
+          errStr = [outputStr stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        }
+        if (errStr.length > 300) {
+          errStr = [[errStr substringToIndex:300] stringByAppendingString:@"..."];
+        }
+        NSString* detail = errStr.length > 0 ? [NSString stringWithFormat:@"%@: %@", toolName, errStr] :
+            [NSString stringWithFormat:@"%@ exited with status %d. Check CLI authentication and permissions.", toolName, task.terminationStatus];
+        error = [NSError errorWithDomain:@"RigAICopilot" code:-6 userInfo:@{NSLocalizedDescriptionKey: detail}];
+      } else {
+        error = parseErr;
+      }
       [weakSelf finishRequest:requestID result:error ? nil : res error:error];
     });
   });
@@ -903,7 +936,15 @@ static NSString* titleCasedString(NSString* s) {
   NSString* localCLI = cfg.allowLocalCLI ? [RigAICopilot detectLocalCLIForProvider:provider] : nil;
 
   if (!isOllama && ![provider isEqualToString:@"custom"] && apiKey.length == 0 && !localCLI) {
-    NSString* msg = [NSString stringWithFormat:@"Enter an API key for %@, or explicitly enable local CLI access in AI settings.", cfg.provider];
+    NSString* detectedCLI = [RigAICopilot detectLocalCLIForProvider:provider];
+    NSString* msg;
+    if (detectedCLI) {
+      NSString* cliLabel = [provider isEqualToString:@"gemini"] ? @"local Antigravity (agy)" :
+          ([provider isEqualToString:@"claude"] ? @"local Claude CLI" : @"local Codex CLI");
+      msg = [NSString stringWithFormat:@"Enter an API key for %@, or check \"Allow local CLI\" in AI settings to use %@.", cfg.provider, cliLabel];
+    } else {
+      msg = [NSString stringWithFormat:@"Enter an API key for %@, or explicitly enable local CLI access in AI settings.", cfg.provider];
+    }
     NSError* keyErr = [NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey: msg}];
     [self failCurrentTaskWithError:keyErr];
     if (completionHandler) {
@@ -1364,11 +1405,13 @@ static NSString* titleCasedString(NSString* s) {
 + (NSArray<NSString*>*)defaultModelsForProvider:(NSString*)provider {
   NSString* p = provider.lowercaseString;
   if ([p isEqualToString:@"gemini"]) {
-    return @[@"gemini-2.5-flash", @"gemini-2.5-pro"];
+    return @[@"gemini-3.8-flash", @"gemini-4-argon", @"gemini-3.5-flash-lite", @"gemini-3.1-pro-preview"];
   } else if ([p isEqualToString:@"openai"]) {
-    return @[@"gpt-4o-mini", @"gpt-4o"];
+    // Offline starters verified against the official catalog, October 2026.
+    // API/public discovery replaces these; they are not an account-access claim.
+    return @[@"gpt-6.1-sol", @"gpt-6-astra", @"gpt-6-luna", @"gpt-5.4-mini", @"gpt-5-mini", @"gpt-4.1-mini", @"gpt-4o"];
   } else if ([p isEqualToString:@"claude"]) {
-    return @[@"claude-sonnet-4-20250514", @"claude-3-5-haiku-20241022"];
+    return @[@"claude-sonnet-5-5", @"claude-opus-5-5", @"claude-haiku-5-5", @"claude-fable-5-1"];
   } else if ([p isEqualToString:@"ollama"]) {
     return @[
       @"llama3.3",
@@ -1386,170 +1429,35 @@ static NSString* titleCasedString(NSString* s) {
 }
 
 - (void)fetchModelsForProvider:(NSString*)provider
-                        apiKey:(nullable NSString*)explicitKey
-             completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler {
-  NSString* p = provider.lowercaseString;
-  NSArray<NSString*>* fallbackList = [RigAICopilot defaultModelsForProvider:p];
+                         apiKey:(nullable NSString*)explicitKey
+              completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler {
+  [self fetchModelsForProvider:provider apiKey:explicitKey baseURL:nil forceRefresh:YES completionHandler:completionHandler];
+}
 
-  RigAIConfig* cfg = self.config;
-  NSString* apiKey = explicitKey.length ? explicitKey :
-      ([p isEqual:cfg.provider] ? cfg.effectiveApiKey : [RigAIConfig storedApiKeyForProvider:p]);
+- (RigAIConfig*)modelDiscoveryConfigForProvider:(NSString*)provider apiKey:(NSString*)key baseURL:(NSString*)baseURL {
+  RigAIConfig* cfg = [RigAIConfig defaultConfig];
+  cfg.provider = provider.lowercaseString;
+  BOOL active = [cfg.provider isEqual:self.config.provider.lowercaseString];
+  cfg.apiKey = key ?: (active ? self.config.apiKey : [RigAIConfig storedApiKeyForProvider:cfg.provider]);
+  cfg.baseURL = baseURL ?: (active ? self.config.baseURL : [RigAIConfig defaultBaseURLForProvider:cfg.provider]);
+  if (!cfg.baseURL.length) cfg.baseURL = [RigAIConfig defaultBaseURLForProvider:cfg.provider];
+  return cfg;
+}
 
-  NSString* endpoint = nil;
-  NSMutableURLRequest* req = nil;
+- (NSArray<NSString*>*)availableModelsForProvider:(NSString*)provider apiKey:(NSString*)key baseURL:(NSString*)baseURL {
+  RigAIConfig* cfg = [self modelDiscoveryConfigForProvider:provider apiKey:key baseURL:baseURL];
+  return [[RigAIModelCatalog sharedCatalog] cachedModelsForProvider:cfg.provider apiKey:cfg.effectiveApiKey baseURL:cfg.baseURL]
+      ?: [RigAICopilot defaultModelsForProvider:cfg.provider];
+}
 
-  if ([p isEqualToString:@"claude"]) {
-    if (!apiKey.length) {
-      if (completionHandler) completionHandler(fallbackList, nil);
-      return;
-    }
-    endpoint = @"https://api.anthropic.com/v1/models?limit=100";
-    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 8.0;
-    [req setValue:apiKey forHTTPHeaderField:@"x-api-key"];
-    [req setValue:@"2023-06-01" forHTTPHeaderField:@"anthropic-version"];
-  } else if ([p isEqualToString:@"gemini"]) {
-    if (!apiKey.length) {
-      if (completionHandler) completionHandler(fallbackList, nil);
-      return;
-    }
-    // Keep credentials in headers rather than query strings/logs.
-    NSString* urlStr = @"https://generativelanguage.googleapis.com/v1beta/models?pageSize=100";
-    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 8.0;
-    [req setValue:apiKey forHTTPHeaderField:@"x-goog-api-key"];
-  } else if ([p isEqualToString:@"openai"]) {
-    if (!apiKey.length) {
-      if (completionHandler) completionHandler(fallbackList, nil);
-      return;
-    }
-    endpoint = @"https://api.openai.com/v1/models";
-    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 8.0;
-    [req setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
-  } else if ([p isEqualToString:@"ollama"]) {
-    NSString* base = [p isEqual:cfg.provider] && cfg.baseURL.length ? cfg.baseURL : [RigAIConfig defaultBaseURLForProvider:p];
-    if ([base hasSuffix:@"/chat/completions"]) base = [base stringByDeletingLastPathComponent];
-    if ([base hasSuffix:@"/"]) base = [base substringToIndex:base.length - 1];
-    endpoint = [base stringByAppendingString:@"/models"];
-    req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 4.0;
-  } else {
-    if (completionHandler) completionHandler(fallbackList, nil);
-    return;
-  }
-
-  NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-        NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
-        if (!error && (http.statusCode < 200 || http.statusCode >= 300))
-          error = [NSError errorWithDomain:@"RigAICopilot" code:http.statusCode userInfo:@{NSLocalizedDescriptionKey: @"Could not fetch the provider's model list."}];
-        if (error || !data) {
-          dispatch_async(dispatch_get_main_queue(), ^{
-            if (completionHandler) completionHandler(fallbackList, error);
-          });
-          return;
-        }
-
-        NSError* jsonErr = nil;
-        NSDictionary* json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonErr];
-        if (![json isKindOfClass:[NSDictionary class]]) {
-          dispatch_async(dispatch_get_main_queue(), ^{
-            if (completionHandler) completionHandler(fallbackList, jsonErr);
-          });
-          return;
-        }
-
-        // Parse either "data" array (OpenAI / Anthropic / Ollama) or "models" array (Google native Gemini)
-        NSArray* items = json[@"data"];
-        if (![items isKindOfClass:[NSArray class]]) {
-          items = json[@"models"];
-        }
-
-        NSMutableArray<NSDictionary*>* discoveredItems = [NSMutableArray array];
-
-        if ([items isKindOfClass:[NSArray class]]) {
-          for (NSDictionary* item in items) {
-            if (![item isKindOfClass:[NSDictionary class]]) continue;
-            NSString* mid = item[@"id"] ?: item[@"name"];
-            if (!mid || ![mid isKindOfClass:[NSString class]]) continue;
-
-            // Strip "models/" prefix if returned by Google
-            if ([mid hasPrefix:@"models/"]) {
-              mid = [mid substringFromIndex:7];
-            }
-
-            NSString* lower = mid.lowercaseString;
-            if ([p isEqualToString:@"gemini"]) {
-              NSArray* methods = [item[@"supportedGenerationMethods"] isKindOfClass:NSArray.class] ? item[@"supportedGenerationMethods"] : @[];
-              if (![methods containsObject:@"generateContent"]) continue;
-              if ([lower containsString:@"embedding"] || [lower containsString:@"aqa"] ||
-                  [lower containsString:@"imagen"] || [lower containsString:@"learnlm"]) {
-                continue;
-              }
-              if ([lower containsString:@"gemini"]) {
-                [discoveredItems addObject:@{@"id": mid, @"created": @0}];
-              }
-            } else if ([p isEqualToString:@"openai"]) {
-              if ([lower containsString:@"whisper"] || [lower containsString:@"tts"] ||
-                  [lower containsString:@"dall-e"] || [lower containsString:@"embedding"] ||
-                  [lower containsString:@"moderation"] || [lower containsString:@"babbage"] ||
-                  [lower containsString:@"davinci"] || [lower containsString:@"canary"] ||
-                  [lower containsString:@"image"] || [lower containsString:@"audio"] ||
-                  [lower containsString:@"realtime"] || [lower containsString:@"transcribe"] ||
-                  [lower containsString:@"search"]) {
-                continue;
-              }
-              NSNumber* created = [item[@"created"] isKindOfClass:NSNumber.class] ? item[@"created"] : @0;
-              [discoveredItems addObject:@{@"id": mid, @"created": created ?: @0}];
-            } else if ([p isEqualToString:@"claude"]) {
-              if ([lower containsString:@"claude"]) {
-                [discoveredItems addObject:@{@"id": mid, @"created": @0}];
-              }
-            } else {
-              [discoveredItems addObject:@{@"id": mid, @"created": @0}];
-            }
-          }
-        }
-
-        // Sort discovered items:
-        // If created timestamp is present (OpenAI), sort by timestamp descending (newest releases first).
-        // Otherwise sort descending using natural numeric version comparison (e.g. 5.5 > 5.1 > 3.7; 3.8 > 3.5 > 2.5).
-        [discoveredItems sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
-          NSNumber* tA = a[@"created"];
-          NSNumber* tB = b[@"created"];
-          if (tA && tB && tA.doubleValue > 0 && tB.doubleValue > 0 && ![tA isEqualToNumber:tB]) {
-            return [tB compare:tA];
-          }
-          NSString* sA = a[@"id"];
-          NSString* sB = b[@"id"];
-          return [sB compare:sA options:NSNumericSearch | NSCaseInsensitiveSearch];
-        }];
-
-        // Live priority merge:
-        // Place live discovered models at the top (newest first).
-        // Do not imply that unlisted fallback models are available to this account.
-        NSMutableArray<NSString*>* merged = [NSMutableArray array];
-        for (NSDictionary* dict in discoveredItems) {
-          NSString* mid = dict[@"id"];
-          if (![merged containsObject:mid]) {
-            [merged addObject:mid];
-          }
-        }
-
-        if (merged.count == 0) {
-          merged = [NSMutableArray arrayWithArray:fallbackList];
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-          if (completionHandler) completionHandler(merged, nil);
-        });
+- (void)fetchModelsForProvider:(NSString*)provider apiKey:(NSString*)key baseURL:(NSString*)baseURL
+                 forceRefresh:(BOOL)forceRefresh
+            completionHandler:(void (^)(NSArray<NSString*>*, NSError*))completionHandler {
+  RigAIConfig* cfg = [self modelDiscoveryConfigForProvider:provider apiKey:key baseURL:baseURL];
+  [[RigAIModelCatalog sharedCatalog] refreshModelsForProvider:cfg.provider apiKey:cfg.effectiveApiKey baseURL:cfg.baseURL
+      force:forceRefresh completion:^(NSArray<NSString*>* models, NSError* error) {
+        if (completionHandler) completionHandler(models, error);
       }];
-  [task resume];
 }
 
 @end

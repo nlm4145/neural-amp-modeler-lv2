@@ -16,6 +16,7 @@
 @end
 @protocol ControllerPrivate
 - (void)setState:(RigUIState*)state;
+- (void)refreshCopilotModelsUIForced:(BOOL)force;
 @end
 
 static int failures = 0;
@@ -29,6 +30,16 @@ static NSString* isolatedCurrentPreset(id, SEL) { return [presetRoot stringByApp
 static NSString* isolatedLibrary(id, SEL) { return libraryRoot; }
 static NSString* isolatedConfig(id, SEL) { return configPath; }
 static id skipConfigLoad(id, SEL) { return nil; }
+static NSMutableArray* modelCallbacks;
+static NSString* discoveryProvider;
+static NSString* discoveryKey;
+static NSString* discoveryURL;
+static BOOL discoveryForce;
+static void captureModelDiscovery(id, SEL, NSString* provider, NSString* key, NSString* url, BOOL force,
+                                  void (^callback)(NSArray*, NSError*)) {
+  discoveryProvider = provider; discoveryKey = key; discoveryURL = url; discoveryForce = force;
+  [modelCallbacks addObject:[callback copy]];
+}
 static id isolatedKeychain(id, SEL, id) {
   return @{(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
            (__bridge id)kSecAttrService: @"Axe FX AI Test", (__bridge id)kSecAttrAccount: configPath};
@@ -176,6 +187,63 @@ int main(int argc, char** argv) {
     CHECK(![config saveToDisk:nil]);
     RigAICopilot* singleton = [copilotClass sharedCopilot];
     CHECK(!singleton.config); // load was stubbed before either instance was initialized.
+    NSArray* openAIStarters = [copilotClass defaultModelsForProvider:@"OpenAI"];
+    CHECK([openAIStarters containsObject:@"gpt-6.1-sol"] && [openAIStarters containsObject:@"gpt-6-luna"]);
+    // Exercise actual UI refresh wiring with injected completions; no provider requests.
+    Method fetchMethod = class_getInstanceMethod(copilotClass, @selector(fetchModelsForProvider:apiKey:baseURL:forceRefresh:completionHandler:));
+    IMP originalFetch = method_setImplementation(fetchMethod, (IMP)captureModelDiscovery);
+    modelCallbacks = [NSMutableArray array];
+    NSPopUpButton* providerPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
+    [providerPopup addItemsWithTitles:@[@"Gemini", @"OpenAI", @"Claude"]];
+    [providerPopup selectItemWithTitle:@"OpenAI"];
+    NSComboBox* modelsBox = [NSComboBox new];
+    [modelsBox addItemWithObjectValue:@"starter"]; modelsBox.stringValue = @"my-selected-model";
+    NSSecureTextField* keyField = [NSSecureTextField new]; keyField.stringValue = @"unsaved-key";
+    NSTextField* urlField = [NSTextField new]; urlField.stringValue = @"https://proxy.example/v1";
+    NSTextField* modelsStatus = [NSTextField labelWithString:@""];
+    NSButton* refreshButton = [NSButton new];
+    [controller setValue:providerPopup forKey:@"copilotProvPopup"];
+    [controller setValue:modelsBox forKey:@"copilotModelComboBox"];
+    [controller setValue:keyField forKey:@"copilotKeyField"];
+    [controller setValue:urlField forKey:@"copilotURLField"];
+    [controller setValue:modelsStatus forKey:@"copilotModelsStatus"];
+    [controller setValue:refreshButton forKey:@"copilotModelsRefreshBtn"];
+    [(id<ControllerPrivate>)controller refreshCopilotModelsUIForced:YES];
+    CHECK([discoveryProvider isEqual:@"openai"] && [discoveryKey isEqual:@"unsaved-key"]);
+    CHECK([discoveryURL isEqual:@"https://proxy.example/v1"] && discoveryForce && !refreshButton.enabled);
+    CHECK(!singleton.config); // Discovery did not mutate the tone request configuration.
+    // A newer key refresh completes first. The old callback must not overwrite its list.
+    keyField.stringValue = @"newer-key";
+    [controller performSelector:@selector(copilotKeyFieldAction:) withObject:nil];
+    CHECK(!discoveryForce && modelCallbacks.count == 2);
+    void (^latestModels)(NSArray*, NSError*) = modelCallbacks.lastObject;
+    latestModels(@[@"gpt-future", @"gpt-other"], nil);
+    CHECK(refreshButton.enabled && [modelsBox.objectValues isEqual:(@[@"gpt-future", @"gpt-other"])]);
+    CHECK([modelsBox.stringValue isEqual:@"my-selected-model"]);
+    void (^oldModels)(NSArray*, NSError*) = modelCallbacks.firstObject;
+    oldModels(@[@"stale-model"], nil);
+    CHECK([modelsBox.objectValues isEqual:(@[@"gpt-future", @"gpt-other"])]);
+    // Failed discovery keeps the current list and reports an actionable status.
+    [controller performSelector:@selector(refreshCopilotModelsAction:) withObject:nil];
+    latestModels = modelCallbacks.lastObject;
+    latestModels(nil, [NSError errorWithDomain:@"test" code:401 userInfo:@{NSLocalizedDescriptionKey:@"Check API key"}]);
+    CHECK([modelsStatus.stringValue containsString:@"Check API key"] && refreshButton.enabled);
+    CHECK([modelsBox.stringValue isEqual:@"my-selected-model"] && modelsBox.numberOfItems == 2);
+    // Click-away/Tab commits URL changes, and opening the dropdown checks freshness.
+    urlField.stringValue = @"https://new-proxy.example/v1";
+    [controller performSelector:@selector(controlTextDidEndEditing:) withObject:
+        [NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:urlField]];
+    CHECK([discoveryURL isEqual:urlField.stringValue] && !discoveryForce);
+    [controller performSelector:@selector(comboBoxWillPopUp:) withObject:
+        [NSNotification notificationWithName:NSComboBoxWillPopUpNotification object:modelsBox]];
+    CHECK(modelCallbacks.count == 5 && !discoveryForce);
+    // Switching away before a callback arrives cannot inject another provider's models.
+    latestModels = modelCallbacks.lastObject;
+    [providerPopup selectItemWithTitle:@"Claude"];
+    latestModels(@[@"wrong-provider"], nil);
+    CHECK(modelsBox.numberOfItems == 2);
+    method_setImplementation(fetchMethod, originalFetch);
+    [modelCallbacks removeAllObjects];
     // Do not execute a user's CLI or send requests: completion/cancellation above use injected lifecycle state.
     // Raw socket route tests: no server startup/token writes, no live networking.
     id server = [NSClassFromString(@"RigLocalServer") new];

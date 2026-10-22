@@ -62,6 +62,16 @@ class ToneTests(unittest.TestCase):
             env = dict(os.environ, HOME=temp)
             subprocess.run([str(binary), str(Path(os.environ["RIG_UI_SO"]).resolve()), temp], env=env, check=True, timeout=30)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Foundation networking requires macOS")
+    def test_provider_model_discovery(self):
+        with tempfile.TemporaryDirectory(prefix="axe-ai-models-", dir=os.environ.get("TMPDIR")) as temp:
+            binary = Path(temp) / "verify-models"
+            cache = Path(temp) / "cache"
+            subprocess.run(["clang++", "-std=c++17", "-fobjc-arc", "-Isrc",
+                            "tests/verify_ai_model_catalog.mm", "src/rig_ai_model_catalog.mm",
+                            "-framework", "Foundation", "-o", str(binary)], cwd=ROOT, check=True)
+            subprocess.run([str(binary), str(cache)], check=True, timeout=30)
+
     def test_mcp_auth_preview_timeout_and_errors(self):
         mcp = load("axe_mcp", ROOT / "scripts/axe_fx_mcp.py")
         class Response:

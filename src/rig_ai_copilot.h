@@ -142,7 +142,14 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
              completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler;
 
 - (void)fetchModelsForProvider:(NSString*)provider
-                        apiKey:(nullable NSString*)apiKey
+                         apiKey:(nullable NSString*)apiKey
+              completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler;
+
+// Uses unsaved UI settings without mutating the active tone request configuration.
+- (NSArray<NSString*>*)availableModelsForProvider:(NSString*)provider
+                                          apiKey:(nullable NSString*)apiKey baseURL:(nullable NSString*)baseURL;
+- (void)fetchModelsForProvider:(NSString*)provider apiKey:(nullable NSString*)apiKey
+                       baseURL:(nullable NSString*)baseURL forceRefresh:(BOOL)forceRefresh
              completionHandler:(void (^)(NSArray<NSString*>* _Nullable models, NSError* _Nullable error))completionHandler;
 
 @end

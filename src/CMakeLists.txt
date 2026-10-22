@@ -324,6 +324,7 @@ if (APPLE)
 		rig_tone_browser.h rig_tone_browser.mm
 		rig_ai_copilot.h rig_ai_copilot.mm
 		rig_ai_support.h rig_ai_support.mm
+		rig_ai_model_catalog.h rig_ai_model_catalog.mm
 		rig_local_server.h rig_local_server.mm
 		rig_riff_recorder.h rig_riff_recorder.mm
 		rig_ui_state.h)
