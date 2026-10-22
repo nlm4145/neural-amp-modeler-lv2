@@ -209,6 +209,7 @@ public:
     float* post_compressor_release; // in: port 188, ms
     float* post_compressor_enabled; // in: port 189, independent bypass
     float* od_tight;                // in: port 190, Sculpt overdrive tight cut (Hz, 100..1500)
+    float* od_voicing;              // in: port 191, Sculpt overdrive diode voicing (0=TS, 1=SD-1, 2=LED, 3=Ge)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -254,9 +255,11 @@ public:
   static_assert(offsetof(Ports, post_compressor_release) == kPostCompressorReleasePort * sizeof(void*));
   static_assert(offsetof(Ports, post_compressor_enabled) == kPostCompressorEnabledPort * sizeof(void*));
   static_assert(offsetof(Ports, od_tight) == kOverdriveTightPort * sizeof(void*));
+  static_assert(offsetof(Ports, od_voicing) == kOverdriveVoicingPort * sizeof(void*));
   static_assert(kPostCompressorFirstPort == kOverdriveEnabledPort + 1);
   static_assert(kOverdriveTightPort == kPostCompressorEnabledPort + 1);
-  static_assert(kPortCount == kOverdriveTightPort + 1);
+  static_assert(kOverdriveVoicingPort == kOverdriveTightPort + 1);
+  static_assert(kPortCount == kOverdriveVoicingPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};

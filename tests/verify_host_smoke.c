@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
   CHECK(h != NULL, "instantiate at 48 kHz");
   if (!h) return 1;
 
-  enum { kPorts = 191, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
+  enum { kPorts = 192, kRackEnd = 80, kMax = 4096, kAtom = 16384 };
   static uint8_t controlBuf[kAtom], notifyBuf[kAtom];
   static float inBuf[kMax], outBuf[kMax], outRightBuf[kMax];
   float ctl[kPorts] = {0};           /* mirrors Plugin::kPortCount */

@@ -154,7 +154,14 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotals(NSString* root, NSStrin
 NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root, NSString* query, NSUInteger limit,
                                                                  NSUInteger totals[3], NSUInteger maxScores[3]) {
   NSMutableArray* items = [NSMutableArray array];
-  NSArray* tokens = [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  NSArray* promptTokens = [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  NSMutableSet<NSString*>* gearTokenSet = [NSMutableSet set];
+  for (NSString* sq in rigAISuggestGearQueries(query)) {
+    for (NSString* t in [sq.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet]) {
+      if (t.length > 2 && ![promptTokens containsObject:t]) [gearTokenSet addObject:t];
+    }
+  }
+  NSArray* gearTokens = [gearTokenSet allObjects];
   NSDirectoryEnumerator* en = [NSFileManager.defaultManager enumeratorAtPath:root];
   NSMutableDictionary* manifests = [NSMutableDictionary dictionary];
   for (NSUInteger s = 0; s < 3; ++s) {
@@ -193,7 +200,8 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
     }
     NSString* searchable = item.description.lowercaseString;
     NSUInteger score = 0;
-    for (NSString* token in tokens) if (token.length > 2 && [searchable containsString:token]) ++score;
+    for (NSString* token in promptTokens) if (token.length > 2 && [searchable containsString:token]) score += 3;
+    for (NSString* token in gearTokens) if ([searchable containsString:token]) score += 1;
     item[@"score"] = @(score);
     if (maxScores && score > maxScores[stage]) maxScores[stage] = score;
     [items addObject:item];
@@ -276,4 +284,391 @@ NSString* rigAIResolveModel(NSString* root, NSString* target, NSUInteger stage, 
   }
   fail(error, [NSString stringWithFormat:@"Model is missing, outside the library, or wrong for stage %lu: %@", (unsigned long)stage, target]);
   return nil;
+}
+
+NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt) {
+  if (![prompt isKindOfClass:NSString.class] || !prompt.length) return @[];
+  NSString* clean = prompt.lowercaseString;
+  NSMutableArray<NSString*>* results = [NSMutableArray array];
+
+  auto addQuery = ^(NSString* q) {
+    if (q.length && ![results containsObject:q]) {
+      [results addObject:q];
+    }
+  };
+
+  struct GearAssociation {
+    NSArray<NSString*>* triggers;
+    NSArray<NSString*>* queries;
+  };
+
+  static const GearAssociation kAssociations[] = {
+    // Modern / Nu Metal / Slipknot
+    {
+      @[@"slipknot", @"before i forget", @"duality", @"psychosocial", @"jim root", @"mick thomson", @"iowa", @"subliminal verses", @"wait and bleed"],
+      @[@"rivera kr7", @"dual rectifier", @"rockerverb", @"diezel herbert", @"5150", @"v30"]
+    },
+    // Thrash / Metallica
+    {
+      @[@"metallica", @"hetfield", @"hammett", @"master of puppets", @"ride the lightning", @"enter sandman", @"black album", @"and justice for all", @"kill em all"],
+      @[@"mesa mark iic+", @"mesa mark iv", @"dual rectifier", @"diesel v30", @"marshall jcm800"]
+    },
+    // Pantera / Dimebag Darrell
+    {
+      @[@"pantera", @"dimebag", @"cowboys from hell", @"vulgar display", @"walk", @"cemetery gates", @"far beyond driven"],
+      @[@"randall rg100", @"warhead", @"krank revolution", @"furman pq3"]
+    },
+    // Tool / Adam Jones
+    {
+      @[@"tool", @"adam jones", @"schism", @"sober", @"lateralus", @"fear inoculum", @"aenima", @"vicarious"],
+      @[@"diezel vh4", @"marshall super bass", @"dual rectifier", @"mesa 4x12"]
+    },
+    // Gojira / Joe Duplantier
+    {
+      @[@"gojira", @"duplantier", @"flying whales", @"silvera", @"stranded", @"l'enfant sauvage", @"art of dying"],
+      @[@"evh 5150 iii", @"5150", @"peavey 6505", @"mesa dual rectifier"]
+    },
+    // Meshuggah / Djent / Progressive Metal
+    {
+      @[@"meshuggah", @"thordendal", @"bleed", @"periphery", @"misha mansoor", @"animals as leaders", @"tosin abasi", @"djent", @"monuments"],
+      @[@"evh 5150 iii", @"friedman be100", @"precision drive", @"bogner uberschall"]
+    },
+    // Deftones / Stephen Carpenter
+    {
+      @[@"deftones", @"stephen carpenter", @"my own summer", @"change in the house of flies", @"around the fur", @"white pony", @"be quiet and drive"],
+      @[@"marshall jmp-1", @"dual rectifier", @"diezel vh4"]
+    },
+    // Alice in Chains / Jerry Cantrell
+    {
+      @[@"alice in chains", @"cantrell", @"man in the box", @"rooster", @"them bones", @"dirt", @"would?"],
+      @[@"bogner uberschall", @"friedman jj", @"bogner fish", @"marshall jcm800"]
+    },
+    // Soundgarden / Kim Thayil / Chris Cornell
+    {
+      @[@"soundgarden", @"kim thayil", @"chris cornell", @"black hole sun", @"spoonman", @"outshined", @"superunknown"],
+      @[@"mesa dual rectifier", @"peavey vtm", @"marshall jcm800"]
+    },
+    // Lamb of God / Mark Morton
+    {
+      @[@"lamb of god", @"mark morton", @"redneck", @"laid to rest", @"ashes of the wake"],
+      @[@"mesa mark iv", @"mesa mark v", @"mesa 4x12 v30"]
+    },
+    // Avenged Sevenfold / Synyster Gates
+    {
+      @[@"avenged sevenfold", @"synyster gates", @"bat country", @"hail to the king", @"nightmare", @"unholy confessions"],
+      @[@"schecter hellwin", @"bogner uberschall", @"mesa dual rectifier"]
+    },
+    // Van Halen / Eddie Van Halen / Brown Sound
+    {
+      @[@"van halen", @"eddie van halen", @"evh", @"brown sound", @"eruption", @"panama", @"hot for teacher", @"jump", @"1984"],
+      @[@"marshall plexi 1959", @"evh 5150", @"variac plexi", @"greenback 4x12"]
+    },
+    // Guns N Roses / Slash
+    {
+      @[@"guns n roses", @"guns n' roses", @"slash", @"sweet child", @"welcome to the jungle", @"november rain", @"paradise city", @"appetite for destruction"],
+      @[@"marshall jubilee 2555", @"marshall afd100", @"marshall jcm800", @"greenback"]
+    },
+    // AC/DC / Angus Young
+    {
+      @[@"acdc", @"ac/dc", @"angus young", @"malcolm young", @"back in black", @"highway to hell", @"thunderstruck", @"tnt", @"hells bells"],
+      @[@"marshall plexi 1959", @"marshall jtm45", @"celestion g12m greenback"]
+    },
+    // Iron Maiden / Judas Priest
+    {
+      @[@"iron maiden", @"judas priest", @"trooper", @"painkiller", @"breaking the law", @"hallowed be thy name", @"run to the hills"],
+      @[@"marshall jcm800", @"marshall super lead", @"ts9", @"celestion g12m"]
+    },
+    // Black Sabbath / Tony Iommi
+    {
+      @[@"black sabbath", @"tony iommi", @"iommi", @"paranoid", @"iron man", @"war pigs", @"children of the grave"],
+      @[@"laney supergroup", @"laney ti100", @"dallas rangemaster", @"marshall super lead"]
+    },
+    // Nirvana / Kurt Cobain
+    {
+      @[@"nirvana", @"kurt cobain", @"cobain", @"smells like teen spirit", @"in bloom", @"come as you are", @"heart shaped box", @"nevermind", @"in utero"],
+      @[@"boss ds-1", @"boss ds-2", @"fender twin reverb", @"mesa studio preamp"]
+    },
+    // Stevie Ray Vaughan / SRV
+    {
+      @[@"stevie ray vaughan", @"srv", @"texas flood", @"pride and joy", @"cold shot", @"crossfire", @"scuttle buttin"],
+      @[@"fender super reverb", @"fender vibroverb", @"dumble steel string singer", @"ts808 tube screamer"]
+    },
+    // John Mayer
+    {
+      @[@"john mayer", @"mayer", @"gravity", @"slow dancing", @"continuum", @"neon", @"bold as love"],
+      @[@"two rock custom classic", @"dumble steel string singer", @"fender bandmaster", @"klon centaur"]
+    },
+    // Jimi Hendrix
+    {
+      @[@"jimi hendrix", @"hendrix", @"purple haze", @"voodoo child", @"little wing", @"foxy lady"],
+      @[@"marshall super lead 100", @"fuzz face", @"vox wah", @"univibe"]
+    },
+    // Pink Floyd / David Gilmour
+    {
+      @[@"pink floyd", @"david gilmour", @"gilmour", @"comfortably numb", @"shine on", @"time", @"money", @"echoes"],
+      @[@"hiwatt dr103", @"electro-harmonix big muff", @"proco rat", @"fane crescendos"]
+    },
+    // Led Zeppelin / Jimmy Page
+    {
+      @[@"led zeppelin", @"jimmy page", @"whole lotta love", @"stairway to heaven", @"kashmir", @"black dog"],
+      @[@"supro 1624t", @"marshall super lead", @"tone bender"]
+    },
+    // Radiohead / Jonny Greenwood
+    {
+      @[@"radiohead", @"jonny greenwood", @"greenwood", @"paranoid android", @"creep", @"karma police", @"ok computer", @"the bends"],
+      @[@"vox ac30", @"fender twin reverb", @"marshall shredmaster"]
+    },
+    // Queen / Brian May
+    {
+      @[@"queen", @"brian may", @"bohemian rhapsody", @"we will rock you", @"killer queen"],
+      @[@"vox ac30", @"treble booster", @"red special"]
+    },
+    // Rage Against the Machine / Tom Morello
+    {
+      @[@"rage against the machine", @"ratm", @"tom morello", @"killing in the name", @"bulls on parade"],
+      @[@"marshall jcm800 2205", @"peavey cab", @"digitech whammy"]
+    },
+    // Polyphia / Tim Henson
+    {
+      @[@"polyphia", @"tim henson", @"playing god", @"goat", @"g.o.a.t.", @"ego death"],
+      @[@"archetype tim henson", @"vox ac30", @"matchless dc30", @"compressor clean"]
+    },
+    // Blink-182 / Green Day / Pop Punk
+    {
+      @[@"blink-182", @"blink 182", @"tom delonge", @"all the small things", @"dammit"],
+      @[@"mesa triple rectifier", @"marshall jcm900", @"invader"]
+    },
+    {
+      @[@"green day", @"billie joe armstrong", @"dookie", @"american idiot", @"basket case"],
+      @[@"marshall plexi 1959", @"marshall jcm800", @"dookie mod"]
+    },
+    // Generic Metal Styles
+    {
+      @[@"death metal", @"deathcore", @"metalcore", @"black metal", @"heavy metal", @"thrash metal"],
+      @[@"5150", @"peavey 6505", @"dual rectifier", @"mesa mark iv", @"v30"]
+    },
+    {
+      @[@"nu metal", @"drop b", @"drop c", @"drop a", @"7 string", @"8 string", @"baritone"],
+      @[@"dual rectifier", @"rivera kr7", @"5150", @"rockerverb", @"v30"]
+    },
+    {
+      @[@"doom metal", @"doom", @"sludge", @"stoner rock", @"stoner metal", @"kyuss", @"sleep"],
+      @[@"orange rockerverb", @"matamp", @"sunn model t", @"fuzz face"]
+    },
+    {
+      @[@"shoegaze", @"ambient", @"dream pop"],
+      @[@"fender twin reverb", @"roland jc120", @"big muff", @"reverse reverb"]
+    },
+    {
+      @[@"country", @"twang", @"chicken pickin"],
+      @[@"fender deluxe reverb", @"fender twin reverb", @"compressor"]
+    },
+    {
+      @[@"jazz", @"clean jazz", @"smooth jazz"],
+      @[@"roland jc120", @"polytone mini brute", @"fender twin reverb"]
+    }
+  };
+
+  const size_t kCount = sizeof(kAssociations) / sizeof(kAssociations[0]);
+  for (size_t i = 0; i < kCount; ++i) {
+    for (NSString* trigger in kAssociations[i].triggers) {
+      if ([clean containsString:trigger]) {
+        for (NSString* q in kAssociations[i].queries) addQuery(q);
+        break;
+      }
+    }
+  }
+
+  // Direct gear keyword detection
+  static NSArray<NSString*>* const kDirectGear = @[
+    @"5150", @"6505", @"rectifier", @"dual recto", @"triple recto", @"kr7", @"rivera",
+    @"diezel", @"vh4", @"herbert", @"bogner", @"uberschall", @"ecstasy", @"friedman", @"be100",
+    @"soldano", @"slo100", @"slo-100", @"jcm800", @"jcm900", @"jcm2000", @"plexi", @"super lead",
+    @"jubilee", @"mark iic", @"mark iv", @"mark v", @"dumble", @"steel string singer",
+    @"two rock", @"twin reverb", @"deluxe reverb", @"super reverb", @"bassman", @"vibroverb",
+    @"ac30", @"ac15", @"matchless dc30", @"rockerverb", @"thunderverb", @"hiwatt", @"dr103",
+    @"laney", @"engl", @"powerball", @"fireball", @"invader", @"savage", @"randall", @"warhead",
+    @"tube screamer", @"ts9", @"ts808", @"klon", @"centaur", @"king of tone", @"big muff",
+    @"rat", @"ds-1", @"precision drive"
+  ];
+  for (NSString* gear in kDirectGear) {
+    if ([clean containsString:gear]) addQuery(gear);
+  }
+
+  return results;
+}
+
+namespace {
+struct AcousticTelemetry {
+  BOOL hasBands = NO;
+  float peak = -120.0f;
+  float rms = -120.0f;
+  float crest = 0.0f;
+  size_t clipped = 0;
+  float bands[5] = {-120.0f, -120.0f, -120.0f, -120.0f, -120.0f};
+  BOOL isFullMix = NO;
+};
+
+static AcousticTelemetry parseTelemetry(NSString* text) {
+  AcousticTelemetry t;
+  if (![text isKindOfClass:NSString.class] || !text.length) return t;
+
+  if ([text rangeOfString:@"full mix" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+    t.isFullMix = YES;
+  }
+
+  NSRange peakRange = [text rangeOfString:@"peak " options:NSCaseInsensitiveSearch];
+  if (peakRange.location != NSNotFound) {
+    NSScanner* s = [NSScanner scannerWithString:[text substringFromIndex:peakRange.location + peakRange.length]];
+    float val = 0;
+    if ([s scanFloat:&val]) t.peak = val;
+  }
+
+  NSRange rmsRange = [text rangeOfString:@"RMS " options:NSCaseInsensitiveSearch];
+  if (rmsRange.location != NSNotFound) {
+    NSScanner* s = [NSScanner scannerWithString:[text substringFromIndex:rmsRange.location + rmsRange.length]];
+    float val = 0;
+    if ([s scanFloat:&val]) t.rms = val;
+  }
+
+  NSRange crestRange = [text rangeOfString:@"crest " options:NSCaseInsensitiveSearch];
+  if (crestRange.location != NSNotFound) {
+    NSScanner* s = [NSScanner scannerWithString:[text substringFromIndex:crestRange.location + crestRange.length]];
+    float val = 0;
+    if ([s scanFloat:&val]) t.crest = val;
+  }
+
+  NSRange clipRange = [text rangeOfString:@"clipped samples " options:NSCaseInsensitiveSearch];
+  if (clipRange.location != NSNotFound) {
+    NSScanner* s = [NSScanner scannerWithString:[text substringFromIndex:clipRange.location + clipRange.length]];
+    long long val = 0;
+    if ([s scanLongLong:&val] && val >= 0) t.clipped = (size_t)val;
+  }
+
+  NSRange bandRange = [text rangeOfString:@"90/350/1500/5000/10500 Hz:" options:NSCaseInsensitiveSearch];
+  if (bandRange.location != NSNotFound) {
+    NSScanner* s = [NSScanner scannerWithString:[text substringFromIndex:bandRange.location + bandRange.length]];
+    float b[5] = {};
+    BOOL ok = YES;
+    for (int i = 0; i < 5; ++i) {
+      if (![s scanFloat:&b[i]]) { ok = NO; break; }
+      if (i < 4) {
+        [s scanString:@"/" intoString:nil];
+      }
+    }
+    if (ok) {
+      t.hasBands = YES;
+      for (int i = 0; i < 5; ++i) t.bands[i] = b[i];
+    }
+  }
+
+  return t;
+}
+} // namespace
+
+NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullable referenceSummary) {
+  if (![playerSummary isKindOfClass:NSString.class] || !playerSummary.length) return @"";
+
+  NSString* playerText = playerSummary;
+  NSString* refText = referenceSummary;
+
+  // If referenceSummary is not provided, check if playerSummary contains both player and reference blocks
+  if ((!refText || !refText.length) && [playerText containsString:@"TARGET REFERENCE"]) {
+    NSRange r = [playerText rangeOfString:@"TARGET REFERENCE"];
+    refText = [playerText substringFromIndex:r.location];
+    playerText = [playerText substringToIndex:r.location];
+  }
+
+  AcousticTelemetry player = parseTelemetry(playerText);
+  AcousticTelemetry ref = parseTelemetry(refText);
+
+  if (!player.hasBands) return @"";
+
+  NSMutableString* out = [NSMutableString string];
+
+  if (ref.hasBands) {
+    [out appendString:@"ACOUSTIC SPECTRAL & DYNAMICS DELTAS (Player Take vs Target Reference):\n"];
+    if (ref.isFullMix) {
+      [out appendString:@"⚠️ Target reference is a FULL MIX (drums/bass boost 90 Hz and cymbals boost 10.5 kHz). Prioritize matching 350 Hz, 1500 Hz, and 5000 Hz.\n"];
+    }
+
+    const char* bandNames[5] = {
+      "Sub/Low Thump (90 Hz)",
+      "Low-Mids/Mud (350 Hz)",
+      "Pick Attack/Core Mids (1500 Hz)",
+      "Treble/Bite (5000 Hz)",
+      "Air/Fizz (10500 Hz)"
+    };
+
+    for (int i = 0; i < 5; ++i) {
+      float delta = player.bands[i] - ref.bands[i];
+      [out appendFormat:@"• %s: Delta %+.1f dB (Player %.1f vs Ref %.1f dBFS) — ", bandNames[i], delta, player.bands[i], ref.bands[i]];
+      if (i == 0) { // 90 Hz
+        if (delta > 2.5f) {
+          [out appendString:@"Excess low-end flub/palm-mute rumble. Reduce 'bass' (-1 to -3 dB) or engage/raise 'input_eq' high-pass (80-120 Hz) to tighten palm mutes.\n"];
+        } else if (delta < -2.5f) {
+          [out appendString:@"Lean low end. Boost 'bass' or lower high-pass cutoff to restore low-end body.\n"];
+        } else {
+          [out appendString:@"Low-end resonance closely matches reference.\n"];
+        }
+      } else if (i == 1) { // 350 Hz
+        if (delta > 2.5f) {
+          [out appendString:@"Boxy/muddy build-up. Scoop 'mid' slightly, engage OD pedal to tighten pre-gain lows, or adjust cab capture.\n"];
+        } else if (delta < -2.5f) {
+          [out appendString:@"Lower mids are hollow. Gently raise 'mid' to add warmth and body.\n"];
+        } else {
+          [out appendString:@"Low-mid body and mud control well balanced.\n"];
+        }
+      } else if (i == 2) { // 1500 Hz
+        if (delta > 2.5f) {
+          [out appendString:@"Honky or overly forward mid attack. Soften 'mid' or select a smoother IR.\n"];
+        } else if (delta < -2.5f) {
+          [out appendString:@"Pick attack is deficient; tone will be buried in a mix. Boost 'mid' (+1 to +3 dB) or engage overdrive pedal (od_drive 10..25, od_tone 55..72) to sharpen pick attack.\n"];
+        } else {
+          [out appendString:@"Pick articulation and midrange cut well aligned.\n"];
+        }
+      } else if (i == 3) { // 5000 Hz
+        if (delta > 2.5f) {
+          [out appendString:@"Harsh treble bite/fizz. Soften 'treble' or 'presence', or tighten 'cab_high_cut' (5.5-6.5 kHz).\n"];
+        } else if (delta < -2.5f) {
+          [out appendString:@"Dark/muffled top end. Increase 'treble' / 'presence' or use a brighter mic IR position.\n"];
+        } else {
+          [out appendString:@"Treble presence and bite well aligned.\n"];
+        }
+      } else if (i == 4) { // 10500 Hz
+        if (delta > 3.0f) {
+          [out appendString:@"Digital sizzle / harsh aliasing fizz. Real guitar speakers roll off steeply above 6 kHz; apply 'cab_high_cut' (6.0-7.5 kHz).\n"];
+        } else {
+          [out appendString:@"Ultra-high frequencies within natural speaker boundaries.\n"];
+        }
+      }
+    }
+  } else {
+    // Single take acoustic profile
+    [out appendString:@"ACOUSTIC SPECTRAL & DYNAMICS PROFILE (Player Take):\n"];
+    [out appendFormat:@"• Signal Dynamics: Peak %.1f dBFS, RMS %.1f dBFS, Crest factor %.1f dB, Clipped samples %zu\n",
+        player.peak, player.rms, player.crest, player.clipped];
+    if (player.clipped > 0) {
+      [out appendFormat:@"⚠️ %zu clipped samples detected! Lower input_level or master to avoid digital distortion.\n", player.clipped];
+    }
+    if (player.crest < 7.0f) {
+      [out appendString:@"• Dynamics: Heavily saturated / compressed take. Ease off pre-gain or gate threshold.\n"];
+    } else if (player.crest > 16.0f) {
+      [out appendString:@"• Dynamics: High dynamic range; overdrive saturation or light compression recommended for sustain.\n"];
+    }
+    if (player.bands[0] > -18.0f && (player.bands[0] - player.bands[1] > 4.0f)) {
+      [out appendFormat:@"• Lows (90 Hz: %.1f dBFS): High palm-mute flub relative to 350 Hz. Recommend input high-pass or reducing bass.\n", player.bands[0]];
+    }
+    if (player.bands[1] > -16.0f && (player.bands[1] - player.bands[2] > 5.0f)) {
+      [out appendFormat:@"• Mids (350 Hz: %.1f dBFS): Prominent boxiness. Slight mid scoop recommended.\n", player.bands[1]];
+    }
+    if (player.bands[2] < -25.0f) {
+      [out appendFormat:@"• Attack (1500 Hz: %.1f dBFS): Muted pick attack. TS-style OD pedal recommended.\n", player.bands[2]];
+    }
+    if (player.bands[4] > -38.0f) {
+      [out appendFormat:@"• Ultra-High (10.5 kHz: %.1f dBFS): Sizzle detected. Speaker cab high-cut filter recommended.\n", player.bands[4]];
+    }
+  }
+
+  return [out copy];
 }

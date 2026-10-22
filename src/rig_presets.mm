@@ -188,6 +188,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     p->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
   p->_controls[NAMRig::kPowerTubeTypePort] = 0.0f;
   p->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
+  p->_controls[NAMRig::kOverdriveVoicingPort] = 0.0f;
   p->_controls[42] = 0.0f;  // Captured / Off
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
@@ -269,6 +270,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     preset->_controls[NAMRig::kRackControlFirstPort + i] = NAMRig::kRackControlDefaults[i];
   preset->_controls[NAMRig::kPowerTubeTypePort] = 0.0f;
   preset->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
+  preset->_controls[NAMRig::kOverdriveVoicingPort] = 0.0f;
   // Presets saved before graph pins existed recall with no pins placed.
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
@@ -427,6 +429,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     p->_controls[NAMRig::kRackControlFirstPort + i] = state->rackControls[i];
   p->_controls[NAMRig::kPowerTubeTypePort] = static_cast<float>(state->powerTubeProfile);
   p->_controls[NAMRig::kPowerTubeCharacterPort] = state->powerTubeCharacter;
+  p->_controls[NAMRig::kOverdriveVoicingPort] = static_cast<float>(state->boostVoicing);
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = state->pinEqControls[i];
 
@@ -545,6 +548,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       ? tubeCharacterIt->second : NAMRig::kPowerTubeCharacterDefault;
   state->sendControl(NAMRig::kPowerTubeCharacterPort, tubeCharacter);
   state->updateControl(NAMRig::kPowerTubeCharacterPort, tubeCharacter);
+  auto odVoicingIt = _controls.find(NAMRig::kOverdriveVoicingPort);
+  const float odVoicing = odVoicingIt != _controls.end() ? odVoicingIt->second : 0.0f;
+  state->sendControl(NAMRig::kOverdriveVoicingPort, odVoicing);
+  state->updateControl(NAMRig::kOverdriveVoicingPort, odVoicing);
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i) {
     const uint32_t port = NAMRig::kPinEqFirstPort + i;
     auto it = _controls.find(port);

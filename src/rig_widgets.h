@@ -123,6 +123,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float tight;
 @property(nonatomic) float tone;
 @property(nonatomic) float level;
+@property(nonatomic) int voicing;
 @property(nonatomic) BOOL enabled;
 @end
 

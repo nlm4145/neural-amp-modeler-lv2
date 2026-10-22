@@ -31,6 +31,9 @@ int main(int argc, char** argv) {
     NSString* json = @"{\"controls\":{\"bass\":-2,\"od_tone\":62},\"amp_model\":\"Amp/A/clean.nam\"}";
     CHECK(rigAIParseResponse(json, nil).controls[@"od_tone"].floatValue == 62);
     CHECK(rigAIParseResponse([NSString stringWithFormat:@"```json\n%@\n```", json], nil));
+    NSString* searchJson = @"{\"controls\":{\"bass\":0},\"search_tone3000\":\"Mick Thomson Slipknot\"}";
+    RigAICopilotResult* searchRes = rigAIParseResponse(searchJson, nil);
+    CHECK(searchRes && [searchRes.searchTone3000 isEqualToString:@"Mick Thomson Slipknot"]);
     for (NSString* bad in @[@"[]", @"{}", @"{\"controls\":null}", @"{\"controls\":{},\"amp_model\":null}",
         @"{\"controls\":{},\"thought\":[]}", @"{\"controls\":{},\"slot_presets\":{\"speaker\":\"x\"}}",
         [@"logs\n" stringByAppendingString:json], [json stringByAppendingString:json]]) CHECK(!rigAIParseResponse(bad, nil));
@@ -57,6 +60,12 @@ int main(int argc, char** argv) {
     }
     CHECK(metadata && cab && full);
     CHECK(rigAILibraryCandidates(root, @"", 0).count == 0);
+    NSUInteger scoredTotals[3] = {};
+    NSUInteger maxScores[3] = {};
+    rigAILibraryCandidatesWithTotalsAndScores(root, @"warm clean boutique", 8, scoredTotals, maxScores);
+    CHECK(maxScores[1] > 0);
+    rigAILibraryCandidatesWithTotalsAndScores(root, @"nonexistentunknownartist", 8, scoredTotals, maxScores);
+    CHECK(maxScores[1] == 0);
     // Pedals are cataloged with totals, and a small library is listed completely.
     NSUInteger totals[3] = {9, 9, 9};
     NSArray* all = rigAILibraryCandidatesWithTotals(root, @"heartland rock", 96, totals);
@@ -82,6 +91,57 @@ int main(int argc, char** argv) {
     // Catalog metadata whitespace is collapsed and capped.
     for (NSDictionary* item in all)
       if ([item[@"path"] isEqual:@"Amp/A/clean.nam"]) CHECK([item[@"description"] isEqual:@"warm clean boutique"]);
+
+    // Semantic gear expansion tests
+    NSArray<NSString*>* slipknotGear = rigAISuggestGearQueries(@"Slipknot Before I Forget");
+    CHECK(slipknotGear.count > 0);
+    BOOL hasKr7OrRecto = NO;
+    for (NSString* g in slipknotGear) {
+      if ([g containsString:@"kr7"] || [g containsString:@"rectifier"] || [g containsString:@"5150"]) hasKr7OrRecto = YES;
+    }
+    CHECK(hasKr7OrRecto);
+
+    NSArray<NSString*>* metallicaGear = rigAISuggestGearQueries(@"Metallica Master of Puppets");
+    CHECK(metallicaGear.count > 0);
+    BOOL hasMarkOrRecto = NO;
+    for (NSString* g in metallicaGear) {
+      if ([g containsString:@"mark"] || [g containsString:@"rectifier"] || [g containsString:@"jcm800"]) hasMarkOrRecto = YES;
+    }
+    CHECK(hasMarkOrRecto);
+
+    NSArray<NSString*>* srvGear = rigAISuggestGearQueries(@"SRV Texas Flood");
+    CHECK(srvGear.count > 0);
+    BOOL hasFenderOrTs = NO;
+    for (NSString* g in srvGear) {
+      if ([g containsString:@"fender"] || [g containsString:@"super reverb"] || [g containsString:@"ts808"]) hasFenderOrTs = YES;
+    }
+    CHECK(hasFenderOrTs);
+    CHECK(rigAISuggestGearQueries(@"").count == 0);
+
+    // Acoustic telemetry delta guidance tests
+    NSString* playerTake = @"Player take: peak -3.0 dBFS; RMS -14.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/350/1500/5000/10500 Hz: -18.0/-15.0/-22.0/-24.0/-38.0 dBFS";
+    NSString* refTake = @"Reference: peak -2.0 dBFS; RMS -13.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/350/1500/5000/10500 Hz: -22.0/-15.0/-16.0/-24.0/-44.0 dBFS";
+    NSString* deltaGuidance = rigAIAcousticDeltaGuidance(playerTake, refTake);
+    CHECK(deltaGuidance.length > 0);
+    CHECK([deltaGuidance containsString:@"+4.0 dB"]);
+    CHECK([deltaGuidance containsString:@"-6.0 dB"]);
+    CHECK([deltaGuidance containsString:@"+6.0 dB"]);
+    CHECK([deltaGuidance containsString:@"palm-mute"]);
+    CHECK([deltaGuidance containsString:@"pick attack"]);
+    CHECK([deltaGuidance containsString:@"sizzle"]);
+
+    // Combined audio description parsing
+    NSString* combinedDesc = [NSString stringWithFormat:@"PLAYER TAKE:\n%@\n\nTARGET REFERENCE:\n%@", playerTake, refTake];
+    NSString* combinedGuidance = rigAIAcousticDeltaGuidance(combinedDesc, nil);
+    CHECK(combinedGuidance.length > 0 && [combinedGuidance containsString:@"+4.0 dB"]);
+
+    // Single-take guidance
+    NSString* clippedTake = @"Player take: peak 0.0 dBFS; RMS -10.0; crest 10.0 dB; clipped samples 42; broad filter estimates at 90/350/1500/5000/10500 Hz: -12.0/-18.0/-26.0/-24.0/-35.0 dBFS";
+    NSString* singleGuidance = rigAIAcousticDeltaGuidance(clippedTake, nil);
+    CHECK(singleGuidance.length > 0);
+    CHECK([singleGuidance containsString:@"42 clipped samples"]);
+    CHECK([singleGuidance containsString:@"flub"]);
+
     std::printf("AI support: %d failures\n", failures);
   }
   return failures ? 1 : 0;

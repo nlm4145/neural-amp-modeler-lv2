@@ -427,7 +427,8 @@ struct Host {
     plugin.ports.post_compressor_release = &controls[NAMRig::kPostCompressorReleasePort];
     plugin.ports.post_compressor_enabled = &controls[NAMRig::kPostCompressorEnabledPort];
     plugin.ports.od_tight = &controls[NAMRig::kOverdriveTightPort];
-    static_assert(Plugin::kPortCount == 191, "update connections if ports change");
+    plugin.ports.od_voicing = &controls[NAMRig::kOverdriveVoicingPort];
+    static_assert(Plugin::kPortCount == 192, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

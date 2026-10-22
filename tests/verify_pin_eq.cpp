@@ -55,7 +55,7 @@ int main() {
   CHECK(pinEqPort(PinEqPane::Speaker, 5, kPinQ) == kPinEqFirstPort + kPinEqPortCount - 1 &&
         kPinEqFirstPort + kPinEqPortCount - 1 == 178, "last pin port");
   CHECK(kOverdriveDrivePort == 179 && kCompressorAttackPort == 182 && kCompressorEnabledPort == 184 &&
-        kOverdriveEnabledPort == 185 && kRigControlPortCount == 191,
+        kOverdriveEnabledPort == 185 && kRigControlPortCount == 192,
         "overdrive and compressor append after the pins");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::Sculpt, 0, kPinShape)) == "sculpt_pin1_shape", "symbol");
   CHECK(pinEqSymbol(pinEqPort(PinEqPane::Transformer, 2, kPinFreq)) == "transformer_pin3_freq", "symbol");

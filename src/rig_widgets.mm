@@ -1706,6 +1706,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if ((self = [super initWithFrame:frame])) {
     _tight = NAMRig::Overdrive::kTightDefault;
     _tone = NAMRig::Overdrive::kToneDefault;
+    _voicing = 0;
     _enabled = YES;
     self.toolTip = @"TS-style symmetrical soft-clipping saturation, variable pre-clip tight high-pass filtering and post-clip tone shaping in front of the amplifier.";
   }
@@ -1716,6 +1717,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setTight:(float)v { _tight = v; self.needsDisplay = YES; }
 - (void)setTone:(float)v { _tone = v; self.needsDisplay = YES; }
 - (void)setLevel:(float)v { _level = v; self.needsDisplay = YES; }
+- (void)setVoicing:(int)v { _voicing = std::clamp(v, 0, 3); self.needsDisplay = YES; }
 - (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
@@ -1743,11 +1745,18 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const float activeTone = _tone;
   const float activeLevel = _level;
 
+  static NSString* const kVoicingHeaders[] = {
+    @"DRIVE SATURATION (CLASSIC TS)",
+    @"DRIVE SATURATION (SD-1 ASYM)",
+    @"DRIVE SATURATION (LED TURBO)",
+    @"DRIVE SATURATION (GERMANIUM)"
+  };
+  const int vIdx = std::clamp(_voicing, 0, 3);
   NSDictionary* leftHeaderAttrs = @{
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
-  [@"DRIVE SATURATION" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:leftHeaderAttrs];
+  [kVoicingHeaders[vIdx] drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:leftHeaderAttrs];
 
   NSDictionary* rightHeaderAttrs = @{
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
@@ -1755,13 +1764,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   };
   [@"TONE & TIGHT (HPF) RESPONSE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:rightHeaderAttrs];
 
+  static NSString* const kVoicingLabels[] = {@"TS", @"SD-1", @"LED", @"GE"};
   NSString* telemetry;
   if (!_enabled) {
     telemetry = @"BOOST BYPASSED (OFF)";
   } else if (_drive < 0.5f) {
-    telemetry = [NSString stringWithFormat:@"CLEAN BOOST  •  TIGHT: %.0f Hz  •  LEVEL: %+.1f dB", _tight, _level];
+    telemetry = [NSString stringWithFormat:@"%@  •  CLEAN BOOST  •  TIGHT: %.0f Hz  •  LEVEL: %+.1f dB", kVoicingLabels[vIdx], _tight, _level];
   } else {
-    telemetry = [NSString stringWithFormat:@"DRIVE: %.0f%%  •  TIGHT: %.0f Hz  •  TONE: %.0f%%  •  LEVEL: %+.1f dB", _drive, _tight, _tone, _level];
+    telemetry = [NSString stringWithFormat:@"%@  •  DRV: %.0f%%  •  TIGHT: %.0f Hz  •  TONE: %.0f%%  •  LVL: %+.1f dB", kVoicingLabels[vIdx], _drive, _tight, _tone, _level];
   }
   NSDictionary* infoAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
@@ -1801,8 +1811,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const int kSatSteps = 50;
   for (int s = 0; s <= kSatSteps; ++s) {
     const double x = -1.0 + 2.0 * ((double)s / (double)kSatSteps);
-    const double clipped = x + driveNorm * NAMRig::Overdrive::clip(g * x * 0.15);
-    const double maxOut = 1.0 + driveNorm * NAMRig::Overdrive::clip(g * 0.15);
+    const double clipped = x + driveNorm * NAMRig::Overdrive::clip(g * x * 0.15, _voicing);
+    const double maxOut = 1.0 + driveNorm * NAMRig::Overdrive::clip(g * 0.15, _voicing);
     const double yNorm = (maxOut > 0.0) ? std::clamp(clipped / maxOut, -1.0, 1.0) : x;
     const NSPoint pt = NSMakePoint(lPad + ((x + 1.0) * 0.5) * lPlotW, lMidY + yNorm * (lPlotH * 0.45));
     if (s == 0) [satCurve moveToPoint:pt];

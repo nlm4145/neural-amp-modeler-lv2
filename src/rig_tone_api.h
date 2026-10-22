@@ -7,6 +7,8 @@
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 extern NSString* const kToneAPI;
 extern NSString* const kPluginPublishableKey;
 
@@ -28,7 +30,7 @@ BOOL gearMatchesFilter(NSString* itemGear, NSString* filterTitle);
 // SearchCache helpers (shared between Tone Browser and AI Tone Copilot)
 NSString* searchCacheDir(void);
 NSString* searchCacheKeyForPath(NSString* path);
-NSDictionary* cachedSearchPageForPath(NSString* path, NSTimeInterval maxAgeSeconds);
+NSDictionary* _Nullable cachedSearchPageForPath(NSString* path, NSTimeInterval maxAgeSeconds);
 void saveSearchPageForPath(NSString* path, NSDictionary* page);
 
 @interface Tone3000FetchResult : NSObject
@@ -45,5 +47,7 @@ void saveSearchPageForPath(NSString* path, NSDictionary* page);
 // Searches Tone3000 online for query and downloads the top matching model for the specified stage
 // (0=pedal, 1=amp/full-rig, 2=cab). Prioritizes A2 architecture, high download counts, and exact tag/title matches.
 // Synchronous (designed to run on background worker threads).
-Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, NSString* libraryRoot);
+Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, NSString* _Nullable libraryRoot);
+
+NS_ASSUME_NONNULL_END
 #endif

@@ -1180,7 +1180,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
                         portValue(ports.od_tone, Overdrive::kToneDefault),
                         portValue(ports.od_level, 0.0f),
-                        portValue(ports.od_tight, Overdrive::kTightDefault), odOn);
+                        portValue(ports.od_tight, Overdrive::kTightDefault),
+                        portValue(ports.od_voicing, 0.0f), odOn);
       const float target = ampGainCache.get(*ports.amp_drive, blockRounding);
       const float coeff = ampDriveRateCache.get(domainRate, blockRounding);
       for (size_t i = 0; i < count; ++i) {

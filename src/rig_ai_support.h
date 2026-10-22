@@ -17,3 +17,9 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
 BOOL rigAIIsNoneModel(NSString* target);
 NSString* rigAIResolveModel(NSString* root, NSString* target, NSUInteger stage, NSError** error);
 BOOL rigAIModelIncludesCab(NSString* path);
+
+// Semantic gear expansion: translates artist/song/style prompts into associated gear families and acoustic search terms.
+NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt);
+
+// Acoustic profile analyzer: extracts frequency band energies from telemetry strings and calculates delta guidance.
+NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullable referenceSummary);

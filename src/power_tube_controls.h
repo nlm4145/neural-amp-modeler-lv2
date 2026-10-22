@@ -39,7 +39,14 @@ inline constexpr uint32_t kOverdriveTightPort = 190;
 inline constexpr float kOverdriveTightDefault = 720.0f;  // Hz
 inline constexpr float kOverdriveTightMin = 100.0f;     // Hz
 inline constexpr float kOverdriveTightMax = 1500.0f;    // Hz
-inline constexpr uint32_t kRigControlPortCount = 191;
+// Pre-Amp Overdrive voicing / diode selector:
+// 0 = Classic TS (symmetric silicon), 1 = SD-1 (asymmetric silicon),
+// 2 = LED Turbo (high headroom red LEDs), 3 = Germanium (vintage soft compression).
+inline constexpr uint32_t kOverdriveVoicingPort = 191;
+inline constexpr float kOverdriveVoicingDefault = 0.0f;
+inline constexpr float kOverdriveVoicingMin = 0.0f;
+inline constexpr float kOverdriveVoicingMax = 3.0f;
+inline constexpr uint32_t kRigControlPortCount = 192;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

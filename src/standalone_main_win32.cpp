@@ -221,7 +221,8 @@ class StandaloneApp {
         {NAMRig::kCompressorAttackPort, controls.subspan(NAMRig::kCompressorAttackPort, 3)},
         {NAMRig::kOverdriveEnabledPort, controls.subspan(NAMRig::kOverdriveEnabledPort, 1)},
         {NAMRig::kPostCompressorFirstPort, controls.subspan(NAMRig::kPostCompressorFirstPort, 4)},
-        {NAMRig::kOverdriveTightPort, controls.subspan(NAMRig::kOverdriveTightPort, 1)}});
+        {NAMRig::kOverdriveTightPort, controls.subspan(NAMRig::kOverdriveTightPort, 1)},
+        {NAMRig::kOverdriveVoicingPort, controls.subspan(NAMRig::kOverdriveVoicingPort, 1)}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))

@@ -162,6 +162,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)applyCompressorPreset:(NSButton*)sender;
 - (void)applySculptPreset:(NSButton*)sender;
 - (void)applyBoostPreset:(NSButton*)sender;
+- (void)boostVoicingChanged:(NSPopUpButton*)sender;
 - (void)sculptPageClicked:(NSButton*)sender;
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
@@ -1296,15 +1297,23 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
+- (void)boostVoicingChanged:(NSPopUpButton*)sender {
+  if (!_state) return;
+  const float val = (float)sender.indexOfSelectedItem;
+  _state->sendControl(NAMRig::kOverdriveVoicingPort, val);
+  _state->updateControl(NAMRig::kOverdriveVoicingPort, val);
+  [self markPresetModified];
+}
+
 - (void)applyBoostPreset:(NSButton*)sender {
   if (!_state) return;
-  struct BoostPreset { float drive, tight, tone, level; };
+  struct BoostPreset { float drive, tight, tone, level, voicing; };
   const BoostPreset presets[] = {
-    {0.0f, 720.0f, 50.0f, 6.0f},   // CLEAN BOOST
-    {35.0f, 720.0f, 55.0f, 2.0f},  // TS9 DRIVE
-    {60.0f, 850.0f, 65.0f, 4.0f},  // LEAD PUSH
-    {15.0f, 1200.0f, 70.0f, 3.0f}, // TIGHT CHUG
-    {45.0f, 350.0f, 40.0f, 0.0f}   // WARM OVERDRIVE
+    {0.0f, 720.0f, 50.0f, 6.0f, 2.0f},   // CLEAN BOOST (LED Turbo)
+    {35.0f, 720.0f, 55.0f, 2.0f, 0.0f},  // TS9 DRIVE (Classic TS)
+    {60.0f, 850.0f, 65.0f, 4.0f, 1.0f},  // LEAD PUSH (SD-1 Asym)
+    {15.0f, 1200.0f, 70.0f, 3.0f, 0.0f}, // TIGHT CHUG (Classic TS)
+    {45.0f, 350.0f, 40.0f, 0.0f, 3.0f}   // WARM OVERDRIVE (Germanium)
   };
   if (sender.tag >= 0 && sender.tag < 5) {
     const auto& p = presets[sender.tag];
@@ -1316,6 +1325,8 @@ static NSString* stageName(NSInteger stage) {
     _state->updateControl(NAMRig::kOverdriveTonePort, p.tone);
     _state->sendControl(NAMRig::kOverdriveLevelPort, p.level);
     _state->updateControl(NAMRig::kOverdriveLevelPort, p.level);
+    _state->sendControl(NAMRig::kOverdriveVoicingPort, p.voicing);
+    _state->updateControl(NAMRig::kOverdriveVoicingPort, p.voicing);
     [self markPresetModified];
   }
 }
@@ -4869,7 +4880,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Tube Screamer-inspired overdrive with symmetric soft clipping, pre-clip tight cut, and active tone filtering.",
+    NSTextField* desc = addLabel(card, @"Overdrive boost with 4 diode voicings (TS, SD-1, LED, Germanium), variable tight high-pass cut, and active tone shaping.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4886,17 +4897,36 @@ static void addLowerStudioDeck(RigUIState* state,
     [[chips.topAnchor constraintEqualToAnchor:desc.bottomAnchor constant:6] setActive:YES];
     [[chips.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
     [[chips.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
-    [[chips.heightAnchor constraintEqualToConstant:20] setActive:YES];
+    [[chips.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+    NSPopUpButton* voicing = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    voicing.controlSize = NSControlSizeSmall;
+    voicing.font = [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium];
+    [voicing addItemsWithTitles:@[@"Classic TS", @"SD-1 Asym", @"LED Turbo", @"Germanium"]];
+    NSArray<NSString*>* vTips = @[
+      @"Classic TS: Symmetric silicon diodes for smooth compression and warm odd harmonics (TS808/TS9).",
+      @"SD-1 Asym: Asymmetric silicon diodes (Boss SD-1 style) producing rich 2nd-order even harmonics.",
+      @"LED Turbo: High-headroom red LEDs (Turbo/Guv'nor style) for punchy transients and open crunch.",
+      @"Germanium: Low-threshold vintage germanium diodes for early compression, fuzzy bite, and warm saturation."
+    ];
+    for (NSUInteger i = 0; i < vTips.count; ++i) [voicing itemAtIndex:i].toolTip = vTips[i];
+    voicing.target = state->uiController;
+    voicing.action = @selector(boostVoicingChanged:);
+    voicing.tag = NAMRig::kOverdriveVoicingPort;
+    [chips addArrangedSubview:voicing];
+    state->boostVoicingPopup = voicing;
+    [voicing selectItemAtIndex:std::clamp(state->boostVoicing, 0, 3)];
 
     NSArray<NSString*>* boostPresetTitles = @[@"CLEAN BOOST", @"TS9 DRIVE", @"LEAD PUSH", @"TIGHT CHUG", @"WARM OVERDRIVE"];
     addSlotPresetDropdown(chips, state, @"boost", @"Pre-Amp Boost",
-                          @[@(NAMRig::kOverdriveDrivePort), @(NAMRig::kOverdriveTightPort), @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)],
+                          @[@(NAMRig::kOverdriveDrivePort), @(NAMRig::kOverdriveTightPort), @(NAMRig::kOverdriveVoicingPort), @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)],
                           boostPresetTitles, @selector(applyBoostPreset:));
 
     NAMBoostVisualizer* bVis = [[NAMBoostVisualizer alloc] initWithFrame:NSZeroRect];
     bVis.translatesAutoresizingMaskIntoConstraints = NO;
     bVis.drive = 0.0f;
     bVis.tight = NAMRig::kOverdriveTightDefault;
+    bVis.voicing = state->boostVoicing;
     bVis.tone = NAMRig::Overdrive::kToneDefault;
     bVis.level = 0.0f;
     bVis.enabled = state->boostEnabled;

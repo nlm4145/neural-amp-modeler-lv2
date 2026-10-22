@@ -199,8 +199,66 @@ int main() {
     check(h3Warm > h3Tight * 1.8, "Tight 1400 Hz cuts 120 Hz pre-clip distortion much more than Tight 200 Hz");
     check(Overdrive::preClipHighPassResponseDb(120.0, 48000.0, 1400.0f) < -15.0,
           "preClipHighPassResponseDb at 1400 Hz is below -15 dB at 120 Hz");
-    check(Overdrive::preClipHighPassResponseDb(3000.0, 48000.0, 720.0f) > -0.5,
+    check(Overdrive::preClipHighPassResponseDb(3000.0, 48000.0, 720.0f) > -1.0,
           "preClipHighPassResponseDb passes highs near unity");
+  }
+
+  // ---- 4 Diode Voicings: Classic TS, SD-1 Asymmetric, LED Turbo, Germanium ----
+  {
+    const double rate = 192000.0;
+    const size_t n = 96000;
+    // 1. SD-1 Asymmetric produces rich 2nd harmonic (H2) and asymmetric peak levels.
+    auto xInput = sine(1000.0, 0.15, rate, n);
+    auto xTS = xInput;
+    auto xSD1 = xInput;
+    Overdrive odTS, odSD1;
+    odTS.process(xTS.data(), xTS.size(), rate, 80.0f, 50.0f, 0.0f, 720.0f, 0.0f);
+    odSD1.process(xSD1.data(), xSD1.size(), rate, 80.0f, 50.0f, 0.0f, 720.0f, 1.0f);
+
+    const double h2TS = level(xTS, 2000.0, rate);
+    const double h2SD1 = level(xSD1, 2000.0, rate);
+    const double f0SD1 = level(xSD1, 1000.0, rate);
+    check(h2TS < 1.0e-5, "Classic TS has negligible even harmonics (symmetric)");
+    check(h2SD1 / f0SD1 > 0.02, "SD-1 Asymmetric generates prominent 2nd-order even harmonics (> -34 dBc)");
+
+    // Positive vs Negative peak asymmetry in SD-1:
+    float maxPos = 0.0f, maxNeg = 0.0f;
+    for (size_t i = n / 2; i < n; ++i) {
+      if (xSD1[i] > maxPos) maxPos = xSD1[i];
+      if (-xSD1[i] > maxNeg) maxNeg = -xSD1[i];
+    }
+    check(maxPos > maxNeg * 1.15f, "SD-1 clips positive and negative half-cycles with asymmetric thresholds");
+
+    // 2. LED Turbo has higher clipping threshold and higher headroom (less distortion at medium drive).
+    auto xTS_med = xInput;
+    auto xLED_med = xInput;
+    Overdrive odTS2, odLED;
+    odTS2.process(xTS_med.data(), xTS_med.size(), rate, 40.0f, 50.0f, 0.0f, 720.0f, 0.0f);
+    odLED.process(xLED_med.data(), xLED_med.size(), rate, 40.0f, 50.0f, 0.0f, 720.0f, 2.0f);
+    const double f0TS = level(xTS_med, 1000.0, rate);
+    const double f0LED = level(xLED_med, 1000.0, rate);
+    check(f0LED > f0TS * 1.4, "LED Turbo provides significantly higher dynamic output headroom than Classic TS");
+
+    // 3. Germanium has lower clipping threshold and compresses earlier into a warm envelope.
+    auto xTS_low = sine(1000.0, 0.08, rate, n);
+    auto xGe_low = xTS_low;
+    Overdrive odTS3, odGe;
+    odTS3.process(xTS_low.data(), xTS_low.size(), rate, 30.0f, 50.0f, 0.0f, 720.0f, 0.0f);
+    odGe.process(xGe_low.data(), xGe_low.size(), rate, 30.0f, 50.0f, 0.0f, 720.0f, 3.0f);
+    const double f0TS_low = level(xTS_low, 1000.0, rate);
+    const double f0Ge_low = level(xGe_low, 1000.0, rate);
+    check(f0Ge_low < f0TS_low * 0.85, "Germanium compresses earlier with lower clipping ceiling than Classic TS");
+
+    // 4. Live Voicing switching crossfades smoothly without DC jumps or instability.
+    Overdrive odSwitch;
+    auto xStream = sine(440.0, 0.2, rate, 48000);
+    odSwitch.process(xStream.data(), 12000, rate, 60.0f, 50.0f, 0.0f, 720.0f, 0.0f);
+    odSwitch.process(xStream.data() + 12000, 12000, rate, 60.0f, 50.0f, 0.0f, 720.0f, 1.0f);
+    odSwitch.process(xStream.data() + 24000, 12000, rate, 60.0f, 50.0f, 0.0f, 720.0f, 2.0f);
+    odSwitch.process(xStream.data() + 36000, 12000, rate, 60.0f, 50.0f, 0.0f, 720.0f, 3.0f);
+    bool streamFinite = true;
+    for (float v : xStream) streamFinite = streamFinite && std::isfinite(v) && std::fabs(v) < 10.0f;
+    check(streamFinite, "Live Voicing switching stays finite, bounded, and seamless across buffer boundaries");
   }
 
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);

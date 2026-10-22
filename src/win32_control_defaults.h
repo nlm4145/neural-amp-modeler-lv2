@@ -36,6 +36,8 @@ inline void forEachWin32ControlDefault(Set&& set) {
         value = NAMRig::kPostCompressorDefaults[entry.port - NAMRig::kPostCompressorFirstPort]; break;
       case NAMRig::kOverdriveTightPort:
         value = NAMRig::kOverdriveTightDefault; break;
+      case NAMRig::kOverdriveVoicingPort:
+        value = NAMRig::kOverdriveVoicingDefault; break;
       default: break;
     }
     set(entry.port, value);

@@ -615,18 +615,6 @@ NSString* artworkForTone(NSInteger toneId, NSInteger stage) {
 // <sha1 of path>.json and served from disk when fresh (<10 min
 // old). Pages load lazily (one page per filter change / scroll), so a full
 // 30-page browse never re-downloads pages it already has.
-static NSString* searchCacheDir(void) {
-  static NSString* dir = nil;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    dir = [@("~/Library/Application Support/Axe FX/SearchCache")
-           stringByExpandingTildeInPath];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                              withIntermediateDirectories:YES attributes:nil error:nil];
-  });
-  return dir;
-}
-
 static NSString* previewCacheDir(void) {
   static NSString* dir = nil;
   static dispatch_once_t once;
@@ -637,45 +625,6 @@ static NSString* previewCacheDir(void) {
                               withIntermediateDirectories:YES attributes:nil error:nil];
   });
   return dir;
-}
-
-// A stable cache key: the request path (sort/gears/query/page), hashed so the
-// filesystem doesn't see query characters it dislikes.
-static NSString* searchCacheKeyForPath(NSString* path) {
-  unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-  CC_SHA1([path UTF8String], (CC_LONG)strlen([path UTF8String]), digest);
-  NSMutableString* hex = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-  for (size_t i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
-  return hex;
-}
-
-// Returns the cached {data, page, total_pages, ...} dictionary for a search
-// page if it exists and is younger than maxAgeSeconds; nil otherwise.
-static NSDictionary* cachedSearchPageForPath(NSString* path, NSTimeInterval maxAgeSeconds) {
-  NSString* file = [searchCacheDir() stringByAppendingPathComponent:
-                    [searchCacheKeyForPath(path) stringByAppendingPathExtension:@"json"]];
-  NSDictionary* wrapper = jsonDictionaryAtPath(file);
-  NSDictionary* page = [wrapper[@"page"] isKindOfClass:NSDictionary.class] ? wrapper[@"page"] : nil;
-  NSNumber* fetched = [wrapper[@"fetchedAt"] respondsToSelector:@selector(doubleValue)]
-      ? wrapper[@"fetchedAt"] : nil;
-  if (!page || !fetched) return nil;
-  if ([[NSDate date] timeIntervalSince1970] - fetched.doubleValue > maxAgeSeconds) return nil;
-  return page;
-}
-
-// Persists a fetched search page (called after every successful API page).
-static void saveSearchPageForPath(NSString* path, NSDictionary* page) {
-  if (![page isKindOfClass:NSDictionary.class] || !page[@"data"]) return;
-  NSDictionary* wrapper = @{
-    @"fetchedAt": @([[NSDate date] timeIntervalSince1970]),
-    @"path": path,
-    @"page": page,
-  };
-  NSData* json = [NSJSONSerialization dataWithJSONObject:wrapper options:0 error:nil];
-  if (!json) return;
-  NSString* file = [searchCacheDir() stringByAppendingPathComponent:
-                    [searchCacheKeyForPath(path) stringByAppendingPathExtension:@"json"]];
-  [json writeToFile:file options:NSDataWritingAtomic error:nil];
 }
 
 static void registerKnownToneCreator(NSString* name);

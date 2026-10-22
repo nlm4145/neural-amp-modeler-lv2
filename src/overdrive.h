@@ -25,10 +25,19 @@ namespace NAMRig {
 // add symmetric soft-clipping saturation.
 class Overdrive {
  public:
+  enum class Voicing : int {
+    ClassicTS = 0,   // Symmetric silicon (TS808 / TS9)
+    Asymmetric = 1,  // Asymmetric silicon (Boss SD-1 style: 2 diodes pos, 1 diode neg, even harmonics)
+    LedTurbo = 2,    // Red LEDs (Turbo / Guv'nor style: high headroom, open crunch)
+    Germanium = 3,   // Germanium diodes (vintage soft saturation, low threshold, warm compression)
+    Count = 4
+  };
+
   static constexpr float kToneDefault = 50.0f;
   static constexpr float kTightDefault = 720.0f;
   static constexpr float kTightMinHz = 100.0f;
   static constexpr float kTightMaxHz = 1500.0f;
+  static constexpr float kVoicingDefault = 0.0f;
   static constexpr float kLevelMinDb = -12.0f;
   static constexpr float kLevelMaxDb = 12.0f;
 
@@ -36,6 +45,8 @@ class Overdrive {
     bass_ = lp_ = tone_ = 0.0;
     smoothOn_ = smoothDrive_ = smoothTone_ = smoothLevel_ = 0.0f;
     smoothTight_ = kTightDefault;
+    currentVoicing_ = targetVoicing_ = 0;
+    voicingFade_ = 1.0f;
     primed_ = false;
   }
 
@@ -43,12 +54,17 @@ class Overdrive {
 
   void process(float* samples, size_t count, double rate, float driveAmount,
                float toneAmount, float levelDb, bool enabled) noexcept {
-    process(samples, count, rate, driveAmount, toneAmount, levelDb, kTightDefault, enabled);
+    process(samples, count, rate, driveAmount, toneAmount, levelDb, kTightDefault, 0.0f, enabled);
+  }
+
+  void process(float* samples, size_t count, double rate, float driveAmount,
+               float toneAmount, float levelDb, float tightHz, bool enabled) noexcept {
+    process(samples, count, rate, driveAmount, toneAmount, levelDb, tightHz, 0.0f, enabled);
   }
 
   void process(float* samples, size_t count, double rate, float driveAmount,
                float toneAmount, float levelDb, float tightHz = kTightDefault,
-               bool enabled = true) noexcept {
+               float voicingMode = 0.0f, bool enabled = true) noexcept {
     const float onTarget = enabled ? 1.0f : 0.0f;
     if (onTarget == 0.0f && smoothOn_ <= 0.0f) {
       reset();
@@ -62,13 +78,23 @@ class Overdrive {
         ? std::clamp(levelDb, kLevelMinDb, kLevelMaxDb) : 0.0f;
     const float tightTarget = std::isfinite(tightHz)
         ? std::clamp(tightHz, kTightMinHz, kTightMaxHz) : kTightDefault;
+    const int newTargetVoicing = std::isfinite(voicingMode)
+        ? std::clamp(static_cast<int>(voicingMode + 0.5f), 0, static_cast<int>(Voicing::Count) - 1) : 0;
     if (!primed_) {
       // Engaging starts from the current settings and fades in via smoothOn_.
       smoothDrive_ = driveTarget;
       smoothTone_ = toneTarget;
       smoothLevel_ = levelTarget;
       smoothTight_ = tightTarget;
+      currentVoicing_ = targetVoicing_ = newTargetVoicing;
+      voicingFade_ = 1.0f;
       primed_ = true;
+    } else if (newTargetVoicing != targetVoicing_) {
+      if (voicingFade_ >= 1.0f) {
+        currentVoicing_ = targetVoicing_;
+        voicingFade_ = 0.0f;
+      }
+      targetVoicing_ = newTargetVoicing;
     }
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
@@ -86,6 +112,7 @@ class Overdrive {
       const double lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * rate), rate);
       const double toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
       const double level = std::pow(10.0, smoothLevel_ / 20.0);
+      const float fadeStep = static_cast<float>(1.0 / (std::max(1.0, rate) * 0.010));
       // Ramp the engage fade per sample so it never zippers.
       double on = onStart;
       const double onStep = (static_cast<double>(smoothOn_) - onStart) / static_cast<double>(n);
@@ -95,7 +122,20 @@ class Overdrive {
         const double x = s[i];
         bass_ += hpK * (x - bass_);
         lp_ += lpK * ((x - bass_) - lp_);
-        const double pedal = x + smoothDrive_ * clip(g * lp_);
+        double clipped;
+        if (voicingFade_ >= 1.0f) {
+          clipped = clip(g * lp_, currentVoicing_);
+        } else {
+          const double c0 = clip(g * lp_, currentVoicing_);
+          const double c1 = clip(g * lp_, targetVoicing_);
+          clipped = (1.0 - voicingFade_) * c0 + voicingFade_ * c1;
+          voicingFade_ += fadeStep;
+          if (voicingFade_ >= 1.0f) {
+            voicingFade_ = 1.0f;
+            currentVoicing_ = targetVoicing_;
+          }
+        }
+        const double pedal = x + smoothDrive_ * clipped;
         tone_ += toneK * (pedal - tone_);
         s[i] = static_cast<float>(x + on * (tone_ * level - x));
       }
@@ -147,10 +187,36 @@ class Overdrive {
   static double feedbackLowPassHz(float drive01) noexcept {
     return 1.0 / (2.0 * kPi * (51.0e3 + driveOhms(drive01)) * 51.0e-12);
   }
-  // Soft symmetric diode-pair limit on the feedback branch.
-  static double clip(double u) noexcept {
-    const double v = u / kDiodeLevel;
-    return kDiodeLevel * v / std::sqrt(1.0 + v * v);
+  // Soft diode limiting on the feedback branch with 4 authentic voicings:
+  // 0: Classic TS (symmetric silicon, Vth = 0.25V)
+  // 1: Asymmetric SD-1 (2 diodes pos 0.50V, 1 diode neg 0.25V -> even harmonics)
+  // 2: LED Turbo (red LEDs, Vth = 0.60V -> high headroom crunch)
+  // 3: Germanium (vintage Ge diodes, Vth = 0.15V -> warm early saturation)
+  static double clip(double u, int voicing = 0) noexcept {
+    switch (voicing) {
+      case 1: { // Asymmetric (SD-1 style)
+        if (u >= 0.0) {
+          const double v = u / 0.50;
+          return 0.50 * v / std::sqrt(1.0 + v * v);
+        } else {
+          const double v = u / 0.25;
+          return 0.25 * v / std::sqrt(1.0 + v * v);
+        }
+      }
+      case 2: { // LED Turbo (High headroom)
+        const double v = u / 0.60;
+        return 0.60 * v / std::sqrt(1.0 + v * v);
+      }
+      case 3: { // Germanium (Warm, early compression)
+        const double v = u / 0.15;
+        return 0.15 * v / std::sqrt(1.0 + v * v);
+      }
+      case 0:   // Classic TS (Symmetric silicon)
+      default: {
+        const double v = u / kDiodeLevel;
+        return kDiodeLevel * v / std::sqrt(1.0 + v * v);
+      }
+    }
   }
 
   static constexpr double kHighPassHz = 720.0;
@@ -170,6 +236,8 @@ class Overdrive {
 
   double bass_ = 0.0, lp_ = 0.0, tone_ = 0.0;
   float smoothOn_ = 0.0f, smoothDrive_ = 0.0f, smoothTight_ = kTightDefault, smoothTone_ = 0.0f, smoothLevel_ = 0.0f;
+  int currentVoicing_ = 0, targetVoicing_ = 0;
+  float voicingFade_ = 1.0f;
   bool primed_ = false;
 };
 

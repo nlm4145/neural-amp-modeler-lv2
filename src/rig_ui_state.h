@@ -189,6 +189,8 @@ struct RigUIState {
   __strong NAMSculptVisualizer* sculptVisualizer = nil;
   __strong RigButton* boostButton = nil;
   float boostEnabled = 1.0f;
+  int boostVoicing = 0;
+  __strong NSPopUpButton* boostVoicingPopup = nil;
   __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
@@ -1067,6 +1069,7 @@ struct RigUIState {
             NSArray<NSString*>* odKeys = @[
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveDrivePort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveTightPort],
+              [NSString stringWithFormat:@"%u", NAMRig::kOverdriveVoicingPort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveTonePort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveLevelPort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveEnabledPort]
@@ -1132,6 +1135,7 @@ struct RigUIState {
     if (port == NAMRig::kPowerTubeCharacterPort) return powerTubeCharacter;
     if (port == NAMRig::kCompressorEnabledPort) return compressorEnabled ? 1.0f : 0.0f;
     if (port == NAMRig::kOverdriveEnabledPort) return boostEnabled ? 1.0f : 0.0f;
+    if (port == NAMRig::kOverdriveVoicingPort) return (float)boostVoicing;
     if (port == NAMRig::kPostCompressorEnabledPort) return postCompressorEnabled;
     if (port >= NAMRig::kRackControlFirstPort &&
         port < NAMRig::kRackControlFirstPort + NAMRig::kRackCount) {
@@ -2202,6 +2206,25 @@ struct RigUIState {
       else dispatch_async(dispatch_get_main_queue(), updateBoost);
       return;
     }
+    if (port == NAMRig::kOverdriveVoicingPort) {
+      const int v = std::isfinite(value)
+          ? std::clamp((int)(value + 0.5f), 0, 3) : 0;
+      auto updateVoicing = ^{
+        if (!alive || !*alive) return;
+        boostVoicing = v;
+        if (boostVoicingPopup) {
+          [boostVoicingPopup selectItemAtIndex:v];
+          boostVoicingPopup.toolTip = boostVoicingPopup.selectedItem.toolTip;
+        }
+        if (boostVisualizer) {
+          boostVisualizer.voicing = v;
+          boostVisualizer.needsDisplay = YES;
+        }
+      };
+      if ([NSThread isMainThread]) updateVoicing();
+      else dispatch_async(dispatch_get_main_queue(), updateVoicing);
+      return;
+    }
     if (port == NAMRig::kPowerTubeTypePort) {
       const int profile = std::isfinite(value) ? NAMRig::PowerTube::clampProfile(
           (int)(std::clamp(value, 0.0f, (float)NAMRig::PowerTube::kProfileCount - 1) + 0.5f))
@@ -2414,11 +2437,13 @@ struct RigUIState {
       }
       if (boostVisualizer && ((port >= NAMRig::kOverdriveDrivePort &&
                                port <= NAMRig::kOverdriveLevelPort) ||
-                              port == NAMRig::kOverdriveTightPort)) {
+                              port == NAMRig::kOverdriveTightPort ||
+                              port == NAMRig::kOverdriveVoicingPort)) {
         if (port == NAMRig::kOverdriveDrivePort) boostVisualizer.drive = value;
         else if (port == NAMRig::kOverdriveTightPort) boostVisualizer.tight = value;
         else if (port == NAMRig::kOverdriveTonePort) boostVisualizer.tone = value;
         else if (port == NAMRig::kOverdriveLevelPort) boostVisualizer.level = value;
+        else if (port == NAMRig::kOverdriveVoicingPort) boostVisualizer.voicing = (int)value;
         boostVisualizer.needsDisplay = YES;
       }
       if (sculptVisualizer && (port >= NAMRig::kOverdriveDrivePort &&
