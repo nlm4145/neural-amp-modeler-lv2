@@ -53,6 +53,18 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
     return nil;
   }
   NSString* json = [content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+
+  // Strip <think>...</think> reasoning blocks from local reasoning models (e.g. DeepSeek-R1 via Ollama)
+  NSString* extractedThought = nil;
+  if ([json hasPrefix:@"<think>"]) {
+    NSRange endTag = [json rangeOfString:@"</think>"];
+    if (endTag.location != NSNotFound) {
+      NSRange thoughtRange = NSMakeRange(7, endTag.location - 7);
+      extractedThought = [[json substringWithRange:thoughtRange] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+      json = [[json substringFromIndex:endTag.location + endTag.length] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    }
+  }
+
   if ([json hasPrefix:@"```json\n"] || [json hasPrefix:@"```\n"]) {
     NSRange newline = [json rangeOfString:@"\n"];
     if (![json hasSuffix:@"```"] || json.length < newline.location + 4) {
@@ -80,7 +92,7 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   if (!rigAIValidateControls(dict[@"controls"], error)) return nil;
   RigAICopilotResult* result = [RigAICopilotResult new];
   result.presetName = dict[@"preset_name"] ?: dict[@"preset_title"];
-  result.thought = dict[@"thought"] ?: @"";
+  result.thought = (dict[@"thought"] && [dict[@"thought"] length] > 0) ? dict[@"thought"] : (extractedThought ?: @"");
   result.explanation = dict[@"explanation"] ?: @"AI tone starting point.";
   result.controls = dict[@"controls"];
   result.ampPath = dict[@"amp_model"] ?: dict[@"amp_path"];
@@ -732,8 +744,18 @@ BOOL rigAIProviderModelSupportsTemperature(NSString* provider, NSString* model) 
     return NO;
   }
   if ([p isEqualToString:@"openai"]) {
-    // OpenAI reasoning models reject temperature with HTTP 400.
-    if ([m hasPrefix:@"o1"] || [m hasPrefix:@"o3"] || [m hasPrefix:@"o4"]) {
+    // OpenAI reasoning models (o1, o3, o4) and GPT-5/GPT-6 families restrict custom temperature.
+    // Sending temperature returns HTTP 400 (only default 1.0 supported).
+    if ([m hasPrefix:@"o1"] || [m hasPrefix:@"o3"] || [m hasPrefix:@"o4"] ||
+        [m containsString:@"gpt-5"] || [m containsString:@"gpt-6"]) {
+      return NO;
+    }
+    return YES;
+  }
+  if ([p isEqualToString:@"gemini"]) {
+    // Google Gemini 3 and Gemini 4 models optimize reasoning at default temperature (1.0).
+    // The official API guidance explicitly instructs not to set temperature < 1.0 to avoid loops.
+    if ([m containsString:@"gemini-3"] || [m containsString:@"gemini-4"]) {
       return NO;
     }
     return YES;

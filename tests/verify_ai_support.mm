@@ -158,10 +158,26 @@ int main(int argc, char** argv) {
     CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o3"));
     CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o3-mini"));
     CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o4-mini"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"gpt-5-mini"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"gpt-5.4-mini"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"gpt-6.1-sol"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"gpt-6-astra"));
     CHECK(rigAIProviderModelSupportsTemperature(@"openai", @"gpt-4o"));
-    CHECK(rigAIProviderModelSupportsTemperature(@"openai", @"gpt-6.1-sol"));
-    CHECK(rigAIProviderModelSupportsTemperature(@"gemini", @"gemini-3.8-flash"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"openai", @"gpt-4.1-mini"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"gemini", @"gemini-3.8-flash"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"gemini", @"gemini-4-argon"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"gemini", @"gemini-2.5-pro"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"gemini", @"gemini-1.5-pro"));
     CHECK(rigAIProviderModelSupportsTemperature(@"ollama", @"llama3.3"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"ollama", @"qwen2.5-coder"));
+
+    // DeepSeek-R1 / Ollama reasoning thinking block extraction test
+    NSString* thinkJson = @"<think>\nEvaluating Lamb of God tone: needs aggressive mid punch and tight palm mutes.\n</think>\n```json\n{\"controls\":{\"bass\":-2,\"od_tone\":62}}\n```";
+    RigAICopilotResult* thinkRes = rigAIParseResponse(thinkJson, nil);
+    CHECK(thinkRes != nil);
+    CHECK([thinkRes.thought containsString:@"aggressive mid punch"]);
+    CHECK(thinkRes.controls[@"bass"].floatValue == -2);
+    CHECK(thinkRes.controls[@"od_tone"].floatValue == 62);
 
     std::printf("AI support: %d failures\n", failures);
   }

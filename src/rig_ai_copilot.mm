@@ -1475,10 +1475,13 @@ static const NSUInteger kRigAICatalogLimit = 48;
       [parts addObject:@{@"type":@"input_audio", @"input_audio":@{@"format":@"wav",
           @"data":[clip[@"data"] base64EncodedStringWithOptions:0]}}];
     }
+    NSString* m = cfg.model.lowercaseString;
+    NSString* openAISystemRole = ([m hasPrefix:@"o1"] || [m hasPrefix:@"o3"] || [m hasPrefix:@"o4"] ||
+                                  [m containsString:@"gpt-5"] || [m containsString:@"gpt-6"]) ? @"developer" : @"system";
     NSMutableDictionary* oBody = [NSMutableDictionary dictionaryWithDictionary:@{
       @"model": cfg.model,
       @"messages": @[
-        @{@"role": @"system", @"content": systemPrompt},
+        @{@"role": openAISystemRole, @"content": systemPrompt},
         @{
           @"role": @"user",
           @"content": parts
@@ -1495,10 +1498,14 @@ static const NSUInteger kRigAICatalogLimit = 48;
     if (apiKey.length > 0) {
       [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
     }
+    NSString* m = cfg.model.lowercaseString;
+    NSString* systemRole = ([provider isEqualToString:@"openai"] &&
+        ([m hasPrefix:@"o1"] || [m hasPrefix:@"o3"] || [m hasPrefix:@"o4"] ||
+         [m containsString:@"gpt-5"] || [m containsString:@"gpt-6"])) ? @"developer" : @"system";
     NSMutableDictionary* generalBody = [NSMutableDictionary dictionaryWithDictionary:@{
       @"model": cfg.model,
       @"messages": @[
-        @{@"role": @"system", @"content": systemPrompt},
+        @{@"role": systemRole, @"content": systemPrompt},
         @{@"role": @"user", @"content": userMessage}
       ],
       @"response_format": @{@"type": @"json_object"},
@@ -1520,7 +1527,6 @@ static const NSUInteger kRigAICatalogLimit = 48;
     reqBody = body;
   }
 
-  const BOOL hasTemp = (reqBody[@"temperature"] != nil || reqBody[@"generationConfig"][@"temperature"] != nil);
   [self dispatchURLRequest:request
                    reqBody:reqBody
                        url:url
@@ -1528,7 +1534,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
                   provider:provider
                 audioClips:audioClips
                  requestID:requestID
-   retryOnTemperatureError:hasTemp];
+         retryOnParamError:YES];
 }
 
 - (void)dispatchURLRequest:(NSMutableURLRequest*)request
@@ -1538,7 +1544,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
                   provider:(NSString*)provider
                 audioClips:(NSArray<NSDictionary*>*)audioClips
                  requestID:(NSString*)requestID
-   retryOnTemperatureError:(BOOL)retryOnTemperatureError {
+         retryOnParamError:(BOOL)retryOnParamError {
   NSError* jsonErr = nil;
   request.HTTPBody = [NSJSONSerialization dataWithJSONObject:reqBody options:0 error:&jsonErr];
   if (jsonErr) {
@@ -1567,26 +1573,76 @@ static const NSUInteger kRigAICatalogLimit = 48;
           if (httpResp.statusCode < 200 || httpResp.statusCode >= 300) {
             NSString* errBody = data.length ? [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, std::min<NSUInteger>(data.length, 2048))] encoding:NSUTF8StringEncoding] : @"";
             NSString* errLower = errBody.lowercaseString;
-            if (retryOnTemperatureError && httpResp.statusCode == 400 &&
-                [errLower containsString:@"temperature"] &&
-                ([errLower containsString:@"deprecated"] || [errLower containsString:@"not supported"] || [errLower containsString:@"unsupported"])) {
-              NSMutableDictionary* stripped = [reqBody mutableCopy];
-              [stripped removeObjectForKey:@"temperature"];
-              if ([stripped[@"generationConfig"] isKindOfClass:NSDictionary.class]) {
-                NSMutableDictionary* genCfg = [stripped[@"generationConfig"] mutableCopy];
-                [genCfg removeObjectForKey:@"temperature"];
-                stripped[@"generationConfig"] = genCfg;
+
+            // Self-healing retry for model-specific API restrictions
+            if (retryOnParamError && httpResp.statusCode == 400) {
+              // 1. Temperature unsupported or deprecated
+              if ([errLower containsString:@"temperature"] &&
+                  ([errLower containsString:@"deprecated"] || [errLower containsString:@"not supported"] ||
+                   [errLower containsString:@"unsupported"] || [errLower containsString:@"only the default"])) {
+                NSMutableDictionary* stripped = [reqBody mutableCopy];
+                [stripped removeObjectForKey:@"temperature"];
+                if ([stripped[@"generationConfig"] isKindOfClass:NSDictionary.class]) {
+                  NSMutableDictionary* genCfg = [stripped[@"generationConfig"] mutableCopy];
+                  [genCfg removeObjectForKey:@"temperature"];
+                  stripped[@"generationConfig"] = genCfg;
+                }
+                [weakSelf reportProgress:@"Provider rejected temperature for this model; retrying immediately without temperature…"];
+                [weakSelf dispatchURLRequest:request
+                                     reqBody:stripped
+                                         url:url
+                                    cfgModel:cfgModel
+                                    provider:provider
+                                  audioClips:audioClips
+                                   requestID:requestID
+                           retryOnParamError:NO];
+                return;
               }
-              [weakSelf reportProgress:@"Provider rejected temperature for this model; retrying immediately without temperature…"];
-              [weakSelf dispatchURLRequest:request
-                                   reqBody:stripped
-                                       url:url
-                                  cfgModel:cfgModel
-                                  provider:provider
-                                audioClips:audioClips
-                                 requestID:requestID
-                   retryOnTemperatureError:NO];
-              return;
+
+              // 2. response_format unsupported (e.g. older local models or non-compliant proxies)
+              if ([errLower containsString:@"response_format"] &&
+                  ([errLower containsString:@"not supported"] || [errLower containsString:@"unsupported"] ||
+                   [errLower containsString:@"invalid"])) {
+                NSMutableDictionary* stripped = [reqBody mutableCopy];
+                [stripped removeObjectForKey:@"response_format"];
+                [weakSelf reportProgress:@"Provider does not support response_format; retrying without JSON mode constraint…"];
+                [weakSelf dispatchURLRequest:request
+                                     reqBody:stripped
+                                         url:url
+                                    cfgModel:cfgModel
+                                    provider:provider
+                                  audioClips:audioClips
+                                   requestID:requestID
+                           retryOnParamError:NO];
+                return;
+              }
+
+              // 3. 'system' role unsupported on reasoning models (requires 'developer')
+              if ([errLower containsString:@"'system'"] &&
+                  ([errLower containsString:@"developer"] || [errLower containsString:@"not supported"])) {
+                NSMutableDictionary* updated = [reqBody mutableCopy];
+                NSMutableArray* msgs = [NSMutableArray array];
+                for (NSDictionary* msgItem in updated[@"messages"]) {
+                  if ([msgItem[@"role"] isEqualToString:@"system"]) {
+                    NSMutableDictionary* mod = [msgItem mutableCopy];
+                    mod[@"role"] = @"developer";
+                    [msgs addObject:mod];
+                  } else {
+                    [msgs addObject:msgItem];
+                  }
+                }
+                updated[@"messages"] = msgs;
+                [weakSelf reportProgress:@"Provider requires developer role; retrying with developer role…"];
+                [weakSelf dispatchURLRequest:request
+                                     reqBody:updated
+                                         url:url
+                                    cfgModel:cfgModel
+                                    provider:provider
+                                  audioClips:audioClips
+                                   requestID:requestID
+                           retryOnParamError:NO];
+                return;
+              }
             }
 
             NSString* msg = [NSString stringWithFormat:@"HTTP Error %ld: %@", (long)httpResp.statusCode, errBody ?: @""];
