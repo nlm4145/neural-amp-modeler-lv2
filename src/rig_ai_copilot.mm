@@ -1027,6 +1027,10 @@ static const NSUInteger kRigAICatalogLimit = 96;
     userPrompt, contextStr];
   if (audioDescription.length > 0) {
     [userMsgBuilder appendFormat:@"\n\nATTACHED AUDIO RIFF ANALYSIS:\n%@", audioDescription];
+    NSString* guidance = rigAIAcousticDeltaGuidance(audioDescription, nil);
+    if (guidance.length > 0) {
+      [userMsgBuilder appendFormat:@"\n\n%@\n", guidance];
+    }
   }
   [userMsgBuilder appendFormat:@"\n\nAUDIO TRANSPORT: %@. No automatic retries or additional AI calls.\n",
       attachments.count ? @"Labeled audio clips attached" : @"Telemetry/text only; no audio attached or heard"];

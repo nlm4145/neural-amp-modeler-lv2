@@ -2,6 +2,10 @@
 #import <Foundation/Foundation.h>
 #import "rig_ai_copilot.h"
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnullability-completeness"
+#pragma clang diagnostic ignored "-Wnullability-completeness-on-arrays"
+
 // Foundation-only validation/catalog helpers, shared by the copilot and local API.
 NSString* rigAIControlReference();
 BOOL rigAIValidateControls(NSDictionary* controls, NSError** error);
@@ -23,3 +27,5 @@ NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt);
 
 // Acoustic profile analyzer: extracts frequency band energies from telemetry strings and calculates delta guidance.
 NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullable referenceSummary);
+
+#pragma clang diagnostic pop

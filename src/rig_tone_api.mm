@@ -9,6 +9,7 @@
 #include <vector>
 
 #import "rig_tone_api.h"
+#import "rig_ai_support.h"
 
 NSDictionary* jsonDictionaryAtPath(NSString* path) {
   NSData* data = [NSData dataWithContentsOfFile:path];
@@ -301,101 +302,115 @@ Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, 
 
   NSString* cleanQuery = [tokens componentsJoinedByString:@" "];
   if (!cleanQuery.length) cleanQuery = query;
-  NSString* encQuery = percentEncode(cleanQuery);
-  NSString* searchPath = [NSString stringWithFormat:@"/tones/search?sort=downloads-all-time&page=1&page_size=15&query=%@", encQuery];
 
-  NSDictionary* searchJson = cachedSearchPageForPath(searchPath, 600.0);
-  if (!searchJson) {
-    NSURL* searchUrl = [NSURL URLWithString:[kToneAPI stringByAppendingString:searchPath]];
-    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:searchUrl];
-    req.timeoutInterval = 7.0;
-    NSDictionary* session = pluginSession() ?: namRigSession();
-    NSString* token = [session[@"accessToken"] isKindOfClass:NSString.class] ? session[@"accessToken"] : nil;
-    if (token.length) {
-      [req setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
-    }
-
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    __block NSData* respData = nil;
-    __block NSInteger respCode = 0;
-    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-      respData = data;
-      respCode = [(NSHTTPURLResponse*)response statusCode];
-      dispatch_semaphore_signal(sem);
-    }];
-    [task resume];
-    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC))) != 0) {
-      [task cancel];
-      result.statusMessage = @"Tone3000 search timed out.";
-      return result;
-    }
-    if (respCode >= 200 && respCode < 300 && respData.length) {
-      id parsed = [NSJSONSerialization JSONObjectWithData:respData options:0 error:nil];
-      if ([parsed isKindOfClass:NSDictionary.class]) {
-        searchJson = parsed;
-        saveSearchPageForPath(searchPath, searchJson);
-      }
-    } else {
-      result.statusMessage = [NSString stringWithFormat:@"Tone3000 search returned HTTP %ld.", (long)respCode];
-      return result;
-    }
-  }
-
-  NSArray* items = [searchJson[@"data"] isKindOfClass:NSArray.class] ? searchJson[@"data"] : @[];
-  if (items.count == 0) {
-    result.statusMessage = [NSString stringWithFormat:@"No models found on Tone3000 for '%@'.", cleanQuery];
-    return result;
+  NSMutableArray<NSString*>* queryCandidates = [NSMutableArray array];
+  if (cleanQuery.length) [queryCandidates addObject:cleanQuery];
+  for (NSString* sq in rigAISuggestGearQueries(query)) {
+    if (![queryCandidates containsObject:sq]) [queryCandidates addObject:sq];
   }
 
   NSDictionary* bestTone = nil;
   NSInteger bestScore = -1;
+  NSString* lastError = nil;
 
-  for (NSDictionary* tone in items) {
-    if (![tone isKindOfClass:NSDictionary.class]) continue;
-    NSString* gear = [tone[@"gear"] isKindOfClass:NSString.class] ? [tone[@"gear"] lowercaseString] : @"";
-    NSInteger itemStage = stageForGear(gear);
+  for (NSUInteger qIdx = 0; qIdx < queryCandidates.count && qIdx < 4; ++qIdx) {
+    NSString* currentQuery = queryCandidates[qIdx];
+    NSString* encQuery = percentEncode(currentQuery);
+    NSString* searchPath = [NSString stringWithFormat:@"/tones/search?sort=downloads-all-time&page=1&page_size=15&query=%@", encQuery];
 
-    BOOL compatible = NO;
-    if (stage == 1) { // Amp
-      compatible = (itemStage == 1 || [gear isEqualToString:@"amp-cab"] || [gear isEqualToString:@"full-rig"]);
-    } else if (stage == 2) { // Cab
-      compatible = (itemStage == 2 || [gear isEqualToString:@"cab"]);
-    } else if (stage == 0) { // Pedal
-      compatible = (itemStage == 0 || [gear containsString:@"pedal"]);
+    NSDictionary* searchJson = cachedSearchPageForPath(searchPath, 600.0);
+    if (!searchJson) {
+      NSURL* searchUrl = [NSURL URLWithString:[kToneAPI stringByAppendingString:searchPath]];
+      NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:searchUrl];
+      req.timeoutInterval = 7.0;
+      NSDictionary* session = pluginSession() ?: namRigSession();
+      NSString* token = [session[@"accessToken"] isKindOfClass:NSString.class] ? session[@"accessToken"] : nil;
+      if (token.length) {
+        [req setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+      }
+
+      dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+      __block NSData* respData = nil;
+      __block NSInteger respCode = 0;
+      NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+          completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+        respData = data;
+        respCode = [(NSHTTPURLResponse*)response statusCode];
+        dispatch_semaphore_signal(sem);
+      }];
+      [task resume];
+      if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC))) != 0) {
+        [task cancel];
+        lastError = @"Tone3000 search timed out.";
+        continue;
+      }
+      if (respCode >= 200 && respCode < 300 && respData.length) {
+        id parsed = [NSJSONSerialization JSONObjectWithData:respData options:0 error:nil];
+        if ([parsed isKindOfClass:NSDictionary.class]) {
+          searchJson = parsed;
+          saveSearchPageForPath(searchPath, searchJson);
+        }
+      } else {
+        lastError = [NSString stringWithFormat:@"Tone3000 search returned HTTP %ld.", (long)respCode];
+        continue;
+      }
     }
-    if (!compatible) continue;
 
-    NSInteger a2Count = [tone[@"a2_models_count"] integerValue];
-    NSInteger customCount = [tone[@"custom_models_count"] integerValue];
-    NSInteger a1Count = [tone[@"a1_models_count"] integerValue];
-    NSInteger downloads = [tone[@"downloads_count"] integerValue];
-    NSInteger favs = [tone[@"favorites_count"] integerValue];
+    NSArray* items = [searchJson[@"data"] isKindOfClass:NSArray.class] ? searchJson[@"data"] : @[];
+    if (items.count == 0) continue;
 
-    NSInteger score = 0;
-    if (a2Count > 0) score += 2000;
-    else if (customCount > 0) score += 600;
-    else if (a1Count > 0) score += 150;
+    for (NSDictionary* tone in items) {
+      if (![tone isKindOfClass:NSDictionary.class]) continue;
+      NSString* gear = [tone[@"gear"] isKindOfClass:NSString.class] ? [tone[@"gear"] lowercaseString] : @"";
+      NSInteger itemStage = stageForGear(gear);
 
-    score += std::min<NSInteger>(1200, downloads);
-    score += favs * 10;
+      BOOL compatible = NO;
+      if (stage == 1) { // Amp
+        compatible = (itemStage == 1 || [gear isEqualToString:@"amp-cab"] || [gear isEqualToString:@"full-rig"]);
+      } else if (stage == 2) { // Cab
+        compatible = (itemStage == 2 || [gear isEqualToString:@"cab"]);
+      } else if (stage == 0) { // Pedal
+        compatible = (itemStage == 0 || [gear containsString:@"pedal"]);
+      }
+      if (!compatible) continue;
 
-    NSString* title = [tone[@"title"] isKindOfClass:NSString.class] ? [tone[@"title"] lowercaseString] : @"";
-    NSString* desc = [tone[@"description"] isKindOfClass:NSString.class] ? [tone[@"description"] lowercaseString] : @"";
-    for (NSString* token in tokens) {
-      if ([title containsString:token]) score += 400;
-      if ([desc containsString:token]) score += 120;
+      NSInteger a2Count = [tone[@"a2_models_count"] integerValue];
+      NSInteger customCount = [tone[@"custom_models_count"] integerValue];
+      NSInteger a1Count = [tone[@"a1_models_count"] integerValue];
+      NSInteger downloads = [tone[@"downloads_count"] integerValue];
+      NSInteger favs = [tone[@"favorites_count"] integerValue];
+
+      NSInteger score = 0;
+      if (a2Count > 0) score += 2000;
+      else if (customCount > 0) score += 600;
+      else if (a1Count > 0) score += 150;
+
+      score += std::min<NSInteger>(1200, downloads);
+      score += favs * 10;
+
+      NSString* title = [tone[@"title"] isKindOfClass:NSString.class] ? [tone[@"title"] lowercaseString] : @"";
+      NSString* desc = [tone[@"description"] isKindOfClass:NSString.class] ? [tone[@"description"] lowercaseString] : @"";
+      for (NSString* token in tokens) {
+        if ([title containsString:token]) score += 400;
+        if ([desc containsString:token]) score += 120;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestTone = tone;
+      }
     }
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestTone = tone;
-    }
+    if (bestScore >= 2500) break;
   }
 
   if (!bestTone) {
-    result.statusMessage = [NSString stringWithFormat:@"No matching %@ models found on Tone3000 for '%@'.",
-        stage == 1 ? @"amp" : (stage == 2 ? @"cab" : @"pedal"), cleanQuery];
+    if (lastError.length && bestScore < 0) {
+      result.statusMessage = lastError;
+    } else {
+      result.statusMessage = [NSString stringWithFormat:@"No matching %@ models found on Tone3000 for '%@'.",
+          stage == 1 ? @"amp" : (stage == 2 ? @"cab" : @"pedal"), cleanQuery];
+    }
     return result;
   }
 

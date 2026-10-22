@@ -75,6 +75,34 @@ int main(int argc, char** argv) {
       CHECK([cabRes.relativePath hasPrefix:@"Cab/Recto 4x12 V30/"]);
     }
 
+    // 5. Test Semantic Fallback for Artist/Song: "Slipknot Before I Forget"
+    // Mock primary query returns 0 results
+    NSString* slipknotEmptyPath = @"/tones/search?sort=downloads-all-time&page=1&page_size=15&query=slipknot%20before%20forget";
+    saveSearchPageForPath(slipknotEmptyPath, @{@"data": @[], @"page": @1, @"total_pages": @1});
+
+    // Mock gear query "rivera kr7" returns high-quality Rivera KR7
+    NSString* kr7Path = @"/tones/search?sort=downloads-all-time&page=1&page_size=15&query=rivera%20kr7";
+    NSDictionary* mockKr7 = @{
+      @"data": @[
+        @{
+          @"id": @201,
+          @"title": @"Rivera KR7 Mick Thomson Signature",
+          @"gear": @"amp",
+          @"a1_models_count": @0,
+          @"a2_models_count": @1,
+          @"downloads_count": @1200,
+          @"description": @"mick thomson slipknot high gain head ch3"
+        }
+      ],
+      @"page": @1,
+      @"total_pages": @1
+    };
+    saveSearchPageForPath(kr7Path, mockKr7);
+
+    Tone3000FetchResult* slipknotRes = tone3000FetchBestProfile(@"Slipknot Before I Forget", 1, @"/tmp/test_tone3000_lib");
+    CHECK([slipknotRes.toneTitle isEqualToString:@"Rivera KR7 Mick Thomson Signature"]);
+    CHECK(slipknotRes.downloadsCount == 1200);
+
     std::printf("verify_tone3000_fetch: %d failures\n", failures);
     return failures ? 1 : 0;
   }
