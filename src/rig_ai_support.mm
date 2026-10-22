@@ -67,7 +67,8 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   }
   NSDictionary* dict = object;
   for (NSString* key in @[@"preset_name", @"preset_title", @"thought", @"explanation",
-                         @"amp_model", @"amp_path", @"cab_ir", @"cab_path", @"pedal_model", @"pedal_path"]) {
+                         @"amp_model", @"amp_path", @"cab_ir", @"cab_path", @"pedal_model", @"pedal_path",
+                         @"search_tone3000", @"search_tone_3000"]) {
     if (dict[key] && ![dict[key] isKindOfClass:NSString.class]) {
       fail(error, [NSString stringWithFormat:@"%@ must be a string, not null or another type.", key]); return nil;
     }
@@ -85,6 +86,7 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   result.ampPath = dict[@"amp_model"] ?: dict[@"amp_path"];
   result.cabPath = dict[@"cab_ir"] ?: dict[@"cab_path"];
   result.pedalPath = dict[@"pedal_model"] ?: dict[@"pedal_path"];
+  result.searchTone3000 = dict[@"search_tone3000"] ?: dict[@"search_tone_3000"];
   if (rigAIIsNoneModel(result.ampPath)) {
     fail(error, @"amp_model cannot be 'none'; choose a catalog amp or leave it unchanged."); return nil;
   }
@@ -145,11 +147,20 @@ NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, 
 
 NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotals(NSString* root, NSString* query, NSUInteger limit,
                                                         NSUInteger totals[3]) {
+  NSUInteger dummyScores[3] = {};
+  return rigAILibraryCandidatesWithTotalsAndScores(root, query, limit, totals, dummyScores);
+}
+
+NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root, NSString* query, NSUInteger limit,
+                                                                 NSUInteger totals[3], NSUInteger maxScores[3]) {
   NSMutableArray* items = [NSMutableArray array];
   NSArray* tokens = [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
   NSDirectoryEnumerator* en = [NSFileManager.defaultManager enumeratorAtPath:root];
   NSMutableDictionary* manifests = [NSMutableDictionary dictionary];
-  for (NSUInteger s = 0; s < 3; ++s) totals[s] = 0;
+  for (NSUInteger s = 0; s < 3; ++s) {
+    totals[s] = 0;
+    if (maxScores) maxScores[s] = 0;
+  }
   for (NSString* relative in en) {
     NSUInteger stage = categoryMatches(relative, 1) ? 1 : categoryMatches(relative, 2) ? 2 : categoryMatches(relative, 0) ? 0 : NSNotFound;
     if (stage == NSNotFound) continue;
@@ -184,6 +195,7 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotals(NSString* root, NSStrin
     NSUInteger score = 0;
     for (NSString* token in tokens) if (token.length > 2 && [searchable containsString:token]) ++score;
     item[@"score"] = @(score);
+    if (maxScores && score > maxScores[stage]) maxScores[stage] = score;
     [items addObject:item];
   }
   [items sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {

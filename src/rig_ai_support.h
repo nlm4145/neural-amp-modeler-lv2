@@ -11,6 +11,8 @@ NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, 
 // prompt can state whether the catalog is complete or a ranked excerpt.
 NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotals(NSString* root, NSString* query, NSUInteger limit,
                                                         NSUInteger totals[3]);
+NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root, NSString* query, NSUInteger limit,
+                                                                 NSUInteger totals[3], NSUInteger maxScores[3]);
 // "none" removes a pedal or cabinet capture instead of selecting one.
 BOOL rigAIIsNoneModel(NSString* target);
 NSString* rigAIResolveModel(NSString* root, NSString* target, NSUInteger stage, NSError** error);

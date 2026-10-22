@@ -34,7 +34,12 @@ inline constexpr uint32_t kPostCompressorReleasePort = 188;
 inline constexpr uint32_t kPostCompressorEnabledPort = 189;
 inline constexpr uint32_t kPostCompressorFirstPort = kPostCompressorAmountPort;
 inline constexpr std::array<float, 4> kPostCompressorDefaults = {0.0f, 8.0f, 120.0f, 1.0f};
-inline constexpr uint32_t kRigControlPortCount = 190;
+// Pre-Amp Overdrive tight high-pass cutoff frequency (100..1500 Hz, default 720 Hz).
+inline constexpr uint32_t kOverdriveTightPort = 190;
+inline constexpr float kOverdriveTightDefault = 720.0f;  // Hz
+inline constexpr float kOverdriveTightMin = 100.0f;     // Hz
+inline constexpr float kOverdriveTightMax = 1500.0f;    // Hz
+inline constexpr uint32_t kRigControlPortCount = 191;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

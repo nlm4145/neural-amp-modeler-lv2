@@ -82,6 +82,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | 182–184 | `compressor_attack`/`compressor_release`/`compressor_enabled` | in | Pre-amp compressor timing and independent bypass |
 | 185 | `od_enabled` | in | Pre-amp boost bypass |
 | 186–189 | `post_compressor`/`post_compressor_attack`/`post_compressor_release`/`post_compressor_enabled` | in | Post-FX Studio stereo compressor: amount 0–100%, attack 1–100 ms (default 8), release 10–1000 ms (default 120), independent enable (default 1); all optional |
+| 190 | `od_tight` | in | Pre-amp overdrive tight high-pass cutoff (100–1500 Hz, default 720 Hz); sweeps pre-clip low-cut bandpass corner |
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.

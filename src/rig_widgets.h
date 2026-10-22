@@ -120,6 +120,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 
 @interface NAMBoostVisualizer : NSView
 @property(nonatomic) float drive;
+@property(nonatomic) float tight;
 @property(nonatomic) float tone;
 @property(nonatomic) float level;
 @property(nonatomic) BOOL enabled;

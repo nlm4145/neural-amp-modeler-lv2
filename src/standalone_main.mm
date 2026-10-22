@@ -590,7 +590,8 @@ class StandaloneHost {
         {NAMRig::kOverdriveDrivePort, overdriveControls_},
         {NAMRig::kCompressorAttackPort, compressorControls_},
         {NAMRig::kOverdriveEnabledPort, {&overdriveEnabled_, 1}},
-        {NAMRig::kPostCompressorFirstPort, postCompressorControls_}});
+        {NAMRig::kPostCompressorFirstPort, postCompressorControls_},
+        {NAMRig::kOverdriveTightPort, {&overdriveTight_, 1}}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -937,6 +938,10 @@ class StandaloneHost {
         port <= NAMRig::kPostCompressorEnabledPort && size == sizeof(float)) {
       host->postCompressorControls_[port - NAMRig::kPostCompressorFirstPort] =
           *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port == NAMRig::kOverdriveTightPort && size == sizeof(float)) {
+      host->overdriveTight_ = *static_cast<const float*>(buffer);
       return;
     }
     if (format == 0 && NAMRig::isPinEqPort(port) && size == sizeof(float)) {
@@ -1778,6 +1783,7 @@ class StandaloneHost {
   std::array<float, 2> tubeControls_ = {0.0f, NAMRig::kPowerTubeCharacterDefault};
   float midPushControl_ = 0.0f;
   std::array<float, 3> overdriveControls_ = {0.0f, NAMRig::Overdrive::kToneDefault, 0.0f};
+  float overdriveTight_ = NAMRig::kOverdriveTightDefault;
   float overdriveEnabled_ = 1.0f;
   std::array<float, 3> compressorControls_ = {NAMRig::kCompressorAttackDefault, NAMRig::kCompressorReleaseDefault, 1.0f};
   std::array<float, 4> postCompressorControls_ = NAMRig::kPostCompressorDefaults;

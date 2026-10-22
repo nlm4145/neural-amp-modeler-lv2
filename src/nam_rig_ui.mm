@@ -1298,18 +1298,20 @@ static NSString* stageName(NSInteger stage) {
 
 - (void)applyBoostPreset:(NSButton*)sender {
   if (!_state) return;
-  struct BoostPreset { float drive, tone, level; };
+  struct BoostPreset { float drive, tight, tone, level; };
   const BoostPreset presets[] = {
-    {0.0f, 50.0f, 6.0f},   // CLEAN BOOST
-    {35.0f, 55.0f, 2.0f},  // TS9 DRIVE
-    {60.0f, 65.0f, 4.0f},  // LEAD PUSH
-    {15.0f, 70.0f, 3.0f},  // TIGHT CHUG
-    {45.0f, 40.0f, 0.0f}   // WARM OVERDRIVE
+    {0.0f, 720.0f, 50.0f, 6.0f},   // CLEAN BOOST
+    {35.0f, 720.0f, 55.0f, 2.0f},  // TS9 DRIVE
+    {60.0f, 850.0f, 65.0f, 4.0f},  // LEAD PUSH
+    {15.0f, 1200.0f, 70.0f, 3.0f}, // TIGHT CHUG
+    {45.0f, 350.0f, 40.0f, 0.0f}   // WARM OVERDRIVE
   };
   if (sender.tag >= 0 && sender.tag < 5) {
     const auto& p = presets[sender.tag];
     _state->sendControl(NAMRig::kOverdriveDrivePort, p.drive);
     _state->updateControl(NAMRig::kOverdriveDrivePort, p.drive);
+    _state->sendControl(NAMRig::kOverdriveTightPort, p.tight);
+    _state->updateControl(NAMRig::kOverdriveTightPort, p.tight);
     _state->sendControl(NAMRig::kOverdriveTonePort, p.tone);
     _state->updateControl(NAMRig::kOverdriveTonePort, p.tone);
     _state->sendControl(NAMRig::kOverdriveLevelPort, p.level);
@@ -4849,7 +4851,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[kr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-10] setActive:YES];
     [[kr.heightAnchor constraintEqualToConstant:108] setActive:YES];
 
-    const size_t boostK[3] = {39, 40, 41};
+    const size_t boostK[4] = {39, 47, 40, 41};
     for (size_t idx : boostK) {
       [kr addArrangedSubview:addDeckKnobCell(kr, state, idx, mins, maxes, knobNames, knobDescriptions)];
     }
@@ -4867,7 +4869,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[card.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-12] setActive:YES];
     [[card.bottomAnchor constraintEqualToAnchor:rack.bottomAnchor constant:-12] setActive:YES];
 
-    NSTextField* desc = addLabel(card, @"Tube Screamer-inspired overdrive with symmetric soft clipping and active tone filtering.",
+    NSTextField* desc = addLabel(card, @"Tube Screamer-inspired overdrive with symmetric soft clipping, pre-clip tight cut, and active tone filtering.",
                                  NSZeroRect, [NSFont systemFontOfSize:9.0 weight:NSFontWeightRegular],
                                  rigDimText(), NSTextAlignmentLeft);
     desc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4888,12 +4890,13 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* boostPresetTitles = @[@"CLEAN BOOST", @"TS9 DRIVE", @"LEAD PUSH", @"TIGHT CHUG", @"WARM OVERDRIVE"];
     addSlotPresetDropdown(chips, state, @"boost", @"Pre-Amp Boost",
-                          @[@(NAMRig::kOverdriveDrivePort), @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)],
+                          @[@(NAMRig::kOverdriveDrivePort), @(NAMRig::kOverdriveTightPort), @(NAMRig::kOverdriveTonePort), @(NAMRig::kOverdriveLevelPort)],
                           boostPresetTitles, @selector(applyBoostPreset:));
 
     NAMBoostVisualizer* bVis = [[NAMBoostVisualizer alloc] initWithFrame:NSZeroRect];
     bVis.translatesAutoresizingMaskIntoConstraints = NO;
     bVis.drive = 0.0f;
+    bVis.tight = NAMRig::kOverdriveTightDefault;
     bVis.tone = NAMRig::Overdrive::kToneDefault;
     bVis.level = 0.0f;
     bVis.enabled = state->boostEnabled;
@@ -5477,7 +5480,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
                                       @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
-                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE"];
+                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE", @"OD TIGHT"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -5485,7 +5488,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
-                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms"];
+                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms", @"720 Hz"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -5533,19 +5536,20 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Release time for the pre-model compressor (10 to 1000 ms). Faster release gives a breathing, lively response; slower release yields smooth sustain.",
       @"Post-cab stereo compression before delay and reverb. Amount lowers threshold, raises ratio and adds makeup gain. Both channels share gain reduction to preserve the stereo image. 0% is exact bypass; independent of pre-amp compression.",
       @"Post-cab compressor attack (1 to 100 ms). Slower attack preserves pick punch; faster attack controls peaks. No lookahead or added latency.",
-      @"Post-cab compressor release (10 to 1000 ms). Short releases recover between notes; longer releases smooth sustained leads."
+      @"Post-cab compressor release (10 to 1000 ms). Short releases recover between notes; longer releases smooth sustained leads.",
+      @"Overdrive tight high-pass cutoff (100 to 1500 Hz). Sweeps the pre-clip bass roll-off frequency: lower settings give warm, full-range drive; higher settings tighten flub and sharpen pick attack for modern rhythms."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0};
+        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0, 100.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0};
+        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0, 1500.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;

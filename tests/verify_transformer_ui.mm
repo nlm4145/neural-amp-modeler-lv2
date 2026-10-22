@@ -345,10 +345,10 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
   };
   stage = "sculpt overdrive / knobs and graph";
   CHECK(kRigKnobPorts[39] == kOverdriveDrivePort && kRigKnobPorts[40] == kOverdriveTonePort &&
-        kRigKnobPorts[41] == kOverdriveLevelPort);
+        kRigKnobPorts[41] == kOverdriveLevelPort && kRigKnobPorts[47] == kOverdriveTightPort);
   CHECK(kRigKnobDefaults[39] == 0.0f && kRigKnobDefaults[40] == Overdrive::kToneDefault &&
-        kRigKnobDefaults[41] == 0.0f);
-  for (size_t k = 39; k <= 41; ++k) {
+        kRigKnobDefaults[41] == 0.0f && kRigKnobDefaults[47] == Overdrive::kTightDefault);
+  for (size_t k : {39u, 40u, 41u, 47u}) {
     REQUIRE(state->deckKnobs[k]);
     CHECK(state->deckKnobs[k].tag == (NSInteger)kRigKnobPorts[k]);
     CHECK([state->deckKnobs[k] isDescendantOf:state->boostVisualizer.superview.superview]);
@@ -356,12 +356,13 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
   REQUIRE(state->sculptVisualizer);
   REQUIRE(state->boostVisualizer);
   CHECK(state->boostVisualizer.tone == Overdrive::kToneDefault);
+  CHECK(state->boostVisualizer.tight == Overdrive::kTightDefault);
 
   stage = "pre-amp EQ and Boost cards layout and bypass";
   REQUIRE(state->sculptEqKnobs && state->sculptOdKnobs);
   CHECK(!state->sculptEqKnobs.hidden && !state->sculptOdKnobs.hidden);
   for (size_t k : {19u, 20u, 38u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptEqKnobs]);
-  for (size_t k : {39u, 40u, 41u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptOdKnobs]);
+  for (size_t k : {39u, 40u, 41u, 47u}) CHECK([state->deckKnobs[k] isDescendantOf:state->sculptOdKnobs]);
 
   // Check ON/OFF toggle buttons for both cards:
   RigButton* eqButton = state->rackButtons[(size_t)NAMRig::Rack::Sculpt];
@@ -437,7 +438,7 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
 
   // Boost slot preset
   NSDictionary* boostValues = state->captureSlotPortValues(boostSlot);
-  for (uint32_t port = kOverdriveDrivePort; port <= kOverdriveLevelPort; ++port)
+  for (uint32_t port : {kOverdriveDrivePort, kOverdriveTonePort, kOverdriveLevelPort, kOverdriveTightPort})
     CHECK(boostValues[[NSString stringWithFormat:@"%u", port]] != nil);
   CHECK(boostValues[[NSString stringWithFormat:@"%u", kOverdriveEnabledPort]] != nil);
 
@@ -1079,7 +1080,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 190 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 191 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:

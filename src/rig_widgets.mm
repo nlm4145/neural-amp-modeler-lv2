@@ -1704,14 +1704,16 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 @implementation NAMBoostVisualizer
 - (instancetype)initWithFrame:(NSRect)frame {
   if ((self = [super initWithFrame:frame])) {
+    _tight = NAMRig::Overdrive::kTightDefault;
     _tone = NAMRig::Overdrive::kToneDefault;
     _enabled = YES;
-    self.toolTip = @"TS-style symmetrical soft-clipping saturation and post-clip tone filter in front of the amplifier.";
+    self.toolTip = @"TS-style symmetrical soft-clipping saturation, variable pre-clip tight high-pass filtering and post-clip tone shaping in front of the amplifier.";
   }
   return self;
 }
 - (BOOL)isFlipped { return NO; }
 - (void)setDrive:(float)v { _drive = v; self.needsDisplay = YES; }
+- (void)setTight:(float)v { _tight = v; self.needsDisplay = YES; }
 - (void)setTone:(float)v { _tone = v; self.needsDisplay = YES; }
 - (void)setLevel:(float)v { _level = v; self.needsDisplay = YES; }
 - (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
@@ -1737,6 +1739,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
   const BOOL isBypassed = !_enabled;
   const float activeDrive = _enabled ? _drive : 0.0f;
+  const float activeTight = _tight;
   const float activeTone = _tone;
   const float activeLevel = _level;
 
@@ -1750,15 +1753,15 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
   };
-  [@"TONE & LEVEL RESPONSE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:rightHeaderAttrs];
+  [@"TONE & TIGHT (HPF) RESPONSE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:rightHeaderAttrs];
 
   NSString* telemetry;
   if (!_enabled) {
     telemetry = @"BOOST BYPASSED (OFF)";
   } else if (_drive < 0.5f) {
-    telemetry = [NSString stringWithFormat:@"CLEAN BOOST  •  LEVEL: %+.1f dB", _level];
+    telemetry = [NSString stringWithFormat:@"CLEAN BOOST  •  TIGHT: %.0f Hz  •  LEVEL: %+.1f dB", _tight, _level];
   } else {
-    telemetry = [NSString stringWithFormat:@"DRIVE: %.0f%%  •  TONE: %.0f%%  •  LEVEL: %+.1f dB", _drive, _tone, _level];
+    telemetry = [NSString stringWithFormat:@"DRIVE: %.0f%%  •  TIGHT: %.0f Hz  •  TONE: %.0f%%  •  LEVEL: %+.1f dB", _drive, _tight, _tone, _level];
   }
   NSDictionary* infoAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
@@ -1814,6 +1817,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [satCurve stroke];
 
   // Right Plot: Post-Clip Tone Frequency Response (200 Hz .. 12 kHz, -18 dB .. +18 dB)
+  // and Pre-Clip Tight High-Pass Cut Response (amber dashed curve)
   const CGFloat rLeft = splitX + 28.0;
   const CGFloat rRight = r.size.width - 20.0;
   const CGFloat rPlotW = rRight - rLeft;
@@ -1827,8 +1831,30 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [[NSColor colorWithSRGBRed:0.25 green:0.28 blue:0.35 alpha:0.5] setStroke];
   [rBase stroke];
 
-  NSBezierPath* toneCurve = [NSBezierPath bezierPath];
+  // Pre-clip tight cut curve (high-pass filter: amber dashed curve)
+  NSBezierPath* cutCurve = [NSBezierPath bezierPath];
   const int kToneSteps = 60;
+  for (int s = 0; s <= kToneSteps; ++s) {
+    const double frac = (double)s / (double)kToneSteps;
+    const double hz = 200.0 * std::pow(60.0, frac);
+    const double cutDb = isBypassed ? 0.0 : NAMRig::Overdrive::preClipHighPassResponseDb(hz, kPinPlotRate, activeTight);
+    const CGFloat y = rMidY + std::clamp((CGFloat)(cutDb / 18.0), -1.0, 1.0) * (lPlotH * 0.45);
+    const NSPoint pt = NSMakePoint(rLeft + frac * rPlotW, y);
+    if (s == 0) [cutCurve moveToPoint:pt];
+    else [cutCurve lineToPoint:pt];
+  }
+  cutCurve.lineWidth = 1.5;
+  CGFloat cutDash[2] = {3.0, 2.0};
+  [cutCurve setLineDash:cutDash count:2 phase:0.0];
+  if (isBypassed) {
+    [[NSColor colorWithSRGBRed:0.45 green:0.35 blue:0.20 alpha:0.35] setStroke];
+  } else {
+    [[NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:0.85] setStroke];
+  }
+  [cutCurve stroke];
+
+  // Post-clip tone filter curve (cyan solid curve)
+  NSBezierPath* toneCurve = [NSBezierPath bezierPath];
   for (int s = 0; s <= kToneSteps; ++s) {
     const double frac = (double)s / (double)kToneSteps;
     const double hz = 200.0 * std::pow(60.0, frac); // 200 Hz to 12 kHz

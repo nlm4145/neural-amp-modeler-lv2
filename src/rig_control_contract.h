@@ -195,6 +195,7 @@ inline constexpr RigControlContract kRigControlContracts[] = {
     {187, "post_compressor_attack", 1.0f, 100.0f, 8.0f, "ms", false, 0u, ""},
     {188, "post_compressor_release", 10.0f, 1000.0f, 120.0f, "ms", false, 0u, ""},
     {189, "post_compressor_enabled", 0.0f, 1.0f, 1.0f, "", true, 0u, ""},
+    {190, "od_tight", 100.0f, 1500.0f, 720.0f, "Hz", false, 0u, ""},
 };
 inline const RigControlContract* rigControlContract(uint32_t port) {
   for (const auto& c : kRigControlContracts) if (c.port == port) return &c;

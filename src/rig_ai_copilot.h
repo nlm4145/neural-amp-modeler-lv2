@@ -64,6 +64,7 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy, nullable) NSString* cabPath;
 @property(nonatomic, copy, nullable) NSString* pedalPath; // Catalog path, "none" to remove, or empty if unchanged
 @property(nonatomic, strong, nullable) NSDictionary<NSString*, NSString*>* slotPresets;
+@property(nonatomic, copy, nullable) NSString* searchTone3000;
 @property(nonatomic, strong, nullable) NSDictionary* rawJson;
 @property(nonatomic, strong, nullable) RigPreset* proposedPreset; // Frozen base + validated proposal
 @end

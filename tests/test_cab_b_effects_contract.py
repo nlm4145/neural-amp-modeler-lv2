@@ -39,8 +39,8 @@ assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 190;" in (ROOT / "src/power_tube_controls.h").read_text()
-assert sorted(ports) == list(range(190)), "ports stay contiguous; post compressor appends at 186..189"
+assert "kRigControlPortCount = 191;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(191)), "ports stay contiguous; overdrive tight appends at 190"
 
 
 def port_default(index: int) -> float:

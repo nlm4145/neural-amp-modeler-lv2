@@ -26,19 +26,29 @@ namespace NAMRig {
 class Overdrive {
  public:
   static constexpr float kToneDefault = 50.0f;
+  static constexpr float kTightDefault = 720.0f;
+  static constexpr float kTightMinHz = 100.0f;
+  static constexpr float kTightMaxHz = 1500.0f;
   static constexpr float kLevelMinDb = -12.0f;
   static constexpr float kLevelMaxDb = 12.0f;
 
   void reset() noexcept {
     bass_ = lp_ = tone_ = 0.0;
     smoothOn_ = smoothDrive_ = smoothTone_ = smoothLevel_ = 0.0f;
+    smoothTight_ = kTightDefault;
     primed_ = false;
   }
 
   bool active() const noexcept { return smoothOn_ > 0.0f; }
 
   void process(float* samples, size_t count, double rate, float driveAmount,
-               float toneAmount, float levelDb, bool enabled = true) noexcept {
+               float toneAmount, float levelDb, bool enabled) noexcept {
+    process(samples, count, rate, driveAmount, toneAmount, levelDb, kTightDefault, enabled);
+  }
+
+  void process(float* samples, size_t count, double rate, float driveAmount,
+               float toneAmount, float levelDb, float tightHz = kTightDefault,
+               bool enabled = true) noexcept {
     const float onTarget = enabled ? 1.0f : 0.0f;
     if (onTarget == 0.0f && smoothOn_ <= 0.0f) {
       reset();
@@ -50,11 +60,14 @@ class Overdrive {
         ? std::clamp(toneAmount * 0.01f, 0.0f, 1.0f) : kToneDefault * 0.01f;
     const float levelTarget = std::isfinite(levelDb)
         ? std::clamp(levelDb, kLevelMinDb, kLevelMaxDb) : 0.0f;
+    const float tightTarget = std::isfinite(tightHz)
+        ? std::clamp(tightHz, kTightMinHz, kTightMaxHz) : kTightDefault;
     if (!primed_) {
       // Engaging starts from the current settings and fades in via smoothOn_.
       smoothDrive_ = driveTarget;
       smoothTone_ = toneTarget;
       smoothLevel_ = levelTarget;
+      smoothTight_ = tightTarget;
       primed_ = true;
     }
     for (size_t start = 0; start < count; start += kChunk) {
@@ -64,11 +77,12 @@ class Overdrive {
       const float onStart = smoothOn_;
       glide(smoothOn_, onTarget, smooth);
       glide(smoothDrive_, driveTarget, smooth);
+      glide(smoothTight_, tightTarget, smooth);
       glide(smoothTone_, toneTarget, smooth);
       glide(smoothLevel_, levelTarget, smooth);
 
       const double g = branchGain(smoothDrive_);
-      const double hpK = onePole(kHighPassHz, rate);
+      const double hpK = onePole(smoothTight_, rate);
       const double lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * rate), rate);
       const double toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
       const double level = std::pow(10.0, smoothLevel_ / 20.0);
@@ -87,6 +101,22 @@ class Overdrive {
       }
     }
     if (onTarget == 0.0f && smoothOn_ < 1.0e-4f) reset();
+  }
+
+  // Pre-clip high-pass filter response (dB) for the variable tight/cut control.
+  static double preClipHighPassResponseDb(double hz, double rate, float tightHz) noexcept {
+    const float tight = std::isfinite(tightHz)
+        ? std::clamp(tightHz, kTightMinHz, kTightMaxHz) : kTightDefault;
+    const double k = onePole(tight, rate);
+    const double w = 2.0 * kPi * hz / rate;
+    const double re = 1.0 - (1.0 - k) * std::cos(w);
+    const double im = (1.0 - k) * std::sin(w);
+    const double numRe = (1.0 - k) * (1.0 - std::cos(w));
+    const double numIm = (1.0 - k) * std::sin(w);
+    const double denMagSq = re * re + im * im;
+    const double numMagSq = numRe * numRe + numIm * numIm;
+    if (denMagSq <= 0.0 || numMagSq <= 0.0) return -60.0;
+    return 10.0 * std::log10(numMagSq / denMagSq);
   }
 
   // Linear part after the clipper (Tone + Level), as drawn on the Sculpt graph.
@@ -139,7 +169,7 @@ class Overdrive {
   }
 
   double bass_ = 0.0, lp_ = 0.0, tone_ = 0.0;
-  float smoothOn_ = 0.0f, smoothDrive_ = 0.0f, smoothTone_ = 0.0f, smoothLevel_ = 0.0f;
+  float smoothOn_ = 0.0f, smoothDrive_ = 0.0f, smoothTight_ = kTightDefault, smoothTone_ = 0.0f, smoothLevel_ = 0.0f;
   bool primed_ = false;
 };
 

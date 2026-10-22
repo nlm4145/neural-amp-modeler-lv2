@@ -1066,6 +1066,7 @@ struct RigUIState {
           if ([slotKey isEqualToString:@"sculpt"]) {
             NSArray<NSString*>* odKeys = @[
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveDrivePort],
+              [NSString stringWithFormat:@"%u", NAMRig::kOverdriveTightPort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveTonePort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveLevelPort],
               [NSString stringWithFormat:@"%u", NAMRig::kOverdriveEnabledPort]
@@ -2411,9 +2412,11 @@ struct RigUIState {
         else if (port == NAMRig::kMidPushPort) sculptVisualizer.midPush = value;
         sculptVisualizer.needsDisplay = YES;
       }
-      if (boostVisualizer && (port >= NAMRig::kOverdriveDrivePort &&
-                              port <= NAMRig::kOverdriveLevelPort)) {
+      if (boostVisualizer && ((port >= NAMRig::kOverdriveDrivePort &&
+                               port <= NAMRig::kOverdriveLevelPort) ||
+                              port == NAMRig::kOverdriveTightPort)) {
         if (port == NAMRig::kOverdriveDrivePort) boostVisualizer.drive = value;
+        else if (port == NAMRig::kOverdriveTightPort) boostVisualizer.tight = value;
         else if (port == NAMRig::kOverdriveTonePort) boostVisualizer.tone = value;
         else if (port == NAMRig::kOverdriveLevelPort) boostVisualizer.level = value;
         boostVisualizer.needsDisplay = YES;

@@ -179,10 +179,28 @@ int main() {
     x[10] = 1.0e6f;
     x[11] = -1.0e6f;
     Overdrive od;
-    od.process(x.data(), x.size(), 48000.0, 100.0f, NAN, NAN);
+    od.process(x.data(), x.size(), 48000.0, 100.0f, NAN, NAN, NAN);
     bool finite = true;
     for (float v : x) finite = finite && std::isfinite(v);
-    check(finite, "finite output with huge input and non-finite Tone/Level");
+    check(finite, "finite output with huge input and non-finite Tone/Level/Tight");
+  }
+
+  // ---- Variable Tight / Cut control sweeps pre-clip high-pass filter. ----
+  {
+    const double rate = 384000.0;
+    const size_t n = 192000;
+    Overdrive odWarm, odTight;
+    auto xWarm = sine(120.0, 0.1, rate, n);
+    auto xTight = xWarm;
+    odWarm.process(xWarm.data(), xWarm.size(), rate, 70.0f, 50.0f, 0.0f, 200.0f);
+    odTight.process(xTight.data(), xTight.size(), rate, 70.0f, 50.0f, 0.0f, 1400.0f);
+    const double h3Warm = level(xWarm, 360.0, rate);
+    const double h3Tight = level(xTight, 360.0, rate);
+    check(h3Warm > h3Tight * 1.8, "Tight 1400 Hz cuts 120 Hz pre-clip distortion much more than Tight 200 Hz");
+    check(Overdrive::preClipHighPassResponseDb(120.0, 48000.0, 1400.0f) < -15.0,
+          "preClipHighPassResponseDb at 1400 Hz is below -15 dB at 120 Hz");
+    check(Overdrive::preClipHighPassResponseDb(3000.0, 48000.0, 720.0f) > -0.5,
+          "preClipHighPassResponseDb passes highs near unity");
   }
 
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);
