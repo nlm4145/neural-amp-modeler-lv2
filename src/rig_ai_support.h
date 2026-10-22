@@ -28,4 +28,8 @@ NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt);
 // Acoustic profile analyzer: extracts frequency band energies from telemetry strings and calculates delta guidance.
 NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullable referenceSummary);
 
+// Returns whether the specified provider and model support the sampling temperature parameter.
+// Anthropic deprecated temperature on Claude Opus 4.7+ and Claude 5+ models, and OpenAI reasoning models (o1/o3/o4) reject it.
+BOOL rigAIProviderModelSupportsTemperature(NSString* _Nullable provider, NSString* _Nullable model);
+
 #pragma clang diagnostic pop

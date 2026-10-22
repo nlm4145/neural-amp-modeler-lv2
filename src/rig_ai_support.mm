@@ -717,3 +717,27 @@ NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullabl
 
   return [out copy];
 }
+
+BOOL rigAIProviderModelSupportsTemperature(NSString* provider, NSString* model) {
+  NSString* p = provider ? provider.lowercaseString : @"";
+  NSString* m = model ? model.lowercaseString : @"";
+  if ([p isEqualToString:@"claude"]) {
+    // Anthropic deprecated sampling parameters (temperature, top_p, top_k) on Claude Opus 4.7+
+    // and Claude 5+ models (e.g. claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-1).
+    // Legacy Claude 2 and Claude 3/3.5 models support temperature when thinking is disabled.
+    if ([m containsString:@"claude-3"] || [m containsString:@"claude-2"] || [m containsString:@"claude-instant"]) {
+      return YES;
+    }
+    // Modern/frontier Claude models: omit deprecated sampling parameters by default.
+    return NO;
+  }
+  if ([p isEqualToString:@"openai"]) {
+    // OpenAI reasoning models reject temperature with HTTP 400.
+    if ([m hasPrefix:@"o1"] || [m hasPrefix:@"o3"] || [m hasPrefix:@"o4"]) {
+      return NO;
+    }
+    return YES;
+  }
+  return YES;
+}
+

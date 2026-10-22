@@ -1417,19 +1417,24 @@ static const NSUInteger kRigAICatalogLimit = 48;
   request.timeoutInterval = 70.0;
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
 
+  const BOOL supportsTemp = rigAIProviderModelSupportsTemperature(provider, cfg.model);
+
   NSDictionary* reqBody = nil;
   if ([provider isEqualToString:@"claude"]) {
     [request setValue:apiKey forHTTPHeaderField:@"x-api-key"];
     [request setValue:@"2023-06-01" forHTTPHeaderField:@"anthropic-version"];
-    reqBody = @{
+    NSMutableDictionary* cBody = [NSMutableDictionary dictionaryWithDictionary:@{
       @"model": cfg.model,
       @"system": systemPrompt,
       @"messages": @[
         @{@"role": @"user", @"content": userMessage}
       ],
-      @"max_tokens": @2048,
-      @"temperature": @(cfg.temperature)
-    };
+      @"max_tokens": @2048
+    }];
+    if (supportsTemp) {
+      cBody[@"temperature"] = @(cfg.temperature);
+    }
+    reqBody = cBody;
   } else if ([provider isEqualToString:@"gemini"] && audioClips.count > 0) {
     if (apiKey.length > 0) {
       [request setValue:apiKey forHTTPHeaderField:@"x-goog-api-key"];
@@ -1441,6 +1446,13 @@ static const NSUInteger kRigAICatalogLimit = 48;
       [parts addObject:@{@"inline_data":@{@"mime_type":clip[@"mime"] ?: @"audio/wav",
           @"data":[clip[@"data"] base64EncodedStringWithOptions:0]}}];
     }
+    NSMutableDictionary* genCfg = [NSMutableDictionary dictionaryWithDictionary:@{
+      @"response_mime_type": @"application/json",
+      @"maxOutputTokens": @2048
+    }];
+    if (supportsTemp) {
+      genCfg[@"temperature"] = @(cfg.temperature);
+    }
     reqBody = @{
       @"system_instruction": @{
         @"parts": @[@{@"text": systemPrompt}]
@@ -1451,11 +1463,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
           @"parts": parts
         }
       ],
-      @"generationConfig": @{
-        @"response_mime_type": @"application/json",
-        @"temperature": @(cfg.temperature),
-        @"maxOutputTokens": @2048
-      }
+      @"generationConfig": genCfg
     };
   } else if ([provider isEqualToString:@"openai"] && audioClips.count > 0) {
     if (apiKey.length > 0) {
@@ -1467,7 +1475,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
       [parts addObject:@{@"type":@"input_audio", @"input_audio":@{@"format":@"wav",
           @"data":[clip[@"data"] base64EncodedStringWithOptions:0]}}];
     }
-    reqBody = @{
+    NSMutableDictionary* oBody = [NSMutableDictionary dictionaryWithDictionary:@{
       @"model": cfg.model,
       @"messages": @[
         @{@"role": @"system", @"content": systemPrompt},
@@ -1476,33 +1484,61 @@ static const NSUInteger kRigAICatalogLimit = 48;
           @"content": parts
         }
       ],
-      @"max_tokens": @2048,
-      @"temperature": @(cfg.temperature)
-    };
+      @"max_tokens": @2048
+    }];
+    if (supportsTemp) {
+      oBody[@"temperature"] = @(cfg.temperature);
+    }
+    reqBody = oBody;
   } else {
     // OpenAI, Gemini (text), Ollama, Groq, DeepSeek
     if (apiKey.length > 0) {
       [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKey] forHTTPHeaderField:@"Authorization"];
     }
-    reqBody = @{
+    NSMutableDictionary* generalBody = [NSMutableDictionary dictionaryWithDictionary:@{
       @"model": cfg.model,
       @"messages": @[
         @{@"role": @"system", @"content": systemPrompt},
         @{@"role": @"user", @"content": userMessage}
       ],
       @"response_format": @{@"type": @"json_object"},
-      @"max_tokens": @2048,
-      @"temperature": @(cfg.temperature)
-    };
+      @"max_tokens": @2048
+    }];
+    if (supportsTemp) {
+      generalBody[@"temperature"] = @(cfg.temperature);
+    }
+    reqBody = generalBody;
   }
 
   if ([provider isEqual:@"openai"]) {
     NSMutableDictionary* body = [reqBody mutableCopy];
     [body removeObjectForKey:@"max_tokens"];
     body[@"max_completion_tokens"] = @2048;
+    if (!supportsTemp) {
+      [body removeObjectForKey:@"temperature"];
+    }
     reqBody = body;
   }
 
+  const BOOL hasTemp = (reqBody[@"temperature"] != nil || reqBody[@"generationConfig"][@"temperature"] != nil);
+  [self dispatchURLRequest:request
+                   reqBody:reqBody
+                       url:url
+                  cfgModel:cfg.model
+                  provider:provider
+                audioClips:audioClips
+                 requestID:requestID
+   retryOnTemperatureError:hasTemp];
+}
+
+- (void)dispatchURLRequest:(NSMutableURLRequest*)request
+                   reqBody:(NSDictionary*)reqBody
+                       url:(NSURL*)url
+                  cfgModel:(NSString*)cfgModel
+                  provider:(NSString*)provider
+                audioClips:(NSArray<NSDictionary*>*)audioClips
+                 requestID:(NSString*)requestID
+   retryOnTemperatureError:(BOOL)retryOnTemperatureError {
   NSError* jsonErr = nil;
   request.HTTPBody = [NSJSONSerialization dataWithJSONObject:reqBody options:0 error:&jsonErr];
   if (jsonErr) {
@@ -1512,7 +1548,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
 
   self.requestStartedAt = NSDate.date;
   [self reportProgress:[NSString stringWithFormat:@"POST %@ → %@ (model %@, %.1f KB JSON%@); waiting for the reply (75 s limit)…",
-      url.host, url.path, cfg.model, request.HTTPBody.length / 1024.0,
+      url.host, url.path, cfgModel, request.HTTPBody.length / 1024.0,
       audioClips.count ? [NSString stringWithFormat:@", %lu audio clip(s)", (unsigned long)audioClips.count] : @", text only"]];
   __weak RigAICopilot* weakSelf = self;
   NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
@@ -1530,6 +1566,29 @@ static const NSUInteger kRigAICatalogLimit = 48;
           [weakSelf reportProgress:[NSString stringWithFormat:@"Reply: HTTP %ld after %.1f s, %.1f KB.", (long)httpResp.statusCode, elapsed, data.length / 1024.0]];
           if (httpResp.statusCode < 200 || httpResp.statusCode >= 300) {
             NSString* errBody = data.length ? [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, std::min<NSUInteger>(data.length, 2048))] encoding:NSUTF8StringEncoding] : @"";
+            NSString* errLower = errBody.lowercaseString;
+            if (retryOnTemperatureError && httpResp.statusCode == 400 &&
+                [errLower containsString:@"temperature"] &&
+                ([errLower containsString:@"deprecated"] || [errLower containsString:@"not supported"] || [errLower containsString:@"unsupported"])) {
+              NSMutableDictionary* stripped = [reqBody mutableCopy];
+              [stripped removeObjectForKey:@"temperature"];
+              if ([stripped[@"generationConfig"] isKindOfClass:NSDictionary.class]) {
+                NSMutableDictionary* genCfg = [stripped[@"generationConfig"] mutableCopy];
+                [genCfg removeObjectForKey:@"temperature"];
+                stripped[@"generationConfig"] = genCfg;
+              }
+              [weakSelf reportProgress:@"Provider rejected temperature for this model; retrying immediately without temperature…"];
+              [weakSelf dispatchURLRequest:request
+                                   reqBody:stripped
+                                       url:url
+                                  cfgModel:cfgModel
+                                  provider:provider
+                                audioClips:audioClips
+                                 requestID:requestID
+                   retryOnTemperatureError:NO];
+              return;
+            }
+
             NSString* msg = [NSString stringWithFormat:@"HTTP Error %ld: %@", (long)httpResp.statusCode, errBody ?: @""];
             [weakSelf finishRequest:requestID result:nil error:[NSError errorWithDomain:@"RigAICopilot"
                 code:(NSInteger)httpResp.statusCode userInfo:@{NSLocalizedDescriptionKey: msg}]];

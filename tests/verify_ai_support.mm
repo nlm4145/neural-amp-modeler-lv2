@@ -142,6 +142,27 @@ int main(int argc, char** argv) {
     CHECK([singleGuidance containsString:@"42 clipped samples"]);
     CHECK([singleGuidance containsString:@"flub"]);
 
+    // Provider model temperature support checks
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @"claude-opus-5-5"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @"claude-sonnet-5-5"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @"claude-haiku-5-5"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @"claude-fable-5-1"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @"claude-opus-4-7"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @"claude-opus-4-8"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"claude", @"claude-3-5-sonnet-20241022"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"claude", @"claude-3-haiku-20240307"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"claude", @"claude-2.1"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"claude", @""));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o1"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o1-mini"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o3"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o3-mini"));
+    CHECK(!rigAIProviderModelSupportsTemperature(@"openai", @"o4-mini"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"openai", @"gpt-4o"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"openai", @"gpt-6.1-sol"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"gemini", @"gemini-3.8-flash"));
+    CHECK(rigAIProviderModelSupportsTemperature(@"ollama", @"llama3.3"));
+
     std::printf("AI support: %d failures\n", failures);
   }
   return failures ? 1 : 0;
