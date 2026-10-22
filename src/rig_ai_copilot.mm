@@ -750,9 +750,18 @@ static const NSUInteger kRigAICatalogLimit = 48;
     if ([toolName isEqualToString:@"agy"]) {
       [args addObject:@"-p"];
       [args addObject:fullPrompt];
-      NSString* agyModel = model.length ? model : @"gemini-3.8-flash";
-      if ([agyModel hasPrefix:@"gemini-2"] || [agyModel hasPrefix:@"gemini-1"] || [agyModel containsString:@"flash-lite"]) {
+      NSString* raw = model.length ? [model.lowercaseString stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : @"";
+      NSString* agyModel = @"gemini-3.8-flash";
+      if ([raw containsString:@"argon"]) {
+        agyModel = @"gemini-4-argon";
+      } else if ([raw containsString:@"flash"] || [raw hasPrefix:@"gemini"]) {
         agyModel = @"gemini-3.8-flash";
+      } else if ([raw containsString:@"opus"]) {
+        agyModel = @"claude-opus-5-5-medium";
+      } else if ([raw containsString:@"sonnet"]) {
+        agyModel = @"claude-sonnet-5-5-medium";
+      } else if ([raw containsString:@"gpt-oss"] || [raw containsString:@"120b"]) {
+        agyModel = @"gpt-oss-120b-medium";
       }
       [args addObject:@"--model"];
       [args addObject:agyModel];
@@ -867,6 +876,16 @@ static const NSUInteger kRigAICatalogLimit = 48;
         if (!errStr.length) {
           errStr = [outputStr stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         }
+
+        // Automatic fallback: if agy failed due to quota/resource exhaustion on another model or invalid model selection,
+        // retry once transparently with default gemini-3.8-flash.
+        if ([toolName isEqualToString:@"agy"] && ![model isEqualToString:@"gemini-3.8-flash"] &&
+            ([errStr containsString:@"RESOURCE_EXHAUSTED"] || [errStr containsString:@"quota"] || [errStr containsString:@"invalid model selection"])) {
+          [weakSelf reportProgress:[NSString stringWithFormat:@"agy model '%@' unavailable; falling back to gemini-3.8-flash…", model]];
+          [weakSelf executeLocalCLI:cliPath provider:provider fullPrompt:fullPrompt model:@"gemini-3.8-flash" completionHandler:completionHandler];
+          return;
+        }
+
         if (errStr.length > 300) {
           errStr = [[errStr substringToIndex:300] stringByAppendingString:@"..."];
         }
@@ -1360,6 +1379,14 @@ static const NSUInteger kRigAICatalogLimit = 48;
     NSString* fullPrompt = [NSString stringWithFormat:@"%@\n\n%@", systemPrompt, userMessage];
     self.requestStartedAt = NSDate.date;
     NSString* effectiveModel = cfg.model.length ? cfg.model : @"gemini-3.8-flash";
+    if ([provider isEqualToString:@"gemini"] && [localCLI.lastPathComponent.lowercaseString isEqualToString:@"agy"]) {
+      NSString* raw = effectiveModel.lowercaseString;
+      if ([raw containsString:@"argon"]) {
+        effectiveModel = @"gemini-4-argon";
+      } else if ([raw containsString:@"flash"] || [raw hasPrefix:@"gemini"]) {
+        effectiveModel = @"gemini-3.8-flash";
+      }
+    }
     [self reportProgress:[NSString stringWithFormat:@"Launching local CLI %@ (model %@) with a %.1f KB prompt; waiting for its answer (120 s limit)…",
         localCLI, effectiveModel, fullPrompt.length / 1024.0]];
     [self executeLocalCLI:localCLI
@@ -1824,7 +1851,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
 + (NSArray<NSString*>*)defaultModelsForProvider:(NSString*)provider {
   NSString* p = provider.lowercaseString;
   if ([p isEqualToString:@"gemini"]) {
-    return @[@"gemini-3.8-flash", @"gemini-4-argon", @"gemini-3.5-flash-lite", @"gemini-3.1-pro-preview"];
+    return @[@"gemini-3.8-flash", @"gemini-4-argon"];
   } else if ([p isEqualToString:@"openai"]) {
     // Offline starters verified against the official catalog, October 2026.
     // API/public discovery replaces these; they are not an account-access claim.

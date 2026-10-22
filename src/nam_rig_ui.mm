@@ -3390,12 +3390,7 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 38, tableWidth, scrollH)];
   scroll.drawsBackground = NO; scroll.borderType = NSNoBorder;
   scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES;
-  scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   scroll.toolTip = @"Scrollable Tone3000 results. More online results load automatically near the bottom.";
-
-  for (NSView* topCtl : @[controller.search, controller.gear, controller.sort, controller.archControl]) {
-    topCtl.autoresizingMask = NSViewMinYMargin;
-  }
 
   RigToneCollectionView *colView = [[RigToneCollectionView alloc] initWithFrame:scroll.bounds];
   colView.toneController = controller;
@@ -3421,7 +3416,6 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
   controller.status = addLabel(browser, @"Scanning NAM Rig's Tone3000 library…", NSMakeRect(24, 12, bw - 48, 20),
                                [NSFont systemFontOfSize:10.5], rigDimText());
-  controller.status.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
   controller.status.lineBreakMode = NSLineBreakByTruncatingTail;
   controller.authStatus.toolTip = @"Tone3000 sign-in and session status.";
   controller.status.toolTip = @"Tone library, search, download, and model-loading status.";
@@ -3502,18 +3496,22 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
 
 - (void)layoutRigContent {
   if (!_rigContent) return;
+  const CGFloat baseW = 1520.0;
+  const CGFloat baseH = 980.0;
   const CGFloat w = self.bounds.size.width;
   const CGFloat h = self.bounds.size.height;
   if (w <= 0.0 || h <= 0.0) return;
 
-  // When unzoomed (or when the host view has expanded beyond the 1520x980 base),
-  // stretch rigContent to fill the entire bounds so Auto Layout expands the stage
-  // cards, Tone3000 browser, and Studio Pro Deck edge-to-edge with zero padding.
-  if (CGAffineTransformIsIdentity(_rigContent.layer.affineTransform)) {
-    [_rigContent setFrame:NSMakeRect(0.0, 0.0, w, h)];
-    [_rigContent setNeedsLayout:YES];
-    [_rigContent setNeedsDisplay:YES];
-  }
+  const CGFloat scale = std::max<CGFloat>(1.0, std::min<CGFloat>(w / baseW, h / baseH));
+  _rigContent.layer.anchorPoint = CGPointMake(0, 0);
+  _rigContent.layer.affineTransform = CGAffineTransformMakeScale(scale, scale);
+
+  const CGFloat scaledW = std::floor(baseW * scale);
+  const CGFloat scaledH = std::floor(baseH * scale);
+  const CGFloat originX = std::max<CGFloat>(0.0, std::floor((w - scaledW) / 2.0));
+  const CGFloat originY = std::max<CGFloat>(0.0, std::floor((h - scaledH) / 2.0));
+  [_rigContent setFrame:NSMakeRect(originX, originY, baseW, baseH)];
+  [_rigContent setNeedsDisplay:YES];
 }
 
 - (void)setHidden:(BOOL)hidden {
@@ -5688,7 +5686,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[boxRow.leadingAnchor constraintEqualToAnchor:rigPane.leadingAnchor constant:24] setActive:YES];
     [[boxRow.trailingAnchor constraintEqualToAnchor:rigPane.trailingAnchor constant:-24] setActive:YES];
     [[boxRow.topAnchor constraintEqualToAnchor:rigPane.topAnchor constant:12] setActive:YES];
-    [[boxRow.heightAnchor constraintEqualToAnchor:rigPane.heightAnchor multiplier:(242.0 / 980.0)] setActive:YES];
+    [[boxRow.heightAnchor constraintEqualToConstant:242] setActive:YES];
 
     // Reserve pedal header space beside the meters without shrinking the amp's
     // six 70pt value cells. Cabinet blend controls live in the lower console;
@@ -5973,8 +5971,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[thumb.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16] setActive:YES];
       [[thumb.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16] setActive:YES];
       [[thumb.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14] setActive:YES];
-      // Keep artwork wells and model selectors vertically aligned across all 3 tiles, scaling with card height.
-      [[thumb.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-47] setActive:YES];
+      // Keep artwork wells and model selectors vertically aligned across all 3 tiles.
+      [[thumb.heightAnchor constraintEqualToConstant:141] setActive:YES];
       state->stageImages[(size_t)i] = thumb;
       thumb.toolTip = [NSString stringWithFormat:@"Artwork for the currently selected %@ tone or model. Right-click card to remove selection.", stageName(i)];
 
@@ -6145,10 +6143,6 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[m.widthAnchor constraintEqualToConstant:meterWidth] setActive:YES];
       [[m.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
       [[m.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
-    }
-    for (RigPanel* tb : {tileBoxes[0], tileBoxes[1], tileBoxes[2]}) {
-      [[tb.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
-      [[tb.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
     }
 
     // Proportional stage tile widths, including the pedal header's minimum budget.
