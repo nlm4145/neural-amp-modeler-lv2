@@ -960,6 +960,11 @@ class StandaloneHost {
   static int resizeUI(LV2UI_Feature_Handle handle, int width, int height) {
     auto* host = static_cast<StandaloneHost*>(handle);
     if (!host->window_) return 1;
+    if ((host->window_.styleMask & NSWindowStyleMaskFullScreen) != 0) {
+      [host->window_.contentView setNeedsLayout:YES];
+      [host->window_.contentView setNeedsDisplay:YES];
+      return 0;
+    }
     if (host->parentView_) {
       host->parentView_.frame = NSMakeRect(0, 0, width, height);
     }
@@ -1836,11 +1841,22 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
 @property(nonatomic, strong) NSView* cpuPill;
 @property(nonatomic, strong) NSPopUpButton* audioPopup;
 @property(nonatomic, strong) StandaloneAnimatedAmpView* ampIconView;
+@property(nonatomic, strong) NSView* pluginHostView;
 @end
 
 @implementation StandaloneContentRootView
 - (void)layout {
   [super layout];
+  if (_pluginHostView) {
+    const CGFloat availW = self.bounds.size.width;
+    const CGFloat availH = self.bounds.size.height - kToolbarStripHeight;
+    const CGFloat baseW = 1520.0;
+    const CGFloat baseH = 980.0;
+
+    const CGFloat hostX = std::max<CGFloat>(0.0, std::floor((availW - baseW) / 2.0));
+    const CGFloat hostY = std::max<CGFloat>(0.0, availH - baseH);
+    _pluginHostView.frame = NSMakeRect(hostX, hostY, baseW, baseH);
+  }
   for (NSView* sub in self.subviews) {
     for (NSView* child in sub.subviews) {
       [child setNeedsLayout:YES];
@@ -2396,6 +2412,26 @@ extern void openAICopilotInActiveRig();
   editItem.submenu = editMenu;
   [menu addItem:editItem];
 
+  NSMenuItem* viewItem = [[NSMenuItem alloc] init];
+  NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+  NSMenuItem* fullScreenItem = [[NSMenuItem alloc] initWithTitle:@"Toggle Full Screen"
+                                                          action:@selector(toggleFullScreen:)
+                                                   keyEquivalent:@"f"];
+  fullScreenItem.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+  [viewMenu addItem:fullScreenItem];
+  viewItem.submenu = viewMenu;
+  [menu addItem:viewItem];
+
+  NSMenuItem* windowItem = [[NSMenuItem alloc] init];
+  NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+  [windowMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+  [windowMenu addItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""];
+  [windowMenu addItem:[NSMenuItem separatorItem]];
+  [windowMenu addItemWithTitle:@"Bring All to Front" action:@selector(arrangeInFront:) keyEquivalent:@""];
+  windowItem.submenu = windowMenu;
+  [menu addItem:windowItem];
+  NSApp.windowsMenu = windowMenu;
+
   NSApp.mainMenu = menu;
 
   // Live animated tube-amp Dock tile icon
@@ -2407,13 +2443,15 @@ extern void openAICopilotInActiveRig();
   _window = [[NSWindow alloc]
       initWithContentRect:initialContent
                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                          NSWindowStyleMaskMiniaturizable
+                          NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
   _window.title = @"Axe FX";
   _window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
   _window.delegate = self;
   _window.releasedWhenClosed = NO;
+  _window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+  _window.minSize = NSMakeSize(1520, 980 + kToolbarStripHeight);
 
   StandaloneContentRootView* rootContent =
       [[StandaloneContentRootView alloc] initWithFrame:initialContent];
@@ -2422,6 +2460,7 @@ extern void openAICopilotInActiveRig();
 
   _pluginHostView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 1520, 980)];
   _pluginHostView.autoresizingMask = NSViewNotSizable;
+  rootContent.pluginHostView = _pluginHostView;
   [rootContent addSubview:_pluginHostView];
 
   // Top-left animated tube-amp badge in the header toolbar strip.
@@ -2502,6 +2541,27 @@ extern void openAICopilotInActiveRig();
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
   (void)sender;
   return YES;
+}
+
+- (void)windowDidResize:(NSNotification*)notification {
+  (void)notification;
+  [_window.contentView setNeedsLayout:YES];
+  [_window.contentView layoutSubtreeIfNeeded];
+  [_window.contentView setNeedsDisplay:YES];
+}
+
+- (void)windowDidEnterFullScreen:(NSNotification*)notification {
+  (void)notification;
+  [_window.contentView setNeedsLayout:YES];
+  [_window.contentView layoutSubtreeIfNeeded];
+  [_window.contentView setNeedsDisplay:YES];
+}
+
+- (void)windowDidExitFullScreen:(NSNotification*)notification {
+  (void)notification;
+  [_window.contentView setNeedsLayout:YES];
+  [_window.contentView layoutSubtreeIfNeeded];
+  [_window.contentView setNeedsDisplay:YES];
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification {

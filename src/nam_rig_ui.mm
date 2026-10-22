@@ -3501,6 +3501,10 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   NSView* contentRoot = self.window.contentView;
   if (!contentRoot) return;
 
+  const bool isStandalone = [NSBundle.mainBundle.bundleIdentifier
+      isEqualToString:@"org.neuralampmodeler.lv2.standalone-rig"] ||
+      [contentRoot isKindOfClass:NSClassFromString(@"StandaloneContentRootView")];
+
   NSRect selfFrameInContent = [self convertRect:self.bounds toView:contentRoot];
   CGFloat topSpace = 0.0;
   if (contentRoot.isFlipped) {
@@ -3509,18 +3513,28 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
     topSpace = contentRoot.bounds.size.height - NSMaxY(selfFrameInContent);
   }
 
-  // When hosted in Element, there is a 24-26pt host toolbar strip above the plugin view.
-  if (topSpace >= 20.0) {
+  // When hosted in Element or Standalone, there is a host toolbar strip above the plugin view.
+  if (isStandalone || topSpace >= 20.0) {
     CGFloat barH = 26.0;
     CGFloat barY = 0.0;
-    if (contentRoot.isFlipped) {
-      barY = NSMinY(selfFrameInContent) - topSpace + (topSpace - barH) / 2.0;
+    CGFloat barX = 0.0;
+    CGFloat barW = 0.0;
+
+    if (isStandalone) {
+      const CGFloat toolbarH = 28.0;
+      barY = contentRoot.bounds.size.height - toolbarH + (toolbarH - barH) / 2.0;
+      barX = 46.0;
+      barW = std::max<CGFloat>(400.0, contentRoot.bounds.size.width - barX - 320.0);
     } else {
-      barY = NSMaxY(selfFrameInContent) + (topSpace - barH) / 2.0;
+      if (contentRoot.isFlipped) {
+        barY = NSMinY(selfFrameInContent) - topSpace + (topSpace - barH) / 2.0;
+      } else {
+        barY = NSMaxY(selfFrameInContent) + (topSpace - barH) / 2.0;
+      }
+      barX = NSMinX(selfFrameInContent) + 46.0;
+      barW = selfFrameInContent.size.width - 46.0 - 32.0;
+      if (barW < 400.0) barW = 400.0;
     }
-    CGFloat barX = NSMinX(selfFrameInContent) + 46.0;
-    CGFloat barW = selfFrameInContent.size.width - 46.0 - 32.0;
-    if (barW < 400.0) barW = 400.0;
 
     if (_headerBar.superview != contentRoot) {
       [_headerBar removeFromSuperview];

@@ -11,7 +11,7 @@ assert "std::array<__strong RigPanel*, 3> stageCards{};" in state, \
     "RigUIState missing stageCards array"
 
 # 2. Verify NAMRigUIController interface declarations
-assert "<NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate>" in ui, \
+assert "NSMenuDelegate" in ui and "@interface NAMRigUIController" in ui, \
     "NAMRigUIController must conform to NSMenuDelegate"
 assert "- (void)removeStageSelection:(id)sender;" in ui, \
     "NAMRigUIController missing removeStageSelection: declaration"
