@@ -924,12 +924,11 @@ static const NSUInteger kRigAICatalogLimit = 48;
   for (const auto& c : NAMRig::kRigControlContracts) [preset setControl:c.port value:c.defaultValue];
   for (const auto& kv : base.allControls) [preset setControl:kv.first value:kv.second];
   for (size_t s = 0; s < 4; ++s) *[preset stageAtIndex:s] = *[base stageAtIndex:s];
-  preset.slotPresets = [base.slotPresets mutableCopy];
+  preset.slotPresets = [base.slotPresets mutableCopy] ?: [NSMutableDictionary dictionary];
   preset.name = result.presetName ?: @"Candidate";
   NSDictionary* symbols = rigSymbolToPortMap();
-  for (NSString* symbol in result.controls) [preset setControl:[symbols[symbol] unsignedIntValue] value:[result.controls[symbol] floatValue]];
-  NSString* root = [self libraryRootPath];
   const uint32_t enables[] = {7, 8, 9, 47};
+  NSString* root = [self libraryRootPath];
   for (size_t s : {size_t(0), size_t(1), size_t(2)}) {
     NSString* requested = s == 0 ? result.pedalPath : (s == 1 ? result.ampPath : result.cabPath);
     if (!requested.length) continue;
@@ -944,6 +943,11 @@ static const NSUInteger kRigAICatalogLimit = 48;
     NSString* path = rigAIResolveModel(root, requested, s, error);
     if (!path) return nil;
     [preset stageAtIndex:s]->path = path.fileSystemRepresentation;
+    [preset setControl:enables[s] value:1];
+  }
+  for (NSString* symbol in result.controls) [preset setControl:[symbols[symbol] unsignedIntValue] value:[result.controls[symbol] floatValue]];
+  for (size_t s = 0; s < 4; ++s) {
+    if ([preset stageAtIndex:s]->path.empty()) [preset setControl:enables[s] value:0];
   }
   if (rigAIModelIncludesCab(@([preset stageAtIndex:1]->path.c_str())) &&
       ([preset controlForPort:9] >= .5 || [preset controlForPort:47] >= .5)) {

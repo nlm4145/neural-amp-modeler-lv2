@@ -1850,15 +1850,13 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   if (_pluginHostView) {
     const CGFloat availW = self.bounds.size.width;
     const CGFloat availH = self.bounds.size.height - kToolbarStripHeight;
-    const CGFloat baseW = 1520.0;
-    const CGFloat baseH = 980.0;
-
-    const CGFloat scale = std::max<CGFloat>(1.0, std::min<CGFloat>(availW / baseW, availH / baseH));
-    const CGFloat scaledW = std::floor(baseW * scale);
-    const CGFloat scaledH = std::floor(baseH * scale);
-    const CGFloat hostX = std::max<CGFloat>(0.0, std::floor((availW - scaledW) / 2.0));
-    const CGFloat hostY = std::max<CGFloat>(0.0, std::floor((availH - scaledH) / 2.0));
-    _pluginHostView.frame = NSMakeRect(hostX, hostY, scaledW, scaledH);
+    const CGFloat hostW = std::max<CGFloat>(1520.0, availW);
+    const CGFloat hostH = std::max<CGFloat>(980.0, availH);
+    _pluginHostView.frame = NSMakeRect(0.0, 0.0, hostW, hostH);
+    for (NSView* pluginView in _pluginHostView.subviews) {
+      pluginView.frame = _pluginHostView.bounds;
+      [pluginView setNeedsLayout:YES];
+    }
   }
   for (NSView* sub in self.subviews) {
     for (NSView* child in sub.subviews) {

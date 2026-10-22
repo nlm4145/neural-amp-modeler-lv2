@@ -1430,11 +1430,23 @@ struct RigUIState {
     const CGFloat baseW = 1520.0, baseH = 980.0;
     const CGFloat z = zoom;
     NSView* container = rigContent ? rigContent : view;
-    container.layer.anchorPoint = CGPointMake(0, 0);
-    container.layer.affineTransform = CGAffineTransformMakeScale(z, z);
-    [container setFrame:NSMakeRect(0, 0, baseW, baseH)];   // pin layout at base
-    [container setNeedsDisplay:YES];
-    [view setFrameSize:NSMakeSize(baseW * z, baseH * z)];
+    if (container == rigContent) {
+      container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+      container.layer.anchorPoint = CGPointMake(0, 0);
+      container.layer.affineTransform = (z == 1.0) ? CGAffineTransformIdentity : CGAffineTransformMakeScale(z, z);
+      const CGFloat vw = view ? view.bounds.size.width : baseW;
+      const CGFloat vh = view ? view.bounds.size.height : baseH;
+      if (z == 1.0 && vw >= baseW && vh >= baseH) {
+        [container setFrame:NSMakeRect(0, 0, vw, vh)];
+      } else {
+        [container setFrame:NSMakeRect(0, 0, baseW, baseH)];
+      }
+      [container setNeedsLayout:YES];
+      [container setNeedsDisplay:YES];
+    }
+    if (view && (z != 1.0 || view.bounds.size.width < baseW || view.bounds.size.height < baseH)) {
+      [view setFrameSize:NSMakeSize(baseW * z, baseH * z)];
+    }
     [view setNeedsLayout:YES];
     if (hostResize && hostResize->ui_resize)
       hostResize->ui_resize(hostResize->handle, baseW * z, baseH * z);
