@@ -492,7 +492,35 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   if (!state) return;
   state->cancelTransformerEditing();
 
-  // 1. Stage powers (ports 7, 8, 9, 47)
+  // 1. Models: discover sibling models and send stage path changes before
+  // touching oversample/cab-enable controls so the audio thread never reloads
+  // the previous preset's models while disk/menu work is still running.
+  for (size_t s = 0; s < 4; ++s) {
+    const std::string& path = _stages[s].path;
+    std::vector<std::string> stageModels = _stages[s].models;
+    if (stageModels.empty() && !path.empty()) {
+      stageModels = discoverModelsForStagePath(path, s);
+    }
+    if (!path.empty()) {
+      if (std::find(stageModels.begin(), stageModels.end(), path) == stageModels.end()) {
+        stageModels.push_back(path);
+      }
+      state->selectedPaths[s] = path;
+      NSMutableArray<NSString*>* modelPaths = [NSMutableArray arrayWithCapacity:stageModels.size()];
+      for (const auto& m : stageModels) {
+        if (!m.empty()) [modelPaths addObject:[NSString stringWithUTF8String:m.c_str()]];
+      }
+      state->setStageModels(s, modelPaths);
+    } else {
+      state->setStageModels(s, @[]);
+    }
+  }
+  for (size_t s = 0; s < 4; ++s) {
+    const std::string& path = _stages[s].path;
+    state->sendPath(s, path.empty() ? "" : path.c_str());
+  }
+
+  // 2. Stage powers (ports 7, 8, 9, 47)
   state->sendControl(7, _stages[0].enabled ? 1.0f : 0.0f);
   state->updateControl(7, _stages[0].enabled ? 1.0f : 0.0f);
   state->sendControl(8, _stages[1].enabled ? 1.0f : 0.0f);
@@ -510,7 +538,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     state->updateControl(port, value);
   }
 
-  // 2. Modes and Profiles
+  // 3. Modes and Profiles
   const auto postEnabledIt = _controls.find(NAMRig::kPostCompressorEnabledPort);
   const float postEnabled = postEnabledIt != _controls.end() ? postEnabledIt->second : 1.0f;
   state->sendControl(NAMRig::kPostCompressorEnabledPort, postEnabled);
@@ -563,7 +591,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);
 
-  // 3. Knobs
+  // 4. Knobs
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     const uint32_t port = kRigKnobPorts[k];
     if (port == NAMRig::kPowerTubeCharacterPort) continue;
@@ -580,27 +608,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     state->updateControl(port, val);
   }
 
-  // 4. Models: populate available stage selections and load selected models
+  // 5. Stage thumbnails
   for (size_t s = 0; s < 4; ++s) {
     const std::string& path = _stages[s].path;
     const std::string& img = _stages[s].imageURL;
     const long toneId = _stages[s].toneId;
-    std::vector<std::string> stageModels = _stages[s].models;
-    if (stageModels.empty() && !path.empty()) {
-      stageModels = discoverModelsForStagePath(path, s);
-    }
     if (!path.empty()) {
-      // Ensure the active path is present in stageModels
-      if (std::find(stageModels.begin(), stageModels.end(), path) == stageModels.end()) {
-        stageModels.push_back(path);
-      }
-      state->selectedPaths[s] = path;
-      NSMutableArray<NSString*>* modelPaths = [NSMutableArray arrayWithCapacity:stageModels.size()];
-      for (const auto& m : stageModels) {
-        if (!m.empty()) [modelPaths addObject:[NSString stringWithUTF8String:m.c_str()]];
-      }
-      state->setStageModels(s, modelPaths);
-      state->sendPath(s, path.c_str());
       NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
       state->updateThumbnailForStagePath(s, nsPath);
       // Stored artwork metadata is trusted only when the model folder itself proves the tone
@@ -612,8 +625,6 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
         state->setStageThumb(s, nil, toneId, img.length() ? [NSString stringWithUTF8String:img.c_str()] : nil);
       }
     } else {
-      state->setStageModels(s, @[]);
-      state->sendPath(s, "");
       state->setStageThumb(s, nil, 0, nil);
     }
   }

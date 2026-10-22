@@ -154,14 +154,34 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotals(NSString* root, NSStrin
 NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root, NSString* query, NSUInteger limit,
                                                                  NSUInteger totals[3], NSUInteger maxScores[3]) {
   NSMutableArray* items = [NSMutableArray array];
-  NSArray* promptTokens = [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  static NSSet<NSString*>* stopWords = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    stopWords = [NSSet setWithObjects:
+      @"the", @"and", @"for", @"with", @"from", @"that", @"this", @"into", @"onto",
+      @"create", @"make", @"build", @"dial", @"give", @"want", @"need", @"please",
+      @"new", @"preset", @"patch", @"tone", @"sound", @"rig", @"guitar", @"setting", @"settings",
+      @"modeled", @"modeled", @"model", @"after", @"before", @"forget", @"like", @"style",
+      @"song", @"track", @"album", @"band", @"artist", @"using", @"based", @"play", @"playing", nil];
+  });
+  NSArray* rawPromptTokens = [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  NSMutableArray<NSString*>* promptTokens = [NSMutableArray array];
+  for (NSString* t in rawPromptTokens) {
+    if (t.length > 2 && ![stopWords containsObject:t] && ![promptTokens containsObject:t]) {
+      [promptTokens addObject:t];
+    }
+  }
   NSMutableSet<NSString*>* gearTokenSet = [NSMutableSet set];
   for (NSString* sq in rigAISuggestGearQueries(query)) {
     for (NSString* t in [sq.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet]) {
-      if (t.length > 2 && ![promptTokens containsObject:t]) [gearTokenSet addObject:t];
+      if (t.length > 2 && ![stopWords containsObject:t] && ![promptTokens containsObject:t]) [gearTokenSet addObject:t];
     }
   }
   NSArray* gearTokens = [gearTokenSet allObjects];
+  NSString* lowerQuery = query.lowercaseString ?: @"";
+  const BOOL wantsChainsawOrFuzz = [lowerQuery containsString:@"chainsaw"] || [lowerQuery containsString:@"hm2"] ||
+                                   [lowerQuery containsString:@"hm-2"] || [lowerQuery containsString:@"fuzz"] ||
+                                   [lowerQuery containsString:@"doom"] || [lowerQuery containsString:@"sludge"];
   NSDirectoryEnumerator* en = [NSFileManager.defaultManager enumeratorAtPath:root];
   NSMutableDictionary* manifests = [NSMutableDictionary dictionary];
   for (NSUInteger s = 0; s < 3; ++s) {
@@ -198,10 +218,34 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
       NSDictionary* model = [entry[@"original_model"] isKindOfClass:NSDictionary.class] ? entry[@"original_model"] : @{};
       if ([model[@"name"] isKindOfClass:NSString.class]) item[@"capture_name"] = [model[@"name"] substringToIndex:std::min<NSUInteger>([model[@"name"] length], 200)];
     }
-    NSString* searchable = item.description.lowercaseString;
+    NSString* primaryText = [NSString stringWithFormat:@"%@ %@ %@ %@",
+        relative, item[@"title"] ?: @"", item[@"capture_name"] ?: @"", item[@"tags"] ?: @""].lowercaseString;
+    NSString* searchable = [NSString stringWithFormat:@"%@ %@", primaryText, item[@"description"] ?: @""].lowercaseString;
+    NSSet<NSString*>* wordSet = [NSSet setWithArray:[searchable componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet]];
+    auto matchesToken = [&](NSString* token, NSString* text) -> BOOL {
+      if (token.length <= 4) return [wordSet containsObject:token];
+      return [text containsString:token];
+    };
     NSUInteger score = 0;
-    for (NSString* token in promptTokens) if (token.length > 2 && [searchable containsString:token]) score += 3;
-    for (NSString* token in gearTokens) if ([searchable containsString:token]) score += 1;
+    for (NSString* token in promptTokens) {
+      if (matchesToken(token, primaryText)) score += 6;
+      else if (matchesToken(token, searchable)) score += 3;
+    }
+    for (NSString* token in gearTokens) {
+      if (matchesToken(token, primaryText)) score += 4;
+      else if (matchesToken(token, searchable)) score += 2;
+    }
+    if (score > 0 && stage == 1 && !wantsChainsawOrFuzz) {
+      NSString* fileLower = relative.lastPathComponent.lowercaseString;
+      if ([fileLower containsString:@"chainsaw"] || [fileLower containsString:@"jugendstil"] ||
+          [fileLower containsString:@"hm300"] || [fileLower containsString:@"pickle"] ||
+          [fileLower containsString:@"fuzz"]) {
+        score = score > 3 ? score - 3 : 1;
+      } else if ([fileLower containsString:@"noboost"] || [fileLower containsString:@"no-boost"] ||
+                 [fileLower containsString:@"od808"] || [fileLower containsString:@"ts9"]) {
+        score += 1;
+      }
+    }
     item[@"score"] = @(score);
     if (maxScores && score > maxScores[stage]) maxScores[stage] = score;
     [items addObject:item];
@@ -222,7 +266,8 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
   for (NSMutableDictionary* item in items) {
     NSUInteger stage = [item[@"stage"] unsignedIntegerValue];
     NSString* pack = [item[@"path"] stringByDeletingLastPathComponent];
-    if (counts[stage] >= caps[stage] || [packCounts[pack] unsignedIntegerValue] >= 3) continue;
+    const NSUInteger packCap = (stage == 1 && totals[1] > caps[1]) ? 2 : 3;
+    if (counts[stage] >= caps[stage] || [packCounts[pack] unsignedIntegerValue] >= packCap) continue;
     ++counts[stage];
     packCounts[pack] = @([packCounts[pack] unsignedIntegerValue] + 1);
     [item removeObjectForKey:@"score"];
@@ -306,7 +351,7 @@ NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt) {
     // Modern / Nu Metal / Slipknot
     {
       @[@"slipknot", @"before i forget", @"duality", @"psychosocial", @"jim root", @"mick thomson", @"iowa", @"subliminal verses", @"wait and bleed"],
-      @[@"rivera kr7", @"dual rectifier", @"rockerverb", @"diezel herbert", @"5150", @"v30"]
+      @[@"rivera knucklehead", @"rivera kr7", @"bogner uberschall", @"jim root", @"rockerverb", @"diezel vh4", @"diezel herbert", @"dual rectifier", @"5150", @"v30"]
     },
     // Thrash / Metallica
     {

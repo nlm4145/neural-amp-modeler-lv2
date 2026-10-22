@@ -507,10 +507,11 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
     return LV2_WORKER_SUCCESS;
   }
   rig->respondedGeneration[index] = message->generation;
-  const int desiredMode = rig->desiredStageMode(index);
+  const int desiredMode = Plugin::normalizeLoadMode(
+      message->stage, rig->desiredStageMode(index));
   const int responseMode = Plugin::normalizeLoadMode(message->stage,
                                                      message->oversampleMode);
-  if (responseMode != desiredMode) {
+  if (message->model && responseMode != desiredMode) {
     // The mode changed while an initial/path load was in flight, before
     // reloadModelsForOversample() had an installed model to reschedule.
     // Reuse the completed response's path and load it for the latest domain.
@@ -529,7 +530,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   pending.model = message->model;
   pending.ir = message->ir;
   pending.irRight = message->irRight;
-  pending.oversampleMode = responseMode;
+  pending.oversampleMode = message->model ? responseMode : desiredMode;
   pending.fullRig = message->fullRig;
   pending.nativeRate = message->nativeRate;
   std::memcpy(pending.path, message->path, MAX_FILE_NAME);
@@ -2038,12 +2039,22 @@ void Plugin::commitPendingSwitches() {
 void Plugin::reloadModelsForOversample() {
   // Re-send every loaded model path through the worker so the models are
   // re-created with the loader external rate matching the new domain.
+  // Never clobber an in-flight load (workResponse re-domains it on completion)
+  // or revive an old model path when a pending switch is already queued.
   for (size_t i = 0; i < kSerialStageCount; ++i) {
-    if (models[i] && !modelPaths[i].empty()) {
-      const size_t len = modelPaths[i].size();
-      const int mode = desiredStageMode(i);
-      if (len < MAX_FILE_NAME)
-        scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(), len, mode);
+    const Stage stage = static_cast<Stage>(i);
+    const int mode = normalizeLoadMode(stage, desiredStageMode(i));
+    const auto& pending = pendingSwitches[i];
+    if (pending.ready) {
+      const size_t len = strnlen(pending.path, MAX_FILE_NAME);
+      if (pending.model && len > 0 && len < MAX_FILE_NAME &&
+          normalizeLoadMode(stage, pending.oversampleMode) != mode) {
+        scheduleModelLoad(stage, pending.path, len, mode);
+      }
+    } else if (loadGeneration[i] == respondedGeneration[i] && models[i] &&
+               !irs[i] && osApplied[i] != mode && !modelPaths[i].empty() &&
+               modelPaths[i].size() < MAX_FILE_NAME) {
+      scheduleModelLoad(stage, modelPaths[i].c_str(), modelPaths[i].size(), mode);
     }
   }
 }

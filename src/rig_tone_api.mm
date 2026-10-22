@@ -470,11 +470,47 @@ Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, 
   }
 
   NSDictionary* targetModel = nil;
+  NSInteger bestModelScore = NSIntegerMin;
+  NSString* lowerQuery = query.lowercaseString ?: @"";
+  const BOOL wantsChainsawOrFuzz = [lowerQuery containsString:@"chainsaw"] || [lowerQuery containsString:@"hm2"] ||
+                                   [lowerQuery containsString:@"hm-2"] || [lowerQuery containsString:@"fuzz"] ||
+                                   [lowerQuery containsString:@"doom"] || [lowerQuery containsString:@"sludge"];
   for (NSDictionary* m in models) {
     if (![m isKindOfClass:NSDictionary.class]) continue;
     NSString* av = [m[@"architecture_version"] respondsToSelector:@selector(stringValue)]
         ? [m[@"architecture_version"] stringValue] : (m[@"architecture_version"] ?: @"");
-    if ([av isEqualToString:@"2"]) { targetModel = m; break; }
+    NSString* mName = [m[@"name"] isKindOfClass:NSString.class] ? [m[@"name"] lowercaseString] : @"";
+    NSInteger mScore = 0;
+    if ([av isEqualToString:@"2"]) mScore += 100;
+    else if ([av isEqualToString:@"custom"]) mScore += 50;
+    else if ([av isEqualToString:@"1"]) mScore += 20;
+    for (NSString* t in tokens) {
+      if (t.length > 2 && [mName containsString:t]) mScore += 15;
+    }
+    if (!wantsChainsawOrFuzz) {
+      if ([mName containsString:@"chainsaw"] || [mName containsString:@"jugendstil"] ||
+          [mName containsString:@"hm300"] || [mName containsString:@"hm-2"] ||
+          [mName containsString:@"hm2"] || [mName containsString:@"fuzz"] ||
+          [mName containsString:@"pickle"] || [mName containsString:@"swollen"] ||
+          [mName containsString:@"wendigo"] || [mName containsString:@"altar"]) {
+        mScore -= 80;
+      }
+      if ([mName containsString:@"noboost"] || [mName containsString:@"no boost"] ||
+          [mName containsString:@"no-boost"] || [mName containsString:@"direct"]) {
+        mScore += 20;
+      } else if ([mName containsString:@"od808"] || [mName containsString:@"ts9"] ||
+                 [mName containsString:@"sd-1"] || [mName containsString:@"sd1"]) {
+        mScore += 12;
+      }
+      if ([mName containsString:@"higain"] || [mName containsString:@"hi-gain"] ||
+          [mName containsString:@"high gain"] || [mName containsString:@"lead"]) {
+        mScore += 10;
+      }
+    }
+    if (mScore > bestModelScore) {
+      bestModelScore = mScore;
+      targetModel = m;
+    }
   }
   if (!targetModel) targetModel = models.firstObject;
 

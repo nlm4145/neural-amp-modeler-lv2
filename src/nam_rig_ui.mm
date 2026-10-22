@@ -6146,6 +6146,10 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       [[m.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
       [[m.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
     }
+    for (RigPanel* tb : {tileBoxes[0], tileBoxes[1], tileBoxes[2]}) {
+      [[tb.topAnchor constraintEqualToAnchor:boxRow.topAnchor] setActive:YES];
+      [[tb.bottomAnchor constraintEqualToAnchor:boxRow.bottomAnchor] setActive:YES];
+    }
 
     // Proportional stage tile widths, including the pedal header's minimum budget.
     [[tileBoxes[1].widthAnchor constraintEqualToAnchor:tileBoxes[0].widthAnchor

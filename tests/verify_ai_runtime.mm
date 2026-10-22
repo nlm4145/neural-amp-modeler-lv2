@@ -148,6 +148,10 @@ int main(int argc, char** argv) {
       }];
       CHECK(!scratchDone);
       // Only stage 1 (amp) changed from empty to a file; stages 0, 2, 3 remain empty (confirmedPaths == "").
+      // An intermediate stale confirmation for a previous non-empty path must not be treated as a rejection.
+      state.confirmedPaths[1] = "/tmp/previous_model.nam"; ++state.pathResponseSerial[1];
+      drain();
+      CHECK(!scratchDone);
       state.confirmedPaths[1] = model.fileSystemRepresentation; ++state.pathResponseSerial[1];
       drain();
       CHECK(scratchDone);
