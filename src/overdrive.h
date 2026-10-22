@@ -42,7 +42,7 @@ class Overdrive {
   static constexpr float kLevelMaxDb = 12.0f;
 
   void reset() noexcept {
-    bass_ = lp_ = tone_ = 0.0;
+    bass_ = lp_ = tone_ = bias_ = 0.0;
     smoothOn_ = smoothDrive_ = smoothTone_ = smoothLevel_ = 0.0f;
     smoothTight_ = kTightDefault;
     currentVoicing_ = targetVoicing_ = 0;
@@ -51,6 +51,10 @@ class Overdrive {
   }
 
   bool active() const noexcept { return smoothOn_ > 0.0f; }
+
+  // Dynamic self-biasing drift voltage across the feedback capacitor network (V).
+  // Settles dynamically during pick attack with ~25 ms time constant.
+  double dynamicBias() const noexcept { return bias_; }
 
   void process(float* samples, size_t count, double rate, float driveAmount,
                float toneAmount, float levelDb, bool enabled) noexcept {
@@ -113,6 +117,8 @@ class Overdrive {
       const double toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
       const double level = std::pow(10.0, smoothLevel_ / 20.0);
       const float fadeStep = static_cast<float>(1.0 / (std::max(1.0, rate) * 0.010));
+      // Dynamic bias drift tracking: tau = 25 ms virtual-ground sag / feedback cap memory
+      const double biasK = 1.0 - std::exp(-1.0 / (std::max(1.0, rate) * 0.025));
       // Ramp the engage fade per sample so it never zippers.
       double on = onStart;
       const double onStep = (static_cast<double>(smoothOn_) - onStart) / static_cast<double>(n);
@@ -122,12 +128,14 @@ class Overdrive {
         const double x = s[i];
         bass_ += hpK * (x - bass_);
         lp_ += lpK * ((x - bass_) - lp_);
+        // Clipper input is modulated by dynamic bias drift
+        const double u = g * lp_ - bias_;
         double clipped;
         if (voicingFade_ >= 1.0f) {
-          clipped = clip(g * lp_, currentVoicing_);
+          clipped = clip(u, currentVoicing_);
         } else {
-          const double c0 = clip(g * lp_, currentVoicing_);
-          const double c1 = clip(g * lp_, targetVoicing_);
+          const double c0 = clip(u, currentVoicing_);
+          const double c1 = clip(u, targetVoicing_);
           clipped = (1.0 - voicingFade_) * c0 + voicingFade_ * c1;
           voicingFade_ += fadeStep;
           if (voicingFade_ >= 1.0f) {
@@ -135,6 +143,8 @@ class Overdrive {
             currentVoicing_ = targetVoicing_;
           }
         }
+        // Leak integrator models dynamic self-biasing charge (tau = 25 ms, 15% coupling factor)
+        bias_ += biasK * (0.15 * clipped - bias_);
         const double pedal = x + smoothDrive_ * clipped;
         tone_ += toneK * (pedal - tone_);
         s[i] = static_cast<float>(x + on * (tone_ * level - x));
@@ -187,14 +197,14 @@ class Overdrive {
   static double feedbackLowPassHz(float drive01) noexcept {
     return 1.0 / (2.0 * kPi * (51.0e3 + driveOhms(drive01)) * 51.0e-12);
   }
-  // Soft diode limiting on the feedback branch with 4 authentic voicings:
-  // 0: Classic TS (symmetric silicon, Vth = 0.25V)
-  // 1: Asymmetric SD-1 (2 diodes pos 0.50V, 1 diode neg 0.25V -> even harmonics)
-  // 2: LED Turbo (red LEDs, Vth = 0.60V -> high headroom crunch)
-  // 3: Germanium (vintage Ge diodes, Vth = 0.15V -> warm early saturation)
+  // Soft diode limiting on the feedback branch with 4 authentic physical voicings:
+  // 0: Classic TS (symmetric silicon, Vth = 0.25V, conduction knee p = 2)
+  // 1: Asymmetric SD-1 (silicon diode array: 2 pos 0.50V, 1 neg 0.25V, p = 2)
+  // 2: LED Turbo (red LEDs, Vth = 0.60V, sharp forward conduction knee p = 4)
+  // 3: Germanium (vintage Ge diodes, Vth = 0.15V, soft warm compression knee p = 4/3)
   static double clip(double u, int voicing = 0) noexcept {
     switch (voicing) {
-      case 1: { // Asymmetric (SD-1 style)
+      case 1: { // Asymmetric SD-1 (silicon array, p = 2)
         if (u >= 0.0) {
           const double v = u / 0.50;
           return 0.50 * v / std::sqrt(1.0 + v * v);
@@ -203,15 +213,18 @@ class Overdrive {
           return 0.25 * v / std::sqrt(1.0 + v * v);
         }
       }
-      case 2: { // LED Turbo (High headroom)
+      case 2: { // LED Turbo (High headroom red LEDs with sharp knee p = 4)
         const double v = u / 0.60;
-        return 0.60 * v / std::sqrt(1.0 + v * v);
+        const double v2 = v * v;
+        return 0.60 * v / std::sqrt(std::sqrt(1.0 + v2 * v2));
       }
-      case 3: { // Germanium (Warm, early compression)
+      case 3: { // Germanium (Warm, early compression with soft vintage knee p = 4/3)
         const double v = u / 0.15;
-        return 0.15 * v / std::sqrt(1.0 + v * v);
+        const double absV = std::fabs(v);
+        const double z = 1.0 + absV * std::cbrt(absV);
+        return 0.15 * v / std::sqrt(z * std::sqrt(z));
       }
-      case 0:   // Classic TS (Symmetric silicon)
+      case 0:   // Classic TS (Symmetric silicon, p = 2)
       default: {
         const double v = u / kDiodeLevel;
         return kDiodeLevel * v / std::sqrt(1.0 + v * v);
@@ -234,7 +247,7 @@ class Overdrive {
     if (std::fabs(target - value) < 1.0e-5f) value = target;
   }
 
-  double bass_ = 0.0, lp_ = 0.0, tone_ = 0.0;
+  double bass_ = 0.0, lp_ = 0.0, tone_ = 0.0, bias_ = 0.0;
   float smoothOn_ = 0.0f, smoothDrive_ = 0.0f, smoothTight_ = kTightDefault, smoothTone_ = 0.0f, smoothLevel_ = 0.0f;
   int currentVoicing_ = 0, targetVoicing_ = 0;
   float voicingFade_ = 1.0f;

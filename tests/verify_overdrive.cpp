@@ -229,6 +229,26 @@ int main() {
     }
     check(maxPos > maxNeg * 1.15f, "SD-1 clips positive and negative half-cycles with asymmetric thresholds");
 
+    // Dynamic Bias Drift: SD-1 charges AC feedback memory under heavy pick attack; TS stays centered.
+    check(odSD1.dynamicBias() > 0.01, "SD-1 develops dynamic self-biasing drift (> 10 mV) on asymmetric pick attack");
+    check(std::fabs(odTS.dynamicBias()) < 0.001, "Classic TS has negligible dynamic bias drift (symmetric)");
+
+    // Dynamic Bias Decay: when signal decays, the leaky integrator discharges back toward 0V.
+    std::vector<float> silence(4800, 0.0f); // 100 ms at 48 kHz
+    odSD1.process(silence.data(), silence.size(), 48000.0, 80.0f, 50.0f, 0.0f, 720.0f, 1.0f);
+    check(odSD1.dynamicBias() < 0.002, "SD-1 dynamic bias decays back to zero over ~25 ms time constant");
+
+    // Physical Shockley diode conduction knee verification:
+    // LED Turbo (p = 4): sharp forward knee, high headroom at u = 0.50V (> 85% of threshold)
+    check(Overdrive::clip(0.50, 2) > 0.44 && Overdrive::clip(10.0, 2) <= 0.60,
+          "LED Turbo exhibits sharp p=4 conduction knee and 0.60V ceiling");
+    // Germanium (p = 4/3): soft early turn-on, compresses heavily at u = 0.15V (< 65% of threshold)
+    check(Overdrive::clip(0.15, 3) < 0.095 && Overdrive::clip(10.0, 3) <= 0.15,
+          "Germanium exhibits soft p=4/3 vintage knee with early warm compression");
+    // Classic TS (p = 2): standard silicon knee, exactly 0.25 / sqrt(2) at threshold
+    check(std::fabs(Overdrive::clip(0.25, 0) - 0.25 / std::sqrt(2.0)) < 1.0e-5,
+          "Classic TS exhibits authentic p=2 silicon diode conduction curve");
+
     // 2. LED Turbo has higher clipping threshold and higher headroom (less distortion at medium drive).
     auto xTS_med = xInput;
     auto xLED_med = xInput;
