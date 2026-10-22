@@ -75,7 +75,7 @@ static NSString* stageName(NSInteger stage) {
 #import "rig_tone_browser.h"
 #import "rig_tone_api.h"
 
-@interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate>
+@interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate, NSPopoverDelegate>
 @property(nonatomic, assign) RigUIState* state;
 @property(nonatomic, strong) NSPopUpButton* copilotProvPopup;
 @property(nonatomic, strong) NSComboBox* copilotModelComboBox;
@@ -211,6 +211,9 @@ static NSString* stageName(NSInteger stage) {
 @implementation NAMRigUIController
 - (void)switchTab:(NSButton*)sender {
   if (!_state) return;
+  if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
+    [_state->aiCopilotPopover close];
+  }
   _state->selectTab(sender.tag);
 }
 - (void)switchDeckTab:(NSButton*)sender {
@@ -2217,17 +2220,67 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 @implementation NAMRigUIController (AICopilot)
 
-- (void)openAICopilot:(id)sender {
-  if (!_state) return;
-  if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
-    ++self.copilotModelsRequestSerial;
+- (BOOL)popoverShouldClose:(NSPopover*)popover {
+  if (_state && popover == _state->aiCopilotPopover) {
+    if (![NSApp isActive] || [NSApp modalWindow] != nil) {
+      return NO;
+    }
+  }
+  return YES;
+}
+
+- (void)popoverWillClose:(NSNotification*)notification {
+  if (!_state || notification.object != _state->aiCopilotPopover) return;
+  if ([RigRiffRecorder sharedRecorder].isRecording || (self.copilotRiffTimer && self.copilotRecordCountdown > 0)) {
     [self.copilotRiffTimer invalidate];
     self.copilotRiffTimer = nil;
     self.copilotRecordCountdown = 0;
-    [RigAICopilot sharedCopilot].progressHandler = nil;
+    [self setCopilotLiveLine:nil];
     [[RigRiffRecorder sharedRecorder] stopRecording];
+  }
+  [[RigRiffRecorder sharedRecorder] stopPlayback];
+}
+
+- (void)openAICopilot:(id)sender {
+  if (!_state) return;
+  if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
+    if ([RigRiffRecorder sharedRecorder].isRecording || (self.copilotRiffTimer && self.copilotRecordCountdown > 0)) {
+      [self.copilotRiffTimer invalidate];
+      self.copilotRiffTimer = nil;
+      self.copilotRecordCountdown = 0;
+      [self setCopilotLiveLine:nil];
+      [[RigRiffRecorder sharedRecorder] stopRecording];
+    }
     [[RigRiffRecorder sharedRecorder] stopPlayback];
     [_state->aiCopilotPopover close];
+    return;
+  }
+
+  if (_state->aiCopilotPopover) {
+    __weak NAMRigUIController* weakProgressSelf = self;
+    [RigAICopilot sharedCopilot].progressHandler = ^(NSString* message) {
+      [weakProgressSelf appendCopilotLog:message];
+    };
+    const BOOL isProc = [RigAICopilot sharedCopilot].isProcessing;
+    self.copilotCancelBtn.enabled = isProc;
+    self.copilotApplyBtn.enabled = (self.copilotProposal != nil) && !isProc;
+    self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !isProc;
+    if (self.copilotProposal && !self.copilotPresetNameField.stringValue.length) {
+      self.copilotPresetNameField.stringValue = [self plannedCopilotPresetName];
+    }
+    [self updateCopilotRiffUI];
+    if (!isProc && _state->aiCopilotBtn) {
+      _state->aiCopilotBtn.title = @"✨ AI Tone Tuning";
+    }
+    NSView* anchorView = [sender isKindOfClass:[NSView class]] ? (NSView*)sender : _state->aiCopilotBtn;
+    if (!anchorView) anchorView = _state->view;
+    [_state->aiCopilotPopover showRelativeToRect:anchorView.bounds ofView:anchorView preferredEdge:NSRectEdgeMaxY];
+    if (isProc) [self.copilotSpinner startAnimation:nil];
+    else [self.copilotSpinner stopAnimation:nil];
+    if (self.copilotOutputView.string.length > 0) {
+      [self.copilotOutputView scrollRangeToVisible:NSMakeRange(self.copilotOutputView.string.length, 0)];
+    }
+    [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
     return;
   }
 
@@ -2480,13 +2533,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSViewController* vc = [[NSViewController alloc] init];
   vc.view = content;
   pop.contentViewController = vc;
-  pop.behavior = NSPopoverBehaviorTransient;
+  pop.behavior = NSPopoverBehaviorSemitransient;
+  pop.delegate = self;
   pop.contentSize = content.frame.size;
   _state->aiCopilotPopover = pop;
 
   NSView* anchorView = [sender isKindOfClass:[NSView class]] ? (NSView*)sender : _state->aiCopilotBtn;
   if (!anchorView) anchorView = _state->view;
   [pop showRelativeToRect:anchorView.bounds ofView:anchorView preferredEdge:NSRectEdgeMaxY];
+  if ([RigAICopilot sharedCopilot].isProcessing) [self.copilotSpinner startAnimation:nil];
   [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
 }
 
@@ -2709,6 +2764,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
   self.copilotDialBtn.enabled = NO;
   [self.copilotSpinner startAnimation:nil];
+  if (_state->aiCopilotBtn) _state->aiCopilotBtn.title = @"⏳ AI Tone Tuning…";
 
   NSString* localCLI = config.allowLocalCLI ? [RigAICopilot detectLocalCLIForProvider:config.provider] : nil;
   RigPreset* live = [RigPreset captureFromState:_state name:_state->presetManager.currentPresetName ?: @"Current rig"];
@@ -2778,24 +2834,35 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     [weakSelf.copilotSpinner stopAnimation:nil];
     weakSelf.copilotDialBtn.enabled = YES;
     weakSelf.copilotCancelBtn.enabled = NO;
+    RigUIState* st = weakSelf.state;
 
     if (err) {
+      if (st && st->aiCopilotBtn) st->aiCopilotBtn.title = @"✨ AI Tone Tuning";
       [weakSelf appendCopilotLog:[NSString stringWithFormat:@"❌ FAILED — %@", err.localizedDescription]];
       [weakSelf appendCopilotLog:@"Nothing was changed. Fix the issue above and press Preview Tone again."];
       [weakSelf updateCopilotRiffUI];
       return;
     }
 
-    if (!res) { [weakSelf appendCopilotLog:@"❌ FAILED — no tone proposal returned."]; return; }
+    if (!res) {
+      if (st && st->aiCopilotBtn) st->aiCopilotBtn.title = @"✨ AI Tone Tuning";
+      [weakSelf appendCopilotLog:@"❌ FAILED — no tone proposal returned."];
+      return;
+    }
     NSError* presetError = nil;
     res.proposedPreset = [RigAICopilot presetForResult:res base:base error:&presetError];
     if (!res.proposedPreset) {
+      if (st && st->aiCopilotBtn) st->aiCopilotBtn.title = @"✨ AI Tone Tuning";
       [weakSelf appendCopilotLog:[NSString stringWithFormat:@"❌ FAILED — invalid proposal: %@", presetError.localizedDescription]];
       [weakSelf appendCopilotLog:@"Nothing was changed. Press Preview Tone to request a new proposal."];
       return;
     }
     weakSelf.copilotProposal = res;
     weakSelf.copilotApplyBtn.enabled = YES;
+    if (st && st->aiCopilotBtn) {
+      const BOOL shown = st->aiCopilotPopover && st->aiCopilotPopover.isShown;
+      st->aiCopilotBtn.title = shown ? @"✨ AI Tone Tuning" : @"✨ AI Tone Ready";
+    }
     [[RigAICopilot sharedCopilot] completeCurrentTaskWithResult:res savedPresetName:nil];
     weakSelf.copilotPresetNameField.stringValue = @"";
     NSString* plannedName = [weakSelf plannedCopilotPresetName];
@@ -6094,6 +6161,13 @@ void cleanup(LV2UI_Handle handle) {
     state->stopKeyEventMonitor();
     state->stopABTimer();   // invalidate the A/B timer before teardown (do not call stopAB() which queues UI rebuilds)
     if (state->uiController) {
+      [state->uiController.copilotRiffTimer invalidate];
+      state->uiController.copilotRiffTimer = nil;
+      [RigAICopilot sharedCopilot].progressHandler = nil;
+      if (state->aiCopilotPopover && state->aiCopilotPopover.isShown) {
+        [state->aiCopilotPopover close];
+      }
+      state->aiCopilotPopover = nil;
       state->uiController.state = nullptr;
     }
     if (state->browserController) {

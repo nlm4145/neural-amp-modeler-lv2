@@ -298,6 +298,7 @@ static NSString* titleCasedString(NSString* s) {
 }
 @property(nonatomic, assign) BOOL isProcessing;
 @property(nonatomic, assign) BOOL isApplying;
+@property(nonatomic, strong) id<NSObject> processActivityToken;
 @property(nonatomic, strong) NSURLSessionDataTask* networkTask;
 @property(nonatomic, strong) NSTask* cliTask;
 @property(nonatomic, copy) NSString* requestID;
@@ -689,6 +690,10 @@ static const NSUInteger kRigAICatalogLimit = 48;
   NSAssert(NSThread.isMainThread, @"AI completion must be on main thread");
   if (![self.requestID isEqualToString:requestID]) return; // Cancelled/superseded response.
   self.isProcessing = NO;
+  if (self.processActivityToken) {
+    [[NSProcessInfo processInfo] endActivity:self.processActivityToken];
+    self.processActivityToken = nil;
+  }
   self.networkTask = nil;
   self.cliTask = nil;
   self.requestID = nil;
@@ -1152,6 +1157,10 @@ static const NSUInteger kRigAICatalogLimit = 48;
   }
 
   self.isProcessing = YES;
+  if (!self.processActivityToken) {
+    self.processActivityToken = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated
+                                                                               reason:@"Axe FX AI Tone Tuning in progress"];
+  }
   NSString* requestID = NSUUID.UUID.UUIDString;
   self.requestID = requestID;
   self.pendingCompletion = completionHandler;
