@@ -373,14 +373,20 @@ static NSString* titleCasedString(NSString* s) {
 @property(nonatomic, assign) BOOL isApplying;
 @property(nonatomic, strong) id<NSObject> processActivityToken;
 @property(nonatomic, strong) NSURLSessionDataTask* networkTask;
+@property(nonatomic, strong) NSURLSession* networkSession;
 @property(nonatomic, strong) NSTask* cliTask;
 @property(nonatomic, copy) NSString* requestID;
 @property(nonatomic, copy) void (^pendingCompletion)(RigAICopilotResult*, NSError*);
 @property(nonatomic, strong) NSDate* requestStartedAt;
+@property(nonatomic, strong) NSDate* nextPathStatusRefresh;
+@property(nonatomic) BOOL pathStatusRefreshRequested;
 - (void)reportProgress:(NSString*)message;
 @end
 
 static const NSUInteger kRigAICatalogLimit = 48;
+// Headroom for complete rig JSON and provider reasoning tokens. This is a
+// ceiling, not a requested reply length; usage is billed on actual generation.
+static const NSUInteger kRigAIOutputTokenLimit = 8192;
 
 @implementation RigAICopilot
 
@@ -716,7 +722,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
   [sys appendString:rigAIControlReference()];
   [sys appendString:
     @"\n\nOUTPUT FORMAT REQUIREMENTS:\n"
-    @"You MUST respond with a valid JSON object only (no outer markdown conversational fluff, or wrap only in ```json ... ```). "
+     @"You MUST respond with a complete valid JSON object only: no Markdown code fences or conversational fluff. Keep thought to at most 120 words and explanation to at most 80 words; list only changed controls, not the full control reference. "
     @"The JSON schema must match:\n"
     @"{\n"
     @"  \"preset_name\": \"Concise preset title formatted as '<Artist> - <Song>' or '<Artist> - <Album>' (e.g. 'Metallica - Master of Puppets', 'Lamb of God - Redneck', 'Van Halen - 1984', or 'Modern High-Gain Metal Rhythm')\",\n"
@@ -1526,7 +1532,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
       @"messages": @[
         @{@"role": @"user", @"content": userMessage}
       ],
-      @"max_tokens": @2048
+      @"max_tokens": @(kRigAIOutputTokenLimit)
     }];
     if (supportsTemp) {
       cBody[@"temperature"] = @(cfg.temperature);
@@ -1545,7 +1551,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
     }
     NSMutableDictionary* genCfg = [NSMutableDictionary dictionaryWithDictionary:@{
       @"response_mime_type": @"application/json",
-      @"maxOutputTokens": @2048
+      @"maxOutputTokens": @(kRigAIOutputTokenLimit)
     }];
     if (supportsTemp) {
       genCfg[@"temperature"] = @(cfg.temperature);
@@ -1584,7 +1590,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
           @"content": parts
         }
       ],
-      @"max_tokens": @2048
+      @"max_tokens": @(kRigAIOutputTokenLimit)
     }];
     if (supportsTemp) {
       oBody[@"temperature"] = @(cfg.temperature);
@@ -1606,7 +1612,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
         @{@"role": @"user", @"content": userMessage}
       ],
       @"response_format": @{@"type": @"json_object"},
-      @"max_tokens": @2048
+      @"max_tokens": @(kRigAIOutputTokenLimit)
     }];
     if (supportsTemp) {
       generalBody[@"temperature"] = @(cfg.temperature);
@@ -1617,7 +1623,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
   if ([provider isEqual:@"openai"]) {
     NSMutableDictionary* body = [reqBody mutableCopy];
     [body removeObjectForKey:@"max_tokens"];
-    body[@"max_completion_tokens"] = @2048;
+    body[@"max_completion_tokens"] = @(kRigAIOutputTokenLimit);
     if (!supportsTemp) {
       [body removeObjectForKey:@"temperature"];
     }
@@ -1654,7 +1660,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
       url.host, url.path, cfgModel, request.HTTPBody.length / 1024.0,
       audioClips.count ? [NSString stringWithFormat:@", %lu audio clip(s)", (unsigned long)audioClips.count] : @", text only"]];
   __weak RigAICopilot* weakSelf = self;
-  NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+  NSURLSessionDataTask* task = [(self.networkSession ?: NSURLSession.sharedSession) dataTaskWithRequest:request
       completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
         dispatch_async(dispatch_get_main_queue(), ^{
           if (![weakSelf.requestID isEqualToString:requestID]) return;
@@ -1807,6 +1813,10 @@ static const NSUInteger kRigAICatalogLimit = 48;
               (long)inTok, (long)outTok, totCost]];
 
           NSError* finalErr = nil;
+          if (!rigAIValidateProviderCompletion(respDict, &finalErr)) {
+            [weakSelf finishRequest:requestID result:nil error:finalErr];
+            return;
+          }
           RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:content error:&finalErr];
           if (res) {
             res.inputTokens = inTok;
@@ -2002,6 +2012,8 @@ static const NSUInteger kRigAICatalogLimit = 48;
   }
   BOOL ready = YES;
   BOOL failed = NO;
+  NSMutableArray<NSString*>* unresolved = [NSMutableArray array];
+  const char* roles[] = {"Pedal", "Amp", "Cab A", "Cab B"};
   for (size_t stage = 0; stage < 4; ++stage) {
     NSString* path = result.proposedPreset ? @([result.proposedPreset stageAtIndex:stage]->path.c_str()) :
         (stage == 0 ? result.pedalPath : (stage == 1 ? result.ampPath : (stage == 2 ? result.cabPath : nil)));
@@ -2012,6 +2024,13 @@ static const NSUInteger kRigAICatalogLimit = 48;
           @"Model selection changed during application. No preset was saved; your newer selection was preserved."}]);
       return;
     }
+    if (state->confirmedPaths[stage] != targetPath) {
+      NSString* reported = [NSString stringWithUTF8String:state->confirmedPaths[stage].c_str()];
+      [unresolved addObject:[NSString stringWithFormat:@"%s: requested %@; engine reports %@%@",
+          roles[stage], path.length ? path.lastPathComponent : @"none",
+          reported.length ? reported.lastPathComponent : @"none",
+          state->pathResponseSerial[stage] <= serials[stage] ? @" (no new acknowledgement)" : @""]];
+    }
     if (state->pathResponseSerial[stage] <= serials[stage]) {
       if (state->confirmedPaths[stage] == targetPath) continue;
       ready = NO;
@@ -2020,7 +2039,9 @@ static const NSUInteger kRigAICatalogLimit = 48;
     if (state->confirmedPaths[stage] != targetPath) {
       // The engine reports a rejected model load as an empty path (""). A non-empty
       // mismatch is an earlier in-flight confirmation from before the new path settled.
-      if (!targetPath.empty() && state->confirmedPaths[stage].empty()) {
+      // Once Get polling starts, an empty path can be a snapshot of a stage
+      // that is still loading, not an explicit rejection. Wait to the deadline.
+      if (!self.pathStatusRefreshRequested && !targetPath.empty() && state->confirmedPaths[stage].empty()) {
         failed = YES;
         break;
       }
@@ -2029,16 +2050,24 @@ static const NSUInteger kRigAICatalogLimit = 48;
     }
   }
   if (failed || (!ready && deadline.timeIntervalSinceNow <= 0)) {
+    NSString* details = [unresolved componentsJoinedByString:@"; "];
+    if (details.length) [self reportProgress:[@"Unconfirmed model stages — " stringByAppendingString:details]];
     [self reportProgress:failed ? @"Engine rejected a requested model; restoring the previous rig." :
         @"Engine did not confirm the model loads within 10 s; restoring the previous rig."];
     [before applyToState:state];
     state->markModified();
     completion([NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:
-        @"The engine could not confirm the requested models. The previous rig was restored; no preset was saved."}]);
+        [NSString stringWithFormat:@"The engine could not confirm the requested models (%@). The previous rig was restored; no preset was saved.", details]}]);
   } else if (ready) {
     [self reportProgress:@"Engine confirmed every model load."];
     completion(nil);
   } else {
+    if (self.nextPathStatusRefresh && self.nextPathStatusRefresh.timeIntervalSinceNow <= 0) {
+      if (!self.pathStatusRefreshRequested) [self reportProgress:@"Refreshing engine model status while waiting for confirmation…"];
+      self.pathStatusRefreshRequested = YES;
+      state->sendGet();
+      self.nextPathStatusRefresh = [NSDate dateWithTimeIntervalSinceNow:1];
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
       [self waitForPaths:result state:state alive:alive serials:serials before:before deadline:deadline completion:completion];
     });
@@ -2062,7 +2091,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
         (stage == 0 ? result.pedalPath : (stage == 1 ? result.ampPath : (stage == 2 ? result.cabPath : nil)));
     if (!result.proposedPreset && !path.length) continue;
     const std::string targetPath = path.length ? std::string(path.fileSystemRepresentation) : std::string();
-    if (state->pathResponseSerial[stage] <= serials[stage] && state->confirmedPaths[stage] != targetPath) {
+    if (state->confirmedPaths[stage] != targetPath) {
       needsAsyncModelWait = YES;
       break;
     }
@@ -2073,10 +2102,13 @@ static const NSUInteger kRigAICatalogLimit = 48;
   }
 
   self.isApplying = YES;
+  self.pathStatusRefreshRequested = NO;
+  self.nextPathStatusRefresh = [NSDate dateWithTimeIntervalSinceNow:1];
   [self reportProgress:@"Waiting for the engine to acknowledge model loads (up to 10 s)…"];
   [self waitForPaths:result state:state alive:state->isAlive serials:serials before:before
       deadline:[NSDate dateWithTimeIntervalSinceNow:10] completion:^(NSError* error) {
         self.isApplying = NO;
+        self.nextPathStatusRefresh = nil;
         completionHandler(error);
       }];
 }

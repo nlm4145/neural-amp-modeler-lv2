@@ -10,6 +10,11 @@
 
 @protocol AIPrivate
 - (void)finishRequest:(NSString*)requestID result:(RigAICopilotResult*)result error:(NSError*)error;
+- (void)waitForPaths:(RigAICopilotResult*)result state:(RigUIState*)state
+              alive:(std::shared_ptr<bool>)alive serials:(std::array<uint64_t, 4>)serials
+             before:(RigPreset*)before deadline:(NSDate*)deadline completion:(void (^)(NSError*))completion;
+- (void)sendPrompt:(NSString*)userMessage systemPrompt:(NSString*)systemPrompt config:(RigAIConfig*)config
+         localCLI:(NSString*)localCLI audioClips:(NSArray*)clips requestID:(NSString*)requestID;
 @end
 @protocol LocalPrivate
 - (void)handleClientSocket:(int)socket;
@@ -45,6 +50,36 @@ static id isolatedKeychain(id, SEL, id) {
            (__bridge id)kSecAttrService: @"Axe FX AI Test", (__bridge id)kSecAttrAccount: configPath};
 }
 static void writeControl(LV2UI_Controller handle, uint32_t, uint32_t, uint32_t, const void*) { ++*static_cast<int*>(handle); }
+static NSDictionary* toneFixtureReply;
+static NSMutableArray<NSDictionary*>* toneFixtureBodies;
+
+@interface ToneFixtureProtocol : NSURLProtocol
+@end
+@implementation ToneFixtureProtocol
++ (BOOL)canInitWithRequest:(NSURLRequest*)request { return YES; }
++ (NSURLRequest*)canonicalRequestForRequest:(NSURLRequest*)request { return request; }
+- (void)startLoading {
+  NSData* body = self.request.HTTPBody;
+  if (!body && self.request.HTTPBodyStream) {
+    NSInputStream* stream = self.request.HTTPBodyStream;
+    NSMutableData* bytes = [NSMutableData data];
+    [stream open]; uint8_t buffer[4096]; NSInteger n;
+    while ((n = [stream read:buffer maxLength:sizeof(buffer)]) > 0) [bytes appendBytes:buffer length:n];
+    [stream close]; body = bytes;
+  }
+  NSDictionary* parsed = body ? [NSJSONSerialization JSONObjectWithData:body options:0 error:nil] : nil;
+  NSDictionary* reply;
+  @synchronized(ToneFixtureProtocol.class) {
+    [toneFixtureBodies addObject:parsed ?: @{}]; reply = toneFixtureReply;
+  }
+  NSHTTPURLResponse* response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:200
+      HTTPVersion:@"HTTP/1.1" headerFields:nil];
+  [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+  [self.client URLProtocol:self didLoadData:[NSJSONSerialization dataWithJSONObject:reply options:0 error:nil]];
+  [self.client URLProtocolDidFinishLoading:self];
+}
+- (void)stopLoading {}
+@end
 
 int main(int argc, char** argv) {
   @autoreleasepool {
@@ -148,6 +183,37 @@ int main(int argc, char** argv) {
     state.confirmedPaths[1] = model.fileSystemRepresentation; ++state.pathResponseSerial[1];
     drain();
     CHECK(confirmedLoad);
+    // A lost one-shot notification triggers Get polling, without retrying the
+    // model load or the AI request. An empty Get snapshot is not load rejection.
+    state.confirmedPaths[1].clear();
+    __block BOOL refreshedLoad = NO;
+    [copilot applyResult:result toState:&state completionHandler:^(NSError* failure) {
+      CHECK(!failure); refreshedLoad = YES;
+    }];
+    int beforeRefresh = writes;
+    [copilot setValue:[NSDate distantPast] forKey:@"nextPathStatusRefresh"];
+    drain();
+    CHECK(writes == beforeRefresh + 1 && !refreshedLoad && copilot.isApplying);
+    CHECK([[copilot valueForKey:@"pathStatusRefreshRequested"] boolValue]);
+    ++state.pathResponseSerial[1]; // Engine still has no amp while the load is pending.
+    drain();
+    CHECK(!refreshedLoad && copilot.isApplying);
+    state.confirmedPaths[1] = model.fileSystemRepresentation; ++state.pathResponseSerial[1];
+    drain();
+    CHECK(refreshedLoad && !copilot.isApplying);
+    // Timeout diagnostics identify the unresolved stage and the actual engine
+    // path, and rollback is preserved. Use an expired deadline, not a 10s sleep.
+    RigPreset* timeoutBefore = [presetClass defaultPreset];
+    state.confirmedPaths[1] = "/previous/amp.nam";
+    const auto timeoutSerials = state.pathResponseSerial;
+    __block BOOL timedOut = NO;
+    [(id<AIPrivate>)copilot waitForPaths:result state:&state alive:state.isAlive serials:timeoutSerials
+        before:timeoutBefore deadline:[NSDate distantPast] completion:^(NSError* failure) {
+      CHECK(failure && [failure.localizedDescription containsString:@"Amp: requested broken.nam"]);
+      CHECK([failure.localizedDescription containsString:@"engine reports amp.nam"]);
+      timedOut = YES;
+    }];
+    CHECK(timedOut && state.selectedPaths[1].empty());
     result.ampPath = nil;
     state.selectedPaths[1].clear();
     state.confirmedPaths[1].clear();
@@ -349,6 +415,60 @@ int main(int argc, char** argv) {
     CHECK(modelsBox.numberOfItems == 2);
     method_setImplementation(fetchMethod, originalFetch);
     [modelCallbacks removeAllObjects];
+    // Exercise real request construction and HTTP completion against an
+    // in-memory transport. No provider calls, user keys, or paid retries.
+    NSURLSessionConfiguration* transportConfig = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    transportConfig.protocolClasses = @[ToneFixtureProtocol.class];
+    NSURLSession* transport = [NSURLSession sessionWithConfiguration:transportConfig];
+    [copilot setValue:transport forKey:@"networkSession"];
+    toneFixtureBodies = [NSMutableArray array];
+    NSString* completeJSON = @"{\"preset_name\":\"Test\",\"controls\":{\"bass\":-2}}";
+    for (NSString* provider in @[@"claude", @"openai", @"gemini", @"custom", @"truncated-claude"]) {
+      BOOL truncated = [provider hasPrefix:@"truncated"];
+      NSString* actualProvider = truncated ? @"claude" : provider;
+      RigAIConfig* requestConfig = [configClass defaultConfig];
+      requestConfig.provider = actualProvider; requestConfig.apiKey = @"fixture-only";
+      requestConfig.model = [actualProvider isEqual:@"claude"] ? @"claude-opus-5-5" :
+          ([actualProvider isEqual:@"gemini"] ? @"gemini-test" : @"gpt-4o");
+      requestConfig.baseURL = @"https://fixture.invalid/v1";
+      NSDictionary* reply;
+      if ([actualProvider isEqual:@"claude"]) {
+        reply = @{@"content":@[@{@"type":@"text", @"text":truncated ? @"```json\n{\"controls\":" :
+            [@"```json\n" stringByAppendingString:completeJSON]}],
+            @"stop_reason":truncated ? @"max_tokens" : @"end_turn",
+            @"usage":@{@"input_tokens":@100, @"output_tokens":truncated ? @8192 : @50}};
+      } else if ([actualProvider isEqual:@"gemini"]) {
+        reply = @{@"candidates":@[@{@"content":@{@"parts":@[@{@"text":completeJSON}]}, @"finishReason":@"STOP"}],
+            @"usageMetadata":@{@"promptTokenCount":@100, @"candidatesTokenCount":@50}};
+      } else {
+        reply = @{@"choices":@[@{@"message":@{@"content":completeJSON}, @"finish_reason":@"stop"}],
+            @"usage":@{@"prompt_tokens":@100, @"completion_tokens":@50}};
+      }
+      @synchronized(ToneFixtureProtocol.class) { toneFixtureReply = reply; }
+      NSString* requestID = NSUUID.UUID.UUIDString;
+      [copilot setValue:requestID forKey:@"requestID"];
+      [copilot setValue:@YES forKey:@"isProcessing"];
+      __block int requestCompletions = 0;
+      [copilot setValue:[^(RigAICopilotResult* response, NSError* failure) {
+        ++requestCompletions;
+        if (truncated) CHECK(!response && [failure.localizedDescription containsString:@"output-token limit"]);
+        else CHECK(response && !failure && response.controls[@"bass"].floatValue == -2);
+      } copy] forKey:@"pendingCompletion"];
+      NSUInteger requestsBefore = toneFixtureBodies.count;
+      NSArray* clips = [actualProvider isEqual:@"gemini"] ? @[@{@"label":@"DI", @"mime":@"audio/wav", @"data":NSData.data}] : @[];
+      [(id<AIPrivate>)copilot sendPrompt:@"test" systemPrompt:@"return JSON" config:requestConfig
+          localCLI:nil audioClips:clips requestID:requestID];
+      NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+      while (!requestCompletions && deadline.timeIntervalSinceNow > 0) drain();
+      CHECK(requestCompletions == 1 && !copilot.isProcessing);
+      CHECK(toneFixtureBodies.count == requestsBefore + 1);
+      NSDictionary* body = toneFixtureBodies.lastObject;
+      NSNumber* limit = [actualProvider isEqual:@"gemini"] ? body[@"generationConfig"][@"maxOutputTokens"] :
+          ([actualProvider isEqual:@"openai"] ? body[@"max_completion_tokens"] : body[@"max_tokens"]);
+      CHECK(limit.unsignedIntegerValue == 8192);
+    }
+    [copilot setValue:nil forKey:@"networkSession"];
+    [transport invalidateAndCancel];
     // Do not execute a user's CLI or send requests: completion/cancellation above use injected lifecycle state.
     // Raw socket route tests: no server startup/token writes, no live networking.
     id server = [NSClassFromString(@"RigLocalServer") new];

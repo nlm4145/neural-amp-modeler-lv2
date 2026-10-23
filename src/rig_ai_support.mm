@@ -47,6 +47,25 @@ BOOL rigAIValidateControls(NSDictionary* controls, NSError** error) {
   return YES;
 }
 
+BOOL rigAIValidateProviderCompletion(NSDictionary* response, NSError** error) {
+  id reason = response[@"stop_reason"];
+  if (![reason isKindOfClass:NSString.class]) {
+    NSArray* choices = [response[@"choices"] isKindOfClass:NSArray.class] ? response[@"choices"] : @[];
+    NSDictionary* choice = [choices.firstObject isKindOfClass:NSDictionary.class] ? choices.firstObject : @{};
+    reason = choice[@"finish_reason"];
+  }
+  if (![reason isKindOfClass:NSString.class]) {
+    NSArray* candidates = [response[@"candidates"] isKindOfClass:NSArray.class] ? response[@"candidates"] : @[];
+    NSDictionary* candidate = [candidates.firstObject isKindOfClass:NSDictionary.class] ? candidates.firstObject : @{};
+    reason = candidate[@"finishReason"];
+  }
+  if ([reason isKindOfClass:NSString.class] &&
+      [@[@"max_tokens", @"length", @"max_output_tokens"] containsObject:[reason lowercaseString]]) {
+    return fail(error, @"The provider stopped at the output-token limit before completing the tone proposal. The incomplete reply was not applied. This is a response-budget issue, not your prompt; no automatic paid retry was made.");
+  }
+  return YES;
+}
+
 RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   if (![content isKindOfClass:NSString.class] || !content.length || content.length > 65536) {
     fail(error, @"AI response is empty, oversized, or not text.");
@@ -65,12 +84,13 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
     }
   }
 
-  if ([json hasPrefix:@"```json\n"] || [json hasPrefix:@"```\n"]) {
+  if ([json hasPrefix:@"```json\n"] || [json hasPrefix:@"```\n"] ||
+      [json hasPrefix:@"```json\r\n"] || [json hasPrefix:@"```\r\n"]) {
     NSRange newline = [json rangeOfString:@"\n"];
-    if (![json hasSuffix:@"```"] || json.length < newline.location + 4) {
-      fail(error, @"Unclosed JSON code fence."); return nil;
-    }
-    json = [json substringWithRange:NSMakeRange(newline.location + 1, json.length - newline.location - 4)];
+    json = [json substringFromIndex:newline.location + 1];
+    if ([json hasSuffix:@"```"]) json = [json substringToIndex:json.length - 3];
+    // A missing Markdown closing fence is harmless only if the entire JSON
+    // object is valid. Never invent braces/values or accept partial controls.
   }
   id object = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding]
       options:0 error:error];
@@ -762,4 +782,3 @@ BOOL rigAIProviderModelSupportsTemperature(NSString* provider, NSString* model) 
   }
   return YES;
 }
-

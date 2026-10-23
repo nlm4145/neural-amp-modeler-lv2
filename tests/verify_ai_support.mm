@@ -31,6 +31,22 @@ int main(int argc, char** argv) {
     NSString* json = @"{\"controls\":{\"bass\":-2,\"od_tone\":62},\"amp_model\":\"Amp/A/clean.nam\"}";
     CHECK(rigAIParseResponse(json, nil).controls[@"od_tone"].floatValue == 62);
     CHECK(rigAIParseResponse([NSString stringWithFormat:@"```json\n%@\n```", json], nil));
+    CHECK(rigAIParseResponse([NSString stringWithFormat:@"```json\n%@", json], nil));
+    CHECK(rigAIParseResponse([NSString stringWithFormat:@"```json\r\n%@\r\n```", json], nil));
+    CHECK(!rigAIParseResponse(@"```json\n{\"controls\":{\"bass\":-2", nil));
+    CHECK(!rigAIParseResponse([NSString stringWithFormat:@"```json\n%@\nextra text", json], nil));
+    for (NSDictionary* response in @[
+        @{@"stop_reason":@"max_tokens"},
+        @{@"choices":@[@{@"finish_reason":@"length"}]},
+        @{@"candidates":@[@{@"finishReason":@"MAX_TOKENS"}]}]) {
+      error = nil;
+      CHECK(!rigAIValidateProviderCompletion(response, &error));
+      CHECK([error.localizedDescription containsString:@"output-token limit"]);
+    }
+    for (NSDictionary* response in @[@{}, @{@"stop_reason":@"end_turn"},
+        @{@"choices":@[@{@"finish_reason":@"stop"}]}, @{@"candidates":@[@{@"finishReason":@"STOP"}]},
+        @{@"stop_reason":NSNull.null, @"choices":@[NSNull.null]}])
+      CHECK(rigAIValidateProviderCompletion(response, nil));
     NSString* searchJson = @"{\"controls\":{\"bass\":0},\"search_tone3000\":\"Mick Thomson Slipknot\"}";
     RigAICopilotResult* searchRes = rigAIParseResponse(searchJson, nil);
     CHECK(searchRes && [searchRes.searchTone3000 isEqualToString:@"Mick Thomson Slipknot"]);

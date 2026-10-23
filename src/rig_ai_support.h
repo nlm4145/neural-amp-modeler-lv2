@@ -10,6 +10,8 @@
 NSString* rigAIControlReference();
 BOOL rigAIValidateControls(NSDictionary* controls, NSError** error);
 RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error);
+// Reject provider-declared output truncation before parsing incomplete JSON.
+BOOL rigAIValidateProviderCompletion(NSDictionary* response, NSError** error);
 NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, NSUInteger limit);
 // Same shortlist plus the installed per-stage totals (index 0 pedal, 1 amp, 2 cab) so the
 // prompt can state whether the catalog is complete or a ranked excerpt.
