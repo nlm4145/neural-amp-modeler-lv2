@@ -54,6 +54,8 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 
 + (instancetype)defaultConfig;
 + (instancetype)loadFromDisk;
++ (NSString*)configFilePath;
++ (NSString*)keysFilePath;
 + (NSString*)defaultBaseURLForProvider:(NSString*)provider;
 + (NSString*)storedApiKeyForProvider:(NSString*)provider;
 - (BOOL)saveToDisk:(NSError**)error;

@@ -2530,7 +2530,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
   [content addSubview:self.copilotGuitarInfo];
   self.copilotModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, popH - 402, 500, 24)];
-  [self.copilotModePopup addItemsWithTitles:@[@"Modify current preset (load your saved preset first)", @"Build from scratch (neutral base; live rig unchanged until Apply)", @"Refine last proposal (same base as the DI audition)"]];
+  [self.copilotModePopup addItemsWithTitles:@[@"New preset (build from scratch; neutral base)", @"Modify current preset (load your saved preset first)", @"Refine last proposal (same base as the DI audition)"]];
   [content addSubview:self.copilotModePopup];
   self.copilotLocalMatchBtn = rigButton(content, @"Learn & Match", self, @selector(matchCopilotLocally:), NSMakeRect(20, popH - 436, 125, 26));
   self.copilotLocalMatchBtn.toolTip = @"Train and compare locally: your raw guitar recording + target guitar sound. No cloud AI request or upload. May take minutes.";
@@ -2855,7 +2855,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }
   RigPreset* previousProposal = self.copilotProposal.proposedPreset;
   if (self.copilotModePopup.indexOfSelectedItem == 2 && !previousProposal) {
-    [self resetCopilotLog:@"Generate a proposal first, or select Modify current / Build from scratch."]; return;
+    [self resetCopilotLog:@"Generate a proposal first, or select New preset / Modify current preset."]; return;
   }
 
   // Auto-save any edited config fields first
@@ -2884,7 +2884,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSString* localCLI = config.allowLocalCLI ? [RigAICopilot detectLocalCLIForProvider:config.provider] : nil;
   RigPreset* live = [RigPreset captureFromState:_state name:_state->presetManager.currentPresetName ?: @"Current rig"];
   self.copilotBaseContext = [RigAICopilot contextForPreset:live compact:NO];
-  self.copilotBasePreset = self.copilotModePopup.indexOfSelectedItem == 1 ? [RigPreset defaultPreset] :
+  self.copilotBasePreset = self.copilotModePopup.indexOfSelectedItem == 0 ? [RigPreset defaultPreset] :
       (self.copilotModePopup.indexOfSelectedItem == 2 ? previousProposal : live);
   NSMutableString* desc = [NSMutableString string];
   [desc appendFormat:@"REQUEST MODE: %@. The supplied base preset defines what will be applied; do not assume the live rig is that base.\n",

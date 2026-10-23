@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <signal.h>
 #include <memory>
+#include <sys/stat.h>
 #import <Security/Security.h>
 #import "rig_ai_support.h"
 #import "rig_ai_model_catalog.h"
@@ -30,6 +31,46 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
                                              attributes:nil
                                                   error:nil];
   return [dir stringByAppendingPathComponent:@"ai-config.json"];
+}
+
++ (NSString*)keysFilePath {
+  NSString* dir = [[self configFilePath] stringByDeletingLastPathComponent];
+  return [dir stringByAppendingPathComponent:@"ai-keys.json"];
+}
+
++ (NSMutableDictionary<NSString*, NSString*>*)cachedKeysFromDisk {
+  @synchronized(self) {
+    NSString* path = [self keysFilePath];
+    NSData* data = [NSData dataWithContentsOfFile:path];
+    if (!data) return [NSMutableDictionary dictionary];
+    NSError* err = nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
+    if ([json isKindOfClass:[NSDictionary class]]) {
+      NSMutableDictionary<NSString*, NSString*>* result = [NSMutableDictionary dictionary];
+      for (id key in [(NSDictionary*)json allKeys]) {
+        if ([key isKindOfClass:[NSString class]] && [[(NSDictionary*)json objectForKey:key] isKindOfClass:[NSString class]]) {
+          result[[(NSString*)key lowercaseString]] = [(NSDictionary*)json objectForKey:key];
+        }
+      }
+      return result;
+    }
+    return [NSMutableDictionary dictionary];
+  }
+}
+
++ (void)saveCachedKeysToDisk:(NSDictionary<NSString*, NSString*>*)keys {
+  if (!keys) return;
+  @synchronized(self) {
+    NSError* err = nil;
+    NSData* data = [NSJSONSerialization dataWithJSONObject:keys
+                                                   options:NSJSONWritingPrettyPrinted
+                                                     error:&err];
+    if (!data) return;
+    NSString* path = [self keysFilePath];
+    if ([data writeToFile:path options:NSDataWritingAtomic error:&err]) {
+      chmod(path.fileSystemRepresentation, S_IRUSR | S_IWUSR);
+    }
+  }
 }
 
 + (instancetype)defaultConfig {
@@ -58,12 +99,33 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
 }
 
 + (NSString*)storedApiKeyForProvider:(NSString*)provider {
-  NSMutableDictionary* query = [[self keychainQueryForProvider:provider] mutableCopy];
+  if (!provider.length) return @"";
+  NSString* prov = provider.lowercaseString;
+
+  // 1. Check user-owned secure credentials cache (0600) first to avoid Keychain prompts across rebuilds.
+  NSMutableDictionary<NSString*, NSString*>* cached = [self cachedKeysFromDisk];
+  NSString* existing = cached[prov];
+  if ([existing isKindOfClass:[NSString class]] && existing.length > 0) {
+    return existing;
+  }
+
+  // 2. Query Keychain. On the first run after a rebuild, macOS prompts the user once to authorize access.
+  NSMutableDictionary* query = [[self keychainQueryForProvider:prov] mutableCopy];
   query[(__bridge id)kSecReturnData] = @YES;
   CFTypeRef data = nullptr;
   OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &data);
-  NSData* key = CFBridgingRelease(data);
-  return status == errSecSuccess ? ([[NSString alloc] initWithData:key encoding:NSUTF8StringEncoding] ?: @"") : @"";
+  NSData* keyData = CFBridgingRelease(data);
+  NSString* retrieved = (status == errSecSuccess && keyData) ?
+      [[[NSString alloc] initWithData:keyData encoding:NSUTF8StringEncoding] ?: @""
+          stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : @"";
+
+  // 3. Cache the retrieved key to the 0600 file immediately so future rebuilds never prompt again.
+  if (retrieved.length > 0) {
+    cached[prov] = retrieved;
+    [self saveCachedKeysToDisk:cached];
+  }
+
+  return retrieved;
 }
 
 + (instancetype)loadFromDisk {
@@ -109,8 +171,20 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
         @"Choose a valid provider, model, and HTTPS endpoint (HTTP is allowed only on loopback). Temperature must be 0..1."}];
     return NO;
   }
+
+  // 1. Update the local user-owned credentials cache (0600)
+  NSString* prov = self.provider.lowercaseString;
+  NSMutableDictionary<NSString*, NSString*>* cached = [[self class] cachedKeysFromDisk];
+  if (self.apiKey.length > 0) {
+    cached[prov] = self.apiKey;
+  } else {
+    [cached removeObjectForKey:prov];
+  }
+  [[self class] saveCachedKeysToDisk:cached];
+
+  // 2. Sync to macOS Keychain as secondary backup
   NSDictionary* query = [[self class] keychainQueryForProvider:self.provider];
-  OSStatus status;
+  OSStatus status = errSecSuccess;
   if (!self.apiKey.length) {
     status = SecItemDelete((__bridge CFDictionaryRef)query);
     if (status == errSecItemNotFound) status = errSecSuccess;
@@ -124,10 +198,13 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
       status = SecItemAdd((__bridge CFDictionaryRef)item, nullptr);
     }
   }
-  if (status != errSecSuccess) {
+  // If Keychain operations fail (e.g. ad-hoc signing ACL mismatch or non-interactive context),
+  // do not fail saveToDisk since credentials are safe in the user-owned 0600 file.
+  if (status != errSecSuccess && status != errSecItemNotFound && ![[self class] cachedKeysFromDisk][prov].length) {
     if (error) *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:status userInfo:nil];
     return NO;
   }
+
   NSDictionary* dict = @{
     @"provider": self.provider ?: @"gemini",
     @"model": self.model ?: @"gemini-3.8-flash",
@@ -138,7 +215,12 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   };
   NSData* data = [NSJSONSerialization dataWithJSONObject:dict options:NSJSONWritingPrettyPrinted error:error];
   if (!data) return NO;
-  return [data writeToFile:[[self class] configFilePath] options:NSDataWritingAtomic error:error];
+  NSString* cfgPath = [[self class] configFilePath];
+  BOOL written = [data writeToFile:cfgPath options:NSDataWritingAtomic error:error];
+  if (written) {
+    chmod(cfgPath.fileSystemRepresentation, S_IRUSR | S_IWUSR);
+  }
+  return written;
 }
 
 - (NSString*)effectiveApiKey {
