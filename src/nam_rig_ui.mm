@@ -158,6 +158,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)duplicateCurrentPreset:(id)sender;
 - (void)deleteCurrentPreset:(id)sender;
 - (void)revealPresetsInFinder:(id)sender;
+- (void)autoOrganizePresetsAction:(id)sender;
 - (void)switchTab:(NSButton*)sender;
 - (void)switchDeckTab:(NSButton*)sender;
 - (void)toggleMuteOnTune:(NSButton*)sender;
@@ -2141,6 +2142,23 @@ static NSString* stageName(NSInteger stage) {
   _state->resyncPresetPopupSelection();
 }
 
+- (void)autoOrganizePresetsAction:(id)sender {
+  (void)sender;
+  if (!_state || !_state->presetManager) return;
+  NSError* err = nil;
+  NSUInteger count = [_state->presetManager autoOrganizeUnsortedPresets:&err];
+  _state->updatePresetDisplayTitle();
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Auto-Organize Presets";
+  if (count > 0) {
+    alert.informativeText = [NSString stringWithFormat:@"Successfully organized %lu preset%@ into Artist and Genre folders.",
+                             (unsigned long)count, count == 1 ? @"" : @"s"];
+  } else {
+    alert.informativeText = @"All presets are already organized into folders.";
+  }
+  [alert runModal];
+}
+
 // ---- Hands-free A/B preset compare ----
 // A is the live active preset (main window); the B dropdown memorizes the
 // other side. START alternates between them on a timer so the player can
@@ -2658,12 +2676,26 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 - (NSString*)plannedCopilotPresetName {
   NSString* typed = [self.copilotPresetNameField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  NSString* base = typed.length ? typed :
-      (self.copilotProposal.presetName.length ? self.copilotProposal.presetName :
-       [RigAICopilot summarizePromptToPresetName:self.copilotPromptInput.stringValue]);
-  base = [base stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+  NSString* base = nil;
+  if (typed.length) {
+    base = [typed stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+  } else {
+    RigAICopilotResult* proposal = self.copilotProposal;
+    NSString* promptText = self.copilotPromptInput.stringValue;
+    NSString* rawTitle = proposal.presetName.length ? proposal.presetName :
+        [RigAICopilot summarizePromptToPresetName:promptText];
+    base = [RigAICopilot hierarchicalPresetPathForTitle:rawTitle
+                                                 prompt:promptText
+                                                 artist:proposal.artist
+                                                  album:proposal.album
+                                                   song:proposal.song
+                                                  genre:proposal.genre
+                                             folderPath:proposal.folderPath];
+  }
   base = [base stringByReplacingOccurrencesOfString:@":" withString:@"-"];
-  if (!base.length) base = @"AI Custom Tone";
+  while ([base containsString:@"//"]) base = [base stringByReplacingOccurrencesOfString:@"//" withString:@"/"];
+  base = [base stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
+  if (!base.length) base = @"Genre/Custom Tones/AI Custom Tone";
   RigPresetManager* manager = _state ? _state->presetManager : nil;
   return manager ? [manager uniquePresetNameForBase:base] : base;
 }

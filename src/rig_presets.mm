@@ -1,5 +1,6 @@
 // RigPreset & RigPresetManager — implementation for Axe FX.
 #import "rig_presets.h"
+#import "rig_ai_copilot.h"
 
 #include <sys/stat.h>
 #include <algorithm>
@@ -1108,6 +1109,64 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       }
     }
   }
+}
+
+- (NSUInteger)autoOrganizeUnsortedPresets:(NSError**)error {
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* dir = self.presetsDirectory;
+  NSArray<NSString*>* entries = [fm contentsOfDirectoryAtPath:dir error:error];
+  if (!entries) return 0;
+
+  NSUInteger movedCount = 0;
+  for (NSString* file in entries) {
+    if ([file hasPrefix:@"."] || ![[file pathExtension].lowercaseString isEqualToString:@"json"]) continue;
+    NSString* stem = [file stringByDeletingPathExtension];
+    if ([stem isEqualToString:@"Default Rig"]) continue;
+
+    NSString* fullPath = [dir stringByAppendingPathComponent:file];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:fullPath isDirectory:&isDir] || isDir) continue;
+
+    NSData* data = [NSData dataWithContentsOfFile:fullPath];
+    if (!data) continue;
+    NSDictionary* root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![root isKindOfClass:[NSDictionary class]]) continue;
+
+    NSDictionary* aiMeta = [root[@"ai_metadata"] isKindOfClass:[NSDictionary class]] ? root[@"ai_metadata"] : nil;
+    NSString* prompt = aiMeta[@"prompt"];
+    NSString* artist = aiMeta[@"artist"];
+    NSString* album = aiMeta[@"album"];
+    NSString* song = aiMeta[@"song"];
+    NSString* genre = aiMeta[@"genre"];
+    NSString* folderPath = aiMeta[@"folder_path"];
+
+    NSString* targetRel = [RigAICopilot hierarchicalPresetPathForTitle:stem
+                                                                prompt:prompt
+                                                                artist:artist
+                                                                 album:album
+                                                                  song:song
+                                                                 genre:genre
+                                                            folderPath:folderPath];
+    if (!targetRel.length || [targetRel isEqualToString:stem]) continue;
+
+    NSString* targetFullPath = [dir stringByAppendingPathComponent:[targetRel stringByAppendingPathExtension:@"json"]];
+    NSString* targetDir = [targetFullPath stringByDeletingLastPathComponent];
+    [fm createDirectoryAtPath:targetDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSError* moveErr = nil;
+    if ([fm moveItemAtPath:fullPath toPath:targetFullPath error:&moveErr]) {
+      movedCount++;
+      if ([_currentPresetName isEqualToString:stem] || [_currentPresetName.lastPathComponent isEqualToString:stem]) {
+        _currentPresetName = [targetRel copy];
+        [self persistCurrentPresetName];
+      }
+    }
+  }
+
+  if (movedCount > 0) {
+    [self rescanPresets];
+  }
+  return movedCount;
 }
 
 - (NSUInteger)propagateSlotValues:(NSDictionary<NSString*, NSNumber*>*)values

@@ -97,6 +97,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSString*)displayTitle;
 - (void)persistCurrentPresetName;
 - (void)restoreCurrentPresetName;
+
+// Automatically organizes any unsorted presets sitting at the root into Option 1 folders (Artists/<Artist>/<Album>/<Song> or Genre/<Genre>/<Preset>).
+- (NSUInteger)autoOrganizeUnsortedPresets:(NSError**)error;
 @end
 
 NS_ASSUME_NONNULL_END

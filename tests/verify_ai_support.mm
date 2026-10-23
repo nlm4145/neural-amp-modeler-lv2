@@ -132,6 +132,14 @@ int main(int argc, char** argv) {
       if ([g containsString:@"fender"] || [g containsString:@"super reverb"] || [g containsString:@"ts808"]) hasFenderOrTs = YES;
     }
     CHECK(hasFenderOrTs);
+
+    NSArray<NSString*>* disturbedGear = rigAISuggestGearQueries(@"Use the equipment actually used by distrubed in this album");
+    CHECK(disturbedGear.count > 0);
+    BOOL hasRectifier = NO;
+    for (NSString* g in disturbedGear) {
+      if ([g containsString:@"rectifier"]) hasRectifier = YES;
+    }
+    CHECK(hasRectifier);
     CHECK(rigAISuggestGearQueries(@"").count == 0);
 
     // Acoustic telemetry delta guidance tests

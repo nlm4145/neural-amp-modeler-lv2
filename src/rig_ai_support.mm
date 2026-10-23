@@ -100,7 +100,8 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   NSDictionary* dict = object;
   for (NSString* key in @[@"preset_name", @"preset_title", @"thought", @"explanation",
                          @"amp_model", @"amp_path", @"cab_ir", @"cab_path", @"pedal_model", @"pedal_path",
-                         @"search_tone3000", @"search_tone_3000"]) {
+                         @"search_tone3000", @"search_tone_3000",
+                         @"artist", @"album", @"song", @"genre", @"folder_path"]) {
     if (dict[key] && ![dict[key] isKindOfClass:NSString.class]) {
       fail(error, [NSString stringWithFormat:@"%@ must be a string, not null or another type.", key]); return nil;
     }
@@ -119,6 +120,11 @@ RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error) {
   result.cabPath = dict[@"cab_ir"] ?: dict[@"cab_path"];
   result.pedalPath = dict[@"pedal_model"] ?: dict[@"pedal_path"];
   result.searchTone3000 = dict[@"search_tone3000"] ?: dict[@"search_tone_3000"];
+  result.artist = dict[@"artist"];
+  result.album = dict[@"album"];
+  result.song = dict[@"song"];
+  result.genre = dict[@"genre"];
+  result.folderPath = dict[@"folder_path"];
   if (rigAIIsNoneModel(result.ampPath)) {
     fail(error, @"amp_model cannot be 'none'; choose a catalog amp or leave it unchanged."); return nil;
   }
@@ -434,6 +440,91 @@ NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt) {
     {
       @[@"avenged sevenfold", @"synyster gates", @"bat country", @"hail to the king", @"nightmare", @"unholy confessions"],
       @[@"schecter hellwin", @"bogner uberschall", @"mesa dual rectifier"]
+    },
+    // Disturbed / Dan Donegan
+    {
+      @[@"disturbed", @"distrubed", @"donegan", @"dan donegan", @"the sickness", @"down with the sickness", @"stupify", @"voices", @"ten thousand fists", @"stricken", @"indestructible", @"inside the fire", @"sound of silence"],
+      @[@"mesa dual rectifier", @"triple rectifier", @"dual rectifier", @"mesa boogie", @"bogner ecstasy", @"mesa 4x12", @"v30"]
+    },
+    // Rammstein / Richard Kruspe / Paul Landers
+    {
+      @[@"rammstein", @"kruspe", @"paul landers", @"du hast", @"sonne", @"feuer frei", @"deutschland", @"mutter"],
+      @[@"mesa dual rectifier", @"dual rectifier", @"engl fireball", @"sansamp psa", @"mesa 4x12"]
+    },
+    // Korn / Munky / Head
+    {
+      @[@"korn", @"munky", @"brian welch", @"blind", @"freak on a leash", @"falling away from me", @"got the life"],
+      @[@"mesa dual rectifier", @"triple rectifier", @"dual rectifier", @"mesa 4x12", @"ts9"]
+    },
+    // System of a Down / Daron Malakian
+    {
+      @[@"system of a down", @"soad", @"malakian", @"chop suey", @"toxicity", @"aerials", @"b.y.o.b."],
+      @[@"marshall jmp-1", @"dual rectifier", @"marshall plexi 1959", @"mesa 4x12"]
+    },
+    // Killswitch Engage / Adam D / Joel Stroetzel
+    {
+      @[@"killswitch engage", @"adam d", @"holy diver", @"end of heartache", @"my curse", @"alive or just breathing"],
+      @[@"peavey 5150", @"6505", @"maxon od808", @"framus cobra", @"v30"]
+    },
+    // Trivium / Matt Heafy / Corey Beaulieu
+    {
+      @[@"trivium", @"heafy", @"in waves", @"the sin and the sentence", @"pull harder", @"ascendancy"],
+      @[@"evh 5150 iii", @"5150", @"peavey 6505", @"maxon od808"]
+    },
+    // Dream Theater / John Petrucci
+    {
+      @[@"dream theater", @"petrucci", @"pull me under", @"panic attack", @"the glass prison", @"metropolis", @"images and words"],
+      @[@"mesa mark iic+", @"mesa mark iv", @"mesa mark v", @"mesa jp-2c", @"mesa 4x12"]
+    },
+    // In Flames / Björn Gelotte
+    {
+      @[@"in flames", @"bjorn gelotte", @"clayman", @"colony", @"the jester race", @"only for the weak"],
+      @[@"peavey 5150", @"6505", @"marshall 1960", @"v30"]
+    },
+    // Arch Enemy / Michael Amott
+    {
+      @[@"arch enemy", @"amott", @"nemesis", @"war eternal", @"we will rise"],
+      @[@"peavey 5150", @"evh 5150 iii", @"marshall jcm800"]
+    },
+    // Mastodon / Bill Kelliher / Brent Hinds
+    {
+      @[@"mastodon", @"blood mountain", @"crack the skye", @"leviathan", @"bill kelliher", @"brent hinds"],
+      @[@"marshall jcm800", @"orange thunderverb", @"friedman butterslax"]
+    },
+    // Foo Fighters / Dave Grohl / Chris Shiflett
+    {
+      @[@"foo fighters", @"grohl", @"everlong", @"all my life", @"the pretender", @"best of you", @"monkey wrench", @"colour and the shape"],
+      @[@"mesa dual rectifier", @"mesa road king", @"vox ac30", @"friedman"]
+    },
+    // Smashing Pumpkins / Billy Corgan
+    {
+      @[@"smashing pumpkins", @"billy corgan", @"siamese dream", @"cherub rock", @"today", @"bullet with butterfly wings", @"mellon collie"],
+      @[@"op-amp big muff", @"big muff", @"marshall jcm800", @"fender twin reverb"]
+    },
+    // Weezer / Rivers Cuomo
+    {
+      @[@"weezer", @"rivers cuomo", @"blue album", @"pinkerton", @"say it ain't so", @"buddy holly", @"hash pipe"],
+      @[@"mesa dual rectifier", @"marshall jcm900", @"marshall 4x12"]
+    },
+    // Steve Vai
+    {
+      @[@"steve vai", @"passion and warfare", @"for the love of god", @"bad horse", @"carvin legacy"],
+      @[@"carvin legacy", @"bogner ecstasy", @"boss ds-1", @"ibanez ts9"]
+    },
+    // Joe Satriani
+    {
+      @[@"joe satriani", @"satriani", @"surfing with the alien", @"satch boogie", @"always with me", @"summer song"],
+      @[@"marshall jvm410hjs", @"peavey jsx", @"boss ds-1"]
+    },
+    // Randy Rhoads
+    {
+      @[@"randy rhoads", @"rhoads", @"crazy train", @"mr crowley", @"blizzard of ozz", @"diary of a madman"],
+      @[@"marshall 1959 super lead", @"marshall plexi", @"mxr distortion+"]
+    },
+    // Zakk Wylde
+    {
+      @[@"zakk wylde", @"black label society", @"no more tears", @"miracle man", @"stillborn"],
+      @[@"marshall jcm800 2203", @"boss sd-1", @"evm-12l"]
     },
     // Van Halen / Eddie Van Halen / Brown Sound
     {

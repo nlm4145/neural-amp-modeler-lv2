@@ -1088,6 +1088,12 @@ struct RigUIState {
     revealItem.target = (id)uiController;
     [[presetPopup menu] addItem:revealItem];
 
+    NSMenuItem* organizeItem = [[NSMenuItem alloc] initWithTitle:@"Auto-Organize Presets into Folders"
+                                                          action:@selector(autoOrganizePresetsAction:)
+                                                   keyEquivalent:@""];
+    organizeItem.target = (id)uiController;
+    [[presetPopup menu] addItem:organizeItem];
+
     NSInteger match = -1;
     NSArray<NSMenuItem*>* items = presetPopup.itemArray;
     for (NSInteger i = 0; i < (NSInteger)items.count; ++i) {

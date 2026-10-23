@@ -65,6 +65,11 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy) NSString* explanation;
 @property(nonatomic, copy) NSString* thought;
 @property(nonatomic, copy, nullable) NSString* presetName;
+@property(nonatomic, copy, nullable) NSString* artist;
+@property(nonatomic, copy, nullable) NSString* album;
+@property(nonatomic, copy, nullable) NSString* song;
+@property(nonatomic, copy, nullable) NSString* genre;
+@property(nonatomic, copy, nullable) NSString* folderPath;
 @property(nonatomic, strong) NSDictionary<NSString*, NSNumber*>* controls;
 @property(nonatomic, copy, nullable) NSString* ampPath;
 @property(nonatomic, copy, nullable) NSString* cabPath;
@@ -115,6 +120,15 @@ void rigAICalculateTokenCost(NSString* _Nullable provider, NSString* _Nullable m
 
 // Summarizes any arbitrary prompt into a clean "<Artist> - <Song>" or "<Artist> - <Album>" title.
 + (NSString*)summarizePromptToPresetName:(NSString*)prompt;
+
+// Resolves a preset title/prompt into an Option 1 hierarchical path (Artists/<Artist>/<Album>/<Song> or Genre/<Genre>/<Title>).
++ (NSString*)hierarchicalPresetPathForTitle:(NSString*)title
+                                     prompt:(nullable NSString*)prompt
+                                     artist:(nullable NSString*)artist
+                                      album:(nullable NSString*)album
+                                       song:(nullable NSString*)song
+                                      genre:(nullable NSString*)genre
+                                 folderPath:(nullable NSString*)folderPath;
 
 // Sends a user prompt (e.g. "Mick Thomson Before I Forget rhythm, tight attack, no feedback")
 // along with the live rig state and library context to the configured LLM.
