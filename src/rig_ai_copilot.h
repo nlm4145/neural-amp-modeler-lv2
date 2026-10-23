@@ -32,6 +32,12 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy) NSString* model;
 @property(nonatomic, copy) NSString* executionMode;
 @property(nonatomic, strong) NSDate* timestamp;
+@property(nonatomic) NSInteger inputTokens;
+@property(nonatomic) NSInteger outputTokens;
+@property(nonatomic) double inputCost;
+@property(nonatomic) double outputCost;
+@property(nonatomic) double tokenCost;
+@property(nonatomic, copy, nullable) NSString* tokenUsageSummary;
 
 - (NSString*)displayText;
 @end
@@ -67,7 +73,23 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy, nullable) NSString* searchTone3000;
 @property(nonatomic, strong, nullable) NSDictionary* rawJson;
 @property(nonatomic, strong, nullable) RigPreset* proposedPreset; // Frozen base + validated proposal
+@property(nonatomic) NSInteger inputTokens;
+@property(nonatomic) NSInteger outputTokens;
+@property(nonatomic) double inputCost;
+@property(nonatomic) double outputCost;
+@property(nonatomic) double tokenCost; // Total input + output cost in USD
+@property(nonatomic, copy, nullable) NSString* tokenUsageSummary;
 @end
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void rigAICalculateTokenCost(NSString* _Nullable provider, NSString* _Nullable model,
+                             NSInteger inputTokens, NSInteger outputTokens,
+                             double* _Nullable outInputCost, double* _Nullable outOutputCost, double* _Nullable outTotalCost);
+#ifdef __cplusplus
+}
+#endif
 
 @interface RigAICopilot : NSObject
 + (instancetype)sharedCopilot;

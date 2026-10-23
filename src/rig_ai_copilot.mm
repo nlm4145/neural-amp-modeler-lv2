@@ -177,6 +177,71 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
 
 @end
 
+void rigAICalculateTokenCost(NSString* provider, NSString* model,
+                             NSInteger inputTokens, NSInteger outputTokens,
+                             double* outInputCost, double* outOutputCost, double* outTotalCost) {
+  NSString* p = provider.lowercaseString ?: @"";
+  NSString* m = model.lowercaseString ?: @"";
+
+  // Rates in USD per 1,000,000 tokens
+  double inputRatePer1M = 0.0;
+  double outputRatePer1M = 0.0;
+
+  if ([p isEqualToString:@"gemini"]) {
+    if ([m containsString:@"pro"] || [m containsString:@"argon"]) {
+      inputRatePer1M = 1.25;
+      outputRatePer1M = 5.00;
+    } else {
+      // flash, flash-lite, 1.5-flash, 2.5-flash, 3.8-flash
+      inputRatePer1M = 0.075;
+      outputRatePer1M = 0.30;
+    }
+  } else if ([p isEqualToString:@"claude"]) {
+    if ([m containsString:@"opus"]) {
+      inputRatePer1M = 15.00;
+      outputRatePer1M = 75.00;
+    } else if ([m containsString:@"haiku"]) {
+      inputRatePer1M = 0.80;
+      outputRatePer1M = 4.00;
+    } else {
+      // sonnet-5-5, sonnet-3-7, sonnet-3-5, fable
+      inputRatePer1M = 3.00;
+      outputRatePer1M = 15.00;
+    }
+  } else if ([p isEqualToString:@"openai"]) {
+    if ([m containsString:@"mini"]) {
+      // gpt-4o-mini, gpt-4.1-mini, gpt-5-mini, gpt-5.4-mini
+      inputRatePer1M = 0.15;
+      outputRatePer1M = 0.60;
+    } else if ([m containsString:@"o1"]) {
+      inputRatePer1M = 15.00;
+      outputRatePer1M = 60.00;
+    } else if ([m containsString:@"o3"]) {
+      inputRatePer1M = 1.10;
+      outputRatePer1M = 4.40;
+    } else {
+      // gpt-4o, gpt-6-luna, gpt-6-astra, gpt-6.1-sol
+      inputRatePer1M = 2.50;
+      outputRatePer1M = 10.00;
+    }
+  } else if ([p isEqualToString:@"ollama"]) {
+    inputRatePer1M = 0.0;
+    outputRatePer1M = 0.0;
+  } else {
+    // Default fallback (e.g. custom)
+    inputRatePer1M = 0.15;
+    outputRatePer1M = 0.60;
+  }
+
+  double inCost = (std::max<NSInteger>(0, inputTokens) * inputRatePer1M) / 1000000.0;
+  double outCost = (std::max<NSInteger>(0, outputTokens) * outputRatePer1M) / 1000000.0;
+  double totCost = inCost + outCost;
+
+  if (outInputCost) *outInputCost = inCost;
+  if (outOutputCost) *outOutputCost = outCost;
+  if (outTotalCost) *outTotalCost = totCost;
+}
+
 @implementation RigAIPresetTask
 
 - (NSString*)displayText {
@@ -202,6 +267,14 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
     }
     if (self.explanation.length > 0) {
       [s appendFormat:@"  • Summary: %@\n", self.explanation];
+    }
+    if (self.inputTokens > 0 || self.outputTokens > 0 || self.tokenCost > 0.0) {
+      if (self.tokenUsageSummary.length > 0) {
+        [s appendFormat:@"  • Token Usage: %@\n", self.tokenUsageSummary];
+      } else {
+        [s appendFormat:@"  • Token Usage: %ld in / %ld out (Cost: $%.5f)\n",
+            (long)self.inputTokens, (long)self.outputTokens, self.tokenCost];
+      }
     }
   } else {
     [s appendFormat:@"❌ %@ (failed)\n", self.summary ?: @"Custom Preset"];
@@ -401,6 +474,13 @@ static const NSUInteger kRigAICatalogLimit = 48;
       if (c[@"delay_mix"].floatValue > 0) [parts addObject:[NSString stringWithFormat:@"Delay %.0f%%", c[@"delay_mix"].floatValue]];
       if (c[@"reverb_mix"].floatValue > 0) [parts addObject:[NSString stringWithFormat:@"Reverb %.0f%%", c[@"reverb_mix"].floatValue]];
       _currentTask.keyDials = [parts componentsJoinedByString:@", "];
+
+      _currentTask.inputTokens = result.inputTokens;
+      _currentTask.outputTokens = result.outputTokens;
+      _currentTask.inputCost = result.inputCost;
+      _currentTask.outputCost = result.outputCost;
+      _currentTask.tokenCost = result.tokenCost;
+      _currentTask.tokenUsageSummary = result.tokenUsageSummary;
 
       _currentTask.status = RigAITaskStatusComplete;
       _currentTask = nil;
@@ -863,6 +943,19 @@ static const NSUInteger kRigAICatalogLimit = 48;
     }
     NSError* parseErr = nil;
     RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:outputStr error:&parseErr];
+    if (res) {
+      NSInteger promptTokens = std::max<NSInteger>(1, (NSInteger)(fullPrompt.length / 4));
+      NSInteger outputTokens = std::max<NSInteger>(1, (NSInteger)(outputStr.length / 4));
+      double inCost = 0.0, outCost = 0.0, totCost = 0.0;
+      rigAICalculateTokenCost(provider, model, promptTokens, outputTokens, &inCost, &outCost, &totCost);
+      res.inputTokens = promptTokens;
+      res.outputTokens = outputTokens;
+      res.inputCost = inCost;
+      res.outputCost = outCost;
+      res.tokenCost = totCost;
+      res.tokenUsageSummary = [NSString stringWithFormat:@"%ld in / %ld out (est.) · Cost: $%.5f",
+          (long)promptTokens, (long)outputTokens, totCost];
+    }
 
     dispatch_async(dispatch_get_main_queue(), ^{
       if (![weakSelf.requestID isEqualToString:requestID]) return;
@@ -871,6 +964,10 @@ static const NSUInteger kRigAICatalogLimit = 48;
       const NSTimeInterval elapsed = weakSelf.requestStartedAt ? -weakSelf.requestStartedAt.timeIntervalSinceNow : 0;
       [weakSelf reportProgress:[NSString stringWithFormat:@"%@ exited with status %d after %.1f s (%.1f KB output).",
           toolName, task.terminationStatus, elapsed, outputStr.length / 1024.0]];
+      if (res && task.terminationStatus == 0) {
+        [weakSelf reportProgress:[NSString stringWithFormat:@"Tokens: %ld in / %ld out (est. cost: $%.5f).",
+            (long)res.inputTokens, (long)res.outputTokens, res.tokenCost]];
+      }
       if (task.terminationStatus != 0) {
         NSString* errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding];
         if (!errStr.length) {
@@ -1661,13 +1758,13 @@ static const NSUInteger kRigAICatalogLimit = 48;
 
           NSDictionary* usage = [respDict[@"usage"] isKindOfClass:NSDictionary.class] ? respDict[@"usage"] :
               ([respDict[@"usageMetadata"] isKindOfClass:NSDictionary.class] ? respDict[@"usageMetadata"] : nil);
+          NSInteger inTok = 0;
+          NSInteger outTok = 0;
           if (usage) {
             id promptTokens = usage[@"prompt_tokens"] ?: usage[@"input_tokens"] ?: usage[@"promptTokenCount"];
             id outputTokens = usage[@"completion_tokens"] ?: usage[@"output_tokens"] ?: usage[@"candidatesTokenCount"];
-            if ([promptTokens isKindOfClass:NSNumber.class] || [outputTokens isKindOfClass:NSNumber.class])
-              [weakSelf reportProgress:[NSString stringWithFormat:@"Tokens: %@ in / %@ out.",
-                  [promptTokens isKindOfClass:NSNumber.class] ? promptTokens : @"?",
-                  [outputTokens isKindOfClass:NSNumber.class] ? outputTokens : @"?"]];
+            if ([promptTokens respondsToSelector:@selector(integerValue)]) inTok = [promptTokens integerValue];
+            if ([outputTokens respondsToSelector:@selector(integerValue)]) outTok = [outputTokens integerValue];
           }
           NSString* content = nil;
           if ([provider isEqualToString:@"claude"]) {
@@ -1697,8 +1794,29 @@ static const NSUInteger kRigAICatalogLimit = 48;
             }
           }
 
+          if (inTok <= 0 && request.HTTPBody.length > 0) {
+            inTok = std::max<NSInteger>(1, (NSInteger)(request.HTTPBody.length / 4));
+          }
+          if (outTok <= 0 && content.length > 0) {
+            outTok = std::max<NSInteger>(1, (NSInteger)(content.length / 4));
+          }
+
+          double inCost = 0.0, outCost = 0.0, totCost = 0.0;
+          rigAICalculateTokenCost(provider, cfgModel, inTok, outTok, &inCost, &outCost, &totCost);
+          [weakSelf reportProgress:[NSString stringWithFormat:@"Tokens: %ld in / %ld out (Cost: $%.5f).",
+              (long)inTok, (long)outTok, totCost]];
+
           NSError* finalErr = nil;
           RigAICopilotResult* res = [weakSelf parseCopilotResponseContent:content error:&finalErr];
+          if (res) {
+            res.inputTokens = inTok;
+            res.outputTokens = outTok;
+            res.inputCost = inCost;
+            res.outputCost = outCost;
+            res.tokenCost = totCost;
+            res.tokenUsageSummary = [NSString stringWithFormat:@"%ld in / %ld out · Cost: $%.5f",
+                (long)inTok, (long)outTok, totCost];
+          }
           [weakSelf finishRequest:requestID result:res error:finalErr];
         });
       }];

@@ -321,6 +321,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     }
   }
 
+  if ([root[@"ai_metadata"] isKindOfClass:[NSDictionary class]]) {
+    preset.aiMetadata = [root[@"ai_metadata"] mutableCopy];
+  }
+
   return preset;
 }
 
@@ -333,6 +337,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
   root[@"created"] = [df stringFromDate:[NSDate date]];
   root[@"speaker_profile"] = @(self.speakerProfile);
+
+  if (self.aiMetadata.count > 0) {
+    root[@"ai_metadata"] = [self.aiMetadata copy];
+  }
 
   NSMutableArray* stagesList = [NSMutableArray arrayWithCapacity:4];
   for (size_t s = 0; s < 4; ++s) {
@@ -700,11 +708,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 - (void)rescanPresets {
   [_presetNames removeAllObjects];
   NSFileManager* fm = [NSFileManager defaultManager];
-  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:self.presetsDirectory error:nil];
-  for (NSString* f in files) {
-    if ([f hasPrefix:@"."]) continue;
-    if ([[f pathExtension] isEqualToString:@"json"]) {
-      [_presetNames addObject:[f stringByDeletingPathExtension]];
+  NSArray<NSString*>* subpaths = [fm subpathsOfDirectoryAtPath:self.presetsDirectory error:nil];
+  for (NSString* rel in subpaths) {
+    if ([rel.lastPathComponent hasPrefix:@"."]) continue;
+    if ([[rel pathExtension].lowercaseString isEqualToString:@"json"]) {
+      [_presetNames addObject:[rel stringByDeletingPathExtension]];
     }
   }
   [_presetNames sortUsingComparator:^NSComparisonResult(NSString* a, NSString* b) {
@@ -719,18 +727,60 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   if (![_presetNames containsObject:_currentPresetName]) {
-    _currentPresetName = _presetNames.firstObject;
-    _isModified = NO;
+    NSString* match = nil;
+    for (NSString* p in _presetNames) {
+      if ([p.lastPathComponent isEqualToString:_currentPresetName]) {
+        match = p;
+        break;
+      }
+    }
+    if (match) {
+      _currentPresetName = match;
+    } else {
+      _currentPresetName = _presetNames.firstObject;
+      _isModified = NO;
+    }
   }
+}
+
+- (NSString*)pathForPresetNamed:(NSString*)name {
+  if (!name.length) return nil;
+  NSString* trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+  // 1. Direct check in presetsDirectory with .json
+  NSString* direct = [self.presetsDirectory stringByAppendingPathComponent:
+                      [trimmed stringByAppendingPathExtension:@"json"]];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:direct]) return direct;
+
+  // 2. Exact match in _presetNames
+  for (NSString* p in _presetNames) {
+    if ([p isEqualToString:trimmed]) {
+      return [self.presetsDirectory stringByAppendingPathComponent:[p stringByAppendingPathExtension:@"json"]];
+    }
+  }
+
+  // 3. Match by lastPathComponent
+  for (NSString* p in _presetNames) {
+    if ([p.lastPathComponent localizedCaseInsensitiveCompare:trimmed] == NSOrderedSame) {
+      return [self.presetsDirectory stringByAppendingPathComponent:[p stringByAppendingPathExtension:@"json"]];
+    }
+  }
+  return direct;
 }
 
 - (nullable RigPreset*)loadPresetNamed:(NSString*)name {
   if (!name.length) return nil;
-  NSString* path = [self.presetsDirectory stringByAppendingPathComponent:
-                    [name.lastPathComponent stringByAppendingPathExtension:@"json"]];
+  NSString* path = [self pathForPresetNamed:name];
   RigPreset* p = [RigPreset loadFromFile:path];
   if (p) {
-    _currentPresetName = [name copy];
+    NSString* canonical = nil;
+    for (NSString* existing in _presetNames) {
+      if ([existing isEqualToString:name] || [existing.lastPathComponent localizedCaseInsensitiveCompare:name] == NSOrderedSame) {
+        canonical = existing;
+        break;
+      }
+    }
+    _currentPresetName = canonical ? [canonical copy] : [name copy];
     _isModified = NO;
     [self persistCurrentPresetName];
   }
@@ -739,13 +789,20 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
 - (BOOL)savePreset:(RigPreset*)preset error:(NSError**)error {
   if (!preset || !preset.name.length) return NO;
-  NSString* safeName = [preset.name stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
-  safeName = [safeName stringByReplacingOccurrencesOfString:@":" withString:@"-"];
-  NSString* path = [self.presetsDirectory stringByAppendingPathComponent:
-                    [safeName stringByAppendingPathExtension:@"json"]];
+  NSString* cleanName = [preset.name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSString* relDir = cleanName.stringByDeletingLastPathComponent;
+  NSString* fileBase = cleanName.lastPathComponent;
+  fileBase = [fileBase stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+
+  NSString* targetDir = self.presetsDirectory;
+  if (relDir.length && ![relDir isEqualToString:@"."]) {
+    targetDir = [targetDir stringByAppendingPathComponent:relDir];
+  }
+  [[NSFileManager defaultManager] createDirectoryAtPath:targetDir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString* path = [targetDir stringByAppendingPathComponent:[fileBase stringByAppendingPathExtension:@"json"]];
   BOOL ok = [preset saveToFile:path error:error];
   if (ok) {
-    _currentPresetName = [preset.name copy];
+    _currentPresetName = [cleanName copy];
     _isModified = NO;
     [self rescanPresets];
     [self persistCurrentPresetName];
@@ -773,7 +830,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
                 fromState:(nullable RigUIState*)state
                     error:(NSError**)error {
   NSString* trimmedOld = [oldName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-  if (!trimmedOld.length || [trimmedOld isEqualToString:@"Default Rig"]) {
+  if (!trimmedOld.length || [trimmedOld isEqualToString:@"Default Rig"] || [trimmedOld.lastPathComponent isEqualToString:@"Default Rig"]) {
     if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
                                             code:-1
                                         userInfo:@{NSLocalizedDescriptionKey: @"The Default Rig preset cannot be renamed."}];
@@ -786,34 +843,43 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
                                         userInfo:@{NSLocalizedDescriptionKey: @"Please enter a valid preset name."}];
     return NO;
   }
-  if ([trimmedNew isEqualToString:@"Default Rig"]) {
+  if ([trimmedNew isEqualToString:@"Default Rig"] || [trimmedNew.lastPathComponent isEqualToString:@"Default Rig"]) {
     if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
                                             code:-3
                                         userInfo:@{NSLocalizedDescriptionKey: @"A preset cannot be named 'Default Rig'."}];
     return NO;
   }
-  if ([trimmedOld isEqualToString:trimmedNew]) {
+
+  NSString* targetRelNew = trimmedNew;
+  if (![targetRelNew containsString:@"/"] && [trimmedOld containsString:@"/"]) {
+    NSString* oldDir = [trimmedOld stringByDeletingLastPathComponent];
+    targetRelNew = [oldDir stringByAppendingPathComponent:trimmedNew];
+  }
+
+  if ([trimmedOld isEqualToString:targetRelNew]) {
     return YES;
   }
 
-  if ([_presetNames containsObject:trimmedNew] &&
-      [trimmedOld localizedCaseInsensitiveCompare:trimmedNew] != NSOrderedSame) {
+  if ([_presetNames containsObject:targetRelNew] &&
+      [trimmedOld localizedCaseInsensitiveCompare:targetRelNew] != NSOrderedSame) {
     if (error) *error = [NSError errorWithDomain:@"RigPresetManager"
                                             code:-4
                                         userInfo:@{NSLocalizedDescriptionKey:
-                                                   [NSString stringWithFormat:@"A preset named '%@' already exists.", trimmedNew]}];
+                                                   [NSString stringWithFormat:@"A preset named '%@' already exists.", targetRelNew]}];
     return NO;
   }
 
-  NSString* safeOld = [trimmedOld stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
-  safeOld = [safeOld stringByReplacingOccurrencesOfString:@":" withString:@"-"];
-  NSString* oldPath = [self.presetsDirectory stringByAppendingPathComponent:
-                       [safeOld stringByAppendingPathExtension:@"json"]];
+  NSString* oldPath = [self pathForPresetNamed:trimmedOld];
 
-  NSString* safeNew = [trimmedNew stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
-  safeNew = [safeNew stringByReplacingOccurrencesOfString:@":" withString:@"-"];
-  NSString* newPath = [self.presetsDirectory stringByAppendingPathComponent:
-                       [safeNew stringByAppendingPathExtension:@"json"]];
+  NSString* newRelDir = targetRelNew.stringByDeletingLastPathComponent;
+  NSString* newFileBase = targetRelNew.lastPathComponent;
+  newFileBase = [newFileBase stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+  NSString* newTargetDir = self.presetsDirectory;
+  if (newRelDir.length && ![newRelDir isEqualToString:@"."]) {
+    newTargetDir = [newTargetDir stringByAppendingPathComponent:newRelDir];
+  }
+  [[NSFileManager defaultManager] createDirectoryAtPath:newTargetDir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString* newPath = [newTargetDir stringByAppendingPathComponent:[newFileBase stringByAppendingPathExtension:@"json"]];
 
   NSFileManager* fm = [NSFileManager defaultManager];
   if (![fm fileExistsAtPath:oldPath]) {
@@ -825,8 +891,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   RigPreset* preset = nil;
-  if (state && [trimmedOld isEqualToString:_currentPresetName] && _isModified) {
-    preset = [RigPreset captureFromState:state name:trimmedNew];
+  if (state && ([trimmedOld isEqualToString:_currentPresetName] || [trimmedOld.lastPathComponent isEqualToString:_currentPresetName.lastPathComponent]) && _isModified) {
+    preset = [RigPreset captureFromState:state name:targetRelNew];
   } else {
     preset = [RigPreset loadFromFile:oldPath];
     if (!preset) {
@@ -835,7 +901,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
                                           userInfo:@{NSLocalizedDescriptionKey: @"Could not load the existing preset."}];
       return NO;
     }
-    preset.name = trimmedNew;
+    preset.name = targetRelNew;
   }
 
   const BOOL caseOnly = [oldPath caseInsensitiveCompare:newPath] == NSOrderedSame &&
@@ -862,8 +928,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     [fm removeItemAtPath:oldPath error:nil];
   }
 
-  if ([_currentPresetName isEqualToString:trimmedOld]) {
-    _currentPresetName = [trimmedNew copy];
+  if ([_currentPresetName isEqualToString:trimmedOld] || [_currentPresetName.lastPathComponent isEqualToString:trimmedOld.lastPathComponent]) {
+    _currentPresetName = [targetRelNew copy];
     _isModified = NO;
     [self persistCurrentPresetName];
   }
@@ -872,9 +938,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 }
 
 - (BOOL)deletePresetNamed:(NSString*)name error:(NSError**)error {
-  if (!name.length || [name isEqualToString:@"Default Rig"]) return NO;
-  NSString* path = [self.presetsDirectory stringByAppendingPathComponent:
-                    [name.lastPathComponent stringByAppendingPathExtension:@"json"]];
+  if (!name.length || [name isEqualToString:@"Default Rig"] || [name.lastPathComponent isEqualToString:@"Default Rig"]) return NO;
+  NSString* path = [self pathForPresetNamed:name];
   BOOL ok = [[NSFileManager defaultManager] removeItemAtPath:path error:error];
   if (ok) {
     [self rescanPresets];
@@ -890,6 +955,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   NSString* trimmed = [raw stringByTrimmingCharactersInSet:
       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
   if (!trimmed.length) trimmed = @"Untitled";
+
+  NSString* dir = [trimmed containsString:@"/"] ? [trimmed stringByDeletingLastPathComponent] : nil;
+  NSString* stem = [trimmed containsString:@"/"] ? trimmed.lastPathComponent : trimmed;
+
   NSSet<NSString*>* existing = [NSSet setWithArray:_presetNames];
   if (![existing containsObject:trimmed]) return trimmed;
   // "Foo" -> "Foo Copy", then "Foo Copy 2", "Foo Copy 3", ...
@@ -902,18 +971,20 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
                                                            options:0
                                                              error:nil];
   });
-  NSString* stem = trimmed;
-  NSTextCheckingResult* m = [copySuffix firstMatchInString:trimmed
+  NSString* baseStem = stem;
+  NSTextCheckingResult* m = [copySuffix firstMatchInString:stem
                                                   options:0
-                                                    range:NSMakeRange(0, trimmed.length)];
+                                                    range:NSMakeRange(0, stem.length)];
   if (m && m.numberOfRanges >= 2 && [m rangeAtIndex:1].location != NSNotFound) {
-    stem = [trimmed substringWithRange:[m rangeAtIndex:1]];
+    baseStem = [stem substringWithRange:[m rangeAtIndex:1]];
   }
-  NSString* candidate = [stem stringByAppendingString:@" Copy"];
+  NSString* candidateLeaf = [baseStem stringByAppendingString:@" Copy"];
+  NSString* candidate = dir ? [dir stringByAppendingPathComponent:candidateLeaf] : candidateLeaf;
   if (![existing containsObject:candidate]) return candidate;
   NSUInteger n = 2;
   while (YES) {
-    NSString* numbered = [candidate stringByAppendingFormat:@" %lu", (unsigned long)n];
+    NSString* numberedLeaf = [candidateLeaf stringByAppendingFormat:@" %lu", (unsigned long)n];
+    NSString* numbered = dir ? [dir stringByAppendingPathComponent:numberedLeaf] : numberedLeaf;
     if (![existing containsObject:numbered]) return numbered;
     ++n;
   }
@@ -962,8 +1033,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   if (_isModified) {
     source = [RigPreset captureFromState:state name:trimmed];
   } else {
-    NSString* path = [self.presetsDirectory stringByAppendingPathComponent:
-                      [_currentPresetName.lastPathComponent stringByAppendingPathExtension:@"json"]];
+    NSString* path = [self pathForPresetNamed:_currentPresetName];
     source = [RigPreset loadFromFile:path];
     if (!source) source = [RigPreset captureFromState:state name:trimmed];
     else source.name = trimmed;
@@ -997,9 +1067,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
 - (void)revealPresetsInFinder {
   NSString* dir = self.presetsDirectory;
-  NSString* cur = [dir stringByAppendingPathComponent:
-                   [_currentPresetName.lastPathComponent stringByAppendingPathExtension:@"json"]];
-  if ([[NSFileManager defaultManager] fileExistsAtPath:cur]) {
+  NSString* cur = [self pathForPresetNamed:_currentPresetName];
+  if (cur.length && [[NSFileManager defaultManager] fileExistsAtPath:cur]) {
     [[NSWorkspace sharedWorkspace] selectFile:cur inFileViewerRootedAtPath:dir];
   } else {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:dir]];
@@ -1024,9 +1093,19 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   if ([[NSFileManager defaultManager] fileExistsAtPath:file]) {
     NSString* saved = [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil];
     saved = [saved stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (saved.length && [_presetNames containsObject:saved]) {
-      _currentPresetName = saved;
-      _isModified = NO;
+    if (saved.length) {
+      if ([_presetNames containsObject:saved]) {
+        _currentPresetName = saved;
+        _isModified = NO;
+      } else {
+        for (NSString* p in _presetNames) {
+          if ([p.lastPathComponent isEqualToString:saved]) {
+            _currentPresetName = p;
+            _isModified = NO;
+            break;
+          }
+        }
+      }
     }
   }
 }
@@ -1038,7 +1117,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   if (!values.count) return 0;
   NSFileManager* fm = [NSFileManager defaultManager];
   NSString* dir = self.presetsDirectory;
-  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:error];
+  NSArray<NSString*>* files = [fm subpathsOfDirectoryAtPath:dir error:error];
   if (!files) return 0;
 
   NSDictionary<NSNumber*, NSString*>* portMap = portToSymbolMap();
@@ -1046,7 +1125,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   for (NSString* f in files) {
     if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
-    if ([[f stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
+    if ([[f.lastPathComponent stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
     NSString* fullPath = [dir stringByAppendingPathComponent:f];
     NSData* data = [NSData dataWithContentsOfFile:fullPath];
     if (!data) continue;
@@ -1100,10 +1179,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   if (!oldName.length || !newName.length || !slotKey.length) return;
   NSFileManager* fm = [NSFileManager defaultManager];
   NSString* dir = self.presetsDirectory;
-  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+  NSArray<NSString*>* files = [fm subpathsOfDirectoryAtPath:dir error:nil];
   for (NSString* f in files) {
     if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
-    if ([[f stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
+    if ([[f.lastPathComponent stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
     NSString* fullPath = [dir stringByAppendingPathComponent:f];
     NSData* data = [NSData dataWithContentsOfFile:fullPath];
     if (!data) continue;
@@ -1126,10 +1205,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   if (!deletedName.length || !slotKey.length) return;
   NSFileManager* fm = [NSFileManager defaultManager];
   NSString* dir = self.presetsDirectory;
-  NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+  NSArray<NSString*>* files = [fm subpathsOfDirectoryAtPath:dir error:nil];
   for (NSString* f in files) {
     if (![[f pathExtension].lowercaseString isEqualToString:@"json"]) continue;
-    if ([[f stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
+    if ([[f.lastPathComponent stringByDeletingPathExtension] isEqualToString:@"Default Rig"]) continue;
     NSString* fullPath = [dir stringByAppendingPathComponent:f];
     NSData* data = [NSData dataWithContentsOfFile:fullPath];
     if (!data) continue;

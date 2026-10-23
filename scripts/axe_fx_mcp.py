@@ -139,7 +139,7 @@ TOOLS = [
     },
     {
         "name": "axe_fx_load_preset",
-        "description": "Load a preset by name into Axe FX (e.g. 'Slipknot (Mick Thompson)', 'Lamb of God', 'Architects').",
+        "description": "Load a preset by name into Axe FX (e.g. 'Slipknot (Mick Thompson)', 'Lamb of God', 'Architects'). If created with AI Tone Copilot, returns its AI metadata and token cost.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -181,7 +181,7 @@ TOOLS = [
     },
     {
         "name": "axe_fx_ask_copilot",
-        "description": "Query the in-app AI Tone Copilot with a plain-English request (e.g. 'Mick Thomson Before I Forget, no feedback', 'Tighten low end for drop-D', 'Diagnose feedback'). Optionally apply the parameters immediately to the live rig.",
+        "description": "Query the in-app AI Tone Copilot with a plain-English request (e.g. 'Mick Thomson Before I Forget, no feedback', 'Tighten low end for drop-D', 'Diagnose feedback'). Optionally apply the parameters immediately to the live rig. Returns proposed settings, input/output token counts, and token cost in USD.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -659,6 +659,19 @@ struct RigUIState {
         : @"A/B idle";
   }
 
+  static NSMenu* findOrCreatePresetSubmenu(NSMenu* parentMenu, NSString* folderName) {
+    for (NSMenuItem* it in parentMenu.itemArray) {
+      if ([it.title isEqualToString:folderName] && it.hasSubmenu) {
+        return it.submenu;
+      }
+    }
+    NSMenuItem* folderItem = [[NSMenuItem alloc] initWithTitle:folderName action:NULL keyEquivalent:@""];
+    NSMenu* sub = [[NSMenu alloc] initWithTitle:folderName];
+    folderItem.submenu = sub;
+    [parentMenu addItem:folderItem];
+    return sub;
+  }
+
   void refreshABMenus() {
     if (!abPresetB || !presetManager) return;
     NSArray<NSString*>* names = presetManager.presetNames ?: @[];
@@ -670,15 +683,52 @@ struct RigUIState {
     [abPresetB removeAllItems];
     if (presetManager.isModified) {
       NSString* modTitle = [cur stringByAppendingString:@" *"];
-      NSMenuItem* modItem = [[NSMenuItem alloc] initWithTitle:modTitle action:NULL keyEquivalent:@""];
+      NSMenuItem* modItem = [[NSMenuItem alloc] initWithTitle:modTitle action:@selector(abPresetChanged:) keyEquivalent:@""];
+      modItem.target = (id)uiController;
       modItem.representedObject = abModifiedToken();
       [[abPresetB menu] addItem:modItem];
     }
-    for (NSString* name in names) {
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:name action:NULL keyEquivalent:@""];
-      item.representedObject = name;
+
+    if ([names containsObject:@"Default Rig"]) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@"Default Rig" action:@selector(abPresetChanged:) keyEquivalent:@""];
+      item.target = (id)uiController;
+      item.representedObject = @"Default Rig";
       [[abPresetB menu] addItem:item];
     }
+
+    NSMutableArray<NSString*>* folderPresets = [NSMutableArray array];
+    NSMutableArray<NSString*>* rootPresets = [NSMutableArray array];
+    for (NSString* p in names) {
+      if ([p isEqualToString:@"Default Rig"]) continue;
+      if ([p containsString:@"/"]) {
+        [folderPresets addObject:p];
+      } else {
+        [rootPresets addObject:p];
+      }
+    }
+
+    for (NSString* p in folderPresets) {
+      NSArray<NSString*>* parts = [p componentsSeparatedByString:@"/"];
+      NSMenu* currentMenu = [abPresetB menu];
+      for (NSUInteger idx = 0; idx + 1 < parts.count; ++idx) {
+        currentMenu = findOrCreatePresetSubmenu(currentMenu, parts[idx]);
+      }
+      NSString* leaf = parts.lastObject;
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:leaf
+                                                    action:@selector(abPresetChanged:)
+                                             keyEquivalent:@""];
+      item.target = (id)uiController;
+      item.representedObject = p;
+      [currentMenu addItem:item];
+    }
+
+    for (NSString* p in rootPresets) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:p action:@selector(abPresetChanged:) keyEquivalent:@""];
+      item.target = (id)uiController;
+      item.representedObject = p;
+      [[abPresetB menu] addItem:item];
+    }
+
     NSInteger match = -1;
     if (presetManager.isModified && !abUserChoseB) {
       match = [abPresetB indexOfItemWithRepresentedObject:abModifiedToken()];
@@ -686,18 +736,33 @@ struct RigUIState {
       match = [abPresetB indexOfItemWithRepresentedObject:keep];
     }
     if (match < 0 && names.count) {
-      // Default B to something other than the active preset when possible.
-      NSString* fallback = nil;
-      for (NSString* name in names) {
-        if (![name isEqualToString:cur]) { fallback = name; break; }
+      if (![keep isEqualToString:abModifiedToken()] && keep.length) {
+        [abPresetB selectItem:nil];
+        [abPresetB setTitle:keep.lastPathComponent];
+        abNameB = keep;
+      } else {
+        // Default B to something other than the active preset when possible.
+        NSString* fallback = nil;
+        for (NSString* name in names) {
+          if (![name isEqualToString:cur]) { fallback = name; break; }
+        }
+        if (!fallback.length) fallback = names.firstObject;
+        match = [abPresetB indexOfItemWithRepresentedObject:fallback];
+        if (match >= 0) {
+          [abPresetB selectItemAtIndex:match];
+          if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
+            abNameB = abPresetB.selectedItem.representedObject;
+        } else if (fallback.length) {
+          [abPresetB selectItem:nil];
+          [abPresetB setTitle:fallback.lastPathComponent];
+          abNameB = fallback;
+        }
       }
-      if (!fallback.length) fallback = names.firstObject;
-      match = [abPresetB indexOfItemWithRepresentedObject:fallback];
-      if (match < 0) match = 0;
+    } else if (match >= 0) {
+      [abPresetB selectItemAtIndex:match];
+      if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
+        abNameB = abPresetB.selectedItem.representedObject;
     }
-    if (match >= 0) [abPresetB selectItemAtIndex:match];
-    if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
-      abNameB = abPresetB.selectedItem.representedObject;
     updateABStatus();
   }
 
@@ -918,14 +983,52 @@ struct RigUIState {
     if (!presetPopup || !presetManager) return;
     [presetPopup removeAllItems];
     NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
-    NSInteger match = -1;
-    NSInteger i = 0;
-    for (NSString* name in presetManager.presetNames) {
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:name action:NULL keyEquivalent:@""];
-      item.representedObject = name;
+
+    // 1. "Default Rig" always at top if present
+    if ([presetManager.presetNames containsObject:@"Default Rig"]) {
+      NSMenuItem* defItem = [[NSMenuItem alloc] initWithTitle:@"Default Rig" action:@selector(presetPopupChanged:) keyEquivalent:@""];
+      defItem.target = (id)uiController;
+      defItem.representedObject = @"Default Rig";
+      defItem.state = [cur isEqualToString:@"Default Rig"] ? NSControlStateValueOn : NSControlStateValueOff;
+      [[presetPopup menu] addItem:defItem];
+    }
+
+    // 2. Separate folder presets from root presets
+    NSMutableArray<NSString*>* folderPresets = [NSMutableArray array];
+    NSMutableArray<NSString*>* rootPresets = [NSMutableArray array];
+    for (NSString* p in presetManager.presetNames) {
+      if ([p isEqualToString:@"Default Rig"]) continue;
+      if ([p containsString:@"/"]) {
+        [folderPresets addObject:p];
+      } else {
+        [rootPresets addObject:p];
+      }
+    }
+
+    // 3. Build folder hierarchy
+    for (NSString* p in folderPresets) {
+      NSArray<NSString*>* parts = [p componentsSeparatedByString:@"/"];
+      NSMenu* currentMenu = [presetPopup menu];
+      for (NSUInteger idx = 0; idx + 1 < parts.count; ++idx) {
+        currentMenu = findOrCreatePresetSubmenu(currentMenu, parts[idx]);
+      }
+      NSString* leaf = parts.lastObject;
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:leaf
+                                                    action:@selector(presetPopupChanged:)
+                                             keyEquivalent:@""];
+      item.target = (id)uiController;
+      item.representedObject = p;
+      item.state = [p isEqualToString:cur] ? NSControlStateValueOn : NSControlStateValueOff;
+      [currentMenu addItem:item];
+    }
+
+    // 4. Add root-level presets
+    for (NSString* p in rootPresets) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:p action:@selector(presetPopupChanged:) keyEquivalent:@""];
+      item.target = (id)uiController;
+      item.representedObject = p;
+      item.state = [p isEqualToString:cur] ? NSControlStateValueOn : NSControlStateValueOff;
       [[presetPopup menu] addItem:item];
-      if ([name isEqualToString:cur]) match = i;
-      ++i;
     }
 
     [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
@@ -946,14 +1049,14 @@ struct RigUIState {
                                                          action:@selector(renameCurrentPreset:)
                                                   keyEquivalent:@""];
     renameItem.target = (id)uiController;
-    renameItem.enabled = ![cur isEqualToString:@"Default Rig"];
+    renameItem.enabled = ![cur isEqualToString:@"Default Rig"] && ![cur.lastPathComponent isEqualToString:@"Default Rig"];
     [[presetPopup menu] addItem:renameItem];
 
     NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete Preset"
                                                          action:@selector(deleteCurrentPreset:)
                                                   keyEquivalent:@""];
     deleteItem.target = (id)uiController;
-    deleteItem.enabled = ![cur isEqualToString:@"Default Rig"];
+    deleteItem.enabled = ![cur isEqualToString:@"Default Rig"] && ![cur.lastPathComponent isEqualToString:@"Default Rig"];
     [[presetPopup menu] addItem:deleteItem];
 
     NSMenuItem* duplicateItem = [[NSMenuItem alloc] initWithTitle:@"Duplicate Preset"
@@ -978,9 +1081,22 @@ struct RigUIState {
     revealItem.target = (id)uiController;
     [[presetPopup menu] addItem:revealItem];
 
+    NSInteger match = -1;
+    NSArray<NSMenuItem*>* items = presetPopup.itemArray;
+    for (NSInteger i = 0; i < (NSInteger)items.count; ++i) {
+      id rep = items[(NSUInteger)i].representedObject;
+      if ([rep isKindOfClass:[NSString class]] && [rep isEqualToString:cur]) {
+        match = i;
+        break;
+      }
+    }
     if (match >= 0) {
       [presetPopup selectItemAtIndex:match];
+    } else {
+      [presetPopup selectItem:nil];
+      [presetPopup setTitle:cur.lastPathComponent];
     }
+    presetPopup.toolTip = [NSString stringWithFormat:@"Active preset: %@\nClick to select a preset, use ←/→ to step up/down through presets, or press ⌘S to save.", cur];
     // Newly saved presets should appear in the A/B slots too.
     refreshABMenus();
   }
@@ -1007,6 +1123,18 @@ struct RigUIState {
     auto resync = ^{
       if (!alive || !*alive) return;
       NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
+
+      std::function<void(NSMenu*)> updateCheckmarks = [&](NSMenu* menu) {
+        for (NSMenuItem* item in menu.itemArray) {
+          if (item.hasSubmenu) {
+            updateCheckmarks(item.submenu);
+          } else if ([item.representedObject isKindOfClass:[NSString class]]) {
+            item.state = [item.representedObject isEqualToString:cur] ? NSControlStateValueOn : NSControlStateValueOff;
+          }
+        }
+      };
+      updateCheckmarks(presetPopup.menu);
+
       NSInteger match = -1;
       NSArray<NSMenuItem*>* items = presetPopup.itemArray;
       for (NSInteger i = 0; i < (NSInteger)items.count; ++i) {
@@ -1016,7 +1144,13 @@ struct RigUIState {
           break;
         }
       }
-      if (match >= 0) [presetPopup selectItemAtIndex:match];
+      if (match >= 0) {
+        [presetPopup selectItemAtIndex:match];
+      } else {
+        [presetPopup selectItem:nil];
+        [presetPopup setTitle:cur.lastPathComponent];
+      }
+      presetPopup.toolTip = [NSString stringWithFormat:@"Active preset: %@\nClick to select a preset, use ←/→ to step up/down through presets, or press ⌘S to save.", cur];
     };
     if ([NSThread isMainThread]) {
       resync();

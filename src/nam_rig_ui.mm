@@ -139,7 +139,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)resetAllKnobs:(id)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
-- (void)presetPopupChanged:(NSPopUpButton*)sender;
+- (void)presetPopupChanged:(id)sender;
 - (void)prevPresetClicked:(NSButton*)sender;
 - (void)nextPresetClicked:(NSButton*)sender;
 - (void)saveCurrentPreset:(id)sender;
@@ -151,7 +151,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)switchTab:(NSButton*)sender;
 - (void)switchDeckTab:(NSButton*)sender;
 - (void)toggleMuteOnTune:(NSButton*)sender;
-- (void)abPresetChanged:(NSPopUpButton*)sender;
+- (void)abPresetChanged:(id)sender;
 - (void)abIntervalChanged:(NSSlider*)sender;
 - (void)abToggleClicked:(NSButton*)sender;
 - (void)abTimerFired:(NSTimer*)timer;
@@ -776,6 +776,17 @@ static NSString* stageName(NSInteger stage) {
       itemBoth.toolTip = @"Completely remove both Cabinet A and Cabinet B selections.";
       [menu addItem:itemBoth];
     }
+  }
+}
+
+- (void)menuWillOpen:(NSMenu*)menu {
+  if (_state && _state->presetManager &&
+      ((_state->presetPopup && menu == _state->presetPopup.menu) ||
+       (_state->abPresetB && menu == _state->abPresetB.menu) ||
+       [menu.identifier isEqualToString:@"preset_popup_menu"] ||
+       [menu.identifier isEqualToString:@"ab_popup_menu"])) {
+    [_state->presetManager rescanPresets];
+    _state->rebuildPresetMenu();
   }
 }
 
@@ -1805,9 +1816,14 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 
-- (void)presetPopupChanged:(NSPopUpButton*)sender {
+- (void)presetPopupChanged:(id)sender {
   if (!_state || !_state->presetManager) return;
-  NSMenuItem* item = sender.selectedItem;
+  NSMenuItem* item = nil;
+  if ([sender isKindOfClass:[NSMenuItem class]]) {
+    item = (NSMenuItem*)sender;
+  } else if ([sender isKindOfClass:[NSPopUpButton class]]) {
+    item = [(NSPopUpButton*)sender selectedItem];
+  }
   // Command rows (Save / Save As… / Delete / Duplicate / Reveal) and the
   // separators carry no representedObject — they fire their own actions via
   // target/action (or do nothing), so ignore them here instead of treating
@@ -1831,6 +1847,16 @@ static NSString* stageName(NSInteger stage) {
     _state->abApplyingCycle = false;
     _state->syncABNameA();
     _state->updatePresetDisplayTitle();
+    if (preset.aiMetadata) {
+      NSDictionary* m = preset.aiMetadata;
+      NSNumber* inTok = m[@"cumulative_input_tokens"] ?: m[@"input_tokens"];
+      NSNumber* outTok = m[@"cumulative_output_tokens"] ?: m[@"output_tokens"];
+      NSNumber* cost = m[@"cumulative_token_cost"] ?: m[@"token_cost"];
+      if (inTok && outTok && cost) {
+        [self appendCopilotLog:[NSString stringWithFormat:@"Loaded AI Tone Preset '%@' (Tokens: %ld in / %ld out · Cost: $%.5f)",
+            preset.name, [inTok longValue], [outTok longValue], [cost doubleValue]]];
+      }
+    }
   } else {
     _state->resyncPresetPopupSelection();
   }
@@ -1902,7 +1928,7 @@ static NSString* stageName(NSInteger stage) {
   if (!_state || !_state->presetManager) return;
   NSAlert* alert = [[NSAlert alloc] init];
   alert.messageText = @"Save Preset";
-  alert.informativeText = @"Enter a name for this preset:";
+  alert.informativeText = @"Enter a preset name (use 'Folder/Name' or 'Folder/Subfolder/Name' to organize into folders):";
   [alert addButtonWithTitle:@"Save"];
   [alert addButtonWithTitle:@"Cancel"];
 
@@ -1952,7 +1978,7 @@ static NSString* stageName(NSInteger stage) {
 
   NSAlert* alert = [[NSAlert alloc] init];
   alert.messageText = @"Rename Preset";
-  alert.informativeText = @"Enter a new name for this preset:";
+  alert.informativeText = @"Enter a new name for this preset (use 'Folder/Name' to move):";
   [alert addButtonWithTitle:@"Rename"];
   [alert addButtonWithTitle:@"Cancel"];
 
@@ -2100,9 +2126,16 @@ static NSString* stageName(NSInteger stage) {
 // other side. START alternates between them on a timer so the player can
 // audition while playing. STOP (same button, or changing B) halts the cycle
 // on the current sound.
-- (void)abPresetChanged:(NSPopUpButton*)sender {
-  if (!_state || sender != _state->abPresetB) return;
-  NSString* name = sender.selectedItem.representedObject;
+- (void)abPresetChanged:(id)sender {
+  if (!_state) return;
+  NSMenuItem* item = nil;
+  if ([sender isKindOfClass:[NSMenuItem class]]) {
+    item = (NSMenuItem*)sender;
+  } else if ([sender isKindOfClass:[NSPopUpButton class]]) {
+    if (sender != _state->abPresetB) return;
+    item = [(NSPopUpButton*)sender selectedItem];
+  }
+  NSString* name = item.representedObject;
   if (![name isKindOfClass:[NSString class]]) return;
   _state->abNameB = name;
   _state->abUserChoseB = ![name isEqualToString:RigUIState::abModifiedToken()];
@@ -2871,6 +2904,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     NSMutableString* msg = [NSMutableString string];
     [msg appendString:@"✅ PREVIEW READY — live rig unchanged.\n"];
     [msg appendFormat:@"Apply & Save will create preset: '%@' (edit the Save as field to rename)\n\n", plannedName];
+    if (res.inputTokens > 0 || res.outputTokens > 0 || res.tokenCost > 0.0) {
+      [msg appendFormat:@"• TOKEN USAGE & COST: %ld in / %ld out · Cost: $%.5f (In: $%.5f, Out: $%.5f)\n\n",
+          (long)res.inputTokens, (long)res.outputTokens, res.tokenCost, res.inputCost, res.outputCost];
+    }
     [msg appendFormat:@"SUMMARY:\n%@\n\n", res.explanation ?: @""];
     if (res.thought.length) {
       [msg appendFormat:@"ENGINEERING REASONING:\n%@\n\n", res.thought];
@@ -2888,7 +2925,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
         [msg appendFormat:@"   - %@: %@\n", k, res.controls[k]];
       }
     }
-    [weakSelf appendCopilotLog:@"Preview complete."];
+    [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Preview complete (Tokens: %ld in / %ld out · Cost: $%.5f).",
+        (long)res.inputTokens, (long)res.outputTokens, res.tokenCost]];
     [weakSelf appendCopilotLog:msg];
     [weakSelf updateCopilotRiffUI];
   }];
@@ -3192,13 +3230,55 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     NSError* saveError = nil;
     BOOL saved = [manager savePresetNamed:name fromState:state error:&saveError];
     if (saved) {
+      RigPreset* savedPreset = [manager loadPresetNamed:name];
+      if (savedPreset) {
+        NSMutableDictionary* meta = [NSMutableDictionary dictionary];
+        meta[@"prompt"] = prompt ?: @"";
+        meta[@"preset_name"] = name;
+        meta[@"provider"] = [RigAICopilot sharedCopilot].config.provider ?: @"";
+        meta[@"model"] = [RigAICopilot sharedCopilot].config.model ?: @"";
+        meta[@"input_tokens"] = @(proposal.inputTokens);
+        meta[@"output_tokens"] = @(proposal.outputTokens);
+        meta[@"input_cost"] = @(proposal.inputCost);
+        meta[@"output_cost"] = @(proposal.outputCost);
+        meta[@"token_cost"] = @(proposal.tokenCost);
+        meta[@"timestamp"] = [[NSDate date] description];
+
+        if (weakSelf.copilotBasePreset && weakSelf.copilotBasePreset.aiMetadata) {
+          NSDictionary* prevMeta = weakSelf.copilotBasePreset.aiMetadata;
+          NSInteger prevIn = [prevMeta[@"cumulative_input_tokens"] ?: prevMeta[@"input_tokens"] integerValue];
+          NSInteger prevOut = [prevMeta[@"cumulative_output_tokens"] ?: prevMeta[@"output_tokens"] integerValue];
+          double prevCost = [prevMeta[@"cumulative_token_cost"] ?: prevMeta[@"token_cost"] doubleValue];
+          NSInteger rev = [prevMeta[@"revision"] integerValue] + 1;
+
+          meta[@"cumulative_input_tokens"] = @(prevIn + proposal.inputTokens);
+          meta[@"cumulative_output_tokens"] = @(prevOut + proposal.outputTokens);
+          meta[@"cumulative_token_cost"] = @(prevCost + proposal.tokenCost);
+          meta[@"revision"] = @(std::max<NSInteger>(2, rev));
+        } else {
+          meta[@"cumulative_input_tokens"] = @(proposal.inputTokens);
+          meta[@"cumulative_output_tokens"] = @(proposal.outputTokens);
+          meta[@"cumulative_token_cost"] = @(proposal.tokenCost);
+          meta[@"revision"] = @1;
+        }
+
+        savedPreset.aiMetadata = meta;
+        [savedPreset saveToFile:savedPreset.filePath error:nil];
+      }
       [copilot completeCurrentTaskWithResult:proposal savedPresetName:name];
       state->updatePresetDisplayTitle();
       weakSelf.copilotPresetNameField.stringValue = name;
       [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Saved preset file: %@",
           [manager.presetsDirectory stringByAppendingPathComponent:[name stringByAppendingPathExtension:@"json"]]]];
-      [weakSelf appendCopilotLog:[NSString stringWithFormat:@"✅ DONE — preset '%@' is saved and is now the live rig.\n%@\nA/B Toggle compares it with the previous rig; the saved file is not affected.",
-          name, proposal.explanation ?: @""]];
+      [weakSelf appendCopilotLog:[NSString stringWithFormat:@"✅ DONE — preset '%@' is saved and is now the live rig.\n%@\n• Token Cost: $%.5f (%ld in / %ld out)%@\nA/B Toggle compares it with the previous rig; the saved file is not affected.",
+          name, proposal.explanation ?: @"",
+          proposal.tokenCost, (long)proposal.inputTokens, (long)proposal.outputTokens,
+          (savedPreset && [savedPreset.aiMetadata[@"revision"] integerValue] > 1) ?
+              [NSString stringWithFormat:@"\n• Cumulative Token Cost: $%.5f (%ld in / %ld out across %ld revisions)",
+                  [savedPreset.aiMetadata[@"cumulative_token_cost"] doubleValue],
+                  [savedPreset.aiMetadata[@"cumulative_input_tokens"] longValue],
+                  [savedPreset.aiMetadata[@"cumulative_output_tokens"] longValue],
+                  [savedPreset.aiMetadata[@"revision"] longValue]] : @""]];
     } else {
       [copilot failCurrentTaskWithError:saveError ?: [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"Preset save failed."}]];
       [weakSelf appendCopilotLog:[NSString stringWithFormat:@"⚠️ Tone applied to the live rig, but the preset was NOT saved: %@. Use A/B Toggle to restore if needed.",
@@ -5516,6 +5596,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     presetPop.translatesAutoresizingMaskIntoConstraints = NO;
     [rigGroup addSubview:presetPop];
     state->presetPopup = presetPop;
+    presetPop.menu.delegate = (id<NSMenuDelegate>)state->uiController;
+    presetPop.menu.identifier = @"preset_popup_menu";
     [[presetPop.leadingAnchor constraintEqualToAnchor:prevPresetBtn.trailingAnchor constant:4] setActive:YES];
     [[presetPop.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[presetPop.widthAnchor constraintEqualToConstant:155] setActive:YES];
@@ -5551,6 +5633,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     abPopB.translatesAutoresizingMaskIntoConstraints = NO;
     [rigGroup addSubview:abPopB];
     state->abPresetB = abPopB;
+    abPopB.menu.delegate = (id<NSMenuDelegate>)state->uiController;
+    abPopB.menu.identifier = @"ab_popup_menu";
     [[abPopB.leadingAnchor constraintEqualToAnchor:abBLabel.trailingAnchor constant:2] setActive:YES];
     [[abPopB.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
     [[abPopB.widthAnchor constraintEqualToConstant:148] setActive:YES];

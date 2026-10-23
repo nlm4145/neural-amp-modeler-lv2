@@ -480,16 +480,39 @@ static NSString* tokenFilePath() {
     }
 
     __block BOOL ok = NO;
+    __block NSDictionary* aiMetadata = nil;
     [self onMain:^{
       RigUIState* state = RigUIState::activeState();
       if (state) {
-        if (![[RigPresetManager sharedManager].presetNames containsObject:name]) return;
-        state->applyPresetByName(name);
+        NSString* resolvedName = name;
+        if (![[RigPresetManager sharedManager].presetNames containsObject:resolvedName]) {
+          for (NSString* p in [RigPresetManager sharedManager].presetNames) {
+            if ([p.lastPathComponent localizedCaseInsensitiveCompare:name] == NSOrderedSame) {
+              resolvedName = p;
+              break;
+            }
+          }
+        }
+        if (![[RigPresetManager sharedManager].presetNames containsObject:resolvedName]) return;
+        state->applyPresetByName(resolvedName);
+        RigPreset* p = [[RigPresetManager sharedManager] loadPresetNamed:resolvedName];
+        if (p && p.aiMetadata) aiMetadata = [p.aiMetadata copy];
         ok = YES;
       }
     }];
 
-    sendJson(clientSock, ok ? 200 : 500, @{@"status": ok ? @"ok" : @"error", @"loaded": name});
+    NSMutableDictionary* resp = [NSMutableDictionary dictionaryWithDictionary:@{
+      @"status": ok ? @"ok" : @"error",
+      @"loaded": name
+    }];
+    if (aiMetadata) {
+      resp[@"ai_metadata"] = aiMetadata;
+      if (aiMetadata[@"input_tokens"]) resp[@"input_tokens"] = aiMetadata[@"input_tokens"];
+      if (aiMetadata[@"output_tokens"]) resp[@"output_tokens"] = aiMetadata[@"output_tokens"];
+      if (aiMetadata[@"token_cost"]) resp[@"token_cost"] = aiMetadata[@"token_cost"];
+      if (aiMetadata[@"cumulative_token_cost"]) resp[@"cumulative_token_cost"] = aiMetadata[@"cumulative_token_cost"];
+    }
+    sendJson(clientSock, ok ? 200 : 500, resp);
     return;
   }
 
@@ -619,7 +642,13 @@ static NSString* tokenFilePath() {
       @"controls": aiResult.controls ?: @{},
       @"amp_model": aiResult.ampPath ?: @"",
       @"cab_ir": aiResult.cabPath ?: @"",
-      @"applied": @(applied)
+      @"applied": @(applied),
+      @"input_tokens": @(aiResult.inputTokens),
+      @"output_tokens": @(aiResult.outputTokens),
+      @"input_cost": @(aiResult.inputCost),
+      @"output_cost": @(aiResult.outputCost),
+      @"token_cost": @(aiResult.tokenCost),
+      @"token_usage": aiResult.tokenUsageSummary ?: [NSString stringWithFormat:@"%ld in / %ld out · Cost: $%.5f", (long)aiResult.inputTokens, (long)aiResult.outputTokens, aiResult.tokenCost]
     });
     return;
   }

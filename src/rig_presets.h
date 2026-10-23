@@ -35,6 +35,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, nullable) NSString* filePath;
 @property(nonatomic) float speakerProfile;   // port 42
 @property(nonatomic, strong) NSMutableDictionary<NSString*, NSString*>* slotPresets;
+@property(nonatomic, strong, nullable) NSMutableDictionary* aiMetadata;
 
 - (RigStagePreset*)stageAtIndex:(size_t)index;
 - (void)setControl:(uint32_t)port value:(float)value;
@@ -59,6 +60,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)sharedManager;
 - (void)rescanPresets;
+- (NSString*)pathForPresetNamed:(NSString*)name;
 - (nullable RigPreset*)loadPresetNamed:(NSString*)name;
 - (BOOL)savePreset:(RigPreset*)preset error:(NSError**)error;
 - (BOOL)saveCurrentPresetFromState:(RigUIState*)state error:(NSError**)error;

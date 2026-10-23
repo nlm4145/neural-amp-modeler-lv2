@@ -96,6 +96,58 @@ class ToneTests(unittest.TestCase):
             schema("axe_fx_get_control_schema", {})
             get.assert_called_once_with("controls/schema")
 
+    def test_mcp_ask_copilot_returns_token_cost(self):
+        mcp = load("axe_mcp", ROOT / "scripts/axe_fx_mcp.py")
+        payload = {
+            "status": "ok",
+            "controls": {"bass": 2.0},
+            "input_tokens": 1250,
+            "output_tokens": 320,
+            "input_cost": 0.00009375,
+            "output_cost": 0.000096,
+            "token_cost": 0.00018975,
+            "token_usage": "1250 in / 320 out · Cost: $0.00019"
+        }
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(payload).encode("utf-8")
+        with patch.dict(os.environ, {"AXE_FX_API_TOKEN": "test-only"}), \
+                patch.object(mcp.urllib.request, "urlopen", return_value=Response()):
+            res = mcp.handle_tool_call("axe_fx_ask_copilot", {"prompt": "tight metal rhythm"})
+            self.assertEqual(res["input_tokens"], 1250)
+            self.assertEqual(res["output_tokens"], 320)
+            self.assertAlmostEqual(res["token_cost"], 0.00018975)
+            self.assertIn("Cost", res["token_usage"])
+
+    def test_mcp_load_preset_returns_ai_metadata_and_tokens(self):
+        mcp = load("axe_mcp", ROOT / "scripts/axe_fx_mcp.py")
+        payload = {
+            "status": "ok",
+            "loaded": "Metal Rhythm",
+            "input_tokens": 1400,
+            "output_tokens": 400,
+            "token_cost": 0.000225,
+            "ai_metadata": {
+                "provider": "gemini",
+                "model": "gemini-3.8-flash",
+                "input_tokens": 1400,
+                "output_tokens": 400,
+                "token_cost": 0.000225
+            }
+        }
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(payload).encode("utf-8")
+        with patch.dict(os.environ, {"AXE_FX_API_TOKEN": "test-only"}), \
+                patch.object(mcp.urllib.request, "urlopen", return_value=Response()):
+            res = mcp.handle_tool_call("axe_fx_load_preset", {"name": "Metal Rhythm"})
+            self.assertEqual(res["input_tokens"], 1400)
+            self.assertEqual(res["output_tokens"], 400)
+            self.assertAlmostEqual(res["token_cost"], 0.000225)
+            self.assertEqual(res["ai_metadata"]["model"], "gemini-3.8-flash")
+
 
 if __name__ == "__main__":
     unittest.main()
