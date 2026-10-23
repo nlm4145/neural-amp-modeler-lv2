@@ -23,10 +23,8 @@ assert "createDirectoryAtPath:targetDir withIntermediateDirectories:YES" in pres
     "savePreset must create intermediate folder directories"
 
 # 3. Hierarchical menu building in UI
-assert "findOrCreatePresetSubmenu" in ui_state_h, \
+assert "buildPresetTree" in ui_state_h, \
     "RigUIState must support hierarchical preset submenus"
-assert "folderPresets" in ui_state_h and "rootPresets" in ui_state_h, \
-    "rebuildPresetMenu must separate folder presets and root presets"
 assert "componentsSeparatedByString:@\"/\"" in ui_state_h, \
     "rebuildPresetMenu must traverse folder path components"
 

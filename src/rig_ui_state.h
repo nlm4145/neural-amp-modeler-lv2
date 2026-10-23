@@ -672,6 +672,70 @@ struct RigUIState {
     return sub;
   }
 
+  static void buildPresetTree(NSMenu* targetMenu,
+                              NSArray<NSString*>* names,
+                              id target,
+                              SEL action,
+                              NSString* cur) {
+    NSMutableDictionary* root = [NSMutableDictionary dictionary];
+    root[@"__presets__"] = [NSMutableArray array];
+
+    for (NSString* p in names) {
+      if ([p isEqualToString:@"Default Rig"]) continue;
+      NSArray<NSString*>* parts = [p componentsSeparatedByString:@"/"];
+      NSMutableDictionary* curr = root;
+      for (NSUInteger i = 0; i < parts.count - 1; ++i) {
+        NSString* part = parts[i];
+        if (!curr[part]) {
+          NSMutableDictionary* nextNode = [NSMutableDictionary dictionary];
+          nextNode[@"__presets__"] = [NSMutableArray array];
+          curr[part] = nextNode;
+        }
+        curr = curr[part];
+      }
+      NSMutableArray* plist = curr[@"__presets__"];
+      [plist addObject:@{@"title": parts.lastObject, @"path": p}];
+    }
+
+    __block void (^populate)(NSMenu*, NSMutableDictionary*);
+    void (^populateBlock)(NSMenu*, NSMutableDictionary*) = ^(NSMenu* menu, NSMutableDictionary* node) {
+      // 1. Subfolders first, sorted alphabetically
+      NSMutableArray<NSString*>* folderKeys = [NSMutableArray arrayWithArray:node.allKeys];
+      [folderKeys removeObject:@"__presets__"];
+      [folderKeys sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+
+      for (NSString* folderName in folderKeys) {
+        NSMenuItem* folderItem = [[NSMenuItem alloc] initWithTitle:folderName action:NULL keyEquivalent:@""];
+        NSMenu* subMenu = [[NSMenu alloc] initWithTitle:folderName];
+        folderItem.submenu = subMenu;
+        [menu addItem:folderItem];
+        populate(subMenu, node[folderName]);
+      }
+
+      // 2. Presets next, sorted alphabetically
+      NSMutableArray<NSDictionary*>* plist = node[@"__presets__"];
+      [plist sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+        return [a[@"title"] localizedCaseInsensitiveCompare:b[@"title"]];
+      }];
+      for (NSDictionary* pinfo in plist) {
+        NSString* title = pinfo[@"title"];
+        NSString* path = pinfo[@"path"];
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:@""];
+        item.target = target;
+        item.representedObject = path;
+        if ([path isEqualToString:cur]) {
+          item.state = NSControlStateValueOn;
+        } else {
+          item.state = NSControlStateValueOff;
+        }
+        [menu addItem:item];
+      }
+    };
+    populate = populateBlock;
+    populate(targetMenu, root);
+    populate = nil;
+  }
+
   void refreshABMenus() {
     if (!abPresetB || !presetManager) return;
     NSArray<NSString*>* names = presetManager.presetNames ?: @[];
@@ -696,38 +760,7 @@ struct RigUIState {
       [[abPresetB menu] addItem:item];
     }
 
-    NSMutableArray<NSString*>* folderPresets = [NSMutableArray array];
-    NSMutableArray<NSString*>* rootPresets = [NSMutableArray array];
-    for (NSString* p in names) {
-      if ([p isEqualToString:@"Default Rig"]) continue;
-      if ([p containsString:@"/"]) {
-        [folderPresets addObject:p];
-      } else {
-        [rootPresets addObject:p];
-      }
-    }
-
-    for (NSString* p in folderPresets) {
-      NSArray<NSString*>* parts = [p componentsSeparatedByString:@"/"];
-      NSMenu* currentMenu = [abPresetB menu];
-      for (NSUInteger idx = 0; idx + 1 < parts.count; ++idx) {
-        currentMenu = findOrCreatePresetSubmenu(currentMenu, parts[idx]);
-      }
-      NSString* leaf = parts.lastObject;
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:leaf
-                                                    action:@selector(abPresetChanged:)
-                                             keyEquivalent:@""];
-      item.target = (id)uiController;
-      item.representedObject = p;
-      [currentMenu addItem:item];
-    }
-
-    for (NSString* p in rootPresets) {
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:p action:@selector(abPresetChanged:) keyEquivalent:@""];
-      item.target = (id)uiController;
-      item.representedObject = p;
-      [[abPresetB menu] addItem:item];
-    }
+    buildPresetTree(abPresetB.menu, names, (id)uiController, @selector(abPresetChanged:), keep);
 
     NSInteger match = -1;
     if (presetManager.isModified && !abUserChoseB) {
@@ -993,43 +1026,8 @@ struct RigUIState {
       [[presetPopup menu] addItem:defItem];
     }
 
-    // 2. Separate folder presets from root presets
-    NSMutableArray<NSString*>* folderPresets = [NSMutableArray array];
-    NSMutableArray<NSString*>* rootPresets = [NSMutableArray array];
-    for (NSString* p in presetManager.presetNames) {
-      if ([p isEqualToString:@"Default Rig"]) continue;
-      if ([p containsString:@"/"]) {
-        [folderPresets addObject:p];
-      } else {
-        [rootPresets addObject:p];
-      }
-    }
-
-    // 3. Build folder hierarchy
-    for (NSString* p in folderPresets) {
-      NSArray<NSString*>* parts = [p componentsSeparatedByString:@"/"];
-      NSMenu* currentMenu = [presetPopup menu];
-      for (NSUInteger idx = 0; idx + 1 < parts.count; ++idx) {
-        currentMenu = findOrCreatePresetSubmenu(currentMenu, parts[idx]);
-      }
-      NSString* leaf = parts.lastObject;
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:leaf
-                                                    action:@selector(presetPopupChanged:)
-                                             keyEquivalent:@""];
-      item.target = (id)uiController;
-      item.representedObject = p;
-      item.state = [p isEqualToString:cur] ? NSControlStateValueOn : NSControlStateValueOff;
-      [currentMenu addItem:item];
-    }
-
-    // 4. Add root-level presets
-    for (NSString* p in rootPresets) {
-      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:p action:@selector(presetPopupChanged:) keyEquivalent:@""];
-      item.target = (id)uiController;
-      item.representedObject = p;
-      item.state = [p isEqualToString:cur] ? NSControlStateValueOn : NSControlStateValueOff;
-      [[presetPopup menu] addItem:item];
-    }
+    // 2. Build cascading folder tree with subfolders first, then presets
+    buildPresetTree(presetPopup.menu, presetManager.presetNames, (id)uiController, @selector(presetPopupChanged:), cur);
 
     [[presetPopup menu] addItem:[NSMenuItem separatorItem]];
 
