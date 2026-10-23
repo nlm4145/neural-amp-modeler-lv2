@@ -158,6 +158,7 @@ void rigAICalculateTokenCost(NSString* _Nullable provider, NSString* _Nullable m
 
 // Helper to scan installed Tone3000 library models and generate a concise catalog summary.
 + (NSString*)generateLibrarySummary;
++ (NSString*)libraryRootPath;
 
 // Default curated models for each provider
 + (NSArray<NSString*>*)defaultModelsForProvider:(NSString*)provider;

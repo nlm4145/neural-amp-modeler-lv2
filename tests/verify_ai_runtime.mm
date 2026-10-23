@@ -1,5 +1,7 @@
 // Exercise the actual built UI module without provider requests or user preferences.
 #import "rig_ai_copilot.h"
+#import "rig_local_tone_matcher.h"
+#import "rig_riff_recorder.h"
 #include "rig_ui_state.h"
 #include <objc/runtime.h>
 #include <dlfcn.h>
@@ -291,6 +293,37 @@ int main(int argc, char** argv) {
     CHECK([state.presetManager.presetNames containsObject:@"Mellencamp - Jack & Diane"]);
     CHECK([nameField.stringValue isEqual:@"Mellencamp - Jack & Diane"]);
     [controller setValue:nil forKey:@"copilotPresetNameField"];
+    // Local finalists become normal frozen proposals without an AI request,
+    // and Apply & Save preserves local provenance despite cloud UI settings.
+    {
+      RigPreset* localBase = [presetClass captureFromState:&state name:state.presetManager.currentPresetName ?: @"Current rig"];
+      RigPreset* localPreset = [presetClass captureFromState:&state name:@"Local candidate"];
+      [localPreset setControl:12 value:-1];
+      localPreset.aiMetadata = [@{@"provider":@"local", @"model":@"ridge-surrogate-v1", @"run_id":@"fixture-run",
+          @"training_file":@"fixture.json", @"token_cost":@0} mutableCopy];
+      RigLocalToneMatch* localMatch = [NSClassFromString(@"RigLocalToneMatch") new];
+      localMatch.preset = localPreset; localMatch.score = .5;
+      NSPopUpButton* finalists = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
+      [finalists addItemWithTitle:@"#1"];
+      [controller setValue:finalists forKey:@"copilotMatchCandidates"];
+      [controller setValue:@[localMatch] forKey:@"copilotLocalMatches"];
+      [controller setValue:localBase forKey:@"copilotBasePreset"];
+      [controller setValue:[copilotClass contextForPreset:localBase compact:NO] forKey:@"copilotBaseContext"];
+      [controller performSelector:@selector(selectCopilotLocalMatch:) withObject:nil];
+      RigAICopilotResult* localProposal = [controller valueForKey:@"copilotProposal"];
+      CHECK(localProposal.proposedPreset == localPreset && localProposal.tokenCost == 0);
+      CHECK(localProposal.controls[@"bass"].floatValue == -1);
+      CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"LOCAL PREVIEW READY"]);
+      [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
+      CHECK([state.presetManager.presetNames containsObject:@"Local Match test tone"]);
+      RigPreset* localSaved = [state.presetManager loadPresetNamed:@"Local Match test tone"];
+      CHECK([localSaved.aiMetadata[@"provider"] isEqual:@"local"]);
+      CHECK([localSaved.aiMetadata[@"run_id"] isEqual:@"fixture-run"]);
+      CHECK([localSaved.aiMetadata[@"token_cost"] doubleValue] == 0);
+      [controller setValue:nil forKey:@"copilotBaseContext"];
+      [controller setValue:nil forKey:@"copilotBasePreset"];
+      [controller setValue:nil forKey:@"copilotLocalMatches"];
+    }
     // Progress lines reach the handler during application.
     NSMutableArray<NSString*>* progress = [NSMutableArray array];
     copilot.progressHandler = ^(NSString* line) { [progress addObject:line]; };
@@ -469,6 +502,57 @@ int main(int argc, char** argv) {
     }
     [copilot setValue:nil forKey:@"networkSession"];
     [transport invalidateAndCancel];
+    // Full Learn & Match UI workflow with an injected local renderer and an
+    // isolated reference: no providers, downloads, or actual live rig writes.
+    {
+      Class matcherClass = NSClassFromString(@"RigLocalToneMatcher");
+      method_setImplementation(class_getClassMethod(matcherClass, @selector(trainingDirectory)), (IMP)isolatedPresets);
+      Class recorderClass = NSClassFromString(@"RigRiffRecorder");
+      RigRiffRecorder* recorder = [recorderClass sharedRecorder];
+      auto pushPair = reinterpret_cast<void (*)(const float*, const float*, const float*, uint32_t, double, uint32_t)>(dlsym(library, "rigRiffRecorderPushPair"));
+      CHECK(pushPair);
+      std::vector<float> input(24000);
+      for (size_t i = 0; i < input.size(); ++i) input[i] = .1f * std::sin(2 * M_PI * 220 * i / 48000);
+      [recorder startRecording];
+      pushPair(input.data(), input.data(), input.data(), input.size(), 48000, 0);
+      [recorder stopRecording];
+      NSURL* targetFile = [NSURL fileURLWithPath:[presetRoot stringByAppendingPathComponent:@"target.wav"]];
+      [recorder.recordedWavData writeToURL:targetFile atomically:YES];
+      CHECK([recorder loadReferenceFromURL:targetFile fullMix:NO error:nil]);
+      recorder.renderHandler = ^NSData*(RigPreset* preset, NSData* di, double rate, NSError** error) {
+        std::vector<float> output(di.length / sizeof(float) * 2);
+        const auto* raw = static_cast<const float*>(di.bytes);
+        for (size_t i = 0; i < output.size() / 2; ++i) output[i * 2] = output[i * 2 + 1] = raw[i];
+        return [NSData dataWithBytes:output.data() length:output.size() * sizeof(float)];
+      };
+      state.selectedPaths[1] = model.fileSystemRepresentation;
+      state.confirmedPaths[1] = state.selectedPaths[1];
+      NSString* fixtureCab = [libraryRoot stringByAppendingPathComponent:@"Cab/Test/mic.wav"];
+      [NSFileManager.defaultManager createDirectoryAtPath:fixtureCab.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+      [@"local fixture" writeToFile:fixtureCab atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      state.selectedPaths[2] = fixtureCab.fileSystemRepresentation;
+      state.confirmedPaths[2] = state.selectedPaths[2];
+      state.powerButtons[1].state = NSControlStateValueOn;
+      [controller setValue:[NSProgressIndicator new] forKey:@"copilotSpinner"];
+      [controller setValue:[NSButton checkboxWithTitle:@"online" target:nil action:nil] forKey:@"copilotMatchOnlineButton"];
+      int writesBefore = writes;
+      [controller performSelector:@selector(matchCopilotLocally:) withObject:nil];
+      CHECK([[controller valueForKey:@"copilotLocalMatching"] boolValue]);
+      NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+      while ([[controller valueForKey:@"copilotLocalMatching"] boolValue] && deadline.timeIntervalSinceNow > 0) drain();
+      CHECK(![[controller valueForKey:@"copilotLocalMatching"] boolValue]);
+      CHECK(writes == writesBefore && state.selectedPaths[1] == model.fileSystemRepresentation);
+      NSArray* results = [controller valueForKey:@"copilotLocalMatches"];
+      if (!results.count) std::fprintf(stderr, "Local UI log: %s\n", [[[controller valueForKey:@"copilotOutputView"] string] UTF8String]);
+      CHECK(results.count > 0);
+      RigAICopilotResult* local = [controller valueForKey:@"copilotProposal"];
+      CHECK(local.proposedPreset && [local.proposedPreset.aiMetadata[@"provider"] isEqual:@"local"]);
+      CHECK(local.tokenCost == 0);
+      CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"LOCAL PREVIEW READY"]);
+      [recorder clearRecording]; [recorder clearReference]; recorder.renderHandler = nil;
+      state.selectedPaths[1].clear(); state.confirmedPaths[1].clear();
+      state.selectedPaths[2].clear(); state.confirmedPaths[2].clear();
+    }
     // Do not execute a user's CLI or send requests: completion/cancellation above use injected lifecycle state.
     // Raw socket route tests: no server startup/token writes, no live networking.
     id server = [NSClassFromString(@"RigLocalServer") new];

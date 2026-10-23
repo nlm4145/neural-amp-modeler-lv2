@@ -149,10 +149,15 @@ int main() {
     [recorder.recordedDIWavData writeToURL:file atomically:YES];
     NSError* importError = nil;
     assert([recorder loadReferenceFromURL:file fullMix:YES error:&importError]);
+    assert(recorder.referenceFrames.length > 0 && recorder.referenceIsFullMix);
+    assert(recorder.referenceSampleRate == srate && recorder.referenceChannels == 1);
     assert(recorder.recordedDIFrames.length > 0);
     assert([recorder.referenceAnalysis containsString:@"do NOT match"]);
     [recorder clearRecording];
     assert(recorder.referenceWavData.length > 0);
+    assert(recorder.referenceFrames.length > 0);
+    assert([recorder loadReferenceFromURL:file fullMix:NO error:&importError]);
+    assert(!recorder.referenceIsFullMix);
     assert([recorder loadAudioFromURL:file error:&importError]);
     assert(recorder.recordedDIFrames == nil);
     assert(recorder.recordedWavData.length > 44);
@@ -162,6 +167,7 @@ int main() {
     assert(recorder.recordedWavData == previous);
     [NSFileManager.defaultManager removeItemAtURL:file error:nil];
     [recorder clearRecording]; [recorder clearReference];
+    assert(!recorder.referenceFrames && recorder.referenceChannels == 0 && recorder.referenceSampleRate == 0);
 
     std::cout << "PASS verify_riff_recorder" << std::endl;
   }

@@ -33,10 +33,54 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/rig_presets.{h,mm}` | Factory and user rig preset serialization, stage-card presets, and Studio Pro Deck slot presets (`slot-presets.json`) |
 | `src/rig_ai_copilot.{h,mm}`, `src/rig_ai_support.{h,mm}`, `src/rig_ai_model_catalog.{h,mm}` | AI Tone Copilot: multi-provider LLM client (Gemini/OpenAI/Anthropic/Ollama/local `agy`/`claude`/`codex`), `jev` candidate ranking, strict JSON parser/clamping, and local library catalog scanner |
 | `src/rig_riff_recorder.{h,mm}`, `src/rig_riff_renderer.{h,mm}` | Live DI + processed stereo take recorder, spectral/loudness audio telemetry analyzer, and offline A/B candidate renderer |
+| `src/rig_local_tone_matcher.{h,mm}`, `src/local_tone_learning.h` | Experimental local target matcher: real-render gear shortlist, locally trained ridge surrogate, verified finalists; no provider calls |
 | `src/rig_local_server.{h,mm}`, `scripts/axe_fx_mcp.py` | Local HTTP JSON control server (`127.0.0.1:49162`) and Python stdio MCP bridge for external agent control |
 | `src/standalone_main.mm`, `src/standalone_controls.h`, `src/standalone_worker.{h,cpp}` | macOS CoreAudio/CoreMIDI standalone host (`Axe FX.app`), control port binding, and LV2 worker queue |
 | `src/standalone_main_win32.cpp`, `src/nam_rig_win32_ui.cpp`, `src/win32_*.{h,cpp}` | Windows WASAPI standalone host, Win32 UI, preset serialization, and allocation-free control defaults |
 | `src/rig_tone_api.{h,mm}`, `src/rig_tone_browser.{h,mm}` | Tone3000 API client (OAuth/PKCE, keychain sessions) and Tone Explorer UI (search pagination, disk cache, downloads, favorites) |
+
+## Experimental local tone matching (macOS standalone)
+
+The Copilot drawer's **Learn & Match** action is separate from **Preview Tone**:
+it requires an unclipped paired raw DI take and a Target WAV explicitly labeled
+**Isolated guitar**. Full-mix source separation is not implemented. Local matching
+does not require AI credentials, send audio, or apply/save anything automatically.
+**Search Tone3000 too** is an explicit, default-off text-only amp search/download;
+otherwise only the installed library is consulted.
+
+`rigLocalToneSeeds` builds a bounded shortlist (current gear plus at most three
+amps × two cabs), respecting amp/full-rig metadata. Seeds bypass gate, compressors,
+space effects and extra power coloration. Input calibration and oversampling stay
+unchanged. Cab B is off. Six continuous controls are searched: amp drive, bass,
+mid, treble, cabinet low/high cuts. Pedal and OD selection are not optimized yet.
+
+The matcher freezes inputs on the main thread and does all model loading,
+rendering, feature extraction and training on a utility queue. It chooses the
+most energetic contiguous 1.5-second DI/target excerpts without normalizing DI.
+Scoring uses 11 bandpass-energy features relative to active-window RMS, plus
+low-weight crest/dynamics features. Stereo energy is measured per channel, not
+downmixed. This is approximate feature distance in dB, **not** a confidence or
+perceptual-accuracy percentage; different performances/tunings can bias results.
+
+The best rendered gear seed supplies 13 local training examples (neutral plus
+positive/negative perturbations for each control). A ridge-regression surrogate
+predicts 256 bounded parameter sets. Its best three predictions are re-rendered;
+only real measurements determine the finalists, including the original seed and
+training examples. Finalists also undergo measured output-headroom correction.
+Users choose a finalist, run **Render DI A/B** on the full take, and explicitly
+**Apply & Save** through the existing acknowledgement/rollback path. Finalists
+retain local provenance instead of the currently selected cloud provider.
+
+Training features/settings/coefficients (no raw audio) are saved as per-run JSON
+under `~/Library/Application Support/Axe FX/Local Tone Training/`. V1 retrains
+per session; these records are not yet reused or a newly trained NAM capture.
+Cancellation is cooperative between renders; an individual render or opted-in
+online search must finish. Closing the drawer/rig cancels or discards the work.
+No heavy work is added to the audio callback and no LV2 ports are added.
+
+Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
+`cmake --build build --target verify_local_match_engine -j8`, then
+`build/src/verify_local_match_engine <temporary-training-dir> [optional-amp.nam]`.
 
 ## Port map (rig plugin) — APPEND-ONLY, never renumber
 

@@ -298,6 +298,14 @@ if (APPLE)
 		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
 	target_compile_options(verify_riff_renderer PRIVATE -fobjc-arc -UNDEBUG -Wno-incomplete-implementation)
 	target_link_libraries(verify_riff_renderer PRIVATE NeuralAudio ${COCOA_FRAMEWORK} ${ACCELERATE_FRAMEWORK})
+	add_executable(verify_local_match_engine EXCLUDE_FROM_ALL
+		../tests/verify_local_tone_matcher.mm rig_local_tone_matcher.mm rig_ai_support.mm
+		rig_riff_renderer.mm $<TARGET_OBJECTS:rig_dsp_core>)
+	target_compile_definitions(verify_local_match_engine PRIVATE NAMRIG_REAL_RENDER)
+	target_include_directories(verify_local_match_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+	target_compile_options(verify_local_match_engine PRIVATE -fobjc-arc -UNDEBUG -Wno-incomplete-implementation)
+	target_link_libraries(verify_local_match_engine PRIVATE NeuralAudio ${COCOA_FRAMEWORK} ${ACCELERATE_FRAMEWORK})
 	add_executable(verify_low_buffer_rig EXCLUDE_FROM_ALL ../tests/verify_low_buffer_rig.cpp)
 	target_include_directories(verify_low_buffer_rig PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 		../deps/lv2/include ../deps/NeuralAudio ../deps/NeuralAudio/deps/RTNeural/modules/json)
@@ -345,6 +353,7 @@ if (APPLE)
 		rig_ai_model_catalog.h rig_ai_model_catalog.mm
 		rig_local_server.h rig_local_server.mm
 		rig_riff_recorder.h rig_riff_recorder.mm
+		rig_local_tone_matcher.h rig_local_tone_matcher.mm local_tone_learning.h
 		rig_ui_state.h)
 	add_library(rig_ui_core OBJECT ${RIG_UI_SOURCES})
 	set_target_properties(rig_ui_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

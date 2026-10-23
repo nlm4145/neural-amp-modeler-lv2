@@ -61,6 +61,10 @@ typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
 @property (nonatomic, readonly) NSInteger guidedSegmentIndex;
 @property (nonatomic, readonly) BOOL isGuided;
 @property (nonatomic, readonly, nullable) NSData* referenceWavData;
+@property (nonatomic, readonly, nullable) NSData* referenceFrames; // Original interleaved float samples, not clamped WAV.
+@property (nonatomic, readonly) double referenceSampleRate;
+@property (nonatomic, readonly) NSUInteger referenceChannels;
+@property (nonatomic, readonly) BOOL referenceIsFullMix;
 @property (nonatomic, readonly, copy) NSString* referenceAnalysis;
 @property (nonatomic, copy, nullable) RigRiffRenderHandler renderHandler;
 @property (nonatomic, readonly) BOOL isRendering;

@@ -177,6 +177,10 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 @property(nonatomic, readwrite) float peakDbfs, rmsDbfs, crestFactorDb, lowBandDbfs, lowMidDbfs, highMidDbfs, trebleDbfs, airDbfs;
 @property(nonatomic, readwrite, copy) NSString* audioAnalysisSummary;
 @property(nonatomic, readwrite, nullable) NSData* referenceWavData;
+@property(nonatomic, readwrite, nullable) NSData* referenceFrames;
+@property(nonatomic, readwrite) double referenceSampleRate;
+@property(nonatomic, readwrite) NSUInteger referenceChannels;
+@property(nonatomic, readwrite) BOOL referenceIsFullMix;
 @property(nonatomic, readwrite, copy) NSString* referenceAnalysis;
 @property(nonatomic, readwrite, nullable) NSData* baselineWavData;
 @property(nonatomic, readwrite, nullable) NSData* candidateWavData;
@@ -302,6 +306,8 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   double rate = 0; NSUInteger channels = 0; NSData* audio = decode(url, rate, channels, error);
   if (!audio) return NO;
   size_t n = audio.length / (channels * sizeof(float)); const auto* x = static_cast<const float*>(audio.bytes);
+  _referenceFrames = audio; _referenceSampleRate = rate;
+  _referenceChannels = channels; _referenceIsFullMix = fullMix;
   _referenceWavData = wav(x, n, channels, rate);
   _referenceAnalysis = [NSString stringWithFormat:@"TARGET REFERENCE (%@, first %.1fs). %@\n%@",
       fullMix ? @"full mix" : @"isolated guitar", n / rate,
@@ -309,7 +315,10 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
       summary(@"Reference", analyze(x, n, channels, rate))];
   return YES;
 }
-- (void)clearReference { _referenceWavData = nil; _referenceAnalysis = @""; }
+- (void)clearReference {
+  _referenceWavData = nil; _referenceFrames = nil; _referenceAnalysis = @"";
+  _referenceSampleRate = 0; _referenceChannels = 0; _referenceIsFullMix = NO;
+}
 - (void)renderBaseline:(RigPreset*)baseline candidate:(RigPreset*)candidate completion:(void (^)(NSError*))completion {
   if (_isRendering) { completion(failure(@"A DI render is already running.")); return; }
   if (!self.renderHandler || !_recordedDIFrames.length) { completion(failure(@"Record paired DI in the standalone app before rendering.")); return; }
