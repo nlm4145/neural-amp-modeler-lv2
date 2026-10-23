@@ -23,6 +23,27 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
 BOOL rigAIIsNoneModel(NSString* target);
 NSString* rigAIResolveModel(NSString* root, NSString* target, NSUInteger stage, NSError** error);
 BOOL rigAIModelIncludesCab(NSString* path);
+// Compact index of every installed pack (one entry per "Amp/<folder>", "Cab/<folder>", ... or loose
+// file) so the AI can match an artist's documented gear against the whole library, not only the
+// keyword-ranked excerpt. Entries: pack, stage, captures, optional title/includes_cab.
+NSArray<NSDictionary*>* rigAILibraryPackIndex(NSString* root, NSUInteger maxEntries);
+// When the AI names a pack folder instead of a capture file, pick the best capture inside it for
+// the stage (query words in filenames first, then plain rhythm captures). Returns a library-relative
+// path, or nil when target is not a pack folder.
+NSString* _Nullable rigAIResolvePackCapture(NSString* root, NSString* target, NSUInteger stage, NSString* _Nullable query);
+// Exact neural-network weight count of a .nam file (0 when unreadable or not a .nam).
+NSInteger rigAINamParameterCount(NSString* path);
+// Filename with size/architecture words (xSTD, lite, feather, nano, A1, A2, ...) removed, so the
+// same capture exported at different network sizes shares one key.
+NSString* rigAIProfileKey(NSString* filename);
+// Architecture of an installed capture: @"custom", @"2" (A2) or @"1" (A1), from the Tone3000
+// manifest or "(A1)/(A2)" in the filename; nil when unknown.
+NSString* _Nullable rigAICaptureArchitecture(NSString* root, NSString* relative);
+// Once a capture is chosen, return the best sibling in the same folder with the same profile key:
+// architecture first (Custom > A2 > A1 > unknown), then highest parameter count. Returns the
+// original path when it is already the best. Optional outputs report chosen/original parameter counts.
+NSString* rigAIHighestCapacityVariant(NSString* root, NSString* relative, NSUInteger stage,
+                                      NSInteger* _Nullable outParams, NSInteger* _Nullable outOriginalParams);
 
 // Semantic gear expansion: translates artist/song/style prompts into associated gear families and acoustic search terms.
 NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt);

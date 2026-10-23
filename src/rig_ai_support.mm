@@ -178,6 +178,192 @@ static BOOL categoryMatches(NSString* relative, NSUInteger stage) {
       ([ext isEqualToString:@"wav"] || [ext isEqualToString:@"nam"]);
 }
 
+static NSUInteger stageForRelative(NSString* relative) {
+  return categoryMatches(relative, 1) ? 1 : categoryMatches(relative, 2) ? 2 : categoryMatches(relative, 0) ? 0 : NSNotFound;
+}
+
+// A pack is the first two path components ("Amp/<pack folder>"), or the file itself when it
+// sits directly inside the category folder ("Amp/loose.nam").
+static NSString* packForRelative(NSString* relative) {
+  NSArray* parts = relative.pathComponents;
+  return parts.count <= 2 ? relative : [NSString pathWithComponents:[parts subarrayWithRange:NSMakeRange(0, 2)]];
+}
+
+NSArray<NSDictionary*>* rigAILibraryPackIndex(NSString* root, NSUInteger maxEntries) {
+  NSMutableDictionary<NSString*, NSMutableDictionary*>* packs = [NSMutableDictionary dictionary];
+  for (NSString* relative in [NSFileManager.defaultManager enumeratorAtPath:root]) {
+    const NSUInteger stage = stageForRelative(relative);
+    if (stage == NSNotFound) continue;
+    NSString* path = [root stringByAppendingPathComponent:relative];
+    if (!regularFileInside(root, path)) continue;
+    NSString* pack = packForRelative(relative);
+    NSMutableDictionary* entry = packs[pack];
+    if (!entry) {
+      entry = [@{@"pack": pack, @"stage": @(stage), @"captures": @0} mutableCopy];
+      NSDictionary* manifest = manifestForPath(path);
+      NSDictionary* tone = [manifest[@"tone"] isKindOfClass:NSDictionary.class] ? manifest[@"tone"] : @{};
+      NSString* title = [tone[@"title"] isKindOfClass:NSString.class] ? tone[@"title"] : nil;
+      if (title.length && ![pack.lastPathComponent.lowercaseString containsString:title.lowercaseString])
+        entry[@"title"] = [title substringToIndex:std::min<NSUInteger>(title.length, 80)];
+      if (stage == 1 && rigAIModelIncludesCab(path)) entry[@"includes_cab"] = @YES;
+      packs[pack] = entry;
+    }
+    entry[@"captures"] = @([entry[@"captures"] unsignedIntegerValue] + 1);
+  }
+  NSArray* sorted = [packs.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+    NSComparisonResult s = [a[@"stage"] compare:b[@"stage"]];
+    return s != NSOrderedSame ? s : [a[@"pack"] localizedCaseInsensitiveCompare:b[@"pack"]];
+  }];
+  return sorted.count > maxEntries ? [sorted subarrayWithRange:NSMakeRange(0, maxEntries)] : sorted;
+}
+
+NSString* rigAIResolvePackCapture(NSString* root, NSString* target, NSUInteger stage, NSString* query) {
+  if (![target isKindOfClass:NSString.class] || !target.length || target.isAbsolutePath ||
+      [target.pathComponents containsObject:@".."]) return nil;
+  BOOL isDirectory = NO;
+  NSString* full = [root stringByAppendingPathComponent:target];
+  if (![NSFileManager.defaultManager fileExistsAtPath:full isDirectory:&isDirectory] || !isDirectory) return nil;
+  NSMutableArray<NSString*>* tokens = [NSMutableArray array];
+  for (NSString* t in [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet])
+    if (t.length > 2) [tokens addObject:t];
+  NSString* best = nil;
+  NSInteger bestScore = NSIntegerMin;
+  for (NSString* inner in [NSFileManager.defaultManager enumeratorAtPath:full]) {
+    NSString* relative = [target stringByAppendingPathComponent:inner];
+    if (!categoryMatches(relative, stage) || !regularFileInside(root, [root stringByAppendingPathComponent:relative])) continue;
+    NSString* name = inner.lowercaseString;
+    NSInteger score = 0;
+    for (NSString* t in tokens) if ([name containsString:t]) score += 4;
+    // Without other hints, prefer a plain rhythm capture over boosted, lead, clean or solo variants.
+    if ([name containsString:@"rhythm"] || [name containsString:@"rhy"]) score += 2;
+    for (NSString* variant in @[@"boost", @"lead", @"solo", @"clean", @"cln", @"fuzz"])
+      if ([name containsString:variant] && ![tokens containsObject:variant]) score -= 1;
+    if (score > bestScore || (score == bestScore && [relative localizedStandardCompare:best] == NSOrderedAscending)) {
+      best = relative;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+NSInteger rigAINamParameterCount(NSString* path) {
+  if (![path.pathExtension.lowercaseString isEqualToString:@"nam"]) return 0;
+  NSData* data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+  if (!data.length || data.length > 100 * 1024 * 1024) return 0;
+  const char* mem = (const char*)data.bytes;
+  const size_t size = data.length;
+  // Count comma-separated values in every "weights" array without building a JSON object graph.
+  NSInteger total = 0;
+  size_t offset = 0;
+  while (offset < size) {
+    const char* p = (const char*)memmem(mem + offset, size - offset, "\"weights\"", 9);
+    if (!p) break;
+    offset = (size_t)(p - mem) + 9;
+    while (offset < size && mem[offset] != '[') offset++;
+    if (offset >= size) break;
+    const size_t start = ++offset;
+    while (offset < size && mem[offset] != ']') offset++;
+    if (offset >= size) break;
+    NSInteger commas = 0;
+    bool hasValue = false;
+    for (size_t i = start; i < offset; ++i) {
+      if (mem[i] == ',') commas++;
+      else if (mem[i] > ' ') hasValue = true;
+    }
+    if (hasValue) total += commas + 1;
+    offset++;
+  }
+  return total;
+}
+
+NSString* rigAIProfileKey(NSString* filename) {
+  // Same capture exported at different network sizes/architectures, e.g.
+  // "Amp-Dialled.nam", "Amp-Dialled-xSTD.nam", "Amp Dialled (A2).nam" -> "ampdialled".
+  static NSSet<NSString*>* sizeWords = [NSSet setWithArray:@[
+    @"xstd", @"std", @"standard", @"lite", @"light", @"feather", @"nano", @"complex", @"xl",
+    @"a1", @"a2", @"custom", @"hq", @"lq"]];
+  NSArray* words = [filename.stringByDeletingPathExtension.lowercaseString
+      componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  NSMutableString* key = [NSMutableString string];
+  for (NSString* w in words) if (w.length && ![sizeWords containsObject:w]) [key appendString:w];
+  return key;
+}
+
+NSString* rigAICaptureArchitecture(NSString* root, NSString* relative) {
+  NSString* full = [root stringByAppendingPathComponent:relative];
+  NSDictionary* manifest = manifestForPath(full);
+  NSArray* downloads = [manifest[@"downloads"] isKindOfClass:NSArray.class] ? manifest[@"downloads"] : @[];
+  for (id entry in downloads) {
+    if (![entry isKindOfClass:NSDictionary.class] || ![entry[@"local_filename"] isEqual:relative.lastPathComponent]) continue;
+    NSDictionary* model = [entry[@"original_model"] isKindOfClass:NSDictionary.class] ? entry[@"original_model"] : @{};
+    id av = model[@"architecture_version"];
+    NSString* arch = [av isKindOfClass:NSString.class] ? av : ([av respondsToSelector:@selector(stringValue)] ? [av stringValue] : nil);
+    if (arch.length) return ([arch isEqualToString:@"1"] || [arch isEqualToString:@"2"]) ? arch : @"custom";
+  }
+  // Tone3000 export names often carry the architecture: "... (A1).nam", "... (A2).nam".
+  NSArray* words = [relative.lastPathComponent.stringByDeletingPathExtension.lowercaseString
+      componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  if ([words containsObject:@"custom"]) return @"custom";
+  if ([words containsObject:@"a2"]) return @"2";
+  if ([words containsObject:@"a1"]) return @"1";
+
+  // Check JSON header for NAM model architecture
+  if ([full.pathExtension.lowercaseString isEqualToString:@"nam"]) {
+    NSData* head = [NSData dataWithContentsOfFile:full options:NSDataReadingMappedIfSafe error:nil];
+    if (head.length > 0) {
+      const char* bytes = (const char*)head.bytes;
+      const size_t scanLen = std::min<size_t>(head.length, 2048);
+      if (memmem(bytes, scanLen, "SlimmableContainer", 18)) return @"2";
+      if (memmem(bytes, scanLen, "WaveNet", 7) || memmem(bytes, scanLen, "LSTM", 4)) return @"1";
+    }
+  }
+  return nil;
+}
+
+// Player preference: Custom > A2 > A1; unknown architecture ranks lowest and is compared by size.
+static NSInteger architectureRank(NSString* arch) {
+  if ([arch isEqualToString:@"custom"]) return 3;
+  if ([arch isEqualToString:@"2"]) return 2;
+  if ([arch isEqualToString:@"1"]) return 1;
+  return 0;
+}
+
+NSString* rigAIHighestCapacityVariant(NSString* root, NSString* relative, NSUInteger stage,
+                                      NSInteger* outParams, NSInteger* outOriginalParams) {
+  if (outParams) *outParams = 0;
+  if (outOriginalParams) *outOriginalParams = 0;
+  if (![relative isKindOfClass:NSString.class] || !relative.length || !categoryMatches(relative, stage) ||
+      ![relative.pathExtension.lowercaseString isEqualToString:@"nam"]) return relative;
+  NSString* full = [root stringByAppendingPathComponent:relative];
+  if (!regularFileInside(root, full)) return relative;
+  NSString* key = rigAIProfileKey(relative.lastPathComponent);
+  NSString* folderRelative = relative.stringByDeletingLastPathComponent;
+  NSString* best = relative;
+  NSInteger original = rigAINamParameterCount(full);
+  NSInteger bestParams = original;
+  NSInteger bestArch = architectureRank(rigAICaptureArchitecture(root, relative));
+  if (key.length) {
+    NSArray* siblings = [NSFileManager.defaultManager contentsOfDirectoryAtPath:full.stringByDeletingLastPathComponent error:nil];
+    for (NSString* name in siblings) {
+      NSString* candidate = [folderRelative stringByAppendingPathComponent:name];
+      if ([candidate isEqualToString:relative] || !categoryMatches(candidate, stage) ||
+          ![rigAIProfileKey(name) isEqualToString:key]) continue;
+      NSString* candidateFull = [root stringByAppendingPathComponent:candidate];
+      if (!regularFileInside(root, candidateFull)) continue;
+      const NSInteger arch = architectureRank(rigAICaptureArchitecture(root, candidate));
+      const NSInteger params = rigAINamParameterCount(candidateFull);
+      if (arch > bestArch || (arch == bestArch && params > bestParams)) {
+        best = candidate;
+        bestParams = params;
+        bestArch = arch;
+      }
+    }
+  }
+  if (outParams) *outParams = bestParams;
+  if (outOriginalParams) *outOriginalParams = original;
+  return best;
+}
+
 NSArray<NSDictionary*>* rigAILibraryCandidates(NSString* root, NSString* query, NSUInteger limit) {
   NSUInteger totals[3] = {};
   return rigAILibraryCandidatesWithTotals(root, query, limit, totals);
@@ -440,91 +626,6 @@ NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt) {
     {
       @[@"avenged sevenfold", @"synyster gates", @"bat country", @"hail to the king", @"nightmare", @"unholy confessions"],
       @[@"schecter hellwin", @"bogner uberschall", @"mesa dual rectifier"]
-    },
-    // Disturbed / Dan Donegan
-    {
-      @[@"disturbed", @"distrubed", @"donegan", @"dan donegan", @"the sickness", @"down with the sickness", @"stupify", @"voices", @"ten thousand fists", @"stricken", @"indestructible", @"inside the fire", @"sound of silence"],
-      @[@"mesa dual rectifier", @"triple rectifier", @"dual rectifier", @"mesa boogie", @"bogner ecstasy", @"mesa 4x12", @"v30"]
-    },
-    // Rammstein / Richard Kruspe / Paul Landers
-    {
-      @[@"rammstein", @"kruspe", @"paul landers", @"du hast", @"sonne", @"feuer frei", @"deutschland", @"mutter"],
-      @[@"mesa dual rectifier", @"dual rectifier", @"engl fireball", @"sansamp psa", @"mesa 4x12"]
-    },
-    // Korn / Munky / Head
-    {
-      @[@"korn", @"munky", @"brian welch", @"blind", @"freak on a leash", @"falling away from me", @"got the life"],
-      @[@"mesa dual rectifier", @"triple rectifier", @"dual rectifier", @"mesa 4x12", @"ts9"]
-    },
-    // System of a Down / Daron Malakian
-    {
-      @[@"system of a down", @"soad", @"malakian", @"chop suey", @"toxicity", @"aerials", @"b.y.o.b."],
-      @[@"marshall jmp-1", @"dual rectifier", @"marshall plexi 1959", @"mesa 4x12"]
-    },
-    // Killswitch Engage / Adam D / Joel Stroetzel
-    {
-      @[@"killswitch engage", @"adam d", @"holy diver", @"end of heartache", @"my curse", @"alive or just breathing"],
-      @[@"peavey 5150", @"6505", @"maxon od808", @"framus cobra", @"v30"]
-    },
-    // Trivium / Matt Heafy / Corey Beaulieu
-    {
-      @[@"trivium", @"heafy", @"in waves", @"the sin and the sentence", @"pull harder", @"ascendancy"],
-      @[@"evh 5150 iii", @"5150", @"peavey 6505", @"maxon od808"]
-    },
-    // Dream Theater / John Petrucci
-    {
-      @[@"dream theater", @"petrucci", @"pull me under", @"panic attack", @"the glass prison", @"metropolis", @"images and words"],
-      @[@"mesa mark iic+", @"mesa mark iv", @"mesa mark v", @"mesa jp-2c", @"mesa 4x12"]
-    },
-    // In Flames / Björn Gelotte
-    {
-      @[@"in flames", @"bjorn gelotte", @"clayman", @"colony", @"the jester race", @"only for the weak"],
-      @[@"peavey 5150", @"6505", @"marshall 1960", @"v30"]
-    },
-    // Arch Enemy / Michael Amott
-    {
-      @[@"arch enemy", @"amott", @"nemesis", @"war eternal", @"we will rise"],
-      @[@"peavey 5150", @"evh 5150 iii", @"marshall jcm800"]
-    },
-    // Mastodon / Bill Kelliher / Brent Hinds
-    {
-      @[@"mastodon", @"blood mountain", @"crack the skye", @"leviathan", @"bill kelliher", @"brent hinds"],
-      @[@"marshall jcm800", @"orange thunderverb", @"friedman butterslax"]
-    },
-    // Foo Fighters / Dave Grohl / Chris Shiflett
-    {
-      @[@"foo fighters", @"grohl", @"everlong", @"all my life", @"the pretender", @"best of you", @"monkey wrench", @"colour and the shape"],
-      @[@"mesa dual rectifier", @"mesa road king", @"vox ac30", @"friedman"]
-    },
-    // Smashing Pumpkins / Billy Corgan
-    {
-      @[@"smashing pumpkins", @"billy corgan", @"siamese dream", @"cherub rock", @"today", @"bullet with butterfly wings", @"mellon collie"],
-      @[@"op-amp big muff", @"big muff", @"marshall jcm800", @"fender twin reverb"]
-    },
-    // Weezer / Rivers Cuomo
-    {
-      @[@"weezer", @"rivers cuomo", @"blue album", @"pinkerton", @"say it ain't so", @"buddy holly", @"hash pipe"],
-      @[@"mesa dual rectifier", @"marshall jcm900", @"marshall 4x12"]
-    },
-    // Steve Vai
-    {
-      @[@"steve vai", @"passion and warfare", @"for the love of god", @"bad horse", @"carvin legacy"],
-      @[@"carvin legacy", @"bogner ecstasy", @"boss ds-1", @"ibanez ts9"]
-    },
-    // Joe Satriani
-    {
-      @[@"joe satriani", @"satriani", @"surfing with the alien", @"satch boogie", @"always with me", @"summer song"],
-      @[@"marshall jvm410hjs", @"peavey jsx", @"boss ds-1"]
-    },
-    // Randy Rhoads
-    {
-      @[@"randy rhoads", @"rhoads", @"crazy train", @"mr crowley", @"blizzard of ozz", @"diary of a madman"],
-      @[@"marshall 1959 super lead", @"marshall plexi", @"mxr distortion+"]
-    },
-    // Zakk Wylde
-    {
-      @[@"zakk wylde", @"black label society", @"no more tears", @"miracle man", @"stillborn"],
-      @[@"marshall jcm800 2203", @"boss sd-1", @"evm-12l"]
     },
     // Van Halen / Eddie Van Halen / Brown Sound
     {

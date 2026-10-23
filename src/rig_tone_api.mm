@@ -429,7 +429,14 @@ Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, 
     return result;
   }
 
-  NSString* archFilter = ([bestTone[@"a2_models_count"] integerValue] > 0) ? @"2" : @"all";
+  NSString* archFilter = @"all";
+  if ([bestTone[@"custom_models_count"] integerValue] > 0) {
+    archFilter = @"custom";
+  } else if ([bestTone[@"a2_models_count"] integerValue] > 0) {
+    archFilter = @"2";
+  } else if ([bestTone[@"a1_models_count"] integerValue] > 0) {
+    archFilter = @"1";
+  }
   NSString* modelsPath = [NSString stringWithFormat:@"/models?tone_id=%ld&page=1&page_size=25&architecture=%@",
       (long)toneId, archFilter];
   NSDictionary* modelsJson = cachedSearchPageForPath(modelsPath, 3600.0);
@@ -481,9 +488,10 @@ Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, 
         ? [m[@"architecture_version"] stringValue] : (m[@"architecture_version"] ?: @"");
     NSString* mName = [m[@"name"] isKindOfClass:NSString.class] ? [m[@"name"] lowercaseString] : @"";
     NSInteger mScore = 0;
-    if ([av isEqualToString:@"2"]) mScore += 100;
-    else if ([av isEqualToString:@"custom"]) mScore += 50;
-    else if ([av isEqualToString:@"1"]) mScore += 20;
+    // Player priority: Custom > A2 > A1
+    if ([av isEqualToString:@"custom"]) mScore += 150;
+    else if ([av isEqualToString:@"2"]) mScore += 100;
+    else if ([av isEqualToString:@"1"]) mScore += 50;
     for (NSString* t in tokens) {
       if (t.length > 2 && [mName containsString:t]) mScore += 15;
     }
@@ -513,6 +521,40 @@ Tone3000FetchResult* tone3000FetchBestProfile(NSString* query, NSInteger stage, 
     }
   }
   if (!targetModel) targetModel = models.firstObject;
+
+  // Same profile offered at several network sizes: download the highest-capacity one. File size
+  // tracks weight count for .nam JSON; fall back to size words in the model name.
+  auto capacityRank = ^NSInteger(NSDictionary* m) {
+    const long long bytes = [m[@"size"] respondsToSelector:@selector(longLongValue)] ? [m[@"size"] longLongValue] : 0;
+    if (bytes > 0) return (NSInteger)(bytes / 1024) + 1000;
+    NSString* n = [m[@"name"] isKindOfClass:NSString.class] ? [m[@"name"] lowercaseString] : @"";
+    if ([n containsString:@"xstd"] || [n containsString:@"complex"]) return 5;
+    if ([n containsString:@"nano"]) return 1;
+    if ([n containsString:@"feather"]) return 2;
+    if ([n containsString:@"lite"]) return 3;
+    return 4;  // standard / unspecified
+  };
+  auto archRank = ^NSInteger(NSDictionary* m) {
+    id av = m[@"architecture_version"];
+    NSString* a = [av respondsToSelector:@selector(stringValue)]
+        ? [av stringValue] : ([av description] ?: @"");
+    if ([a isEqualToString:@"custom"]) return 3;
+    if ([a isEqualToString:@"2"]) return 2;
+    if ([a isEqualToString:@"1"]) return 1;
+    return 0;
+  };
+  NSString* targetName = [targetModel[@"name"] isKindOfClass:NSString.class] ? targetModel[@"name"] : @"";
+  NSString* targetKey = rigAIProfileKey(targetName);
+  for (NSDictionary* m in models) {
+    if (![m isKindOfClass:NSDictionary.class] || m == targetModel) continue;
+    NSString* n = [m[@"name"] isKindOfClass:NSString.class] ? m[@"name"] : @"";
+    if (!targetKey.length || ![rigAIProfileKey(n) isEqualToString:targetKey]) continue;
+    const NSInteger mArch = archRank(m);
+    const NSInteger tArch = archRank(targetModel);
+    if (mArch > tArch || (mArch == tArch && capacityRank(m) > capacityRank(targetModel))) {
+      targetModel = m;
+    }
+  }
 
   NSString* modelUrl = [targetModel[@"model_url"] isKindOfClass:NSString.class] ? targetModel[@"model_url"] : nil;
   if (!modelUrl.length) {

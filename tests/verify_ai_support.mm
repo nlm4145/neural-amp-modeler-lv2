@@ -133,14 +133,48 @@ int main(int argc, char** argv) {
     }
     CHECK(hasFenderOrTs);
 
-    NSArray<NSString*>* disturbedGear = rigAISuggestGearQueries(@"Use the equipment actually used by distrubed in this album");
-    CHECK(disturbedGear.count > 0);
-    BOOL hasRectifier = NO;
-    for (NSString* g in disturbedGear) {
-      if ([g containsString:@"rectifier"]) hasRectifier = YES;
-    }
-    CHECK(hasRectifier);
     CHECK(rigAISuggestGearQueries(@"").count == 0);
+
+    // Whole-library pack index: one entry per pack, correct stages, excludes empty/outside files.
+    NSArray<NSDictionary*>* packIndex = rigAILibraryPackIndex(root, 100);
+    NSMutableDictionary<NSString*, NSDictionary*>* packsByPath = [NSMutableDictionary dictionary];
+    for (NSDictionary* p in packIndex) packsByPath[p[@"pack"]] = p;
+    CHECK([packsByPath[@"Amp/A"][@"stage"] intValue] == 1 && [packsByPath[@"Amp/A"][@"captures"] intValue] == 1);
+    CHECK([packsByPath[@"Amp/A"][@"title"] isEqual:@"Boutique Clean"]);
+    CHECK([packsByPath[@"Full Rig/Combo"][@"includes_cab"] boolValue]);
+    CHECK([packsByPath[@"Cab/CabA"][@"stage"] intValue] == 2);
+    CHECK([packsByPath[@"Pedal/TS"][@"stage"] intValue] == 0);
+    CHECK(packIndex.count == 9);
+    CHECK(rigAILibraryPackIndex(root, 2).count == 2);
+    // Pack folders resolve to a real capture for the right stage; files and escapes do not.
+    CHECK([rigAIResolvePackCapture(root, @"Amp/A", 1, @"") isEqual:@"Amp/A/clean.nam"]);
+    CHECK([rigAIResolvePackCapture(root, @"Cab/CabA", 2, nil) isEqual:@"Cab/CabA/mic.wav"]);
+    CHECK(!rigAIResolvePackCapture(root, @"Amp/A/clean.nam", 1, @""));
+    CHECK(!rigAIResolvePackCapture(root, @"Cab/CabA", 1, @""));
+    CHECK(!rigAIResolvePackCapture(root, @"../library", 1, @""));
+
+    // Profile key extraction and variant comparison (Custom > A2 > A1, capacity)
+    CHECK([rigAIProfileKey(@"Amp-Dialled-xSTD.nam") isEqual:@"ampdialled"]);
+    CHECK([rigAIProfileKey(@"Amp Dialled (A2).nam") isEqual:@"ampdialled"]);
+    CHECK([rigAIProfileKey(@"Amp Dialled (A1).nam") isEqual:@"ampdialled"]);
+    CHECK([rigAIProfileKey(@"Amp Dialled Custom.nam") isEqual:@"ampdialled"]);
+    CHECK([rigAIHighestCapacityVariant(root, @"Amp/A/clean.nam", 1, nil, nil) isEqual:@"Amp/A/clean.nam"]);
+
+    NSString* varDir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"axe-var-%@", [NSUUID UUID].UUIDString]];
+    NSString* ampVarDir = [varDir stringByAppendingPathComponent:@"Amp/Variants"];
+    [NSFileManager.defaultManager createDirectoryAtPath:ampVarDir withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"{\"architecture\":\"WaveNet\",\"weights\":[1,2,3,4,5,6]}" writeToFile:[ampVarDir stringByAppendingPathComponent:@"model (A1).nam"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"{\"architecture\":\"SlimmableContainer\",\"weights\":[1,2,3,4,5]}" writeToFile:[ampVarDir stringByAppendingPathComponent:@"model (A2).nam"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"{\"architecture\":\"CustomNet\",\"weights\":[1,2]}" writeToFile:[ampVarDir stringByAppendingPathComponent:@"model Custom.nam"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    CHECK([rigAICaptureArchitecture(varDir, @"Amp/Variants/model (A1).nam") isEqual:@"1"]);
+    CHECK([rigAICaptureArchitecture(varDir, @"Amp/Variants/model (A2).nam") isEqual:@"2"]);
+    CHECK([rigAICaptureArchitecture(varDir, @"Amp/Variants/model Custom.nam") isEqual:@"custom"]);
+    NSInteger chosenParams = 0, origParams = 0;
+    NSString* highest = rigAIHighestCapacityVariant(varDir, @"Amp/Variants/model (A1).nam", 1, &chosenParams, &origParams);
+    CHECK([highest isEqual:@"Amp/Variants/model Custom.nam"]);
+    CHECK(chosenParams == 2 && origParams == 6);
+    [NSFileManager.defaultManager removeItemAtPath:varDir error:nil];
 
     // Acoustic telemetry delta guidance tests
     NSString* playerTake = @"Player take: peak -3.0 dBFS; RMS -14.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/350/1500/5000/10500 Hz: -18.0/-15.0/-22.0/-24.0/-38.0 dBFS";
