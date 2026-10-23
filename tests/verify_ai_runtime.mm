@@ -79,6 +79,27 @@ int main(int argc, char** argv) {
       state.knobs[i].floatValue = kRigKnobDefaults[i];
     }
     for (size_t i = 0; i < 4; ++i) state.powerButtons[i] = [[NSButton alloc] initWithFrame:NSZeroRect];
+    // Paired recording must ignore bypassed stages with stale engine paths,
+    // but still block enabled stages (including an outstanding unload).
+    state.selectedPaths[0] = "/Pedal/new.nam";
+    state.confirmedPaths[0] = "/Pedal/old.nam";
+    state.confirmedPaths[3] = "/Cab/old.wav";
+    CHECK(state.unconfirmedRecordingStage() == -1);
+    state.powerButtons[0].state = NSControlStateValueOn;
+    CHECK(state.unconfirmedRecordingStage() == 0);
+    state.confirmedPaths[0] = state.selectedPaths[0];
+    CHECK(state.unconfirmedRecordingStage() == -1);
+    state.powerButtons[3].state = NSControlStateValueOn;
+    CHECK(state.unconfirmedRecordingStage() == 3);
+    state.selectedPaths[3] = state.confirmedPaths[3];
+    CHECK(state.unconfirmedRecordingStage() == -1);
+    state.selectedPaths[1] = "/Amp/new.nam";
+    state.powerButtons[1].state = NSControlStateValueOn;
+    CHECK(state.unconfirmedRecordingStage() == 1);
+    state.confirmedPaths[1] = state.selectedPaths[1];
+    CHECK(state.unconfirmedRecordingStage() == -1);
+    state.selectedPaths = {}; state.confirmedPaths = {};
+    for (size_t i = 0; i < 4; ++i) state.powerButtons[i].state = NSControlStateValueOff;
     state.stageOsPopup[1] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
     [state.stageOsPopup[1] addItemsWithTitles:@[@"off", @"2", @"4", @"8", @"16"]];
     state.irNormPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
@@ -165,6 +186,25 @@ int main(int argc, char** argv) {
     NSTextField* promptField = [NSTextField new]; promptField.stringValue = @"test tone";
     [controller setValue:promptField forKey:@"copilotPromptInput"];
     [controller setValue:[NSTextView new] forKey:@"copilotOutputView"];
+    // Exercise the actual Record action: stale bypassed paths must not block
+    // pre-roll, while an enabled amp mismatch names the stage and sends Get.
+    {
+      state.confirmedPaths[3] = "/Cab/stale.wav";
+      state.powerButtons[3].state = NSControlStateValueOff;
+      [controller performSelector:@selector(toggleCopilotRecordRiff:) withObject:nil];
+      CHECK([[controller valueForKey:@"copilotRecordCountdown"] integerValue] == 3);
+      CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"FREE TAKE"]);
+      [controller performSelector:@selector(toggleCopilotRecordRiff:) withObject:nil];
+      CHECK([[controller valueForKey:@"copilotRecordCountdown"] integerValue] == 0);
+      state.selectedPaths[1] = model.fileSystemRepresentation;
+      state.powerButtons[1].state = NSControlStateValueOn;
+      int previousWrites = writes;
+      [controller performSelector:@selector(toggleCopilotRecordRiff:) withObject:nil];
+      CHECK(writes == previousWrites + 1);
+      CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"Recording blocked: Amp"]);
+      CHECK([[controller valueForKey:@"copilotRecordCountdown"] integerValue] == 0);
+      state.selectedPaths[1].clear(); state.confirmedPaths[3].clear();
+    }
     RigAICopilotResult* proposal = [NSClassFromString(@"RigAICopilotResult") new];
     proposal.controls = @{@"bass": @-3}; proposal.presetName = @"AI Test"; proposal.explanation = @"test";
     [controller setValue:proposal forKey:@"copilotProposal"];

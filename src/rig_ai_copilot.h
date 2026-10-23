@@ -96,6 +96,7 @@ void rigAICalculateTokenCost(NSString* _Nullable provider, NSString* _Nullable m
 
 @property(nonatomic, strong) RigAIConfig* config;
 @property(nonatomic, readonly) BOOL isProcessing;
+@property(nonatomic, readonly) BOOL isApplying;
 - (void)cancelProcessing;
 
 // Human-readable progress lines (catalog, request, response, apply steps). Called on the main thread.

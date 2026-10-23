@@ -1339,7 +1339,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
 
     // Automatic fallback: If prompt requests a tone, but local library lacks matching amps (or max score is 0)
     if (userPrompt.length > 0 && (totals[1] == 0 || maxScores[1] == 0)) {
-      [self reportProgress:@"Local library lacks matching amp captures; searching Tone3000 online…"];
+      [self reportProgress:@"Local keyword search found no amp matches; searching Tone3000 online (not the full catalog)…"];
       Tone3000FetchResult* fetch = tone3000FetchBestProfile(userPrompt, 1, [[self class] libraryRootPath]);
       if (fetch.success) {
         [self reportProgress:[NSString stringWithFormat:@"Tone3000: Auto-downloaded '%@' (%@, %ld downloads) into library.",
@@ -1414,7 +1414,7 @@ static const NSUInteger kRigAICatalogLimit = 48;
                 }
               }
               result.controls = [mutableControls copy];
-              [weakSelf reportProgress:[NSString stringWithFormat:@"Tone3000: Auto-downloaded '%@' → applied as amp.", fetch.toneTitle]];
+              [weakSelf reportProgress:[NSString stringWithFormat:@"Tone3000: Downloaded '%@' → selected for the amp proposal (live rig unchanged).", fetch.toneTitle]];
             } else if (fetch.statusMessage.length) {
               [weakSelf reportProgress:fetch.statusMessage];
             }

@@ -89,6 +89,15 @@ struct RigUIState {
   // Engine acknowledgements, not optimistic UI selections. Used for AI load verification.
   std::array<std::string, 4> confirmedPaths{};
   std::array<uint64_t, 4> pathResponseSerial{};
+  // Only stages contributing to the live signal need matching paths for a
+  // paired take. A bypassed stage may retain an old/unconfirmed selection.
+  int unconfirmedRecordingStage() const {
+    for (size_t s = 0; s < selectedPaths.size(); ++s) {
+      const bool enabled = powerButtons[s] ? powerButtons[s].state == NSControlStateValueOn : s < 3;
+      if (enabled && selectedPaths[s] != confirmedPaths[s]) return static_cast<int>(s);
+    }
+    return -1;
+  }
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;

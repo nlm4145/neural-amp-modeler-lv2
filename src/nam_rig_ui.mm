@@ -2947,11 +2947,21 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     [self updateCopilotRiffUI];
   } else {
     if (!_state || [RigAICopilot sharedCopilot].isProcessing || recorder.isRendering) return;
+    if ([RigAICopilot sharedCopilot].isApplying) {
+      [self appendCopilotLog:@"⚠️ Wait for the tone application to finish before recording a paired take."]; return;
+    }
     if (self.copilotRiffTimer) return; // countdown already running
-    for (size_t s = 0; s < 4; ++s) {
-      if (_state->selectedPaths[s] != _state->confirmedPaths[s]) {
-        [self appendCopilotLog:@"⚠️ Wait for model loading to finish before recording a paired take."]; return;
-      }
+    const int pendingStage = _state->unconfirmedRecordingStage();
+    if (pendingStage >= 0) {
+      const char* roles[] = {"Pedal", "Amp", "Cab A", "Cab B"};
+      NSString* selected = [NSString stringWithUTF8String:_state->selectedPaths[pendingStage].c_str()];
+      NSString* confirmed = [NSString stringWithUTF8String:_state->confirmedPaths[pendingStage].c_str()];
+      [self appendCopilotLog:[NSString stringWithFormat:
+          @"⚠️ Recording blocked: %s is enabled but its model is not confirmed (selected: %@; engine: %@). Refreshing engine status. If this persists, reload that stage or bypass it before recording.",
+          roles[pendingStage], selected.length ? selected.lastPathComponent : @"none",
+          confirmed.length ? confirmed.lastPathComponent : @"none"]];
+      _state->sendGet();
+      return;
     }
     const BOOL guided = self.copilotGuidedButton.state == NSControlStateValueOn;
     self.copilotProposal = nil; self.copilotApplyBtn.enabled = NO;
@@ -2995,6 +3005,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
           return;
         }
         if (!state || !*state->isAlive) { [timer invalidate]; weakSelf.copilotRiffTimer = nil; return; }
+        // A selection or stage power may have changed during the pre-roll.
+        if (state->unconfirmedRecordingStage() >= 0 || [RigAICopilot sharedCopilot].isApplying) {
+          [timer invalidate]; weakSelf.copilotRiffTimer = nil;
+          [weakSelf setCopilotLiveLine:nil];
+          [weakSelf appendCopilotLog:@"⚠️ Recording cancelled: an active model changed during the countdown. Wait for loading, then press Record Riff again."];
+          state->sendGet();
+          [weakSelf updateCopilotRiffUI];
+          return;
+        }
         [r startRecordingGuided:guided];
         r.recordingPreset = [RigPreset captureFromState:state name:state->presetManager.currentPresetName ?: @"Recorded rig"];
         r.recordingMetadata = @{@"player_context":weakSelf.copilotGuitarInfo.stringValue ?: @"unknown",
