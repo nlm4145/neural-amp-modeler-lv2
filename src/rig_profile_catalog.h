@@ -16,6 +16,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Invalidate cached library index (e.g. after downloading a new tone or editing files).
 - (void)invalidateCache;
 
+// Returns all model fullPaths belonging to the same classified (Brand > Specific Model) group as modelPath.
+// If the stage/model cannot be classified or is not found in the local library, returns empty array.
+- (NSArray<NSString*>*)allModelPathsForModelPath:(NSString*)modelPath stage:(size_t)stage;
+
 // Returns a populated hierarchical NSMenu for the given stage (0=Pedal, 1=Amp, 2=Cab A, 3=Cab B).
 // Items fire the given action on target with representedObject = fullFilePath and tag = (NSInteger)stage.
 - (NSMenu*)buildLibraryMenuForStage:(size_t)stage

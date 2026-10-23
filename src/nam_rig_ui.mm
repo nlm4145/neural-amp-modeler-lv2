@@ -1792,7 +1792,14 @@ static NSString* stageName(NSInteger stage) {
       std::string oldPath = (stage < _state->selectedPaths.size()) ? _state->selectedPaths[stage] : "";
       NSString* oldFolder = oldPath.empty() ? @"" : [[NSString stringWithUTF8String:oldPath.c_str()] stringByDeletingLastPathComponent];
       NSString* newFolder = [path stringByDeletingLastPathComponent];
-      if (![oldFolder isEqualToString:newFolder]) {
+      BOOL alreadyAvailable = NO;
+      if (stage < _state->availableModelPaths.size()) {
+        const auto& avail = _state->availableModelPaths[stage];
+        if (std::find(avail.begin(), avail.end(), path.fileSystemRepresentation) != avail.end()) {
+          alreadyAvailable = YES;
+        }
+      }
+      if (!alreadyAvailable && ![oldFolder isEqualToString:newFolder]) {
         std::vector<std::string> discovered = discoverModelsForStagePath(path.fileSystemRepresentation, stage);
         NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithCapacity:discovered.size()];
         for (const auto& m : discovered) {
@@ -1918,6 +1925,19 @@ static NSString* stageName(NSInteger stage) {
       validPos = i;
       break;
     }
+  }
+  if (validPos == -1 && stage < (NSInteger)_state->selectedPaths.size()) {
+    NSString* curPath = [NSString stringWithUTF8String:_state->selectedPaths[(size_t)stage].c_str()];
+    for (NSInteger i = 0; i < (NSInteger)validIndices.count; ++i) {
+      NSMenuItem* it = [picker itemAtIndex:validIndices[(NSUInteger)i].integerValue];
+      if ([it.representedObject isKindOfClass:[NSString class]] && [(NSString*)it.representedObject isEqualToString:curPath]) {
+        validPos = i;
+        break;
+      }
+    }
+  }
+  if (validPos == -1) {
+    validPos = (direction > 0) ? -1 : 0;
   }
 
   NSInteger newPos = validPos + direction;

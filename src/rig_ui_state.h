@@ -1537,8 +1537,19 @@ struct RigUIState {
       selectedPaths[i] = path;
       selectedImageURLs[i] = imageURL;
       selectedToneIds[i] = toneId;
-      if (!path.empty()) sendPath(i, path.c_str());
-      else displayPath(i, "");
+      if (!path.empty()) {
+        std::vector<std::string> discovered = discoverModelsForStagePath(path, i);
+        if (!discovered.empty()) {
+          NSMutableArray<NSString*>* mPaths = [NSMutableArray arrayWithCapacity:discovered.size()];
+          for (const auto& m : discovered) {
+            if (!m.empty()) [mPaths addObject:[NSString stringWithUTF8String:m.c_str()]];
+          }
+          setStageModels(i, mPaths);
+        }
+        sendPath(i, path.c_str());
+      } else {
+        displayPath(i, "");
+      }
       if (imageURL.length() || toneId > 0)
         setStageThumb(i, nil, toneId, imageURL.length() ? [NSString stringWithUTF8String:imageURL.c_str()] : nil);
     }

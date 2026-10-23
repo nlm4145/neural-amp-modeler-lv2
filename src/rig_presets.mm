@@ -1,6 +1,7 @@
 // RigPreset & RigPresetManager — implementation for Axe FX.
 #import "rig_presets.h"
 #import "rig_ai_copilot.h"
+#import "rig_profile_catalog.h"
 
 #include <sys/stat.h>
 #include <algorithm>
@@ -57,6 +58,17 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   NSFileManager* fm = [NSFileManager defaultManager];
   if (![fm fileExistsAtPath:pathStr]) {
     return {modelPath};
+  }
+
+  // 1. If RigProfileCatalog classifies this model, return all captures for this model across local packs
+  NSArray<NSString*>* classified = [[RigProfileCatalog sharedCatalog] allModelPathsForModelPath:pathStr stage:stage];
+  if (classified.count > 0) {
+    std::vector<std::string> result;
+    result.reserve(classified.count);
+    for (NSString* p in classified) {
+      if (p.length) result.push_back(p.fileSystemRepresentation);
+    }
+    return result;
   }
 
   NSString* folder = [pathStr stringByDeletingLastPathComponent];
@@ -255,8 +267,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
           }
         }
       }
-      if (preset->_stages[s].models.empty() && !preset->_stages[s].path.empty()) {
-        preset->_stages[s].models = discoverModelsForStagePath(preset->_stages[s].path, s);
+      if (!preset->_stages[s].path.empty()) {
+        std::vector<std::string> discovered = discoverModelsForStagePath(preset->_stages[s].path, s);
+        if (!discovered.empty()) {
+          preset->_stages[s].models = std::move(discovered);
+        }
       }
     }
   }
@@ -507,8 +522,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   for (size_t s = 0; s < 4; ++s) {
     const std::string& path = _stages[s].path;
     std::vector<std::string> stageModels = _stages[s].models;
-    if (stageModels.empty() && !path.empty()) {
-      stageModels = discoverModelsForStagePath(path, s);
+    if (!path.empty()) {
+      std::vector<std::string> discovered = discoverModelsForStagePath(path, s);
+      if (!discovered.empty()) {
+        stageModels = std::move(discovered);
+      }
     }
     if (!path.empty()) {
       if (std::find(stageModels.begin(), stageModels.end(), path) == stageModels.end()) {

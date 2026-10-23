@@ -131,10 +131,10 @@ static const SpecificModelRule sSpecificModelRules[] = {
   {"ENGL", "Sovereign 100", {"sovereign", NULL}},
 
   // Mesa Boogie
-  {"Mesa Boogie", "Triple Rectifier", {"triple rectifier", "triple recto", "triple", NULL}},
-  {"Mesa Boogie", "Dual Rectifier", {"dual rectifier", "dual recto", "rev g", "revision g", "rectifier", "recto", NULL}},
   {"Mesa Boogie", "Badlander Rectifier", {"badlander", NULL}},
   {"Mesa Boogie", "Road King", {"road king", NULL}},
+  {"Mesa Boogie", "Triple Rectifier", {"triple rectifier", "triple recto", "triple", NULL}},
+  {"Mesa Boogie", "Dual Rectifier", {"dual rectifier", "dual recto", "rev g", "revision g", "rectifier", "recto", NULL}},
   {"Mesa Boogie", "Mark III", {"mark iii", "mark 3", "mk3", "mkiii", NULL}},
   {"Mesa Boogie", "Mark IV", {"mark iv", "mark 4", "mk4", "mkiv", NULL}},
   {"Mesa Boogie", "Mark V", {"mark v", "mark 5", "mkv", NULL}},
@@ -468,6 +468,112 @@ static NSString* cleanModelName(NSString* filename) {
   }
 
   return tree;
+}
+
+- (NSArray<NSString*>*)allModelPathsForModelPath:(NSString*)modelPath stage:(size_t)stage {
+  if (!modelPath.length) return @[];
+
+  size_t effectiveCategoryStage = (stage == 3) ? 2 : stage;
+  NSDictionary<NSString*, NSDictionary<NSString*, NSMutableArray<RigLibraryProfilePack*>*>*>* tree =
+      [self catalogForStage:effectiveCategoryStage];
+  if (tree.count == 0) return @[];
+
+  NSString* stdPath = [[modelPath stringByExpandingTildeInPath] stringByStandardizingPath];
+  NSString* stdFolder = [stdPath stringByDeletingLastPathComponent];
+
+  NSString* matchedBrand = nil;
+  NSString* matchedModel = nil;
+
+  // Pass 1: Look for exact model fullPath or folderPath in existing catalog
+  for (NSString* brand in tree) {
+    NSDictionary<NSString*, NSMutableArray<RigLibraryProfilePack*>*>* models = tree[brand];
+    for (NSString* model in models) {
+      for (RigLibraryProfilePack* pack in models[model]) {
+        NSString* stdPackFolder = [[pack.folderPath stringByExpandingTildeInPath] stringByStandardizingPath];
+        if ([stdPackFolder isEqualToString:stdFolder]) {
+          matchedBrand = brand;
+          matchedModel = model;
+          break;
+        }
+        for (RigLibraryModelEntry* me in pack.models) {
+          NSString* stdMePath = [[me.fullPath stringByExpandingTildeInPath] stringByStandardizingPath];
+          if ([stdMePath isEqualToString:stdPath]) {
+            matchedBrand = brand;
+            matchedModel = model;
+            break;
+          }
+        }
+        if (matchedBrand) break;
+      }
+      if (matchedBrand) break;
+    }
+    if (matchedBrand) break;
+  }
+
+  // Pass 2: If not found by direct folder/path match, classify stdFolder or filename
+  if (!matchedBrand) {
+    NSString* folderName = [stdFolder lastPathComponent];
+    NSString* filename = [stdPath lastPathComponent];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* manifest = [stdFolder stringByAppendingPathComponent:@"_tone3000.json"];
+    NSMutableArray<NSString*>* makes = [NSMutableArray array];
+    NSMutableArray<NSString*>* tags = [NSMutableArray array];
+    NSString* desc = @"";
+    NSString* title = folderName;
+
+    if ([fm fileExistsAtPath:manifest]) {
+      NSData* data = [NSData dataWithContentsOfFile:manifest];
+      if (data) {
+        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if ([json isKindOfClass:[NSDictionary class]]) {
+          NSDictionary* tone = json[@"tone"];
+          if ([tone isKindOfClass:[NSDictionary class]]) {
+            if ([tone[@"title"] isKindOfClass:[NSString class]]) title = tone[@"title"];
+            if ([tone[@"description"] isKindOfClass:[NSString class]]) desc = tone[@"description"];
+            for (id m in [tone[@"makes"] isKindOfClass:[NSArray class]] ? tone[@"makes"] : @[]) {
+              if ([m isKindOfClass:[NSDictionary class]] && [m[@"name"] isKindOfClass:[NSString class]])
+                [makes addObject:m[@"name"]];
+            }
+            for (id t in [tone[@"tags"] isKindOfClass:[NSArray class]] ? tone[@"tags"] : @[]) {
+              if ([t isKindOfClass:[NSDictionary class]] && [t[@"name"] isKindOfClass:[NSString class]])
+                [tags addObject:t[@"name"]];
+            }
+          }
+        }
+      }
+    }
+
+    NSString* b = nil;
+    NSString* m = nil;
+    classifyProfileIntoBrandAndModel(title.length ? title : filename, makes, tags, desc, &b, &m);
+    if (b && m && tree[b][m]) {
+      matchedBrand = b;
+      matchedModel = m;
+    }
+  }
+
+  if (!matchedBrand || !matchedModel || !tree[matchedBrand][matchedModel]) {
+    return @[];
+  }
+
+  NSMutableArray<NSString*>* aggregated = [NSMutableArray array];
+  NSArray<RigLibraryProfilePack*>* packs = tree[matchedBrand][matchedModel];
+  for (RigLibraryProfilePack* pack in packs) {
+    for (RigLibraryModelEntry* me in pack.models) {
+      if (me.fullPath.length && ![aggregated containsObject:me.fullPath]) {
+        [aggregated addObject:me.fullPath];
+      }
+    }
+  }
+
+  // Ensure current modelPath is included if it exists on disk and is not yet in the list
+  if (stdPath.length && ![aggregated containsObject:stdPath] && ![aggregated containsObject:modelPath]) {
+    if ([[NSFileManager defaultManager] fileExistsAtPath:modelPath]) {
+      [aggregated addObject:modelPath];
+    }
+  }
+
+  return aggregated;
 }
 
 #pragma mark - Menu Construction (Direct 3-Tier Hierarchy: Brand > Specific Model > .nam files)
