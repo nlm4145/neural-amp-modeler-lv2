@@ -92,7 +92,6 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) RigButton* copilotUndoBtn;
 @property(nonatomic, strong) NSProgressIndicator* copilotSpinner;
 @property(nonatomic, strong) NSTextField* copilotURLField;
-@property(nonatomic, strong) NSButton* copilotLocalCLIButton;
 @property(nonatomic, strong) RigButton* copilotApplyBtn;
 @property(nonatomic, strong) RigButton* copilotCancelBtn;
 @property(nonatomic, strong) RigAICopilotResult* copilotProposal;
@@ -110,6 +109,8 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) NSTextField* copilotGuitarInfo;
 @property(nonatomic, strong) RigButton* copilotRenderBtn;
 @property(nonatomic, strong) RigButton* copilotLocalMatchBtn;
+@property(nonatomic, strong) NSTextField* copilotTargetStatus;
+@property(nonatomic, strong) NSTextField* copilotLocalMatchStatus;
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
 @property(nonatomic, strong) NSPopUpButton* copilotMatchCandidates;
 @property(nonatomic, strong) NSArray<RigLocalToneMatch*>* copilotLocalMatches;
@@ -197,8 +198,9 @@ static NSString* stageName(NSInteger stage) {
 - (void)copilotProviderChanged:(NSPopUpButton*)sender;
 - (void)refreshCopilotModelsAction:(id)sender;
 - (void)copilotKeyFieldAction:(id)sender;
-- (void)copilotLocalCLIToggled:(id)sender;
 - (void)updateCopilotProviderControlsForProvider:(NSString*)provider;
+- (void)updateCopilotAudioControls;
+- (void)copilotAudioUploadToggled:(id)sender;
 - (void)refreshCopilotModelsUI;
 - (void)refreshCopilotModelsUIForced:(BOOL)force;
 - (void)applyCopilotProposal:(id)sender;
@@ -830,7 +832,9 @@ static NSString* stageName(NSInteger stage) {
   }
 }
 - (void)controlTextDidEndEditing:(NSNotification*)obj {
+  if (obj.object == self.copilotModelComboBox) { [self updateCopilotAudioControls]; return; }
   if (obj.object == self.copilotKeyField || obj.object == self.copilotURLField) {
+    [self updateCopilotAudioControls];
     [self refreshCopilotModelsUI];
     return;
   }
@@ -1734,6 +1738,11 @@ static NSString* stageName(NSInteger stage) {
 // Picking a predefined zoom value from the combo's dropdown also fires the
 // zoom (an editable NSComboBox's action isn't reliable for list selections).
 - (void)comboBoxSelectionDidChange:(NSNotification*)notification {
+  if (notification.object == self.copilotModelComboBox) {
+    // NSComboBox updates its text after this notification is delivered.
+    dispatch_async(dispatch_get_main_queue(), ^{ [self updateCopilotAudioControls]; });
+    return;
+  }
   NSComboBox* combo = (NSComboBox*)notification.object;
   if ([combo isKindOfClass:NSComboBox.class]) [self zoomChanged:combo];
 }
@@ -2331,6 +2340,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }
 
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+  config.allowLocalCLI = YES; // Automatic fallback, requested by the UI policy.
 
   const CGFloat popW = 540.0;
   const CGFloat popH = 874.0;
@@ -2344,8 +2354,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   title.textColor = rigText();
   [content addSubview:title];
 
-  NSTextField* sub = [NSTextField labelWithString:@"Preview a tone starting point, then apply & save · ⌘K"];
-  sub.frame = NSMakeRect(20, popH - 54, 400, 16);
+  NSTextField* sub = [NSTextField labelWithString:@"AI suggestion or local sound matching → audition → Apply & Save"];
+  sub.frame = NSMakeRect(20, popH - 54, 500, 16);
   sub.font = [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
   sub.textColor = rigDimText();
   [content addSubview:sub];
@@ -2416,9 +2426,11 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   urlLabel.frame = NSMakeRect(20, popH - 144, 60, 18);
   urlLabel.textColor = rigText();
   [content addSubview:urlLabel];
-  self.copilotLocalCLIButton = [NSButton checkboxWithTitle:@"" target:self action:@selector(copilotLocalCLIToggled:)];
-  self.copilotLocalCLIButton.frame = NSMakeRect(20, popH - 172, 500, 22);
-  [content addSubview:self.copilotLocalCLIButton];
+  self.copilotSendAudioButton = [NSButton checkboxWithTitle:@"Send recordings to cloud AI (optional; extra cost)" target:self action:@selector(copilotAudioUploadToggled:)];
+  self.copilotSendAudioButton.frame = NSMakeRect(20, popH - 172, 500, 22);
+  self.copilotSendAudioButton.font = [NSFont systemFontOfSize:10];
+  self.copilotSendAudioButton.state = config.sendAudio ? NSControlStateValueOn : NSControlStateValueOff;
+  [content addSubview:self.copilotSendAudioButton];
   [self updateCopilotProviderControlsForProvider:config.provider];
 
   self.copilotModelsStatus = [NSTextField labelWithString:@""];
@@ -2437,15 +2449,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [content addSubview:sep];
 
   // --- AUDIO RIFF SECTION ---
-  NSTextField* riffHeader = [NSTextField labelWithString:@"🎸 Audio Riff for Tone Tuning (Optional):"];
-  riffHeader.frame = NSMakeRect(20, popH - 204, 380, 18);
+  NSTextField* riffHeader = [NSTextField labelWithString:@"1. Your guitar — record your playing for matching"];
+  riffHeader.frame = NSMakeRect(20, popH - 204, 500, 18);
   riffHeader.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
   riffHeader.textColor = rigText();
   [content addSubview:riffHeader];
 
   self.copilotRecordBtn = rigButton(content, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(20, popH - 236, 110, 26));
   self.copilotRecordBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
-  self.copilotRecordBtn.toolTip = @"Record up to 20 seconds of paired raw DI and full stereo rig output";
+  self.copilotRecordBtn.toolTip = @"Record your guitar, not the song. Captures raw DI (before the rig) and processed output. Required for Learn & Match; standalone app only.";
 
   self.copilotPlayBtn = rigButton(content, @"▶ Play", self, @selector(playCopilotRiff:), NSMakeRect(136, popH - 236, 68, 26));
   self.copilotPlayBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
@@ -2455,11 +2467,11 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotClearBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotClearBtn.enabled = NO;
 
-  self.copilotImportBtn = rigButton(content, @"Load WAV…", self, @selector(importCopilotRiff:), NSMakeRect(280, popH - 236, 88, 26));
+  self.copilotImportBtn = rigButton(content, @"Your riff WAV…", self, @selector(importCopilotRiff:), NSMakeRect(280, popH - 236, 110, 26));
   self.copilotImportBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-  self.copilotImportBtn.toolTip = @"Import your processed riff. Use Target WAV for a separate reference.";
+  self.copilotImportBtn.toolTip = @"Import YOUR processed guitar recording for AI analysis. It has no raw DI, so it cannot enable Learn & Match. Use Load target sound for the sound you want to match.";
 
-  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(376, popH - 231, 144, 16)];
+  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(398, popH - 231, 122, 16)];
   self.copilotRiffLevelBar.minValue = 0.0;
   self.copilotRiffLevelBar.maxValue = 1.0;
   self.copilotRiffLevelBar.indeterminate = NO;
@@ -2479,41 +2491,48 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotGuidedButton.toolTip = @"Muted strings → chugs → chords → soft/hard notes → sustain. Substitute representative playing for clean/lead tones.";
   [content addSubview:self.copilotGuidedButton];
   self.copilotTrackPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(175, popH - 288, 160, 24)];
-  [self.copilotTrackPopup addItemsWithTitles:@[@"Recorded output", @"Raw DI", @"Baseline (matched)", @"Candidate (matched)", @"Target reference"]];
+  [self.copilotTrackPopup addItemsWithTitles:@[@"Your guitar output", @"Your raw DI", @"Baseline (matched)", @"Candidate (matched)", @"Target sound"]];
   [content addSubview:self.copilotTrackPopup];
   self.copilotRenderBtn = rigButton(content, @"Render DI A/B", self, @selector(renderCopilotDI:), NSMakeRect(345, popH - 288, 175, 24));
   self.copilotRenderBtn.toolTip = @"Render the same DI through baseline and proposal locally. No AI call, no live rig changes.";
-  rigButton(content, @"Target WAV…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 112, 24));
-  rigButton(content, @"Clear target", self, @selector(clearCopilotReference:), NSMakeRect(138, popH - 316, 100, 24));
-  self.copilotSendAudioButton = [NSButton checkboxWithTitle:@"Upload audio (extra cost; supported models only)" target:nil action:nil];
-  self.copilotSendAudioButton.frame = NSMakeRect(245, popH - 316, 280, 24);
-  self.copilotSendAudioButton.font = [NSFont systemFontOfSize:10];
-  self.copilotSendAudioButton.state = config.sendAudio ? NSControlStateValueOn : NSControlStateValueOff;
-  [content addSubview:self.copilotSendAudioButton];
-  self.copilotGuitarInfo = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 344, 500, 24)];
+  RigButton* targetButton = rigButton(content, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 172, 24));
+  targetButton.toolTip = @"Choose a WAV of the sound you WANT your guitar to resemble. This loads a local reference, not an AI upload. Learn & Match requires guitar-only audio (an isolated recording or guitar stem).";
+  rigButton(content, @"Clear target", self, @selector(clearCopilotReference:), NSMakeRect(200, popH - 316, 95, 24));
+  NSTextField* targetHint = [NSTextField labelWithString:@"Reference WAV · loaded locally"];
+  targetHint.frame = NSMakeRect(305, popH - 312, 215, 18);
+  targetHint.font = [NSFont systemFontOfSize:10]; targetHint.textColor = rigDimText();
+  [content addSubview:targetHint];
+  self.copilotTargetStatus = [NSTextField labelWithString:@""];
+  self.copilotTargetStatus.frame = NSMakeRect(20, popH - 340, 500, 18);
+  self.copilotTargetStatus.font = [NSFont systemFontOfSize:10];
+  self.copilotTargetStatus.lineBreakMode = NSLineBreakByTruncatingTail;
+  [content addSubview:self.copilotTargetStatus];
+  self.copilotGuitarInfo = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 374, 500, 24)];
   self.copilotGuitarInfo.placeholderString = @"Optional: tuning, pickup, interface gain / external pedals";
   self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
   [content addSubview:self.copilotGuitarInfo];
-  self.copilotModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, popH - 372, 500, 24)];
+  self.copilotModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, popH - 402, 500, 24)];
   [self.copilotModePopup addItemsWithTitles:@[@"Modify current preset (load your saved preset first)", @"Build from scratch (neutral base; live rig unchanged until Apply)", @"Refine last proposal (same base as the DI audition)"]];
   [content addSubview:self.copilotModePopup];
-  self.copilotLocalMatchBtn = rigButton(content, @"Learn & Match", self, @selector(matchCopilotLocally:), NSMakeRect(20, popH - 406, 125, 26));
-  self.copilotLocalMatchBtn.toolTip = @"Experimental local training: requires paired raw DI and an isolated Target WAV. Tests a bounded gear shortlist and six controls. No paid AI calls; may take minutes.";
-  self.copilotMatchCandidates = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(155, popH - 406, 155, 26)];
+  self.copilotLocalMatchBtn = rigButton(content, @"Learn & Match", self, @selector(matchCopilotLocally:), NSMakeRect(20, popH - 436, 125, 26));
+  self.copilotLocalMatchBtn.toolTip = @"Train and compare locally: your raw guitar recording + target guitar sound. No cloud AI request or upload. May take minutes.";
+  self.copilotMatchCandidates = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(155, popH - 436, 155, 26)];
   [self.copilotMatchCandidates addItemWithTitle:@"Local finalists"];
   self.copilotMatchCandidates.enabled = NO;
   self.copilotMatchCandidates.target = self;
   self.copilotMatchCandidates.action = @selector(selectCopilotLocalMatch:);
   [content addSubview:self.copilotMatchCandidates];
   self.copilotMatchOnlineButton = [NSButton checkboxWithTitle:@"Search Tone3000 too" target:nil action:nil];
-  self.copilotMatchOnlineButton.frame = NSMakeRect(320, popH - 406, 205, 26);
+  self.copilotMatchOnlineButton.frame = NSMakeRect(320, popH - 436, 205, 26);
   self.copilotMatchOnlineButton.toolTip = @"Opt in to one online amp search/download using your prompt/gear terms. No audio uploads. Local training remains offline.";
   [content addSubview:self.copilotMatchOnlineButton];
-  NSTextField* localNote = [NSTextField labelWithString:@"Experimental · isolated guitar target + raw DI · trains locally · no AI charge"];
-  localNote.frame = NSMakeRect(20, popH - 430, 505, 18);
-  localNote.font = [NSFont systemFontOfSize:10]; localNote.textColor = rigDimText();
-  [content addSubview:localNote];
-  const CGFloat captureOffset = 184;
+  self.copilotLocalMatchStatus = [NSTextField labelWithString:@""];
+  self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 478, 505, 36);
+  self.copilotLocalMatchStatus.font = [NSFont systemFontOfSize:10];
+  self.copilotLocalMatchStatus.lineBreakMode = NSLineBreakByWordWrapping;
+  self.copilotLocalMatchStatus.maximumNumberOfLines = 2;
+  [content addSubview:self.copilotLocalMatchStatus];
+  const CGFloat captureOffset = 232;
 
   // Separator 2
   NSBox* sep2 = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 272 - captureOffset, popW - 40, 1)];
@@ -2539,6 +2558,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotDialBtn.primary = YES;
   self.copilotDialBtn.enabled = ![RigAICopilot sharedCopilot].isProcessing;
   self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+  self.copilotDialBtn.toolTip = @"Ask the selected AI provider for settings. Uses text and audio measurements by default; sends clips only with the cloud-audio option enabled. Unlike Learn & Match, it does not locally train against the target.";
 
   self.copilotApplyBtn = rigButton(content, @"Apply & Save", self, @selector(applyCopilotProposal:), NSMakeRect(140, popH - 384 - captureOffset, 110, 30));
   self.copilotApplyBtn.enabled = self.copilotProposal != nil;
@@ -2655,6 +2675,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 - (void)copilotKeyFieldAction:(id)sender {
   (void)sender;
+  [self updateCopilotAudioControls];
   [self refreshCopilotModelsUI];
 }
 
@@ -2695,6 +2716,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     controller.copilotModelsStatus.stringValue = status;
     controller.copilotModelsStatus.toolTip = status;
     weakBox.toolTip = status;
+    [controller updateCopilotAudioControls];
   }];
 }
 
@@ -2731,50 +2753,44 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 - (void)updateCopilotProviderControlsForProvider:(NSString*)prov {
   NSString* sel = prov.lowercaseString;
-  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
   NSString* localCLI = [RigAICopilot detectLocalCLIForProvider:sel];
   NSString* cliDisplayName = [sel isEqualToString:@"gemini"] ? @"Antigravity (agy)" :
       ([sel isEqualToString:@"claude"] ? @"Claude" :
       ([sel isEqualToString:@"openai"] ? @"Codex" : nil));
 
   if ([sel isEqualToString:@"ollama"]) {
-    self.copilotLocalCLIButton.enabled = NO;
-    self.copilotLocalCLIButton.title = @"Direct HTTP connection (no local CLI needed)";
-    self.copilotLocalCLIButton.state = NSControlStateValueOff;
     self.copilotKeyField.placeholderString = @"API key not required for local Ollama";
   } else if ([sel isEqualToString:@"custom"]) {
-    self.copilotLocalCLIButton.enabled = NO;
-    self.copilotLocalCLIButton.title = @"Direct HTTP connection (no local CLI needed)";
-    self.copilotLocalCLIButton.state = NSControlStateValueOff;
     self.copilotKeyField.placeholderString = @"Enter API key if required by endpoint (optional)";
   } else if (localCLI) {
-    self.copilotLocalCLIButton.enabled = YES;
-    self.copilotLocalCLIButton.title = [NSString stringWithFormat:@"Allow local %@ CLI (uses its permissions; may access local tools)", cliDisplayName ?: sel];
-    self.copilotLocalCLIButton.state = config.allowLocalCLI ? NSControlStateValueOn : NSControlStateValueOff;
-    if (config.allowLocalCLI) {
-      self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Using local %@ (leave empty, or enter API key)",
-        cliDisplayName ?: @"CLI"];
-    } else {
-      self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key, or check \"Allow local %@\" below",
-        sel.uppercaseString,
-        [sel isEqualToString:@"gemini"] ? @"agy" :
-        ([sel isEqualToString:@"claude"] ? @"claude" : @"codex")];
-    }
+    self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Optional: leave empty to use signed-in %@ automatically", cliDisplayName ?: @"CLI"];
   } else {
-    self.copilotLocalCLIButton.enabled = NO;
-    self.copilotLocalCLIButton.title = [NSString stringWithFormat:@"Allow local %@ CLI (not found in ~/.local/bin or PATH)", cliDisplayName ?: sel];
-    self.copilotLocalCLIButton.state = NSControlStateValueOff;
     self.copilotKeyField.placeholderString = [NSString stringWithFormat:@"Enter %@ API key (or set in environment)", sel.uppercaseString];
   }
+  self.copilotKeyField.toolTip = @"An API key uses the cloud API. With no key, a supported installed CLI is used automatically (Claude, Codex, or Antigravity agy), respecting its login and permissions. Local matching needs neither.";
+  [self updateCopilotAudioControls];
 }
 
-- (void)copilotLocalCLIToggled:(id)sender {
+- (void)updateCopilotAudioControls {
+  RigAIConfig* saved = [RigAICopilot sharedCopilot].config;
+  RigAIConfig* selected = [RigAIConfig new];
+  selected.provider = self.copilotProvPopup.titleOfSelectedItem.lowercaseString ?: saved.provider;
+  selected.model = self.copilotModelComboBox.stringValue ?: saved.model;
+  selected.apiKey = self.copilotKeyField ? self.copilotKeyField.stringValue : saved.effectiveApiKey;
+  const BOOL canSend = selected.canSendAudio;
+  self.copilotSendAudioButton.enabled = canSend;
+  if (!canSend) self.copilotSendAudioButton.state = NSControlStateValueOff;
+  self.copilotSendAudioButton.title = [selected.provider isEqual:@"claude"]
+      ? @"Claude uses audio measurements only — no clip uploads"
+      : @"Send recordings to cloud AI (optional; extra cost)";
+  self.copilotSendAudioButton.toolTip = canSend
+      ? @"When you click Preview Tone, send your guitar recordings AND the target sound to the selected cloud AI. Off = text/audio measurements only. Loading the target and Learn & Match never upload audio."
+      : @"This model/connection cannot receive audio clips in Axe FX. Preview Tone receives text and locally computed measurements instead. Supported Gemini/OpenAI audio models with an API key can optionally receive clips. Loading a target sound or using Learn & Match keeps audio local.";
+}
+
+- (void)copilotAudioUploadToggled:(id)sender {
   (void)sender;
-  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
-  config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
-  NSError* err = nil;
-  [config saveToDisk:&err];
-  [self updateCopilotProviderControlsForProvider:config.provider];
+  [self updateCopilotAudioControls];
 }
 
 - (void)saveCopilotConfig:(id)sender {
@@ -2784,7 +2800,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.model = self.copilotModelComboBox.stringValue;
   config.apiKey = self.copilotKeyField.stringValue;
   config.baseURL = self.copilotURLField.stringValue;
-  config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
+  config.allowLocalCLI = YES;
+  [self updateCopilotAudioControls];
   config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;
   NSError* err = nil;
   if ([config saveToDisk:&err]) {
@@ -2815,7 +2832,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.model = self.copilotModelComboBox.stringValue;
   config.apiKey = self.copilotKeyField.stringValue;
   config.baseURL = self.copilotURLField.stringValue;
-  config.allowLocalCLI = self.copilotLocalCLIButton.state == NSControlStateValueOn;
+  config.allowLocalCLI = YES;
+  [self updateCopilotAudioControls];
   config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;
   NSError* configError = nil;
   if (![config saveToDisk:&configError]) {
@@ -2865,8 +2883,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   attach(@"TARGET REFERENCE: see isolated/full-mix label in analysis", recorder.referenceWavData);
   // Keep uploads to three short clips. Candidate feedback is telemetry, locally generated.
   NSString* audioNote = config.sendAudio && config.canSendAudio
-      ? @"\nAudio upload enabled: labeled short clips + telemetry (extra provider cost)."
-      : @"\nTelemetry-only: no audio uploaded. Gemini / OpenAI audio-input models can optionally receive clips.";
+      ? @"\nSending guitar/target audio clips to cloud AI for this preview (extra cost)."
+      : @"\nText + audio measurements only; no recordings uploaded or heard. Target sound stays local.";
   [recorder invalidatePreview];
   [self updateCopilotRiffUI];
 
@@ -3133,6 +3151,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (self.copilotLocalMatching) return;
   if ([RigRiffRecorder sharedRecorder].isRecording || [RigRiffRecorder sharedRecorder].isRendering) return;
   NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.title = @"Import your own processed guitar riff";
+  panel.message = @"This is YOUR playing, not the target sound. A processed WAV supports AI measurements but has no raw DI for Learn & Match. Record Riff in standalone Axe FX to capture raw DI.";
   panel.canChooseFiles = YES;
   panel.canChooseDirectories = NO;
   panel.allowsMultipleSelection = NO;
@@ -3170,12 +3190,32 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotImportBtn.enabled = !busy;
   self.copilotRecordBtn.enabled = r.renderHandler && !self.copilotLocalMatching && !r.isRendering &&
       ![RigAICopilot sharedCopilot].isProcessing && ![RigAICopilot sharedCopilot].isApplying;
-  self.copilotLocalMatchBtn.enabled = r.renderHandler && r.recordedDIFrames.length && r.referenceFrames.length && !r.referenceIsFullMix && !busy;
+  NSMutableArray<NSString*>* missing = [NSMutableArray array];
+  if (!r.renderHandler) [missing addObject:@"Open standalone Axe FX to record raw guitar"];
+  if (!r.recordedDIFrames.length) [missing addObject:@"record your guitar (raw DI)"];
+  if (!r.referenceFrames.length) [missing addObject:@"load a target guitar sound"];
+  else if (r.referenceIsFullMix) [missing addObject:@"use a guitar-only target, not a full song mix"];
+  if (r.recordingMetadata[@"warning"]) [missing addObject:@"re-record without changing the rig"];
+  self.copilotLocalMatchBtn.enabled = !missing.count && !busy;
+  NSString* matchStatus = self.copilotLocalMatching ? @"Training locally… no AI charge. Cancel stops after the current render." :
+      (missing.count ? [@"To enable: " stringByAppendingString:[missing componentsJoinedByString:@"; "]] :
+       (busy ? @"Finish recording/rendering before local matching." : @"Ready: Learn & Match → Render DI A/B → listen → Apply & Save. No AI charge."));
+  self.copilotLocalMatchStatus.stringValue = matchStatus;
+  self.copilotLocalMatchStatus.toolTip = matchStatus;
+  self.copilotLocalMatchStatus.textColor = missing.count ? [NSColor systemOrangeColor] : rigDimText();
+  self.copilotLocalMatchBtn.toolTip = matchStatus;
+  NSString* targetStatus = !r.referenceFrames.length ? @"Target sound: not loaded — choose the guitar sound you want to match." :
+      (r.referenceIsFullMix ? @"Target sound: full song mix — AI context only; local matching needs guitar-only audio." :
+       [NSString stringWithFormat:@"Target sound: guitar-only reference · %.1fs · loaded locally, not uploaded",
+           r.referenceFrames.length / (r.referenceChannels * sizeof(float) * r.referenceSampleRate)]);
+  self.copilotTargetStatus.stringValue = targetStatus;
+  self.copilotTargetStatus.toolTip = targetStatus;
+  self.copilotTargetStatus.textColor = r.referenceIsFullMix ? [NSColor systemOrangeColor] : rigDimText();
   self.copilotMatchCandidates.enabled = self.copilotLocalMatches.count > 0 && !busy;
   self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
   self.copilotCancelBtn.enabled = self.copilotLocalMatching || [RigAICopilot sharedCopilot].isProcessing;
-  self.copilotRecordBtn.toolTip = r.renderHandler ? @"Capture raw DI + stereo output before/after the full rig" : @"Paired recording is available in the standalone app. Import a processed WAV here.";
+  self.copilotRecordBtn.toolTip = r.renderHandler ? @"Record YOUR guitar: raw DI before processing plus the rig output. Needed for Learn & Match." : @"Record Riff requires the standalone Axe FX app, not the LV2 plugin. Your riff WAV imports processed output only and cannot supply raw DI for matching.";
   NSArray* available = @[@(r.recordedWavData.length > 0), @(r.recordedDIWavData.length > 0),
       @(r.baselineWavData.length > 0), @(r.candidateWavData.length > 0), @(r.referenceWavData.length > 0)];
   self.copilotTrackPopup.autoenablesItems = NO;
@@ -3188,20 +3228,17 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     self.copilotRiffStatusLabel.stringValue = r.guidance;
     self.copilotPlayBtn.enabled = NO; self.copilotClearBtn.enabled = NO; return;
   }
-  if (r.recordedWavData.length > 0 || r.referenceWavData.length > 0) {
-    self.copilotPlayBtn.enabled = YES;
-    self.copilotClearBtn.enabled = !busy;
+  self.copilotPlayBtn.enabled = r.recordedWavData.length > 0 || r.referenceWavData.length > 0;
+  self.copilotClearBtn.enabled = r.recordedWavData.length > 0 && !busy;
+  if (r.recordedWavData.length > 0) {
     self.copilotPlayBtn.title = r.isPlaying ? @"❚❚ Stop" : @"▶ Play";
     self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
-      @"%@ %.1fs · Peak %.1f dBFS · %@",
-      r.recordedDIFrames.length ? @"DI + output" : @"Output only", r.recordedDuration, r.peakDbfs,
-      r.referenceWavData.length ? @"target attached" : @"no target"];
+      @"Your guitar: %@ · %.1fs · output peak %.1f dBFS",
+      r.recordedDIFrames.length ? @"raw DI + output" : @"processed WAV only (no raw DI)", r.recordedDuration, r.peakDbfs];
     self.copilotRiffStatusLabel.textColor = [NSColor systemGreenColor];
   } else {
-    self.copilotPlayBtn.enabled = NO;
-    self.copilotClearBtn.enabled = NO;
     self.copilotPlayBtn.title = @"▶ Play";
-    self.copilotRiffStatusLabel.stringValue = @"No take. Record paired DI/output or request a text-only starting point.";
+    self.copilotRiffStatusLabel.stringValue = @"Your guitar: no recording. Record Riff captures raw DI + output.";
     self.copilotRiffStatusLabel.textColor = rigDimText();
   }
 }
@@ -3211,19 +3248,21 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
   if (r.isRecording || r.isRendering) return;
   NSOpenPanel* panel = [NSOpenPanel openPanel]; panel.allowedFileTypes = @[@"wav"];
+  panel.title = @"Load the target guitar sound you want to match";
+  panel.message = @"Choose a reference WAV, not your raw guitar input. Loaded locally; nothing is uploaded. For Learn & Match, use isolated guitar or a guitar stem. First 20 seconds are used.";
+  panel.prompt = @"Load target sound";
   panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
   __weak NAMRigUIController* weakSelf = self;
   [panel beginWithCompletionHandler:^(NSInteger response) {
     if (response != NSModalResponseOK || !panel.URL) return;
-    NSAlert* kind = [NSAlert new]; kind.messageText = @"What does this target contain?";
-    kind.informativeText = @"A full mix includes bass, drums, or other instruments and must not be treated as isolated guitar EQ. First 20 seconds are used.";
-    [kind addButtonWithTitle:@"Full mix"]; [kind addButtonWithTitle:@"Isolated guitar"]; [kind addButtonWithTitle:@"Cancel"];
+    NSAlert* kind = [NSAlert new]; kind.messageText = @"Is the target sound guitar-only?";
+    kind.informativeText = @"Isolated guitar (or a separated guitar stem) enables local Learn & Match. A full song mix includes bass/drums and can only provide AI context; it cannot enable local matching. Choose honestly—this does not separate instruments or upload audio.";
+    [kind addButtonWithTitle:@"Full mix — AI context only"]; [kind addButtonWithTitle:@"Guitar only — enable matching"]; [kind addButtonWithTitle:@"Cancel"];
     NSInteger choice = [kind runModal]; if (choice == NSAlertThirdButtonReturn) return;
     NSError* error = nil;
     if (![r loadReferenceFromURL:panel.URL fullMix:choice == NSAlertFirstButtonReturn error:&error])
       [weakSelf resetCopilotLog:error.localizedDescription];
     else { weakSelf.copilotLocalMatches = nil; [weakSelf resetCopilotLog:r.referenceAnalysis]; }
-    [weakSelf updateCopilotRiffUI];
     [weakSelf updateCopilotRiffUI];
   }];
 }
@@ -3239,7 +3278,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (!_state || self.copilotLocalMatching || [RigLocalToneMatcher sharedMatcher].isRunning ||
       r.isRecording || r.isRendering || self.copilotRecordCountdown > 0 || ai.isProcessing || ai.isApplying) return;
   if (!r.renderHandler || !r.recordedDIFrames.length || !r.referenceFrames.length || r.referenceIsFullMix) {
-    [self appendCopilotLog:@"Local matching requires Record Riff in the standalone app and a Target WAV labeled Isolated guitar. Full-song separation is not implemented."]; return;
+    [self appendCopilotLog:@"Local matching needs YOUR raw guitar (Record Riff in standalone Axe FX) and the guitar sound you WANT (Load target sound → guitar-only WAV). Loading a full song mix won't work; instrument separation is not implemented."]; return;
   }
   if (r.recordingMetadata[@"warning"]) {
     [self appendCopilotLog:@"Record a new paired take: the rig changed during the previous take."]; return;

@@ -39,7 +39,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   c.model = @"gemini-3.8-flash";
   c.baseURL = @"https://generativelanguage.googleapis.com/v1beta/openai";
   c.temperature = 0.2f;
-  c.allowLocalCLI = NO;
+  c.allowLocalCLI = YES;
   c.sendAudio = NO;
   return c;
 }
@@ -87,7 +87,8 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   c.baseURL = [dict[@"base_url"] isKindOfClass:NSString.class] ? dict[@"base_url"] : [self defaultBaseURLForProvider:c.provider];
   NSNumber* temp = dict[@"temperature"];
   c.temperature = [temp isKindOfClass:NSNumber.class] && std::isfinite(temp.floatValue) ? std::clamp(temp.floatValue, 0.0f, 1.0f) : 0.2f;
-  c.allowLocalCLI = [dict[@"allow_local_cli"] isKindOfClass:NSNumber.class] && [dict[@"allow_local_cli"] boolValue];
+  // CLI fallback is automatic in the UI; retain explicit configuration opt-outs.
+  if ([dict[@"allow_local_cli"] isKindOfClass:NSNumber.class]) c.allowLocalCLI = [dict[@"allow_local_cli"] boolValue];
   c.sendAudio = [dict[@"send_audio"] isKindOfClass:NSNumber.class] && [dict[@"send_audio"] boolValue];
   // Migrate a legacy plaintext key only after Keychain accepts it. Do not lose credentials on failure.
   if ([dict[@"api_key"] isKindOfClass:NSString.class] && [dict[@"api_key"] length]) {
@@ -1034,7 +1035,15 @@ static const NSUInteger kRigAIOutputTokenLimit = 8192;
   NSMutableArray* stages = [NSMutableArray array];
   for (size_t s = 0; s < 4; ++s) {
     const auto* stage = [preset stageAtIndex:s];
-    [stages addObject:@{@"role":@(stage->role.c_str()), @"path":@(stage->path.c_str())}];
+    NSMutableDictionary* stageDict = [@{
+      @"role": @(stage->role.c_str()),
+      @"path": @(stage->path.c_str()),
+      @"enabled": @(stage->enabled)
+    } mutableCopy];
+    if (s == 1 && stage->path.length()) {
+      stageDict[@"includes_cab"] = @(rigAIModelIncludesCab(@(stage->path.c_str())));
+    }
+    [stages addObject:stageDict];
   }
   return @{@"name":preset.name ?: @"Rig", @"controls":controls, @"stages":stages,
       @"omitted_controls":compact ? @"shipped control-reference defaults" : @"none"};
@@ -1071,10 +1080,21 @@ static const NSUInteger kRigAIOutputTokenLimit = 8192;
   for (size_t s = 0; s < 4; ++s) {
     if ([preset stageAtIndex:s]->path.empty()) [preset setControl:enables[s] value:0];
   }
-  if (rigAIModelIncludesCab(@([preset stageAtIndex:1]->path.c_str())) &&
-      ([preset controlForPort:9] >= .5 || [preset controlForPort:47] >= .5)) {
-    if (error) *error = [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:@"Full-rig captures require Cab A/B disabled."}];
-    return nil;
+  if (rigAIModelIncludesCab(@([preset stageAtIndex:1]->path.c_str()))) {
+    // If the amp includes a cab (full-rig capture), auto-disable and clear Cab A/B
+    // to prevent double-cabbing rather than failing the tone proposal.
+    [preset setControl:9 value:0.0f];
+    [preset setControl:47 value:0.0f];
+    [preset stageAtIndex:2]->path.clear();
+    [preset stageAtIndex:2]->models.clear();
+    [preset stageAtIndex:2]->imageURL.clear();
+    [preset stageAtIndex:2]->toneId = 0;
+    [preset stageAtIndex:2]->enabled = false;
+    [preset stageAtIndex:3]->path.clear();
+    [preset stageAtIndex:3]->models.clear();
+    [preset stageAtIndex:3]->imageURL.clear();
+    [preset stageAtIndex:3]->toneId = 0;
+    [preset stageAtIndex:3]->enabled = false;
   }
   for (size_t s = 0; s < 4; ++s) [preset stageAtIndex:s]->enabled = [preset controlForPort:enables[s]] >= .5;
   [preset stageAtIndex:0]->oversample = [preset controlForPort:20];
@@ -1266,9 +1286,9 @@ static const NSUInteger kRigAIOutputTokenLimit = 8192;
     if (detectedCLI) {
       NSString* cliLabel = [provider isEqualToString:@"gemini"] ? @"local Antigravity (agy)" :
           ([provider isEqualToString:@"claude"] ? @"local Claude CLI" : @"local Codex CLI");
-      msg = [NSString stringWithFormat:@"Enter an API key for %@, or check \"Allow local CLI\" in AI settings to use %@.", cfg.provider, cliLabel];
+      msg = [NSString stringWithFormat:@"Enter an API key for %@, or enable local CLI access in ai-config.json to use %@.", cfg.provider, cliLabel];
     } else {
-      msg = [NSString stringWithFormat:@"Enter an API key for %@, or explicitly enable local CLI access in AI settings.", cfg.provider];
+      msg = [NSString stringWithFormat:@"Enter an API key for %@, or install and sign in to its local CLI (Claude, Codex, or Antigravity agy).", cfg.provider];
     }
     NSError* keyErr = [NSError errorWithDomain:@"RigAICopilot" code:-2 userInfo:@{NSLocalizedDescriptionKey: msg}];
     [self failCurrentTaskWithError:keyErr];
@@ -1871,14 +1891,27 @@ static const NSUInteger kRigAIOutputTokenLimit = 8192;
       (ampPath ?: [NSString stringWithUTF8String:state->selectedPaths[1].c_str()]);
   RigPreset* before = [RigPreset captureFromState:state name:@"Before AI Tone Tuning"];
   if (rigAIModelIncludesCab(effectiveAmp)) {
-    RigPreset* effective = result.proposedPreset ?: before;
-    float cabEnabled = result.controls[@"cab_enabled"] ? result.controls[@"cab_enabled"].floatValue : [effective controlForPort:9];
-    float cabBEnabled = result.controls[@"cab2_enabled"] ? result.controls[@"cab2_enabled"].floatValue : [effective controlForPort:47];
-    if (cabEnabled >= 0.5f || cabBEnabled >= 0.5f) {
-      if (error) *error = [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey:
-          @"This full-rig capture already includes a cabinet. Disable Cab A and B or select an amp-only capture."}];
-      return NO;
+    if (result.proposedPreset) {
+      [result.proposedPreset setControl:9 value:0.0f];
+      [result.proposedPreset setControl:47 value:0.0f];
+      [result.proposedPreset stageAtIndex:2]->path.clear();
+      [result.proposedPreset stageAtIndex:2]->models.clear();
+      [result.proposedPreset stageAtIndex:2]->enabled = false;
+      [result.proposedPreset stageAtIndex:3]->path.clear();
+      [result.proposedPreset stageAtIndex:3]->models.clear();
+      [result.proposedPreset stageAtIndex:3]->enabled = false;
     }
+    if (result.controls[@"cab_enabled"] && [result.controls[@"cab_enabled"] floatValue] >= 0.5f) {
+      NSMutableDictionary* modControls = [result.controls mutableCopy];
+      modControls[@"cab_enabled"] = @(0.0f);
+      result.controls = modControls;
+    }
+    if (result.controls[@"cab2_enabled"] && [result.controls[@"cab2_enabled"] floatValue] >= 0.5f) {
+      NSMutableDictionary* modControls = [result.controls mutableCopy];
+      modControls[@"cab2_enabled"] = @(0.0f);
+      result.controls = modControls;
+    }
+    cabPath = nil;
   }
 
   if (saveUndo) {

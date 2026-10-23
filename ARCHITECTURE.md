@@ -42,11 +42,23 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 ## Experimental local tone matching (macOS standalone)
 
 The Copilot drawer's **Learn & Match** action is separate from **Preview Tone**:
-it requires an unclipped paired raw DI take and a Target WAV explicitly labeled
-**Isolated guitar**. Full-mix source separation is not implemented. Local matching
+it requires an unclipped paired raw DI take and **Load target sound…** with a WAV
+explicitly labeled **Guitar only**. The drawer separately shows **Your guitar**,
+**Target sound**, and the reason matching is disabled. Importing **Your riff WAV…**
+is processed-player audio, not a raw DI take or a target reference.
+Full-mix source separation is not implemented. Local matching
 does not require AI credentials, send audio, or apply/save anything automatically.
 **Search Tone3000 too** is an explicit, default-off text-only amp search/download;
 otherwise only the installed library is consulted.
+
+Cloud audio transport is a separate, default-off provider-setting option:
+**Send recordings to cloud AI** attaches both player clips and the target only
+on **Preview Tone** and only for supported Gemini/OpenAI API models. It is disabled
+with an explanation on Claude or text-only connections. Target import itself
+never uploads. Local CLI fallback is enabled automatically in the UI (no checkbox):
+an API key takes precedence; otherwise the installed signed-in Claude/Codex/agy
+CLI is used with its existing permissions. No CLI is installed or authenticated
+automatically, and API defaults retain `sendAudio=NO`.
 
 `rigLocalToneSeeds` builds a bounded shortlist (current gear plus at most three
 amps × two cabs), respecting amp/full-rig metadata. Seeds bypass gate, compressors,

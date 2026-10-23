@@ -350,6 +350,7 @@ int main(int argc, char** argv) {
     CHECK(completions == 1);
     // Saving with an empty key must never put plaintext secrets in JSON (isolated Keychain account).
     RigAIConfig* config = [configClass defaultConfig];
+    CHECK(config.allowLocalCLI);
     CHECK(!config.sendAudio && !config.canSendAudio);
     config.apiKey = @"test-only"; config.provider = @"openai"; config.model = @"gpt-4o";
     CHECK(!config.canSendAudio);
@@ -387,6 +388,7 @@ int main(int argc, char** argv) {
     CHECK([config saveToDisk:&error]);
     NSDictionary* saved = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:configPath] options:0 error:nil];
     CHECK(!saved[@"api_key"]);
+    CHECK([saved[@"allow_local_cli"] boolValue]);
     config.baseURL = @"http://example.com/v1";
     CHECK(![config saveToDisk:nil]);
     RigAICopilot* singleton = [copilotClass sharedCopilot];
@@ -549,7 +551,46 @@ int main(int argc, char** argv) {
       CHECK(local.proposedPreset && [local.proposedPreset.aiMetadata[@"provider"] isEqual:@"local"]);
       CHECK(local.tokenCost == 0);
       CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"LOCAL PREVIEW READY"]);
+      // Readiness text differentiates our guitar, the target, and cloud upload.
+      NSTextField* targetStatus = [NSTextField labelWithString:@""];
+      NSTextField* matchStatus = [NSTextField labelWithString:@""];
+      NSButton* matchButton = [NSButton new];
+      [controller setValue:targetStatus forKey:@"copilotTargetStatus"];
+      [controller setValue:matchStatus forKey:@"copilotLocalMatchStatus"];
+      [controller setValue:matchButton forKey:@"copilotLocalMatchBtn"];
+      [controller performSelector:@selector(updateCopilotRiffUI)];
+      CHECK(matchButton.enabled && [matchStatus.stringValue containsString:@"Ready:"]);
+      CHECK([targetStatus.stringValue containsString:@"loaded locally, not uploaded"]);
+      CHECK([recorder loadReferenceFromURL:targetFile fullMix:YES error:nil]);
+      [controller performSelector:@selector(updateCopilotRiffUI)];
+      CHECK(!matchButton.enabled && [matchStatus.stringValue containsString:@"guitar-only target"]);
+      CHECK([targetStatus.stringValue containsString:@"full song mix"]);
+      [recorder clearRecording];
+      [controller performSelector:@selector(updateCopilotRiffUI)];
+      CHECK([matchStatus.stringValue containsString:@"record your guitar"]);
+      NSTextField* guitarStatus = [NSTextField labelWithString:@""];
+      [controller setValue:guitarStatus forKey:@"copilotRiffStatusLabel"];
+      [controller performSelector:@selector(updateCopilotRiffUI)];
+      CHECK([guitarStatus.stringValue containsString:@"no recording"] && ![guitarStatus.stringValue containsString:@"Output only"]);
       [recorder clearRecording]; [recorder clearReference]; recorder.renderHandler = nil;
+      [controller performSelector:@selector(updateCopilotRiffUI)];
+      CHECK([matchStatus.stringValue containsString:@"standalone Axe FX"]);
+      // Unsupported Claude audio is explained and disabled, not a mysterious checkbox.
+      NSButton* upload = [NSButton checkboxWithTitle:@"upload" target:nil action:nil];
+      upload.state = NSControlStateValueOn;
+      [controller setValue:upload forKey:@"copilotSendAudioButton"];
+      [providerPopup selectItemWithTitle:@"Claude"];
+      [controller performSelector:@selector(updateCopilotAudioControls)];
+      CHECK(!upload.enabled && upload.state == NSControlStateValueOff);
+      CHECK([upload.title containsString:@"measurements only"]);
+      [providerPopup selectItemWithTitle:@"Gemini"]; modelsBox.stringValue = @"gemini-test";
+      [controller performSelector:@selector(updateCopilotAudioControls)];
+      CHECK(upload.enabled && upload.state == NSControlStateValueOff);
+      CHECK([upload.toolTip containsString:@"guitar recordings AND the target"]);
+      [providerPopup selectItemWithTitle:@"OpenAI"]; modelsBox.stringValue = @"gpt-4o";
+      [controller performSelector:@selector(updateCopilotAudioControls)]; CHECK(!upload.enabled);
+      modelsBox.stringValue = @"gpt-4o-audio-preview";
+      [controller performSelector:@selector(updateCopilotAudioControls)]; CHECK(upload.enabled);
       state.selectedPaths[1].clear(); state.confirmedPaths[1].clear();
       state.selectedPaths[2].clear(); state.confirmedPaths[2].clear();
     }

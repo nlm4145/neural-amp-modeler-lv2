@@ -48,7 +48,7 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic, copy) NSString* model;       // e.g. @"gemini-2.5-flash", @"gpt-4o", @"claude-3-7-sonnet-20250219", @"llama3.3"
 @property(nonatomic, copy) NSString* baseURL;     // e.g. @"https://generativelanguage.googleapis.com/v1beta/openai", @"https://api.openai.com/v1"
 @property(nonatomic) float temperature;
-@property(nonatomic) BOOL allowLocalCLI; // Explicit opt-in; never bypass CLI permissions.
+@property(nonatomic) BOOL allowLocalCLI; // Automatic UI fallback; always respects CLI permissions.
 @property(nonatomic) BOOL sendAudio; // Explicit opt-in; telemetry-only by default to limit cost.
 - (BOOL)canSendAudio; // Conservative model/transport capability check.
 
