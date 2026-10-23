@@ -5,6 +5,7 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreImage/CoreImage.h>
 #import <QuartzCore/QuartzCore.h>
+#import "rig_profile_catalog.h"
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
@@ -1962,6 +1963,15 @@ struct RigUIState {
         picker.enabled = savedPaths.count == 0 ? NO : YES;
         picker.toolTip = modelPickerTooltip(stage, nil);
         updateStageArchBadge(stage, nil);
+        NSMenuItem* libItem = [[RigProfileCatalog sharedCatalog] modelPickerLibraryMenuItemForStage:stage
+                                                                                             target:(id)uiController
+                                                                                             action:@selector(selectLibraryModelItem:)
+                                                                                        currentPath:nil];
+        if (libItem) {
+          [[picker menu] addItem:[NSMenuItem separatorItem]];
+          [[picker menu] addItem:libItem];
+          picker.enabled = YES;
+        }
         return;
       }
       NSString* full = [NSString stringWithUTF8String:copy.c_str()];
@@ -2038,6 +2048,17 @@ struct RigUIState {
         NSString* activePath = picker.selectedItem.representedObject;
         picker.toolTip = modelPickerTooltip(stage, activePath);
         updateStageArchBadge(stage, activePath);
+      }
+      NSString* curPath = !selectedPaths[stage].empty()
+          ? [NSString stringWithUTF8String:selectedPaths[stage].c_str()] : nil;
+      NSMenuItem* libItem = [[RigProfileCatalog sharedCatalog] modelPickerLibraryMenuItemForStage:stage
+                                                                                           target:(id)uiController
+                                                                                           action:@selector(selectLibraryModelItem:)
+                                                                                      currentPath:curPath];
+      if (libItem) {
+        [[picker menu] addItem:[NSMenuItem separatorItem]];
+        [[picker menu] addItem:libItem];
+        if (paths.count == 0) picker.enabled = YES;
       }
       picker.hidden = NO;
     };

@@ -2,6 +2,7 @@
 #import <AuthenticationServices/AuthenticationServices.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <Security/Security.h>
+#import "rig_profile_catalog.h"
 
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
@@ -3252,6 +3253,7 @@ static void saveParamCache(void) {
     if (p.length && [fm fileExistsAtPath:p]) [paths addObject:p];
   }
   item.models = paths; item.local = YES;
+  [[RigProfileCatalog sharedCatalog] invalidateCache];
   item.parameterCount = 0;
   [self effectiveParameterCountForItem:item];
   for (ToneCardItem* card in self.collectionView.visibleItems) {

@@ -6,6 +6,7 @@
 #import "rig_riff_recorder.h"
 #import "rig_local_tone_matcher.h"
 #import "rig_ai_support.h"
+#import "rig_profile_catalog.h"
 #include "rig_control_metadata.h"
 
 #include <lv2/atom/atom.h>
@@ -149,6 +150,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)resetAllKnobs:(id)sender;
 - (void)zoomChanged:(NSComboBox*)sender;
 - (void)stageModelChanged:(NSPopUpButton*)sender;
+- (void)selectLibraryModelItem:(NSMenuItem*)sender;
 - (void)presetPopupChanged:(id)sender;
 - (void)prevPresetClicked:(NSButton*)sender;
 - (void)nextPresetClicked:(NSButton*)sender;
@@ -707,6 +709,16 @@ static NSString* stageName(NSInteger stage) {
     loadItem.target = self;
     loadItem.tag = stage;
     [menu addItem:loadItem];
+
+    NSString* curPath = (stage < _state->selectedPaths.size() && !_state->selectedPaths[(size_t)stage].empty())
+        ? [NSString stringWithUTF8String:_state->selectedPaths[(size_t)stage].c_str()] : nil;
+    NSMenuItem* libItem = [[RigProfileCatalog sharedCatalog] stageCardLibraryMenuItemForStage:(size_t)stage
+                                                                                       target:self
+                                                                                       action:@selector(selectLibraryModelItem:)
+                                                                                  currentPath:curPath];
+    if (libItem) {
+      [menu addItem:libItem];
+    }
     [menu addItem:[NSMenuItem separatorItem]];
 
     BOOL hasModel = !_state->selectedPaths[(size_t)stage].empty();
@@ -734,12 +746,32 @@ static NSString* stageName(NSInteger stage) {
     loadCabA.tag = 2;
     [menu addItem:loadCabA];
 
+    NSString* curPathA = (!_state->selectedPaths[2].empty())
+        ? [NSString stringWithUTF8String:_state->selectedPaths[2].c_str()] : nil;
+    NSMenuItem* libCabA = [[RigProfileCatalog sharedCatalog] stageCardLibraryMenuItemForStage:2
+                                                                                       target:self
+                                                                                       action:@selector(selectLibraryModelItem:)
+                                                                                  currentPath:curPathA];
+    if (libCabA) {
+      [menu addItem:libCabA];
+    }
+
     NSMenuItem* loadCabB = [[NSMenuItem alloc] initWithTitle:@"Load Cab B Model from Disk…"
                                                       action:@selector(chooseModel:)
                                                keyEquivalent:@""];
     loadCabB.target = self;
     loadCabB.tag = 3;
     [menu addItem:loadCabB];
+
+    NSString* curPathB = (!_state->selectedPaths[3].empty())
+        ? [NSString stringWithUTF8String:_state->selectedPaths[3].c_str()] : nil;
+    NSMenuItem* libCabB = [[RigProfileCatalog sharedCatalog] stageCardLibraryMenuItemForStage:3
+                                                                                       target:self
+                                                                                       action:@selector(selectLibraryModelItem:)
+                                                                                  currentPath:curPathB];
+    if (libCabB) {
+      [menu addItem:libCabB];
+    }
     [menu addItem:[NSMenuItem separatorItem]];
 
     BOOL hasCabA = !_state->selectedPaths[2].empty();
@@ -1757,6 +1789,19 @@ static NSString* stageName(NSInteger stage) {
   sender.toolTip = _state->modelPickerTooltip(stage, path);
   if (path.length) {
     if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+      std::string oldPath = (stage < _state->selectedPaths.size()) ? _state->selectedPaths[stage] : "";
+      NSString* oldFolder = oldPath.empty() ? @"" : [[NSString stringWithUTF8String:oldPath.c_str()] stringByDeletingLastPathComponent];
+      NSString* newFolder = [path stringByDeletingLastPathComponent];
+      if (![oldFolder isEqualToString:newFolder]) {
+        std::vector<std::string> discovered = discoverModelsForStagePath(path.fileSystemRepresentation, stage);
+        NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithCapacity:discovered.size()];
+        for (const auto& m : discovered) {
+          if (!m.empty()) [paths addObject:[NSString stringWithUTF8String:m.c_str()]];
+        }
+        if (paths.count > 0) {
+          _state->setStageModels(stage, paths);
+        }
+      }
       _state->sendPath(stage, path.fileSystemRepresentation);
       _state->updateThumbnailForStagePath(stage, path);
     } else if (stage < _state->selectedPaths.size()) {
@@ -1767,6 +1812,55 @@ static NSString* stageName(NSInteger stage) {
     }
     [self markPresetModified];
   }
+}
+
+- (void)selectLibraryModelItem:(NSMenuItem*)sender {
+  if (!_state) return;
+  NSString* path = [sender.representedObject isKindOfClass:[NSString class]] ? sender.representedObject : nil;
+  if (!path.length) return;
+  const size_t stage = (size_t)sender.tag;
+  if (stage >= 4) return;
+
+  [self selectStageCard:(NSInteger)stage];
+
+  // 1. Discover all sibling models in this profile folder
+  std::vector<std::string> discovered = discoverModelsForStagePath(path.fileSystemRepresentation, stage);
+  NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithCapacity:discovered.size()];
+  for (const auto& m : discovered) {
+    if (!m.empty()) [paths addObject:[NSString stringWithUTF8String:m.c_str()]];
+  }
+  if (paths.count > 0) {
+    _state->setStageModels(stage, paths);
+  }
+
+  // 2. Select this specific model and send to DSP
+  _state->sendPath(stage, path.fileSystemRepresentation);
+  _state->updateThumbnailForStagePath(stage, path);
+
+  // 3. Update the picker selection to match this model
+  NSPopUpButton* picker = _state->modelPickers[stage];
+  if (picker) {
+    for (NSInteger i = 0; i < picker.numberOfItems; ++i) {
+      NSMenuItem* it = [picker itemAtIndex:i];
+      if ([it.representedObject isKindOfClass:[NSString class]] &&
+          [it.representedObject isEqualToString:path]) {
+        [picker selectItemAtIndex:i];
+        break;
+      }
+    }
+    picker.toolTip = _state->modelPickerTooltip(stage, path);
+  }
+
+  // 4. If Cab B, ensure Cab B is enabled
+  if (stage == 3) {
+    if (_state->powerButtons[3] && _state->powerButtons[3].state != NSControlStateValueOn) {
+      _state->powerButtons[3].state = NSControlStateValueOn;
+      _state->sendControl(47, 1.0f);
+      _state->updateControl(47, 1.0f);
+    }
+  }
+
+  [self markPresetModified];
 }
 
 - (void)selectStageCard:(NSInteger)stageIndex {
@@ -1811,7 +1905,7 @@ static NSString* stageName(NSInteger stage) {
   NSMutableArray<NSNumber*>* validIndices = [NSMutableArray array];
   for (NSInteger i = 0; i < picker.numberOfItems; ++i) {
     NSMenuItem* it = [picker itemAtIndex:i];
-    if (it.representedObject && [(NSString*)it.representedObject length] > 0) {
+    if (it.representedObject && [(NSString*)it.representedObject length] > 0 && !it.hasSubmenu) {
       [validIndices addObject:@(i)];
     }
   }
