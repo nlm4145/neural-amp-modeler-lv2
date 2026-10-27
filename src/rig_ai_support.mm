@@ -1005,7 +1005,7 @@ struct AcousticTelemetry {
   float rms = -120.0f;
   float crest = 0.0f;
   size_t clipped = 0;
-  float bands[5] = {-120.0f, -120.0f, -120.0f, -120.0f, -120.0f};
+  float bands[8] = {-120.0f, -120.0f, -120.0f, -120.0f, -120.0f, -120.0f, -120.0f, -120.0f};
   BOOL isFullMix = NO;
 };
 
@@ -1045,20 +1045,20 @@ static AcousticTelemetry parseTelemetry(NSString* text) {
     if ([s scanLongLong:&val] && val >= 0) t.clipped = (size_t)val;
   }
 
-  NSRange bandRange = [text rangeOfString:@"90/350/1500/5000/10500 Hz:" options:NSCaseInsensitiveSearch];
+  NSRange bandRange = [text rangeOfString:@"90/250/500/1000/2000/4000/8000/12000 Hz:" options:NSCaseInsensitiveSearch];
   if (bandRange.location != NSNotFound) {
     NSScanner* s = [NSScanner scannerWithString:[text substringFromIndex:bandRange.location + bandRange.length]];
-    float b[5] = {};
+    float b[8] = {};
     BOOL ok = YES;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 8; ++i) {
       if (![s scanFloat:&b[i]]) { ok = NO; break; }
-      if (i < 4) {
+      if (i < 7) {
         [s scanString:@"/" intoString:nil];
       }
     }
     if (ok) {
       t.hasBands = YES;
-      for (int i = 0; i < 5; ++i) t.bands[i] = b[i];
+      for (int i = 0; i < 8; ++i) t.bands[i] = b[i];
     }
   }
 
@@ -1087,60 +1087,61 @@ NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullabl
   NSMutableString* out = [NSMutableString string];
 
   if (ref.hasBands) {
-    [out appendString:@"ACOUSTIC SPECTRAL & DYNAMICS DELTAS (Player Take vs Target Reference):\n"];
+    [out appendString:@"ACOUSTIC SPECTRAL & DYNAMICS DELTAS (Player Take vs Target Reference — level-normalized):\n"];
     if (ref.isFullMix) {
-      [out appendString:@"⚠️ Target reference is a FULL MIX (drums/bass boost 90 Hz and cymbals boost 10.5 kHz). Prioritize matching 350 Hz, 1500 Hz, and 5000 Hz.\n"];
+      [out appendString:@"⚠️ Target reference is a FULL MIX (bass/kick boost 90 Hz, cymbals boost 8/12 kHz). Prioritize matching 250 Hz, 500 Hz, 1 kHz, 2 kHz, and 4 kHz.\n"];
     }
 
-    const char* bandNames[5] = {
+    // Level normalization: compute RMS offset so spectral comparison is tonal shape, not volume.
+    float rmsOffset = player.rms - ref.rms;
+    rmsOffset = std::max(-12.0f, std::min(12.0f, rmsOffset));
+
+    const char* bandNames[8] = {
       "Sub/Low Thump (90 Hz)",
-      "Low-Mids/Mud (350 Hz)",
-      "Pick Attack/Core Mids (1500 Hz)",
-      "Treble/Bite (5000 Hz)",
-      "Air/Fizz (10500 Hz)"
+      "Low-Mids/Mud (250 Hz)",
+      "Body/Warmth (500 Hz)",
+      "Core Midrange (1 kHz)",
+      "Upper Mids/Nasal (2 kHz)",
+      "Presence/Attack (4 kHz)",
+      "Treble/Sizzle (8 kHz)",
+      "Air/Fizz (12 kHz)"
     };
 
-    for (int i = 0; i < 5; ++i) {
-      float delta = player.bands[i] - ref.bands[i];
-      [out appendFormat:@"• %s: Delta %+.1f dB (Player %.1f vs Ref %.1f dBFS) — ", bandNames[i], delta, player.bands[i], ref.bands[i]];
+    for (int i = 0; i < 8; ++i) {
+      float normalizedPlayerBand = player.bands[i] - rmsOffset;
+      float delta = normalizedPlayerBand - ref.bands[i];
+      [out appendFormat:@"• %s: Delta %+.1f dB (Player %.1f vs Ref %.1f dBFS) — ", bandNames[i], delta, normalizedPlayerBand, ref.bands[i]];
       if (i == 0) { // 90 Hz
-        if (delta > 2.5f) {
-          [out appendString:@"Excess low-end flub/palm-mute rumble. Reduce 'bass' (-1 to -3 dB) or engage/raise 'input_eq' high-pass (80-120 Hz) to tighten palm mutes.\n"];
-        } else if (delta < -2.5f) {
-          [out appendString:@"Lean low end. Boost 'bass' or lower high-pass cutoff to restore low-end body.\n"];
-        } else {
-          [out appendString:@"Low-end resonance closely matches reference.\n"];
-        }
-      } else if (i == 1) { // 350 Hz
-        if (delta > 2.5f) {
-          [out appendString:@"Boxy/muddy build-up. Scoop 'mid' slightly, engage OD pedal to tighten pre-gain lows, or adjust cab capture.\n"];
-        } else if (delta < -2.5f) {
-          [out appendString:@"Lower mids are hollow. Gently raise 'mid' to add warmth and body.\n"];
-        } else {
-          [out appendString:@"Low-mid body and mud control well balanced.\n"];
-        }
-      } else if (i == 2) { // 1500 Hz
-        if (delta > 2.5f) {
-          [out appendString:@"Honky or overly forward mid attack. Soften 'mid' or select a smoother IR.\n"];
-        } else if (delta < -2.5f) {
-          [out appendString:@"Pick attack is deficient; tone will be buried in a mix. Boost 'mid' (+1 to +3 dB) or engage overdrive pedal (od_drive 10..25, od_tone 55..72) to sharpen pick attack.\n"];
-        } else {
-          [out appendString:@"Pick articulation and midrange cut well aligned.\n"];
-        }
-      } else if (i == 3) { // 5000 Hz
-        if (delta > 2.5f) {
-          [out appendString:@"Harsh treble bite/fizz. Soften 'treble' or 'presence', or tighten 'cab_high_cut' (5.5-6.5 kHz).\n"];
-        } else if (delta < -2.5f) {
-          [out appendString:@"Dark/muffled top end. Increase 'treble' / 'presence' or use a brighter mic IR position.\n"];
-        } else {
-          [out appendString:@"Treble presence and bite well aligned.\n"];
-        }
-      } else if (i == 4) { // 10500 Hz
-        if (delta > 3.0f) {
-          [out appendString:@"Digital sizzle / harsh aliasing fizz. Real guitar speakers roll off steeply above 6 kHz; apply 'cab_high_cut' (6.0-7.5 kHz).\n"];
-        } else {
-          [out appendString:@"Ultra-high frequencies within natural speaker boundaries.\n"];
-        }
+        if (delta > 2.5f)  [out appendString:@"Excess low-end flub. Reduce 'bass' or raise input high-pass (80-120 Hz).\n"];
+        else if (delta < -2.5f) [out appendString:@"Lean low end. Boost 'bass' or lower high-pass cutoff.\n"];
+        else [out appendString:@"Low-end resonance closely matches reference.\n"];
+      } else if (i == 1) { // 250 Hz
+        if (delta > 2.5f)  [out appendString:@"Boxy/muddy build-up. Scoop 'mid' slightly or engage OD pedal to tighten pre-gain lows.\n"];
+        else if (delta < -2.5f) [out appendString:@"Lower mids are hollow. Gently raise 'mid' to add warmth and body.\n"];
+        else [out appendString:@"Low-mid body well balanced.\n"];
+      } else if (i == 2) { // 500 Hz
+        if (delta > 2.5f)  [out appendString:@"Cardboard warmth build-up. Notch 'mid' around 500 Hz or choose a cab with less low-mid bloom.\n"];
+        else if (delta < -2.5f) [out appendString:@"Thin/hollow body. Raise 'mid' or try a fuller-sounding cab IR.\n"];
+        else [out appendString:@"Body and warmth well matched.\n"];
+      } else if (i == 3) { // 1000 Hz
+        if (delta > 2.5f)  [out appendString:@"Honky/nasal core. Soften 'mid' (-1 to -2 dB) or select a smoother IR.\n"];
+        else if (delta < -2.5f) [out appendString:@"Hollow core midrange. Boost 'mid' (+1 to +2 dB).\n"];
+        else [out appendString:@"Core midrange well aligned.\n"];
+      } else if (i == 4) { // 2000 Hz
+        if (delta > 2.5f)  [out appendString:@"Nasal/aggressive upper mids. Cut 'mid' or reduce 'presence'.\n"];
+        else if (delta < -2.5f) [out appendString:@"Recessed upper mids. Raise 'presence' or 'mid' slightly.\n"];
+        else [out appendString:@"Upper midrange matches reference.\n"];
+      } else if (i == 5) { // 4000 Hz
+        if (delta > 2.5f)  [out appendString:@"Harsh presence peak. Soften 'treble'/'presence' (-1 to -2 dB) or choose a darker mic IR position.\n"];
+        else if (delta < -2.5f) [out appendString:@"Pick attack is deficient; tone may get buried in a mix. Boost 'presence' or engage OD pedal (od_drive 10-25, od_tone 55-72).\n"];
+        else [out appendString:@"Presence and attack well aligned.\n"];
+      } else if (i == 6) { // 8000 Hz
+        if (delta > 2.5f)  [out appendString:@"Harsh treble sizzle. Increase 'cab_high_cut' (6.5-8 kHz) or soften 'treble'.\n"];
+        else if (delta < -2.5f) [out appendString:@"Dull/muffled top end. Raise 'treble' or open up 'cab_high_cut'.\n"];
+        else [out appendString:@"Treble sizzle well matched.\n"];
+      } else if (i == 7) { // 12000 Hz
+        if (delta > 3.0f)  [out appendString:@"Digital fizz / aliasing artefacts. Apply 'cab_high_cut' (6.0-7.5 kHz) — real speakers roll off here.\n"];
+        else [out appendString:@"Ultra-high frequencies within natural speaker boundaries.\n"];
       }
     }
   } else {
@@ -1156,17 +1157,17 @@ NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullabl
     } else if (player.crest > 16.0f) {
       [out appendString:@"• Dynamics: High dynamic range; overdrive saturation or light compression recommended for sustain.\n"];
     }
-    if (player.bands[0] > -18.0f && (player.bands[0] - player.bands[1] > 4.0f)) {
-      [out appendFormat:@"• Lows (90 Hz: %.1f dBFS): High palm-mute flub relative to 350 Hz. Recommend input high-pass or reducing bass.\n", player.bands[0]];
+    if (player.bands[0] > -18.0f && (player.bands[0] - player.bands[2] > 4.0f)) {
+      [out appendFormat:@"• Lows (90 Hz: %.1f dBFS): High palm-mute flub relative to 500 Hz. Recommend input high-pass or reducing bass.\n", player.bands[0]];
     }
-    if (player.bands[1] > -16.0f && (player.bands[1] - player.bands[2] > 5.0f)) {
-      [out appendFormat:@"• Mids (350 Hz: %.1f dBFS): Prominent boxiness. Slight mid scoop recommended.\n", player.bands[1]];
+    if (player.bands[1] > -16.0f && (player.bands[1] - player.bands[3] > 5.0f)) {
+      [out appendFormat:@"• Mids (250 Hz: %.1f dBFS): Prominent boxiness. Slight mid scoop recommended.\n", player.bands[1]];
     }
-    if (player.bands[2] < -25.0f) {
-      [out appendFormat:@"• Attack (1500 Hz: %.1f dBFS): Muted pick attack. TS-style OD pedal recommended.\n", player.bands[2]];
+    if (player.bands[5] < -25.0f) {
+      [out appendFormat:@"• Attack (4 kHz: %.1f dBFS): Muted presence/attack. TS-style OD pedal recommended.\n", player.bands[5]];
     }
-    if (player.bands[4] > -38.0f) {
-      [out appendFormat:@"• Ultra-High (10.5 kHz: %.1f dBFS): Sizzle detected. Speaker cab high-cut filter recommended.\n", player.bands[4]];
+    if (player.bands[7] > -38.0f) {
+      [out appendFormat:@"• Ultra-High (12 kHz: %.1f dBFS): Sizzle detected. Speaker cab high-cut filter recommended.\n", player.bands[7]];
     }
   }
 

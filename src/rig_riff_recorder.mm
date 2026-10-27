@@ -48,7 +48,7 @@ NSData* wav(const float* samples, size_t frames, uint16_t channels, double rate)
 struct Stats {
   float peak = -120, rms = -120;
   size_t clipped = 0;
-  std::array<float, 5> bands{};
+  std::array<float, 8> bands{};
 };
 Stats analyze(const float* x, size_t frames, size_t channels, double rate) {
   Stats s;
@@ -59,8 +59,8 @@ Stats analyze(const float* x, size_t frames, size_t channels, double rate) {
   }
   s.peak = db(peak); s.rms = db(std::sqrt(sum / std::max<size_t>(1, frames * channels)));
   // Broad center-frequency estimates, not exact disjoint frequency bands.
-  const double centers[] = {90, 350, 1500, 5000, 10500};
-  for (size_t band = 0; band < 5; ++band) {
+  const double centers[] = {90, 250, 500, 1000, 2000, 4000, 8000, 12000};
+  for (size_t band = 0; band < 8; ++band) {
     if (centers[band] >= rate * .45) { s.bands[band] = -120; continue; }
     double w = 2 * M_PI * centers[band] / rate, alpha = std::sin(w) / 1.4;
     double b = alpha / (1 + alpha), a1 = -2 * std::cos(w) / (1 + alpha), a2 = (1 - alpha) / (1 + alpha);
@@ -77,9 +77,9 @@ Stats analyze(const float* x, size_t frames, size_t channels, double rate) {
   return s;
 }
 NSString* summary(NSString* label, const Stats& s) {
-  return [NSString stringWithFormat:@"%@: peak %.1f dBFS; RMS %.1f; crest %.1f dB; clipped samples %zu; broad filter estimates at 90/350/1500/5000/10500 Hz: %.1f/%.1f/%.1f/%.1f/%.1f dBFS",
+  return [NSString stringWithFormat:@"%@: peak %.1f dBFS; RMS %.1f; crest %.1f dB; clipped samples %zu; broad filter estimates at 90/250/500/1000/2000/4000/8000/12000 Hz: %.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f dBFS",
       label, s.peak, s.rms, std::max(0.f, s.peak - s.rms), s.clipped,
-      s.bands[0], s.bands[1], s.bands[2], s.bands[3], s.bands[4]];
+      s.bands[0], s.bands[1], s.bands[2], s.bands[3], s.bands[4], s.bands[5], s.bands[6], s.bands[7]];
 }
 NSError* failure(NSString* text) {
   return [NSError errorWithDomain:@"RigRiffRecorder" code:-1 userInfo:@{NSLocalizedDescriptionKey:text}];
@@ -306,13 +306,39 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   double rate = 0; NSUInteger channels = 0; NSData* audio = decode(url, rate, channels, error);
   if (!audio) return NO;
   size_t n = audio.length / (channels * sizeof(float)); const auto* x = static_cast<const float*>(audio.bytes);
+
+  // Smart trimming: find the densest 20-second passage using a sliding window over 1-second RMS chunks.
+  const size_t windowFrames = static_cast<size_t>(rate * 20.0);
+  const size_t chunkFrames  = static_cast<size_t>(rate * 1.0);
+  const float* xBest = x; size_t nBest = n;
+  if (n > windowFrames && chunkFrames > 0) {
+    size_t numChunks = n / chunkFrames;
+    std::vector<double> chunkRMS(numChunks);
+    for (size_t c = 0; c < numChunks; ++c) {
+      double sum = 0;
+      const float* p = x + c * chunkFrames * channels;
+      for (size_t i = 0; i < chunkFrames * channels; ++i) sum += double(p[i]) * p[i];
+      chunkRMS[c] = std::sqrt(sum / std::max<size_t>(1, chunkFrames * channels));
+    }
+    size_t windowChunks = windowFrames / chunkFrames;
+    double windowSum = 0;
+    for (size_t c = 0; c < std::min(windowChunks, numChunks); ++c) windowSum += chunkRMS[c];
+    double bestSum = windowSum; size_t bestStart = 0;
+    for (size_t c = windowChunks; c < numChunks; ++c) {
+      windowSum += chunkRMS[c] - chunkRMS[c - windowChunks];
+      if (windowSum > bestSum) { bestSum = windowSum; bestStart = c - windowChunks + 1; }
+    }
+    xBest = x + bestStart * chunkFrames * channels;
+    nBest = std::min(windowFrames, n - bestStart * chunkFrames);
+  }
+
   _referenceFrames = audio; _referenceSampleRate = rate;
   _referenceChannels = channels; _referenceIsFullMix = fullMix;
-  _referenceWavData = wav(x, n, channels, rate);
-  _referenceAnalysis = [NSString stringWithFormat:@"TARGET REFERENCE (%@, first %.1fs). %@\n%@",
-      fullMix ? @"full mix" : @"isolated guitar", n / rate,
+  _referenceWavData = wav(xBest, nBest, channels, rate);
+  _referenceAnalysis = [NSString stringWithFormat:@"TARGET REFERENCE (%@, %.1fs window of %.1fs total). %@\n%@",
+      fullMix ? @"full mix" : @"isolated guitar", nBest / rate, n / rate,
       fullMix ? @"Contains other instruments/mastering: do NOT match its raw spectrum or loudness as guitar EQ." : @"Different performance/tuning may affect spectral comparisons.",
-      summary(@"Reference", analyze(x, n, channels, rate))];
+      summary(@"Reference", analyze(xBest, nBest, channels, rate))];
   return YES;
 }
 - (void)clearReference {
@@ -346,9 +372,10 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
             size_t start = bounds[i] * rate, end = std::min({an, bn, takeFrames, size_t(bounds[i+1] * rate)});
             if (end <= start) break;
             Stats sa = analyze(ax + start * 2, end - start, 2, rate), sb = analyze(bx + start * 2, end - start, 2, rate);
-            [segments appendFormat:@"\nExpected %@: baseline/candidate RMS %.1f/%.1f, crest %.1f/%.1f dB; candidate-minus-baseline broad-filter dB (90/350/1500/5000/10500 Hz): %.1f/%.1f/%.1f/%.1f/%.1f",
+            [segments appendFormat:@"\nExpected %@: baseline/candidate RMS %.1f/%.1f, crest %.1f/%.1f dB; candidate-minus-baseline broad-filter dB (90/250/500/1000/2000/4000/8000/12000 Hz): %.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f",
                 labels[i], sa.rms, sb.rms, sa.peak-sa.rms, sb.peak-sb.rms,
-                sb.bands[0]-sa.bands[0], sb.bands[1]-sa.bands[1], sb.bands[2]-sa.bands[2], sb.bands[3]-sa.bands[3], sb.bands[4]-sa.bands[4]];
+                sb.bands[0]-sa.bands[0], sb.bands[1]-sa.bands[1], sb.bands[2]-sa.bands[2], sb.bands[3]-sa.bands[3],
+                sb.bands[4]-sa.bands[4], sb.bands[5]-sa.bands[5], sb.bands[6]-sa.bands[6], sb.bands[7]-sa.bands[7]];
           }
           analysis = segments;
         }

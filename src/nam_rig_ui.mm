@@ -3545,13 +3545,14 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     }
 
     // ── 3. Run Demucs ────────────────────────────────────────────────────
-    // --two-stems=guitar separates guitar vs. everything-else, producing
-    // htdemucs/<trackname>/guitar.wav and no_guitar.wav.
+    // htdemucs_6s provides a dedicated guitar stem (guitar.wav) distinct
+    // from bass, drums, vocals, piano, and other. --two-stems merges all
+    // non-target stems and loses that precision.
     NSTask* demucsTask = [NSTask new];
     demucsTask.launchPath = python3;
     demucsTask.arguments = @[
       @"-m", @"demucs",
-      @"--two-stems=guitar",
+      @"--name=htdemucs_6s",
       @"--out", tmpDir,
       inputURL.path
     ];
@@ -3919,6 +3920,29 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
                   [savedPreset.aiMetadata[@"cumulative_input_tokens"] longValue],
                   [savedPreset.aiMetadata[@"cumulative_output_tokens"] longValue],
                   [savedPreset.aiMetadata[@"revision"] longValue]] : @""]];
+
+      // Post-apply re-render: render DI through the applied preset, compute fresh
+      // spectral delta vs the reference so the copilot can iterate if needed.
+      RigRiffRecorder* recorder = [RigRiffRecorder sharedRecorder];
+      if (recorder.referenceAnalysis.length && recorder.renderHandler && weakSelf.copilotBasePreset) {
+        [weakSelf appendCopilotLog:@"⏳ Re-rendering DI through applied preset to measure residual delta…"];
+        RigPreset* appliedPreset = savedPreset;
+        [recorder renderBaseline:weakSelf.copilotBasePreset candidate:appliedPreset completion:^(NSError* renderError) {
+          if (renderError) {
+            [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Re-render skipped: %@", renderError.localizedDescription]];
+            return;
+          }
+          NSString* playerSummary = recorder.candidateAnalysis;
+          NSString* refSummary    = recorder.referenceAnalysis;
+          if (playerSummary.length && refSummary.length) {
+            NSString* delta = rigAIAcousticDeltaGuidance(playerSummary, refSummary);
+            if (delta.length) {
+              [weakSelf appendCopilotLog:@"POST-APPLY SPECTRAL CHECK (applied preset vs target reference):"];
+              [weakSelf appendCopilotLog:delta];
+            }
+          }
+        }];
+      }
     } else {
       [copilot failCurrentTaskWithError:saveError ?: [NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"Preset save failed."}]];
       [weakSelf appendCopilotLog:[NSString stringWithFormat:@"⚠️ Tone applied to the live rig, but the preset was NOT saved: %@. Use A/B Toggle to restore if needed.",
