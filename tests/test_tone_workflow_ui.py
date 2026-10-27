@@ -9,11 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 class WorkflowTests(unittest.TestCase):
     def test_separate_player_target_and_upload(self):
         ui = (ROOT / "src/nam_rig_ui.mm").read_text()
-        for label in ["Your guitar — record your playing", "Your riff WAV…",
-                      "2. Load target sound…", "Reference WAV · loaded locally",
+        for label in ["Your guitar — record your playing",
+                      "2. Load target sound…", "not uploaded",
                       "Send recordings to cloud AI", "Claude uses audio measurements only",
-                      "To enable: ", "use a guitar-only target, not a full song mix"]:
+                      "To enable: "]:
             self.assertIn(label, ui)
+        self.assertNotIn("Your riff WAV…", ui)
+        self.assertNotIn("Extract guitar stem…", ui)
         self.assertNotIn("copilotLocalCLIButton", ui)
         self.assertNotIn("copilotLocalCLIToggled", ui)
         self.assertIn("config.allowLocalCLI = YES", ui)

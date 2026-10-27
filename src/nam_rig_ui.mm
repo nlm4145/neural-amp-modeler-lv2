@@ -100,7 +100,6 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) RigButton* copilotRecordBtn;
 @property(nonatomic, strong) RigButton* copilotPlayBtn;
 @property(nonatomic, strong) RigButton* copilotClearBtn;
-@property(nonatomic, strong) RigButton* copilotImportBtn;
 @property(nonatomic, strong) NSTextField* copilotRiffStatusLabel;
 @property(nonatomic, strong) NSProgressIndicator* copilotRiffLevelBar;
 @property(nonatomic, strong) NSTimer* copilotRiffTimer;
@@ -125,6 +124,9 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, copy) NSString* copilotLogBase;
 @property(nonatomic) NSInteger copilotRecordCountdown;
 @property(nonatomic) NSInteger copilotLastGuidedSegment;
+@property(nonatomic, strong) NSProgressIndicator* copilotDemucsSpinner;
+@property(nonatomic, strong) NSTask* copilotDemucsTask;
+@property(nonatomic) BOOL copilotDemucsRunning;
 - (void)chooseModel:(id)sender;
 - (void)clearModel:(id)sender;
 - (void)removeStageSelection:(id)sender;
@@ -212,7 +214,6 @@ static NSString* stageName(NSInteger stage) {
 - (void)toggleCopilotRecordRiff:(id)sender;
 - (void)playCopilotRiff:(id)sender;
 - (void)clearCopilotRiff:(id)sender;
-- (void)importCopilotRiff:(id)sender;
 - (void)updateCopilotRiffUI;
 - (void)renderCopilotDI:(id)sender;
 - (void)matchCopilotLocally:(id)sender;
@@ -2612,11 +2613,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotClearBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotClearBtn.enabled = NO;
 
-  self.copilotImportBtn = rigButton(content, @"Your riff WAV…", self, @selector(importCopilotRiff:), NSMakeRect(280, popH - 236, 110, 26));
-  self.copilotImportBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-  self.copilotImportBtn.toolTip = @"Import YOUR processed guitar recording for AI analysis. It has no raw DI, so it cannot enable Learn & Match. Use Load target sound for the sound you want to match.";
-
-  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(398, popH - 231, 122, 16)];
+  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(284, popH - 231, 236, 16)];
   self.copilotRiffLevelBar.minValue = 0.0;
   self.copilotRiffLevelBar.maxValue = 1.0;
   self.copilotRiffLevelBar.indeterminate = NO;
@@ -2640,11 +2637,16 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [content addSubview:self.copilotTrackPopup];
   self.copilotRenderBtn = rigButton(content, @"Render DI A/B", self, @selector(renderCopilotDI:), NSMakeRect(345, popH - 288, 175, 24));
   self.copilotRenderBtn.toolTip = @"Render the same DI through baseline and proposal locally. No AI call, no live rig changes.";
-  RigButton* targetButton = rigButton(content, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 172, 24));
-  targetButton.toolTip = @"Choose a WAV of the sound you WANT your guitar to resemble. This loads a local reference, not an AI upload. Learn & Match requires guitar-only audio (an isolated recording or guitar stem).";
-  rigButton(content, @"Clear target", self, @selector(clearCopilotReference:), NSMakeRect(200, popH - 316, 95, 24));
-  NSTextField* targetHint = [NSTextField labelWithString:@"Reference WAV · loaded locally"];
-  targetHint.frame = NSMakeRect(305, popH - 312, 215, 18);
+  RigButton* targetButton = rigButton(content, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 150, 24));
+  targetButton.toolTip = @"Choose an audio file or song to match. Extracts the guitar stem locally via Demucs by default (no upload). Hold Option to load an already-isolated guitar track as-is.";
+  rigButton(content, @"Clear", self, @selector(clearCopilotReference:), NSMakeRect(178, popH - 316, 55, 24));
+  self.copilotDemucsSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(242, popH - 313, 18, 18)];
+  self.copilotDemucsSpinner.style = NSProgressIndicatorStyleSpinning;
+  self.copilotDemucsSpinner.controlSize = NSControlSizeSmall;
+  self.copilotDemucsSpinner.hidden = YES;
+  [content addSubview:self.copilotDemucsSpinner];
+  NSTextField* targetHint = [NSTextField labelWithString:@"extracts guitar stem locally · not uploaded"];
+  targetHint.frame = NSMakeRect(268, popH - 312, 252, 18);
   targetHint.font = [NSFont systemFontOfSize:10]; targetHint.textColor = rigDimText();
   [content addSubview:targetHint];
   self.copilotTargetStatus = [NSTextField labelWithString:@""];
@@ -3339,37 +3341,6 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [self updateCopilotRiffUI];
 }
 
-- (void)importCopilotRiff:(id)sender {
-  (void)sender;
-  if (self.copilotLocalMatching) return;
-  if ([RigRiffRecorder sharedRecorder].isRecording || [RigRiffRecorder sharedRecorder].isRendering) return;
-  NSOpenPanel* panel = [NSOpenPanel openPanel];
-  panel.title = @"Import your own processed guitar riff";
-  panel.message = @"This is YOUR playing, not the target sound. A processed WAV supports AI measurements but has no raw DI for Learn & Match. Record Riff in standalone Axe FX to capture raw DI.";
-  panel.canChooseFiles = YES;
-  panel.canChooseDirectories = NO;
-  panel.allowsMultipleSelection = NO;
-  panel.allowedFileTypes = @[@"wav", @"WAV"];
-  __weak NAMRigUIController* weakSelf = self;
-  [panel beginWithCompletionHandler:^(NSInteger result) {
-    if (result == NSModalResponseOK && panel.URL) {
-      NSError* err = nil;
-      if ([[RigRiffRecorder sharedRecorder] loadAudioFromURL:panel.URL error:&err]) {
-        weakSelf.copilotLocalMatches = nil;
-        weakSelf.copilotProposal = nil; weakSelf.copilotApplyBtn.enabled = NO;
-        weakSelf.copilotAuditionContext = nil;
-        if (weakSelf.copilotModePopup.indexOfSelectedItem == 2) [weakSelf.copilotModePopup selectItemAtIndex:0];
-        [weakSelf updateCopilotRiffUI];
-      } else {
-        NSAlert* alert = [[NSAlert alloc] init];
-        alert.messageText = @"Could not load audio file";
-        alert.informativeText = err.localizedDescription ?: @"Invalid audio file.";
-        [alert runModal];
-      }
-    }
-  }];
-}
-
 - (void)updateCopilotRiffUI {
   RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
   const BOOL countingDown = self.copilotRiffTimer && !r.isRecording && self.copilotRecordCountdown > 0;
@@ -3380,7 +3351,6 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       [RigAICopilot sharedCopilot].isProcessing || [RigAICopilot sharedCopilot].isApplying;
   self.copilotRenderBtn.enabled = r.renderHandler && r.recordedDIFrames.length && self.copilotProposal && !busy;
   self.copilotDialBtn.enabled = !busy;
-  self.copilotImportBtn.enabled = !busy;
   self.copilotRecordBtn.enabled = r.renderHandler && !self.copilotLocalMatching && !r.isRendering &&
       ![RigAICopilot sharedCopilot].isProcessing && ![RigAICopilot sharedCopilot].isApplying;
   NSMutableArray<NSString*>* missing = [NSMutableArray array];
@@ -3407,8 +3377,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotMatchCandidates.enabled = self.copilotLocalMatches.count > 0 && !busy;
   self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
-  self.copilotCancelBtn.enabled = self.copilotLocalMatching || [RigAICopilot sharedCopilot].isProcessing;
-  self.copilotRecordBtn.toolTip = r.renderHandler ? @"Record YOUR guitar: raw DI before processing plus the rig output. Needed for Learn & Match." : @"Record Riff requires the standalone Axe FX app, not the LV2 plugin. Your riff WAV imports processed output only and cannot supply raw DI for matching.";
+  self.copilotCancelBtn.enabled = self.copilotLocalMatching || self.copilotDemucsRunning || [RigAICopilot sharedCopilot].isProcessing;
+  self.copilotRecordBtn.toolTip = r.renderHandler ? @"Record YOUR guitar: raw DI before processing plus the rig output. Needed for Learn & Match." : @"Record Riff requires the standalone Axe FX app (captures raw DI + processed output).";
   NSArray* available = @[@(r.recordedWavData.length > 0), @(r.recordedDIWavData.length > 0),
       @(r.baselineWavData.length > 0), @(r.candidateWavData.length > 0), @(r.referenceWavData.length > 0)];
   self.copilotTrackPopup.autoenablesItems = NO;
@@ -3427,7 +3397,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     self.copilotPlayBtn.title = r.isPlaying ? @"❚❚ Stop" : @"▶ Play";
     self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
       @"Your guitar: %@ · %.1fs · output peak %.1f dBFS",
-      r.recordedDIFrames.length ? @"raw DI + output" : @"processed WAV only (no raw DI)", r.recordedDuration, r.peakDbfs];
+      r.recordedDIFrames.length ? @"raw DI + output" : @"recorded output", r.recordedDuration, r.peakDbfs];
     self.copilotRiffStatusLabel.textColor = [NSColor systemGreenColor];
   } else {
     self.copilotPlayBtn.title = @"▶ Play";
@@ -3437,33 +3407,263 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 }
 
 - (void)importCopilotReference:(id)sender {
-  if (self.copilotLocalMatching) return;
+  if (self.copilotLocalMatching || self.copilotDemucsRunning) return;
   RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
   if (r.isRecording || r.isRendering) return;
-  NSOpenPanel* panel = [NSOpenPanel openPanel]; panel.allowedFileTypes = @[@"wav"];
-  panel.title = @"Load the target guitar sound you want to match";
-  panel.message = @"Choose a reference WAV, not your raw guitar input. Loaded locally; nothing is uploaded. For Learn & Match, use isolated guitar or a guitar stem. First 20 seconds are used.";
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.allowedFileTypes = @[@"wav", @"mp3", @"flac", @"m4a", @"aif", @"aiff", @"ogg", @"opus"];
+  panel.title = @"Load target sound (extracts guitar stem)";
+  panel.message = @"Choose a song or audio file. Axe FX extracts the guitar stem locally via Demucs by default. Hold Option to load an already-isolated guitar track as-is.";
   panel.prompt = @"Load target sound";
   panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
   __weak NAMRigUIController* weakSelf = self;
   [panel beginWithCompletionHandler:^(NSInteger response) {
     if (response != NSModalResponseOK || !panel.URL) return;
-    NSAlert* kind = [NSAlert new]; kind.messageText = @"Is the target sound guitar-only?";
-    kind.informativeText = @"Isolated guitar (or a separated guitar stem) enables local Learn & Match. A full song mix includes bass/drums and can only provide AI context; it cannot enable local matching. Choose honestly—this does not separate instruments or upload audio.";
-    [kind addButtonWithTitle:@"Full mix — AI context only"]; [kind addButtonWithTitle:@"Guitar only — enable matching"]; [kind addButtonWithTitle:@"Cancel"];
-    NSInteger choice = [kind runModal]; if (choice == NSAlertThirdButtonReturn) return;
-    NSError* error = nil;
-    if (![r loadReferenceFromURL:panel.URL fullMix:choice == NSAlertFirstButtonReturn error:&error])
-      [weakSelf resetCopilotLog:error.localizedDescription];
-    else { weakSelf.copilotLocalMatches = nil; [weakSelf resetCopilotLog:r.referenceAnalysis]; }
-    [weakSelf updateCopilotRiffUI];
+    const BOOL isGuitarStem = [panel.URL.lastPathComponent.lowercaseString isEqualToString:@"guitar.wav"];
+    const BOOL optionHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+    if (optionHeld || isGuitarStem) {
+      NSError* error = nil;
+      if (![r loadReferenceFromURL:panel.URL fullMix:NO error:&error]) {
+        [weakSelf resetCopilotLog:error.localizedDescription];
+      } else {
+        weakSelf.copilotLocalMatches = nil;
+        [weakSelf.copilotTrackPopup selectItemAtIndex:4];
+        [weakSelf resetCopilotLog:r.referenceAnalysis];
+      }
+      [weakSelf updateCopilotRiffUI];
+    } else {
+      [weakSelf runDemucsOnFile:panel.URL];
+    }
   }];
 }
+
 - (void)clearCopilotReference:(id)sender {
   if (self.copilotLocalMatching) return;
   self.copilotLocalMatches = nil;
   [[RigRiffRecorder sharedRecorder] clearReference]; [self updateCopilotRiffUI];
 }
+
+- (void)extractDemucsStem:(id)sender {
+  [self importCopilotReference:sender];
+}
+
+- (void)runDemucsOnFile:(NSURL*)inputURL {
+  NSAssert(NSThread.isMainThread, @"Must be called on main thread");
+  if (self.copilotDemucsRunning) return;
+
+  self.copilotDemucsRunning = YES;
+  self.copilotDemucsSpinner.hidden = NO;
+  [self.copilotDemucsSpinner startAnimation:nil];
+  [self resetCopilotLog:[NSString stringWithFormat:@"Demucs: separating guitar stem from \"%@\"...",
+      inputURL.lastPathComponent]];
+  [self updateCopilotRiffUI];
+
+  // Scratch directory for Demucs output — cleaned up on finish or error.
+  NSString* tmpDir = [NSTemporaryDirectory() stringByAppendingPathComponent:
+      [NSString stringWithFormat:@"axefx-demucs-%@", [[NSUUID UUID] UUIDString]]];
+  [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+
+  __weak NAMRigUIController* weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    // ── 1. Find python3 ──────────────────────────────────────────────────
+    NSArray<NSString*>* pythonCandidates = @[
+      @"/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+      @"/usr/local/bin/python3",
+      @"/opt/homebrew/bin/python3",
+      @"/usr/bin/python3",
+    ];
+    // Also honour the user's PATH by trying `which python3`
+    NSString* python3 = nil;
+    for (NSString* candidate in pythonCandidates) {
+      if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
+        python3 = candidate; break;
+      }
+    }
+    if (!python3) {
+      // fallback: ask shell
+      NSTask* which = [NSTask new];
+      which.launchPath = @"/bin/zsh";
+      which.arguments = @[@"-lc", @"which python3 2>/dev/null"];
+      NSPipe* p = [NSPipe pipe];
+      which.standardOutput = p;
+      which.standardError = [NSPipe pipe];
+      if ([which launchAndReturnError:nil]) {
+        [which waitUntilExit];
+        NSData* d = [[p fileHandleForReading] readDataToEndOfFile];
+        NSString* found = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        found = [found stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (found.length && [[NSFileManager defaultManager] isExecutableFileAtPath:found])
+          python3 = found;
+      }
+    }
+    if (!python3) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf demucsFinishedWithError:@"Python 3 not found. Install Python from python.org or via Homebrew (brew install python)."];
+      });
+      return;
+    }
+
+    // ── 2. Check / install demucs ────────────────────────────────────────
+    NSTask* checkTask = [NSTask new];
+    checkTask.launchPath = python3;
+    checkTask.arguments = @[@"-c", @"import demucs"];
+    checkTask.standardOutput = [NSPipe pipe];
+    checkTask.standardError = [NSPipe pipe];
+    BOOL demucsInstalled = [checkTask launchAndReturnError:nil] && ({ [checkTask waitUntilExit]; checkTask.terminationStatus == 0; });
+
+    if (!demucsInstalled) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf appendCopilotLog:@"Demucs not found. Installing via pip (one-time, ~400 MB model downloads on first use)…"];
+      });
+      NSTask* installTask = [NSTask new];
+      installTask.launchPath = python3;
+      installTask.arguments = @[@"-m", @"pip", @"install", @"--quiet", @"demucs"];
+      NSPipe* installOut = [NSPipe pipe];
+      installTask.standardOutput = installOut;
+      installTask.standardError = installOut;
+      NSError* installLaunchErr = nil;
+      if (![installTask launchAndReturnError:&installLaunchErr]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [weakSelf demucsFinishedWithError:[NSString stringWithFormat:@"pip install failed: %@", installLaunchErr.localizedDescription]];
+        });
+        return;
+      }
+      [installTask waitUntilExit];
+      if (installTask.terminationStatus != 0) {
+        NSData* errData = [[installOut fileHandleForReading] availableData];
+        NSString* errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [weakSelf demucsFinishedWithError:[NSString stringWithFormat:@"pip install demucs failed (exit %d). %@",
+              installTask.terminationStatus, [errStr stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]]];
+        });
+        return;
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf appendCopilotLog:@"Demucs installed. Separating stems…"];
+      });
+    }
+
+    // ── 3. Run Demucs ────────────────────────────────────────────────────
+    // --two-stems=guitar separates guitar vs. everything-else, producing
+    // htdemucs/<trackname>/guitar.wav and no_guitar.wav.
+    NSTask* demucsTask = [NSTask new];
+    demucsTask.launchPath = python3;
+    demucsTask.arguments = @[
+      @"-m", @"demucs",
+      @"--two-stems=guitar",
+      @"--out", tmpDir,
+      inputURL.path
+    ];
+    NSPipe* demucsPipe = [NSPipe pipe];
+    demucsTask.standardOutput = demucsPipe;
+    demucsTask.standardError = demucsPipe; // Demucs progress goes to stderr
+
+    __block NSTask* taskRef = demucsTask;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (weakSelf) weakSelf.copilotDemucsTask = taskRef;
+    });
+
+    // Stream progress lines back to the log on the main thread.
+    NSFileHandle* fh = demucsPipe.fileHandleForReading;
+    __block NSMutableData* accumulator = [NSMutableData data];
+    fh.readabilityHandler = ^(NSFileHandle* handle) {
+      NSData* chunk = handle.availableData;
+      if (!chunk.length) return;
+      [accumulator appendData:chunk];
+      // Flush complete lines
+      NSString* str = [[NSString alloc] initWithData:accumulator encoding:NSUTF8StringEncoding];
+      if (!str) return;
+      NSArray<NSString*>* lines = [str componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+      if (lines.count > 1) {
+        accumulator = [[lines.lastObject dataUsingEncoding:NSUTF8StringEncoding] mutableCopy] ?: [NSMutableData data];
+        NSArray<NSString*>* completedLines = [lines subarrayWithRange:NSMakeRange(0, lines.count - 1)];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          for (NSString* line in completedLines) {
+            NSString* trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (trimmed.length) [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Demucs: %@", trimmed]];
+          }
+        });
+      }
+    };
+
+    NSError* demucsLaunchErr = nil;
+    if (![demucsTask launchAndReturnError:&demucsLaunchErr]) {
+      fh.readabilityHandler = nil;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf demucsFinishedWithError:[NSString stringWithFormat:@"Could not launch Demucs: %@", demucsLaunchErr.localizedDescription]];
+      });
+      return;
+    }
+    [demucsTask waitUntilExit];
+    fh.readabilityHandler = nil;
+
+    if (demucsTask.terminationStatus != 0) {
+      NSString* partial = [[NSString alloc] initWithData:accumulator encoding:NSUTF8StringEncoding] ?: @"";
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf demucsFinishedWithError:[NSString stringWithFormat:@"Demucs exited with status %d. %@",
+            demucsTask.terminationStatus,
+            [partial stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]]];
+      });
+      [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+      return;
+    }
+
+    // ── 4. Find guitar.wav in Demucs output ─────────────────────────────
+    // Demucs writes: <tmpDir>/<model>/<trackBasename>/guitar.wav
+    NSString* guitarWav = nil;
+    NSDirectoryEnumerator* enumerator = [[NSFileManager defaultManager]
+        enumeratorAtPath:tmpDir];
+    for (NSString* entry in enumerator) {
+      if ([entry.lastPathComponent isEqualToString:@"guitar.wav"]) {
+        guitarWav = [tmpDir stringByAppendingPathComponent:entry];
+        break;
+      }
+    }
+    if (!guitarWav) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf demucsFinishedWithError:@"Demucs finished but guitar.wav not found in output. Check console for Demucs errors."];
+      });
+      [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+      return;
+    }
+
+    // ── 5. Load stem as reference on main thread ─────────────────────────
+    NSString* guitarWavCopy = guitarWav;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!weakSelf) return;
+      RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+      NSError* loadErr = nil;
+      BOOL loaded = [r loadReferenceFromURL:[NSURL fileURLWithPath:guitarWavCopy]
+                                    fullMix:NO
+                                      error:&loadErr];
+      // Clean up temp files after loading (data is now in memory).
+      [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+
+      [weakSelf demucsFinishedWithError:loaded ? nil : (loadErr.localizedDescription ?: @"Failed to load guitar stem.")];
+      if (loaded) {
+        [weakSelf.copilotTrackPopup selectItemAtIndex:4]; // Switch to "Target sound" in the track popup
+        weakSelf.copilotLocalMatches = nil;
+        [weakSelf resetCopilotLog:[NSString stringWithFormat:@"Demucs: guitar stem extracted and loaded.\n%@",
+            r.referenceAnalysis]];
+      }
+    });
+  });
+}
+
+// Called on the main thread after Demucs finishes (successfully or not).
+- (void)demucsFinishedWithError:(NSString* _Nullable)errorMessage {
+  NSAssert(NSThread.isMainThread, @"");
+  self.copilotDemucsRunning = NO;
+  self.copilotDemucsTask = nil;
+  [self.copilotDemucsSpinner stopAnimation:nil];
+  self.copilotDemucsSpinner.hidden = YES;
+  if (errorMessage.length) {
+    [self appendCopilotLog:[NSString stringWithFormat:@"❌ Demucs failed — %@", errorMessage]];
+  }
+  [self updateCopilotRiffUI];
+}
+
 - (void)matchCopilotLocally:(id)sender {
   (void)sender;
   RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
@@ -3471,7 +3671,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (!_state || self.copilotLocalMatching || [RigLocalToneMatcher sharedMatcher].isRunning ||
       r.isRecording || r.isRendering || self.copilotRecordCountdown > 0 || ai.isProcessing || ai.isApplying) return;
   if (!r.renderHandler || !r.recordedDIFrames.length || !r.referenceFrames.length || r.referenceIsFullMix) {
-    [self appendCopilotLog:@"Local matching needs YOUR raw guitar (Record Riff in standalone Axe FX) and the guitar sound you WANT (Load target sound → guitar-only WAV). Loading a full song mix won't work; instrument separation is not implemented."]; return;
+    NSString* hint = r.referenceIsFullMix
+        ? @"Local matching needs a guitar-only target. Re-load target sound to extract the guitar stem via Demucs."
+        : @"Local matching needs YOUR raw guitar (Record Riff in standalone Axe FX) and the guitar sound you WANT (Load target sound).";
+    [self appendCopilotLog:hint]; return;
   }
   if (r.recordingMetadata[@"warning"]) {
     [self appendCopilotLog:@"Record a new paired take: the rig changed during the previous take."]; return;
@@ -3607,6 +3810,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 }
 
 - (void)cancelCopilotRequest:(id)sender {
+  if (self.copilotDemucsRunning) {
+    [self.copilotDemucsTask terminate];
+    [self appendCopilotLog:@"Demucs: cancelled."];
+    [self demucsFinishedWithError:nil]; // clean up UI state without logging a second error
+    return;
+  }
   if (self.copilotLocalMatching) {
     ++self.copilotLocalMatchGeneration;
     [[RigLocalToneMatcher sharedMatcher] cancel];
