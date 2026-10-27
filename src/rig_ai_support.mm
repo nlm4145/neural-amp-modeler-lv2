@@ -555,215 +555,446 @@ NSString* rigAIResolveModel(NSString* root, NSString* target, NSUInteger stage, 
   return nil;
 }
 
-NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt) {
-  if (![prompt isKindOfClass:NSString.class] || !prompt.length) return @[];
-  NSString* clean = prompt.lowercaseString;
-  NSMutableArray<NSString*>* results = [NSMutableArray array];
+// ---------------------------------------------------------------------------
+// Gear research: the copilot asks the configured model which gear is documented for an
+// artist/album/song before searching the library. Replies are cached on disk so repeat
+// requests skip the lookup and synchronous searches (library, Tone3000, Learn & Match)
+// can reuse the gear names without a hand-written artist table.
 
-  auto addQuery = ^(NSString* q) {
-    if (q.length && ![results containsObject:q]) {
-      [results addObject:q];
+static const NSUInteger kGearResearchMaxEntries = 500;
+static const NSUInteger kGearResearchMaxItems = 6;
+
+static NSString* gResearchCachePathOverride = nil;
+static NSMutableDictionary<NSString*, NSDictionary*>* gResearchEntries = nil;
+static NSString* gResearchLoadedPath = nil;
+
+static NSString* normalizedResearchText(NSString* text) {
+  if (![text isKindOfClass:NSString.class]) return @"";
+  NSArray* raw = [text.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet];
+  NSMutableArray* words = [NSMutableArray array];
+  for (NSString* w in raw) if (w.length) [words addObject:w];
+  return [words componentsJoinedByString:@" "];
+}
+
+// Whole-word containment on normalized text ("tool" must not match "toolbox").
+static BOOL researchTextNames(NSString* normalizedText, NSString* phrase) {
+  NSString* p = normalizedResearchText(phrase);
+  if (!p.length || !normalizedText.length) return NO;
+  return [[NSString stringWithFormat:@" %@ ", normalizedText] containsString:[NSString stringWithFormat:@" %@ ", p]];
+}
+
+BOOL rigAITextNamesPhrase(NSString* text, NSString* _Nullable phrase) {
+  return researchTextNames(normalizedResearchText(text), phrase);
+}
+
+static NSString* researchString(id value, NSUInteger maxLength) {
+  if (![value isKindOfClass:NSString.class]) return @"";
+  NSMutableArray* words = [NSMutableArray array];
+  for (NSString* w in [value componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet])
+    if (w.length) [words addObject:w];
+  NSString* s = [words componentsJoinedByString:@" "];
+  return s.length > maxLength ? [s substringToIndex:maxLength] : s;
+}
+
+static NSArray<NSString*>* researchList(id value, BOOL lowercase) {
+  NSMutableArray<NSString*>* out = [NSMutableArray array];
+  if (![value isKindOfClass:NSArray.class]) return out;
+  for (id item in value) {
+    NSString* s = researchString(item, 80);
+    if (lowercase) s = s.lowercaseString;
+    if (s.length && ![out containsObject:s]) [out addObject:s];
+    if (out.count >= kGearResearchMaxItems) break;
+  }
+  return out;
+}
+
+static NSDictionary* _Nullable researchFromObject(id object);
+
+static NSString* researchCachePath() {
+  if (gResearchCachePathOverride.length) return gResearchCachePathOverride;
+  NSString* appSupport = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+  return [[appSupport stringByAppendingPathComponent:@"Axe FX"] stringByAppendingPathComponent:@"gear-research-cache.json"];
+}
+
+// Caller holds the lock.
+static NSMutableDictionary<NSString*, NSDictionary*>* researchEntriesLocked() {
+  NSString* path = researchCachePath();
+  if (gResearchEntries && [gResearchLoadedPath isEqualToString:path]) return gResearchEntries;
+  gResearchEntries = [NSMutableDictionary dictionary];
+  gResearchLoadedPath = [path copy];
+  NSData* data = [NSData dataWithContentsOfFile:path];
+  NSDictionary* root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+  NSDictionary* entries = [root isKindOfClass:NSDictionary.class] && [root[@"entries"] isKindOfClass:NSDictionary.class] ? root[@"entries"] : nil;
+  for (NSString* key in entries) {
+    NSDictionary* entry = researchFromObject(entries[key]);
+    if ([key isKindOfClass:NSString.class] && entry) {
+      NSMutableDictionary* e = [entry mutableCopy];
+      if ([entries[key][@"updated"] isKindOfClass:NSNumber.class]) e[@"updated"] = entries[key][@"updated"];
+      gResearchEntries[key] = e;
     }
-  };
+  }
+  return gResearchEntries;
+}
 
-  struct GearAssociation {
-    NSArray<NSString*>* triggers;
-    NSArray<NSString*>* queries;
-  };
+static NSObject* researchLock() {
+  static NSObject* lock = [NSObject new];
+  return lock;
+}
 
-  static const GearAssociation kAssociations[] = {
-    // Modern / Nu Metal / Slipknot
-    {
-      @[@"slipknot", @"before i forget", @"duality", @"psychosocial", @"jim root", @"mick thomson", @"iowa", @"subliminal verses", @"wait and bleed"],
-      @[@"rivera knucklehead", @"rivera kr7", @"bogner uberschall", @"jim root", @"rockerverb", @"diezel vh4", @"diezel herbert", @"dual rectifier", @"5150", @"v30"]
-    },
-    // Thrash / Metallica
-    {
-      @[@"metallica", @"hetfield", @"hammett", @"master of puppets", @"ride the lightning", @"enter sandman", @"black album", @"and justice for all", @"kill em all"],
-      @[@"mesa mark iic+", @"mesa mark iv", @"dual rectifier", @"diesel v30", @"marshall jcm800"]
-    },
-    // Pantera / Dimebag Darrell
-    {
-      @[@"pantera", @"dimebag", @"cowboys from hell", @"vulgar display", @"walk", @"cemetery gates", @"far beyond driven"],
-      @[@"randall rg100", @"warhead", @"krank revolution", @"furman pq3"]
-    },
-    // Tool / Adam Jones
-    {
-      @[@"tool", @"adam jones", @"schism", @"sober", @"lateralus", @"fear inoculum", @"aenima", @"vicarious"],
-      @[@"diezel vh4", @"marshall super bass", @"dual rectifier", @"mesa 4x12"]
-    },
-    // Gojira / Joe Duplantier
-    {
-      @[@"gojira", @"duplantier", @"flying whales", @"silvera", @"stranded", @"l'enfant sauvage", @"art of dying"],
-      @[@"evh 5150 iii", @"5150", @"peavey 6505", @"mesa dual rectifier"]
-    },
-    // Meshuggah / Djent / Progressive Metal
-    {
-      @[@"meshuggah", @"thordendal", @"bleed", @"periphery", @"misha mansoor", @"animals as leaders", @"tosin abasi", @"djent", @"monuments"],
-      @[@"evh 5150 iii", @"friedman be100", @"precision drive", @"bogner uberschall"]
-    },
-    // Deftones / Stephen Carpenter
-    {
-      @[@"deftones", @"stephen carpenter", @"my own summer", @"change in the house of flies", @"around the fur", @"white pony", @"be quiet and drive"],
-      @[@"marshall jmp-1", @"dual rectifier", @"diezel vh4"]
-    },
-    // Alice in Chains / Jerry Cantrell
-    {
-      @[@"alice in chains", @"cantrell", @"man in the box", @"rooster", @"them bones", @"dirt", @"would?"],
-      @[@"bogner uberschall", @"friedman jj", @"bogner fish", @"marshall jcm800"]
-    },
-    // Soundgarden / Kim Thayil / Chris Cornell
-    {
-      @[@"soundgarden", @"kim thayil", @"chris cornell", @"black hole sun", @"spoonman", @"outshined", @"superunknown"],
-      @[@"mesa dual rectifier", @"peavey vtm", @"marshall jcm800"]
-    },
-    // Lamb of God / Mark Morton
-    {
-      @[@"lamb of god", @"mark morton", @"redneck", @"laid to rest", @"ashes of the wake"],
-      @[@"mesa mark iv", @"mesa mark v", @"mesa 4x12 v30"]
-    },
-    // Avenged Sevenfold / Synyster Gates
-    {
-      @[@"avenged sevenfold", @"synyster gates", @"bat country", @"hail to the king", @"nightmare", @"unholy confessions"],
-      @[@"schecter hellwin", @"bogner uberschall", @"mesa dual rectifier"]
-    },
-    // Van Halen / Eddie Van Halen / Brown Sound
-    {
-      @[@"van halen", @"eddie van halen", @"evh", @"brown sound", @"eruption", @"panama", @"hot for teacher", @"jump", @"1984"],
-      @[@"marshall plexi 1959", @"evh 5150", @"variac plexi", @"greenback 4x12"]
-    },
-    // Guns N Roses / Slash
-    {
-      @[@"guns n roses", @"guns n' roses", @"slash", @"sweet child", @"welcome to the jungle", @"november rain", @"paradise city", @"appetite for destruction"],
-      @[@"marshall jubilee 2555", @"marshall afd100", @"marshall jcm800", @"greenback"]
-    },
-    // AC/DC / Angus Young
-    {
-      @[@"acdc", @"ac/dc", @"angus young", @"malcolm young", @"back in black", @"highway to hell", @"thunderstruck", @"tnt", @"hells bells"],
-      @[@"marshall plexi 1959", @"marshall jtm45", @"celestion g12m greenback"]
-    },
-    // Iron Maiden / Judas Priest
-    {
-      @[@"iron maiden", @"judas priest", @"trooper", @"painkiller", @"breaking the law", @"hallowed be thy name", @"run to the hills"],
-      @[@"marshall jcm800", @"marshall super lead", @"ts9", @"celestion g12m"]
-    },
-    // Black Sabbath / Tony Iommi
-    {
-      @[@"black sabbath", @"tony iommi", @"iommi", @"paranoid", @"iron man", @"war pigs", @"children of the grave"],
-      @[@"laney supergroup", @"laney ti100", @"dallas rangemaster", @"marshall super lead"]
-    },
-    // Nirvana / Kurt Cobain
-    {
-      @[@"nirvana", @"kurt cobain", @"cobain", @"smells like teen spirit", @"in bloom", @"come as you are", @"heart shaped box", @"nevermind", @"in utero"],
-      @[@"boss ds-1", @"boss ds-2", @"fender twin reverb", @"mesa studio preamp"]
-    },
-    // Stevie Ray Vaughan / SRV
-    {
-      @[@"stevie ray vaughan", @"srv", @"texas flood", @"pride and joy", @"cold shot", @"crossfire", @"scuttle buttin"],
-      @[@"fender super reverb", @"fender vibroverb", @"dumble steel string singer", @"ts808 tube screamer"]
-    },
-    // John Mayer
-    {
-      @[@"john mayer", @"mayer", @"gravity", @"slow dancing", @"continuum", @"neon", @"bold as love"],
-      @[@"two rock custom classic", @"dumble steel string singer", @"fender bandmaster", @"klon centaur"]
-    },
-    // Jimi Hendrix
-    {
-      @[@"jimi hendrix", @"hendrix", @"purple haze", @"voodoo child", @"little wing", @"foxy lady"],
-      @[@"marshall super lead 100", @"fuzz face", @"vox wah", @"univibe"]
-    },
-    // Pink Floyd / David Gilmour
-    {
-      @[@"pink floyd", @"david gilmour", @"gilmour", @"comfortably numb", @"shine on", @"time", @"money", @"echoes"],
-      @[@"hiwatt dr103", @"electro-harmonix big muff", @"proco rat", @"fane crescendos"]
-    },
-    // Led Zeppelin / Jimmy Page
-    {
-      @[@"led zeppelin", @"jimmy page", @"whole lotta love", @"stairway to heaven", @"kashmir", @"black dog"],
-      @[@"supro 1624t", @"marshall super lead", @"tone bender"]
-    },
-    // Radiohead / Jonny Greenwood
-    {
-      @[@"radiohead", @"jonny greenwood", @"greenwood", @"paranoid android", @"creep", @"karma police", @"ok computer", @"the bends"],
-      @[@"vox ac30", @"fender twin reverb", @"marshall shredmaster"]
-    },
-    // Queen / Brian May
-    {
-      @[@"queen", @"brian may", @"bohemian rhapsody", @"we will rock you", @"killer queen"],
-      @[@"vox ac30", @"treble booster", @"red special"]
-    },
-    // Rage Against the Machine / Tom Morello
-    {
-      @[@"rage against the machine", @"ratm", @"tom morello", @"killing in the name", @"bulls on parade"],
-      @[@"marshall jcm800 2205", @"peavey cab", @"digitech whammy"]
-    },
-    // Polyphia / Tim Henson
-    {
-      @[@"polyphia", @"tim henson", @"playing god", @"goat", @"g.o.a.t.", @"ego death"],
-      @[@"archetype tim henson", @"vox ac30", @"matchless dc30", @"compressor clean"]
-    },
-    // Blink-182 / Green Day / Pop Punk
-    {
-      @[@"blink-182", @"blink 182", @"tom delonge", @"all the small things", @"dammit"],
-      @[@"mesa triple rectifier", @"marshall jcm900", @"invader"]
-    },
-    {
-      @[@"green day", @"billie joe armstrong", @"dookie", @"american idiot", @"basket case"],
-      @[@"marshall plexi 1959", @"marshall jcm800", @"dookie mod"]
-    },
-    // Generic Metal Styles
-    {
-      @[@"death metal", @"deathcore", @"metalcore", @"black metal", @"heavy metal", @"thrash metal"],
-      @[@"5150", @"peavey 6505", @"dual rectifier", @"mesa mark iv", @"v30"]
-    },
-    {
-      @[@"nu metal", @"drop b", @"drop c", @"drop a", @"7 string", @"8 string", @"baritone"],
-      @[@"dual rectifier", @"rivera kr7", @"5150", @"rockerverb", @"v30"]
-    },
-    {
-      @[@"doom metal", @"doom", @"sludge", @"stoner rock", @"stoner metal", @"kyuss", @"sleep"],
-      @[@"orange rockerverb", @"matamp", @"sunn model t", @"fuzz face"]
-    },
-    {
-      @[@"shoegaze", @"ambient", @"dream pop"],
-      @[@"fender twin reverb", @"roland jc120", @"big muff", @"reverse reverb"]
-    },
-    {
-      @[@"country", @"twang", @"chicken pickin"],
-      @[@"fender deluxe reverb", @"fender twin reverb", @"compressor"]
-    },
-    {
-      @[@"jazz", @"clean jazz", @"smooth jazz"],
-      @[@"roland jc120", @"polytone mini brute", @"fender twin reverb"]
+// Queries a local SearXNG instance and returns a compact snippet block for gear lookup prompts.
+// Returns nil (silently) when SearXNG is unreachable or returns an error, so the caller can
+// fall back to the model's training knowledge without surfacing a hard failure.
+NSString* _Nullable rigAIWebSearchForGear(NSString* query, NSString* searxngURL) {
+  if (!query.length || !searxngURL.length) return nil;
+
+  // Sanitize and validate URL — only plain HTTP(S) loopback allowed (no credentials).
+  NSString* base = [searxngURL stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if ([base hasSuffix:@"/"]) base = [base substringToIndex:base.length - 1];
+  NSURL* baseURL = [NSURL URLWithString:base];
+  if (!baseURL || baseURL.user.length || baseURL.password.length) return nil;
+  NSString* scheme = baseURL.scheme.lowercaseString;
+  NSString* host = baseURL.host.lowercaseString;
+  BOOL loopback = [@[@"127.0.0.1", @"localhost", @"::1"] containsObject:host];
+  if (![@[@"http", @"https"] containsObject:scheme]) return nil;
+  if ([scheme isEqualToString:@"http"] && !loopback) return nil; // Require HTTPS for non-loopback.
+
+  NSURLComponents* comps = [NSURLComponents componentsWithURL:baseURL resolvingAgainstBaseURL:NO];
+  comps.path = @"/search";
+  comps.queryItems = @[
+    [NSURLQueryItem queryItemWithName:@"q" value:query],
+    [NSURLQueryItem queryItemWithName:@"format" value:@"json"],
+    [NSURLQueryItem queryItemWithName:@"categories" value:@"general"],
+  ];
+  NSURL* url = comps.URL;
+  if (!url) return nil;
+
+  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url
+                                                    cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                timeoutInterval:10.0];
+  [req setValue:@"AxeFX-GearResearch/1.0" forHTTPHeaderField:@"User-Agent"];
+  [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+
+  __block NSData* responseData = nil;
+  __block NSInteger statusCode = 0;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  NSURLSession* session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+  [[session dataTaskWithRequest:req completionHandler:^(NSData* data, NSURLResponse* response, NSError*) {
+    statusCode = [(NSHTTPURLResponse*)response statusCode];
+    responseData = data;
+    dispatch_semaphore_signal(sem);
+  }] resume];
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)));
+  [session invalidateAndCancel];
+
+  if (statusCode != 200 || !responseData) return nil;
+  NSDictionary* json = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:nil];
+  NSArray* results = [json[@"results"] isKindOfClass:NSArray.class] ? json[@"results"] : @[];
+  if (!results.count) return nil;
+
+  NSMutableString* out = [NSMutableString stringWithFormat:@"WEB SEARCH RESULTS for \"%@\":\n", query];
+  NSUInteger count = 0;
+  for (id item in results) {
+    if (count >= 5) break;
+    if (![item isKindOfClass:NSDictionary.class]) continue;
+    NSString* title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : @"";
+    NSString* urlStr = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : @"";
+    NSString* content = [item[@"content"] isKindOfClass:NSString.class] ? item[@"content"] : @"";
+    if (!title.length && !content.length) continue;
+    // Truncate snippets to keep the prompt compact.
+    if (content.length > 300) content = [[content substringToIndex:297] stringByAppendingString:@"…"];
+    [out appendFormat:@"\n[%lu] %@\n%@\n%@\n", (unsigned long)(count + 1), title, urlStr, content];
+    count++;
+  }
+  return count > 0 ? out : nil;
+}
+
+NSString* _Nullable rigAIFindSearxngScript(void) {
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSMutableArray<NSString*>* candidates = [NSMutableArray array];
+
+  NSString* cwd = fm.currentDirectoryPath;
+  if (cwd) {
+    [candidates addObject:[cwd stringByAppendingPathComponent:@"searxng.sh"]];
+    [candidates addObject:[cwd stringByAppendingPathComponent:@"scripts/searxng.sh"]];
+  }
+
+  NSString* bundleDir = [NSBundle mainBundle].bundlePath;
+  if (bundleDir) {
+    [candidates addObject:[bundleDir stringByAppendingPathComponent:@"Contents/Resources/searxng.sh"]];
+    NSString* cur = bundleDir;
+    for (int i = 0; i < 5; ++i) {
+      cur = [cur stringByDeletingLastPathComponent];
+      if (!cur.length || [cur isEqualToString:@"/"]) break;
+      [candidates addObject:[cur stringByAppendingPathComponent:@"searxng.sh"]];
     }
-  };
+  }
 
-  const size_t kCount = sizeof(kAssociations) / sizeof(kAssociations[0]);
-  for (size_t i = 0; i < kCount; ++i) {
-    for (NSString* trigger in kAssociations[i].triggers) {
-      if ([clean containsString:trigger]) {
-        for (NSString* q in kAssociations[i].queries) addQuery(q);
-        break;
+  NSString* home = NSHomeDirectory();
+  [candidates addObject:[home stringByAppendingPathComponent:@"Documents/Github/neural-amp-modeler-lv2/searxng.sh"]];
+  [candidates addObject:[home stringByAppendingPathComponent:@".local/bin/searxng.sh"]];
+  [candidates addObject:[home stringByAppendingPathComponent:@"Library/Application Support/Axe FX/searxng.sh"]];
+
+  for (NSString* path in candidates) {
+    if ([fm fileExistsAtPath:path] && [fm isExecutableFileAtPath:path]) return path;
+  }
+  return nil;
+}
+
+void rigAIEnsureSearxngRunning(void (^ _Nullable completion)(BOOL success, NSString* message)) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // 1. Quick probe to see if already responding
+    NSURL* probeURL = [NSURL URLWithString:@"http://localhost:8080/"];
+    NSMutableURLRequest* probeReq = [NSMutableURLRequest requestWithURL:probeURL
+                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                        timeoutInterval:1.0];
+    probeReq.HTTPMethod = @"HEAD";
+    [probeReq setValue:@"AxeFX/1.0" forHTTPHeaderField:@"User-Agent"];
+
+    __block BOOL responding = NO;
+    dispatch_semaphore_t probeSem = dispatch_semaphore_create(0);
+    NSURLSession* probeSession = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+    [[probeSession dataTaskWithRequest:probeReq completionHandler:^(NSData*, NSURLResponse* response, NSError*) {
+      NSInteger code = [(NSHTTPURLResponse*)response statusCode];
+      if (code >= 200 && code < 400) responding = YES;
+      dispatch_semaphore_signal(probeSem);
+    }] resume];
+    dispatch_semaphore_wait(probeSem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)));
+    [probeSession invalidateAndCancel];
+
+    if (responding) {
+      if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          completion(YES, @"online at http://localhost:8080");
+        });
+      }
+      return;
+    }
+
+    // 2. Locate searxng.sh
+    NSString* scriptPath = rigAIFindSearxngScript();
+    if (!scriptPath) {
+      if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          completion(NO, @"searxng.sh not found");
+        });
+      }
+      return;
+    }
+
+    // 3. Launch searxng.sh start via NSTask
+    @try {
+      NSTask* task = [[NSTask alloc] init];
+      task.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+      task.arguments = @[scriptPath, @"start"];
+      task.currentDirectoryPath = scriptPath.stringByDeletingLastPathComponent;
+
+      NSMutableDictionary* env = [NSProcessInfo.processInfo.environment mutableCopy];
+      NSString* home = NSHomeDirectory();
+      NSString* curPath = env[@"PATH"] ?: @"/usr/bin:/bin";
+      env[@"PATH"] = [NSString stringWithFormat:@"/opt/homebrew/bin:/usr/local/bin:%@/.local/bin:%@/.docker/bin:/Applications/Docker.app/Contents/Resources/bin:%@", home, home, curPath];
+      task.environment = env;
+
+      NSPipe* outPipe = [NSPipe pipe];
+      task.standardOutput = outPipe;
+      task.standardError = outPipe;
+
+      NSError* launchError = nil;
+      if (![task launchAndReturnError:&launchError]) {
+        if (completion) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            completion(NO, launchError.localizedDescription ?: @"launch failed");
+          });
+        }
+        return;
+      }
+
+      [task waitUntilExit];
+
+      // 4. Verify SearXNG is now responding
+      __block BOOL nowUp = NO;
+      for (int attempt = 0; attempt < 6; ++attempt) {
+        dispatch_semaphore_t checkSem = dispatch_semaphore_create(0);
+        NSURLSession* s = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+        [[s dataTaskWithRequest:probeReq completionHandler:^(NSData*, NSURLResponse* response, NSError*) {
+          NSInteger code = [(NSHTTPURLResponse*)response statusCode];
+          if (code >= 200 && code < 400) nowUp = YES;
+          dispatch_semaphore_signal(checkSem);
+        }] resume];
+        dispatch_semaphore_wait(checkSem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)));
+        [s invalidateAndCancel];
+        if (nowUp) break;
+        [NSThread sleepForTimeInterval:0.8];
+      }
+
+      if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (nowUp) completion(YES, @"started at http://localhost:8080");
+          else completion(NO, @"started container but HTTP port 8080 did not respond");
+        });
+      }
+    } @catch (NSException* e) {
+      if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          completion(NO, e.reason ?: @"exception launching searxng.sh");
+        });
       }
     }
-  }
+  });
+}
 
-  // Direct gear keyword detection
-  static NSArray<NSString*>* const kDirectGear = @[
-    @"5150", @"6505", @"rectifier", @"dual recto", @"triple recto", @"kr7", @"rivera",
-    @"diezel", @"vh4", @"herbert", @"bogner", @"uberschall", @"ecstasy", @"friedman", @"be100",
-    @"soldano", @"slo100", @"slo-100", @"jcm800", @"jcm900", @"jcm2000", @"plexi", @"super lead",
-    @"jubilee", @"mark iic", @"mark iv", @"mark v", @"dumble", @"steel string singer",
-    @"two rock", @"twin reverb", @"deluxe reverb", @"super reverb", @"bassman", @"vibroverb",
-    @"ac30", @"ac15", @"matchless dc30", @"rockerverb", @"thunderverb", @"hiwatt", @"dr103",
-    @"laney", @"engl", @"powerball", @"fireball", @"invader", @"savage", @"randall", @"warhead",
-    @"tube screamer", @"ts9", @"ts808", @"klon", @"centaur", @"king of tone", @"big muff",
-    @"rat", @"ds-1", @"precision drive"
-  ];
-  for (NSString* gear in kDirectGear) {
-    if ([clean containsString:gear]) addQuery(gear);
-  }
+NSString* rigAIGearResearchSystemPrompt() {
+  return @"You identify guitar gear for an amp-modeling app. Reply with ONE JSON object only, no Markdown.\n"
+         @"Schema: {\"kind\":\"artist|style|adjustment\",\"artist\":\"\",\"album\":\"\",\"song\":\"\",\"era\":\"\","
+         @"\"confidence\":\"high|medium|low\",\"amps\":[],\"cabs\":[],\"pedals\":[],\"search_terms\":[],\"notes\":\"\"}\n"
+         @"- kind \"artist\": the request names an artist, band, guitarist, album or song. Use canonical spellings for artist/album/song "
+         @"and fill album when you know which album the song is on.\n"
+         @"- kind \"style\": a genre, era or sound without a specific artist; list typical gear for it.\n"
+         @"- kind \"adjustment\": a tweak to the current sound (\"tighter\", \"less fizz\", \"more delay\"); leave gear lists empty.\n"
+         @"- amps/cabs/pedals: gear well documented for THAT recording or era (interviews, rig rundowns, liner notes), most important first, "
+         @"full model names (e.g. \"Mesa/Boogie Mark IIC+\", \"Mesa 4x12 with Celestion Vintage 30s\", \"Ibanez TS9\"). At most 6 each.\n"
+         @"- search_terms: 3-8 short lowercase phrases for searching capture filenames, primary amp first (e.g. \"mark iic+\", \"mesa mark\", \"v30\").\n"
+         @"- confidence: high only when the gear is well documented; use low and say so in notes when guessing. Never invent gear.\n"
+         @"- notes: at most 40 words.";
+}
 
+NSString* rigAIGearResearchUserMessage(NSString* prompt, NSString* _Nullable presetContext) {
+  NSMutableString* msg = [NSMutableString stringWithFormat:@"REQUEST: %@", prompt ?: @""];
+  if (presetContext.length) {
+    [msg appendFormat:@"\nCURRENT PRESET NAME (may identify \"this song/album\"): %@", presetContext];
+  }
+  return msg;
+}
+
+NSDictionary* _Nullable rigAIParseGearResearch(NSString* _Nullable content) {
+  if (![content isKindOfClass:NSString.class] || !content.length || content.length > 65536) return nil;
+  NSRange open = [content rangeOfString:@"{"];
+  NSRange close = [content rangeOfString:@"}" options:NSBackwardsSearch];
+  if (open.location == NSNotFound || close.location == NSNotFound || close.location < open.location) return nil;
+  NSString* json = [content substringWithRange:NSMakeRange(open.location, close.location - open.location + 1)];
+  return researchFromObject([NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]);
+}
+
+static NSDictionary* _Nullable researchFromObject(id object) {
+  if (![object isKindOfClass:NSDictionary.class]) return nil;
+  NSDictionary* d = object;
+
+  NSString* kind = researchString(d[@"kind"], 16).lowercaseString;
+  if (![@[@"artist", @"style", @"adjustment"] containsObject:kind]) return nil;
+  NSString* confidence = researchString(d[@"confidence"], 8).lowercaseString;
+  if (![@[@"high", @"medium", @"low"] containsObject:confidence]) confidence = @"low";
+
+  NSArray* amps = researchList(d[@"amps"], NO);
+  NSArray* cabs = researchList(d[@"cabs"], NO);
+  NSArray* pedals = researchList(d[@"pedals"], NO);
+  NSMutableArray* terms = [researchList(d[@"search_terms"], YES) mutableCopy];
+  if (!terms.count) {
+    for (NSArray* list in @[amps, cabs, pedals])
+      for (NSString* s in list) if (![terms containsObject:s.lowercaseString]) [terms addObject:s.lowercaseString];
+  }
+  if ([kind isEqualToString:@"adjustment"]) { amps = cabs = pedals = @[]; [terms removeAllObjects]; }
+  if (![kind isEqualToString:@"adjustment"] && !amps.count && !terms.count) return nil;
+  return @{
+    @"kind": kind,
+    @"artist": researchString(d[@"artist"], 80),
+    @"album": researchString(d[@"album"], 120),
+    @"song": researchString(d[@"song"], 120),
+    @"era": researchString(d[@"era"], 60),
+    @"confidence": confidence,
+    @"amps": amps, @"cabs": cabs, @"pedals": pedals,
+    @"search_terms": [terms subarrayWithRange:NSMakeRange(0, std::min<NSUInteger>(terms.count, 8))],
+    @"notes": researchString(d[@"notes"], 300),
+  };
+}
+
+void rigAIGearResearchSetCachePath(NSString* _Nullable path) {
+  @synchronized(researchLock()) {
+    gResearchCachePathOverride = [path copy];
+    gResearchEntries = nil;
+    gResearchLoadedPath = nil;
+  }
+}
+
+NSDictionary* _Nullable rigAIGearResearchCached(NSString* prompt) {
+  NSString* key = normalizedResearchText(prompt);
+  if (!key.length) return nil;
+  @synchronized(researchLock()) {
+    return researchEntriesLocked()[key];
+  }
+}
+
+void rigAIGearResearchStore(NSString* prompt, NSDictionary* research) {
+  NSString* key = normalizedResearchText(prompt);
+  if (!key.length || ![research isKindOfClass:NSDictionary.class]) return;
+  @synchronized(researchLock()) {
+    NSMutableDictionary* entries = researchEntriesLocked();
+    NSMutableDictionary* entry = [research mutableCopy];
+    entry[@"updated"] = @((long long)NSDate.date.timeIntervalSince1970);
+    entries[key] = entry;
+    if (entries.count > kGearResearchMaxEntries) {
+      NSArray* oldest = [entries keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+        return [a[@"updated"] ?: @0 compare:b[@"updated"] ?: @0];
+      }];
+      [entries removeObjectsForKeys:[oldest subarrayWithRange:NSMakeRange(0, entries.count - kGearResearchMaxEntries)]];
+    }
+    NSString* path = researchCachePath();
+    [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+    NSData* data = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"entries": entries}
+                                                   options:NSJSONWritingPrettyPrinted error:nil];
+    [data writeToFile:path atomically:YES];
+  }
+}
+
+NSDictionary* _Nullable rigAIGearResearchMatching(NSString* text, BOOL specificOnly) {
+  NSString* norm = normalizedResearchText(text);
+  if (!norm.length) return nil;
+  @synchronized(researchLock()) {
+    NSMutableDictionary* entries = researchEntriesLocked();
+    if (entries[norm]) return entries[norm];
+    NSDictionary* best = nil;
+    NSInteger bestScore = 0;
+    for (NSString* key in entries) {
+      NSDictionary* e = entries[key];
+      if (![e[@"kind"] isEqual:@"artist"] || !researchTextNames(norm, e[@"artist"])) continue;
+      const BOOL songNamed = researchTextNames(norm, e[@"song"]);
+      const BOOL albumNamed = researchTextNames(norm, e[@"album"]);
+      // Specific reuse must identify the same recording, not just the same artist.
+      if (specificOnly && !songNamed && !([e[@"song"] length] == 0 && albumNamed)) continue;
+      const NSInteger score = 1 + (songNamed ? 4 : 0) + (albumNamed ? 2 : 0) + ([e[@"confidence"] isEqual:@"high"] ? 1 : 0);
+      if (score > bestScore) { best = e; bestScore = score; }
+    }
+    return best;
+  }
+}
+
+NSString* rigAIGearResearchSummary(NSDictionary* research) {
+  if ([research[@"kind"] isEqual:@"adjustment"]) return @"adjustment to the current sound; no gear lookup needed.";
+  NSMutableArray* parts = [NSMutableArray array];
+  NSMutableArray* subject = [NSMutableArray array];
+  for (NSString* key in @[@"artist", @"album", @"song"])
+    if ([research[key] length]) [subject addObject:research[key]];
+  if (subject.count) [parts addObject:[subject componentsJoinedByString:@" / "]];
+  for (NSString* label in @[@"amps", @"cabs", @"pedals"]) {
+    NSArray* list = research[label];
+    if ([list isKindOfClass:NSArray.class] && list.count) {
+      [parts addObject:[NSString stringWithFormat:@"%@ %@", label, [list componentsJoinedByString:@", "]]];
+    }
+  }
+  return [parts componentsJoinedByString:@"; "];
+}
+
+NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt) {
+  if (![prompt isKindOfClass:NSString.class] || !prompt.length) return @[];
+  NSDictionary* research = rigAIGearResearchMatching(prompt, NO);
+  if (!research) return @[];
+  NSMutableArray<NSString*>* results = [NSMutableArray array];
+  for (NSArray* list in @[research[@"search_terms"] ?: @[], research[@"amps"] ?: @[],
+                          research[@"cabs"] ?: @[], research[@"pedals"] ?: @[]]) {
+    for (NSString* s in list) {
+      NSString* q = s.lowercaseString;
+      if (q.length && ![results containsObject:q]) [results addObject:q];
+    }
+  }
   return results;
 }
 

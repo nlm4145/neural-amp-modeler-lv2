@@ -31,6 +31,12 @@ Always use non-interactive flags when running builds or tests from an agent sess
   - Port & contract alignment: `python3 tests/test_ports.py`
   - Preset serialization: `python3 tests/test_presets.py`
   - DSP numerical regression: `python3 tests/test_dsp.py`
+- **SearXNG Local Search Service** ([`tools/searxng/README.md`](tools/searxng/README.md)):
+  - Start / auto-launch: `./searxng.sh start`
+  - Query (CLI): `./searxng.sh search "query"`
+  - Query (JSON API): `./searxng.sh json "query"` (or `curl http://localhost:8080/search?q=query&format=json`)
+  - Health & status: `./searxng.sh status`
+  - Reclaim port: `./searxng.sh reclaim`
 
 ## 3. Codebase Landmarks for Large Files
 Avoid reading entire multi-thousand-line files into context. Read targeted line ranges instead:

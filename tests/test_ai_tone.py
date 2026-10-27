@@ -148,6 +148,20 @@ class ToneTests(unittest.TestCase):
             self.assertAlmostEqual(res["token_cost"], 0.000225)
             self.assertEqual(res["ai_metadata"]["model"], "gemini-3.8-flash")
 
+    def test_searxng_config_and_ui_wiring(self):
+        ui_source = (ROOT / "src/nam_rig_ui.mm").read_text()
+        self.assertIn("copilotSearxngButton", ui_source)
+        self.assertIn("copilotSearxngToggled:", ui_source)
+        self.assertIn("config.useSearxng", ui_source)
+        copilot_source = (ROOT / "src/rig_ai_copilot.mm").read_text()
+        self.assertIn('dict[@"use_searxng"]', copilot_source)
+        self.assertIn("cfg.useSearxng", copilot_source)
+        self.assertIn("rigAIEnsureSearxngRunning", copilot_source)
+        support_source = (ROOT / "src/rig_ai_support.mm").read_text()
+        self.assertIn("rigAIWebSearchForGear", support_source)
+        self.assertIn("rigAIEnsureSearxngRunning", support_source)
+        self.assertIn("rigAIFindSearxngScript", support_source)
+
 
 if __name__ == "__main__":
     unittest.main()

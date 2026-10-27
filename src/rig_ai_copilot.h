@@ -50,6 +50,10 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic) float temperature;
 @property(nonatomic) BOOL allowLocalCLI; // Automatic UI fallback; always respects CLI permissions.
 @property(nonatomic) BOOL sendAudio; // Explicit opt-in; telemetry-only by default to limit cost.
+@property(nonatomic) BOOL useSearxng; // Checkbox toggle: automatically queries or spins up local SearXNG
+// Optional self-hosted SearXNG instance URL for platform-agnostic gear web search (defaults to http://localhost:8080).
+// When set, the gear research step fetches live web results before calling the AI provider.
+@property(nonatomic, copy, nullable) NSString* searxngURL;
 - (BOOL)canSendAudio; // Conservative model/transport capability check.
 
 + (instancetype)defaultConfig;

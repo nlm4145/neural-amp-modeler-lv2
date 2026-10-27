@@ -4,3 +4,7 @@ build*/
 *.zip
 dist_temp/
 /.idea
+
+# SearXNG local configuration
+tools/searxng/.env
+tools/searxng/core-data/

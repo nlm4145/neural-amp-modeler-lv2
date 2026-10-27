@@ -93,6 +93,7 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) RigButton* copilotUndoBtn;
 @property(nonatomic, strong) NSProgressIndicator* copilotSpinner;
 @property(nonatomic, strong) NSTextField* copilotURLField;
+@property(nonatomic, strong) NSButton* copilotSearxngButton;
 @property(nonatomic, strong) RigButton* copilotApplyBtn;
 @property(nonatomic, strong) RigButton* copilotCancelBtn;
 @property(nonatomic, strong) RigAICopilotResult* copilotProposal;
@@ -218,6 +219,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)selectCopilotLocalMatch:(id)sender;
 - (void)importCopilotReference:(id)sender;
 - (void)clearCopilotReference:(id)sender;
+- (void)copilotSearxngToggled:(id)sender;
 - (void)appendCopilotLog:(NSString*)line;
 - (void)resetCopilotLog:(NSString*)header;
 - (void)setCopilotLiveLine:(NSString*)line;
@@ -2455,6 +2457,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     if (self.copilotProposal && !self.copilotPresetNameField.stringValue.length) {
       self.copilotPresetNameField.stringValue = [self plannedCopilotPresetName];
     }
+    if (self.copilotSearxngButton) {
+      self.copilotSearxngButton.state = ([RigAICopilot sharedCopilot].config.useSearxng || [RigAICopilot sharedCopilot].config.searxngURL.length) ? NSControlStateValueOn : NSControlStateValueOff;
+    }
     [self updateCopilotRiffUI];
     if (!isProc && _state->aiCopilotBtn) {
       _state->aiCopilotBtn.title = @"✨ AI Tone Tuning";
@@ -2558,11 +2563,19 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   urlLabel.frame = NSMakeRect(20, popH - 144, 60, 18);
   urlLabel.textColor = rigText();
   [content addSubview:urlLabel];
+
   self.copilotSendAudioButton = [NSButton checkboxWithTitle:@"Send recordings to cloud AI (optional; extra cost)" target:self action:@selector(copilotAudioUploadToggled:)];
-  self.copilotSendAudioButton.frame = NSMakeRect(20, popH - 172, 500, 22);
+  self.copilotSendAudioButton.frame = NSMakeRect(20, popH - 172, 305, 22);
   self.copilotSendAudioButton.font = [NSFont systemFontOfSize:10];
   self.copilotSendAudioButton.state = config.sendAudio ? NSControlStateValueOn : NSControlStateValueOff;
   [content addSubview:self.copilotSendAudioButton];
+
+  self.copilotSearxngButton = [NSButton checkboxWithTitle:@"Web gear research (SearXNG)" target:self action:@selector(copilotSearxngToggled:)];
+  self.copilotSearxngButton.frame = NSMakeRect(335, popH - 172, 185, 22);
+  self.copilotSearxngButton.font = [NSFont systemFontOfSize:10];
+  self.copilotSearxngButton.state = (config.useSearxng || config.searxngURL.length) ? NSControlStateValueOn : NSControlStateValueOff;
+  self.copilotSearxngButton.toolTip = @"Search the web for documented artist gear & rig rundowns using local SearXNG (auto-starts via ./searxng.sh if not running).";
+  [content addSubview:self.copilotSearxngButton];
   [self updateCopilotProviderControlsForProvider:config.provider];
 
   self.copilotModelsStatus = [NSTextField labelWithString:@""];
@@ -2946,6 +2959,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.model = self.copilotModelComboBox.stringValue;
   config.apiKey = self.copilotKeyField.stringValue;
   config.baseURL = self.copilotURLField.stringValue;
+  config.useSearxng = (self.copilotSearxngButton.state == NSControlStateValueOn);
+  if (config.useSearxng) {
+    if (!config.searxngURL.length) config.searxngURL = @"http://localhost:8080";
+  } else {
+    config.searxngURL = nil;
+  }
   config.allowLocalCLI = YES;
   [self updateCopilotAudioControls];
   config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;
@@ -2955,6 +2974,28 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     [self refreshCopilotModelsUIForced:YES];
   } else {
     [self resetCopilotLog:[NSString stringWithFormat:@"Failed to save config: %@", err.localizedDescription]];
+  }
+}
+
+- (void)copilotSearxngToggled:(id)sender {
+  (void)sender;
+  BOOL enabled = (self.copilotSearxngButton.state == NSControlStateValueOn);
+  RigAIConfig* config = [RigAICopilot sharedCopilot].config;
+  config.useSearxng = enabled;
+  if (enabled) {
+    if (!config.searxngURL.length) config.searxngURL = @"http://localhost:8080";
+    [self appendCopilotLog:@"SearXNG gear research enabled."];
+    __weak NAMRigUIController* weakSelf = self;
+    rigAIEnsureSearxngRunning(^(BOOL success, NSString* msg) {
+      if (success) {
+        [weakSelf appendCopilotLog:[NSString stringWithFormat:@"✓ SearXNG ready (%@).", msg]];
+      } else {
+        [weakSelf appendCopilotLog:[NSString stringWithFormat:@"⚠️ SearXNG notice: %@.", msg]];
+      }
+    });
+  } else {
+    config.searxngURL = nil;
+    [self appendCopilotLog:@"SearXNG gear research disabled."];
   }
 }
 
@@ -2978,6 +3019,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.model = self.copilotModelComboBox.stringValue;
   config.apiKey = self.copilotKeyField.stringValue;
   config.baseURL = self.copilotURLField.stringValue;
+  config.useSearxng = (self.copilotSearxngButton.state == NSControlStateValueOn);
+  if (config.useSearxng) {
+    if (!config.searxngURL.length) config.searxngURL = @"http://localhost:8080";
+  } else {
+    config.searxngURL = nil;
+  }
   config.allowLocalCLI = YES;
   [self updateCopilotAudioControls];
   config.sendAudio = self.copilotSendAudioButton.state == NSControlStateValueOn;

@@ -108,32 +108,50 @@ int main(int argc, char** argv) {
     for (NSDictionary* item in all)
       if ([item[@"path"] isEqual:@"Amp/A/clean.nam"]) CHECK([item[@"description"] isEqual:@"warm clean boutique"]);
 
-    // Semantic gear expansion tests
-    NSArray<NSString*>* slipknotGear = rigAISuggestGearQueries(@"Slipknot Before I Forget");
-    CHECK(slipknotGear.count > 0);
-    BOOL hasKr7OrRecto = NO;
-    for (NSString* g in slipknotGear) {
-      if ([g containsString:@"kr7"] || [g containsString:@"rectifier"] || [g containsString:@"5150"]) hasKr7OrRecto = YES;
-    }
-    CHECK(hasKr7OrRecto);
-
-    NSArray<NSString*>* metallicaGear = rigAISuggestGearQueries(@"Metallica Master of Puppets");
-    CHECK(metallicaGear.count > 0);
-    BOOL hasMarkOrRecto = NO;
-    for (NSString* g in metallicaGear) {
-      if ([g containsString:@"mark"] || [g containsString:@"rectifier"] || [g containsString:@"jcm800"]) hasMarkOrRecto = YES;
-    }
-    CHECK(hasMarkOrRecto);
-
-    NSArray<NSString*>* srvGear = rigAISuggestGearQueries(@"SRV Texas Flood");
-    CHECK(srvGear.count > 0);
-    BOOL hasFenderOrTs = NO;
-    for (NSString* g in srvGear) {
-      if ([g containsString:@"fender"] || [g containsString:@"super reverb"] || [g containsString:@"ts808"]) hasFenderOrTs = YES;
-    }
-    CHECK(hasFenderOrTs);
-
+    // Gear research: parsing, cache persistence and matching replace the old artist tables.
+    NSString* researchCache = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"axe-gear-research-%@.json", NSUUID.UUID.UUIDString]];
+    rigAIGearResearchSetCachePath(researchCache);
+    CHECK(rigAISuggestGearQueries(@"Fakeband - Neon Song").count == 0);
     CHECK(rigAISuggestGearQueries(@"").count == 0);
+
+    NSDictionary* research = rigAIParseGearResearch(
+        @"Sure:\n```json\n{\"kind\":\"artist\",\"artist\":\"Fakeband\",\"album\":\"Vol. 3 (The Night)\",\"song\":\"Neon Song\","
+        @"\"confidence\":\"HIGH\",\"amps\":[\"Unique Amp Co. Model U\",\"  Second   Amp \"],\"cabs\":[\"2x12 Greenback\"],"
+        @"\"pedals\":[],\"search_terms\":[\"Unique\",\"model u\"],\"notes\":\"well documented\"}\n```");
+    CHECK(research != nil);
+    CHECK([research[@"confidence"] isEqual:@"high"]);
+    CHECK([research[@"amps"][1] isEqual:@"Second Amp"]);
+    CHECK([research[@"search_terms"][0] isEqual:@"unique"]);
+    CHECK(!rigAIParseGearResearch(@"{\"kind\":\"band\",\"amps\":[\"x\"]}"));
+    CHECK(!rigAIParseGearResearch(@"{\"kind\":\"artist\",\"artist\":\"Nobody\"}"));
+    CHECK(!rigAIParseGearResearch(@"not json"));
+    NSDictionary* adjustment = rigAIParseGearResearch(@"{\"kind\":\"adjustment\",\"amps\":[\"Ignored\"]}");
+    CHECK(adjustment && [adjustment[@"amps"] count] == 0 && [adjustment[@"confidence"] isEqual:@"low"]);
+    CHECK([rigAIGearResearchSummary(research) containsString:@"Fakeband / Vol. 3 (The Night) / Neon Song"]);
+    CHECK([rigAIGearResearchSummary(adjustment) containsString:@"adjustment"]);
+
+    rigAIGearResearchStore(@"Fakeband - Neon Song tone", research);
+    CHECK(rigAIGearResearchCached(@"fakeband neon song TONE") != nil);
+    // Specific reuse needs the same recording; search hints only need the artist.
+    CHECK(rigAIGearResearchMatching(@"play neon song by fakeband", YES) != nil);
+    CHECK(rigAIGearResearchMatching(@"Fakeband other track", YES) == nil);
+    CHECK(rigAIGearResearchMatching(@"Fakeband other track", NO) != nil);
+    CHECK(rigAIGearResearchMatching(@"fakebandit riff", NO) == nil);
+    NSArray<NSString*>* fakeQueries = rigAISuggestGearQueries(@"Fakeband other track");
+    CHECK(fakeQueries.count >= 3 && [fakeQueries[0] isEqual:@"unique"]);
+    CHECK(rigAITextNamesPhrase(@"the vol 3 the night era", @"Vol. 3 (The Night)"));
+    CHECK(!rigAITextNamesPhrase(@"toolbox", @"Tool"));
+
+    // Cached gear names rank captures the prompt itself never mentions.
+    NSArray* fakeCandidates = rigAILibraryCandidates(root, @"Fakeband Neon Song", 8);
+    CHECK(fakeCandidates.count > 0 && [fakeCandidates[0][@"path"] isEqual:@"Amp/C/unique.nam"]);
+
+    // Survives a reload from disk.
+    rigAIGearResearchSetCachePath(researchCache);
+    CHECK(rigAIGearResearchCached(@"Fakeband - Neon Song tone") != nil);
+    [NSFileManager.defaultManager removeItemAtPath:researchCache error:nil];
+    rigAIGearResearchSetCachePath(nil);
 
     // Whole-library pack index: one entry per pack, correct stages, excludes empty/outside files.
     NSArray<NSDictionary*>* packIndex = rigAILibraryPackIndex(root, 100);

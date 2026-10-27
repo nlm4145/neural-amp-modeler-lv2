@@ -45,7 +45,35 @@ NSString* _Nullable rigAICaptureArchitecture(NSString* root, NSString* relative)
 NSString* rigAIHighestCapacityVariant(NSString* root, NSString* relative, NSUInteger stage,
                                       NSInteger* _Nullable outParams, NSInteger* _Nullable outOriginalParams);
 
-// Semantic gear expansion: translates artist/song/style prompts into associated gear families and acoustic search terms.
+// Platform-agnostic web search via a local SearXNG instance. Returns a compact snippet block
+// ready to embed in a gear-research prompt, or nil when SearXNG is unreachable or misconfigured.
+// Only loopback HTTP and any HTTPS URLs are permitted; credentials in the URL are rejected.
+NSString* _Nullable rigAIWebSearchForGear(NSString* query, NSString* searxngURL);
+
+// Locate searxng.sh in repo, bundle, or standard Axe FX locations.
+NSString* _Nullable rigAIFindSearxngScript(void);
+
+// Checks if SearXNG is running on localhost:8080, and spins up searxng.sh start in the background if needed.
+void rigAIEnsureSearxngRunning(void (^ _Nullable completion)(BOOL success, NSString* message));
+
+// Gear research: a preliminary AI lookup of the gear documented for an artist/album/song/style
+// request. Replies are normalized and cached on disk (Application Support/Axe FX).
+NSString* rigAIGearResearchSystemPrompt();
+NSString* rigAIGearResearchUserMessage(NSString* prompt, NSString* _Nullable presetContext);
+// Validates/normalizes a lookup reply (kind, artist/album/song, amps/cabs/pedals, search_terms); nil if unusable.
+NSDictionary* _Nullable rigAIParseGearResearch(NSString* _Nullable content);
+// Tests point the cache at a temporary file; nil restores the default location.
+void rigAIGearResearchSetCachePath(NSString* _Nullable path);
+NSDictionary* _Nullable rigAIGearResearchCached(NSString* prompt);
+void rigAIGearResearchStore(NSString* prompt, NSDictionary* research);
+// Cached research for free text: the exact prompt, else an artist entry named in the text.
+// specificOnly additionally requires the same song (or album, for album-level entries).
+NSDictionary* _Nullable rigAIGearResearchMatching(NSString* text, BOOL specificOnly);
+// Whole-word, case- and punctuation-insensitive phrase match ("Vol. 3" matches "vol 3").
+BOOL rigAITextNamesPhrase(NSString* text, NSString* _Nullable phrase);
+// One-line description for the progress log ("Artist / Album / Song; amps …; cabs …; pedals …").
+NSString* rigAIGearResearchSummary(NSDictionary* research);
+// Gear search terms (primary amp first) from cached research; empty when nothing is cached.
 NSArray<NSString*>* rigAISuggestGearQueries(NSString* prompt);
 
 // Acoustic profile analyzer: extracts frequency band energies from telemetry strings and calculates delta guidance.
