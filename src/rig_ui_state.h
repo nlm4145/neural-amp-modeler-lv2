@@ -494,13 +494,15 @@ struct RigUIState {
   NSComboBox* zoomControl = nil;
   __strong NSView* rigContent = nil;   // the Auto Layout container that fills the window
 
-  // Tabbed panes: Rig (tab 0) and Tone3000 (tab 1).
+  // Tabbed panes: Rig (tab 0), Tone3000 (tab 1), and AI Tone Matcher (tab 2).
   __strong NSView* headerBar = nil;
   __strong NSView* rigHeaderGroup = nil;
   __strong NSView* rigPane = nil;
   __strong NSView* tonePane = nil;
+  __strong NSView* aiPane = nil;
   __strong RigButton* rigTabBtn = nil;
   __strong RigButton* toneTabBtn = nil;
+  __strong RigButton* aiTabBtn = nil;
   NSInteger activeTab = 0;
 
   void selectTab(NSInteger tab) {
@@ -516,10 +518,15 @@ struct RigUIState {
         toneTabBtn.state = (tab == 1) ? NSControlStateValueOn : NSControlStateValueOff;
         toneTabBtn.needsDisplay = YES;
       }
+      if (aiTabBtn) {
+        aiTabBtn.state = (tab == 2) ? NSControlStateValueOn : NSControlStateValueOff;
+        aiTabBtn.needsDisplay = YES;
+      }
       if (rigHeaderGroup) rigHeaderGroup.hidden = (tab != 0);
       if (rigPane) rigPane.hidden = (tab != 0);
       if (tonePane) tonePane.hidden = (tab != 1);
-      if (tab == 1) {
+      if (aiPane) aiPane.hidden = (tab != 2);
+      if (tab != 0) {
         selectedStageIndex = -1;
         for (size_t s = 0; s < stageCards.size(); ++s) {
           if (stageCards[s]) stageCards[s].showsSelection = NO;
@@ -527,6 +534,10 @@ struct RigUIState {
         for (size_t s = 0; s < modelPickers.size(); ++s) {
           if (modelPickers[s]) modelPickers[s].showsSelection = NO;
         }
+      }
+      id ctrl = (id)uiController;
+      if (tab == 2 && ctrl && [ctrl respondsToSelector:@selector(prepareAITonePage)]) {
+        [ctrl performSelector:@selector(prepareAITonePage)];
       }
     });
   }

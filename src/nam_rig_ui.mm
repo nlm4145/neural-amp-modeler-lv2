@@ -221,6 +221,8 @@ static double copilotParseClock(NSString* text) {
 @end
 
 @interface NAMRigUIController (AICopilot)
+- (void)setupAIToneMatcherPage:(NSView*)aiPane;
+- (void)prepareAITonePage;
 - (void)openAICopilot:(id)sender;
 - (void)executeCopilotDial:(id)sender;
 - (void)undoCopilotDial:(id)sender;
@@ -258,9 +260,6 @@ static double copilotParseClock(NSString* text) {
 @implementation NAMRigUIController
 - (void)switchTab:(NSButton*)sender {
   if (!_state) return;
-  if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
-    [_state->aiCopilotPopover close];
-  }
   _state->selectTab(sender.tag);
 }
 - (void)switchDeckTab:(NSButton*)sender {
@@ -2460,50 +2459,43 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
 - (void)openAICopilot:(id)sender {
   if (!_state) return;
-  if (_state->aiCopilotPopover && _state->aiCopilotPopover.isShown) {
-    if (self.copilotLocalMatching) [self cancelCopilotRequest:nil];
-    if ([RigRiffRecorder sharedRecorder].isRecording || (self.copilotRiffTimer && self.copilotRecordCountdown > 0)) {
-      [self.copilotRiffTimer invalidate];
-      self.copilotRiffTimer = nil;
-      self.copilotRecordCountdown = 0;
-      [self setCopilotLiveLine:nil];
-      [[RigRiffRecorder sharedRecorder] stopRecording];
-    }
-    [[RigRiffRecorder sharedRecorder] stopPlayback];
-    [_state->aiCopilotPopover close];
-    return;
-  }
+  _state->selectTab(2);
+  [self prepareAITonePage];
+}
 
-  if (_state->aiCopilotPopover) {
-    __weak NAMRigUIController* weakProgressSelf = self;
-    [RigAICopilot sharedCopilot].progressHandler = ^(NSString* message) {
-      [weakProgressSelf appendCopilotLog:message];
-    };
-    const BOOL isProc = [RigAICopilot sharedCopilot].isProcessing;
-    self.copilotCancelBtn.enabled = isProc;
-    self.copilotApplyBtn.enabled = (self.copilotProposal != nil) && !isProc;
-    self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !isProc;
-    if (self.copilotProposal && !self.copilotPresetNameField.stringValue.length) {
-      self.copilotPresetNameField.stringValue = [self plannedCopilotPresetName];
-    }
-    if (self.copilotSearxngButton) {
-      self.copilotSearxngButton.state = ([RigAICopilot sharedCopilot].config.useSearxng || [RigAICopilot sharedCopilot].config.searxngURL.length) ? NSControlStateValueOn : NSControlStateValueOff;
-    }
-    [self updateCopilotRiffUI];
-    if (!isProc && _state->aiCopilotBtn) {
-      _state->aiCopilotBtn.title = @"✨ AI Tone Tuning";
-    }
-    NSView* anchorView = [sender isKindOfClass:[NSView class]] ? (NSView*)sender : _state->aiCopilotBtn;
-    if (!anchorView) anchorView = _state->view;
-    [_state->aiCopilotPopover showRelativeToRect:anchorView.bounds ofView:anchorView preferredEdge:NSRectEdgeMaxY];
-    if (isProc) [self.copilotSpinner startAnimation:nil];
-    else [self.copilotSpinner stopAnimation:nil];
-    if (self.copilotOutputView.string.length > 0) {
-      [self.copilotOutputView scrollRangeToVisible:NSMakeRange(self.copilotOutputView.string.length, 0)];
-    }
-    [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
-    return;
+- (void)prepareAITonePage {
+  if (!_state) return;
+
+  __weak NAMRigUIController* weakProgressSelf = self;
+  [RigAICopilot sharedCopilot].progressHandler = ^(NSString* message) {
+    [weakProgressSelf appendCopilotLog:message];
+  };
+  const BOOL isProc = [RigAICopilot sharedCopilot].isProcessing;
+  self.copilotCancelBtn.enabled = isProc;
+  self.copilotApplyBtn.enabled = (self.copilotProposal != nil) && !isProc;
+  self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !isProc;
+  if (self.copilotProposal && !self.copilotPresetNameField.stringValue.length) {
+    self.copilotPresetNameField.stringValue = [self plannedCopilotPresetName];
   }
+  if (self.copilotSearxngButton) {
+    self.copilotSearxngButton.state = ([RigAICopilot sharedCopilot].config.useSearxng || [RigAICopilot sharedCopilot].config.searxngURL.length) ? NSControlStateValueOn : NSControlStateValueOff;
+  }
+  [self updateCopilotRiffUI];
+  if (!isProc && _state->aiTabBtn) {
+    _state->aiTabBtn.title = @"✨ AI TONE MATCHER";
+  }
+  if (isProc) [self.copilotSpinner startAnimation:nil];
+  else [self.copilotSpinner stopAnimation:nil];
+  if (self.copilotOutputView.string.length > 0) {
+    [self.copilotOutputView scrollRangeToVisible:NSMakeRange(self.copilotOutputView.string.length, 0)];
+  }
+  if (self.copilotPromptInput.window) {
+    [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
+  }
+}
+
+- (void)setupAIToneMatcherPage:(NSView*)aiPane {
+  if (!_state) return;
 
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
   config.allowLocalCLI = YES; // Automatic fallback, requested by the UI policy.
@@ -2513,47 +2505,78 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     [weakSelf updateCopilotRiffUI];
   };
 
-  const CGFloat popW = 540.0;
-  const CGFloat popH = 900.0;
-  RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, popW, popH)];
-  content.wantsLayer = YES;
+  const CGFloat pad = 24.0;
 
-  // Header
-  NSTextField* title = [NSTextField labelWithString:@"✨ AI Tone Tuning"];
-  title.frame = NSMakeRect(20, popH - 36, 320, 22);
-  title.font = [NSFont systemFontOfSize:16 weight:NSFontWeightBold];
-  title.textColor = rigText();
-  [content addSubview:title];
+  // Header Title Bar
+  NSTextField* aiTitle = addLabel(aiPane, @"✨ AI TONE MATCHER", NSZeroRect,
+                                  [NSFont fontWithName:@"SF Mono Bold" size:16.0] ?: [NSFont boldSystemFontOfSize:16],
+                                  rigAccent());
+  aiTitle.toolTip = @"AI Tone Matcher (⌘K): Describe any artist, song, or match sound from reference audio.";
+  aiTitle.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:aiTitle];
+  [[aiTitle.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
+  [[aiTitle.topAnchor constraintEqualToAnchor:aiPane.topAnchor constant:10] setActive:YES];
+  [[aiTitle.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-  NSTextField* sub = [NSTextField labelWithString:@"AI suggestion or local sound matching → audition → Apply & Save"];
-  sub.frame = NSMakeRect(20, popH - 54, 500, 16);
-  sub.font = [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
-  sub.textColor = rigDimText();
-  [content addSubview:sub];
+  NSTextField* aiSub = addLabel(aiPane, @"INTELLIGENT TONE TUNING & LOCAL REFERENCE AUDIO MATCHING", NSZeroRect,
+                                [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+                                rigDimText());
+  rigApplyTracking(aiSub, 0.8);
+  aiSub.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:aiSub];
+  [[aiSub.leadingAnchor constraintEqualToAnchor:aiTitle.trailingAnchor constant:14] setActive:YES];
+  [[aiSub.centerYAnchor constraintEqualToAnchor:aiTitle.centerYAnchor] setActive:YES];
 
-  // Provider row
-  NSTextField* provLbl = [NSTextField labelWithString:@"Provider:"];
-  provLbl.frame = NSMakeRect(20, popH - 86, 60, 18);
-  provLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-  provLbl.textColor = rigText();
-  [content addSubview:provLbl];
+  NSTextField* aiBadge = addLabel(aiPane, @"⌘K SWITCH • LOCAL DSP & DEMUCS ISOLATION • CLOUD & OFFLINE MODELS", NSZeroRect,
+                                  [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
+                                  rigDimText(), NSTextAlignmentRight);
+  aiBadge.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:aiBadge];
+  [[aiBadge.trailingAnchor constraintEqualToAnchor:aiPane.trailingAnchor constant:-pad] setActive:YES];
+  [[aiBadge.centerYAnchor constraintEqualToAnchor:aiTitle.centerYAnchor] setActive:YES];
 
-  self.copilotProvPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(82, popH - 90, 100, 24) pullsDown:NO];
+  // Top Strip: AI Inference Engine & Configuration
+  RigPanel* engineStrip = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  engineStrip.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:engineStrip];
+  [[engineStrip.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
+  [[engineStrip.trailingAnchor constraintEqualToAnchor:aiPane.trailingAnchor constant:-pad] setActive:YES];
+  [[engineStrip.topAnchor constraintEqualToAnchor:aiTitle.bottomAnchor constant:10] setActive:YES];
+  [[engineStrip.heightAnchor constraintEqualToConstant:68] setActive:YES];
+
+  // Engine Strip Header
+  NSTextField* engHeader = addLabel(engineStrip, @"AI INFERENCE ENGINE & CREDENTIALS", NSMakeRect(16, 44, 250, 18),
+                                    [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold],
+                                    rigAccent());
+  rigApplyTracking(engHeader, 1.0);
+
+  self.copilotModelsStatus = [NSTextField labelWithString:@""];
+  self.copilotModelsStatus.frame = NSMakeRect(270, 44, 600, 18);
+  self.copilotModelsStatus.font = [NSFont systemFontOfSize:10 weight:NSFontWeightRegular];
+  self.copilotModelsStatus.textColor = rigDimText();
+  self.copilotModelsStatus.lineBreakMode = NSLineBreakByTruncatingTail;
+  [engineStrip addSubview:self.copilotModelsStatus];
+
+  // Controls Row (engineStrip)
+  addLabel(engineStrip, @"Provider:", NSMakeRect(16, 14, 55, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], rigText());
+
+  self.copilotProvPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(74, 12, 95, 24) pullsDown:NO];
   [self.copilotProvPopup addItemsWithTitles:@[@"Gemini", @"OpenAI", @"Claude", @"Ollama", @"Custom"]];
   self.copilotProvPopup.font = [NSFont systemFontOfSize:11];
-  for (NSMenuItem* item in self.copilotProvPopup.itemArray)
-    if ([item.title.lowercaseString isEqual:config.provider.lowercaseString]) [self.copilotProvPopup selectItem:item];
+  for (NSMenuItem* item in self.copilotProvPopup.itemArray) {
+    if ([item.title.lowercaseString isEqual:config.provider.lowercaseString]) {
+      [self.copilotProvPopup selectItem:item];
+    }
+  }
   self.copilotProvPopup.target = self;
   self.copilotProvPopup.action = @selector(copilotProviderChanged:);
-  [content addSubview:self.copilotProvPopup];
+  [engineStrip addSubview:self.copilotProvPopup];
 
-  NSTextField* modLbl = [NSTextField labelWithString:@"Model:"];
-  modLbl.frame = NSMakeRect(188, popH - 86, 44, 18);
-  modLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-  modLbl.textColor = rigText();
-  [content addSubview:modLbl];
+  addLabel(engineStrip, @"Model:", NSMakeRect(177, 14, 45, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], rigText());
 
-  self.copilotModelComboBox = [[NSComboBox alloc] initWithFrame:NSMakeRect(234, popH - 89, 146, 24)];
+  self.copilotModelComboBox = [[NSComboBox alloc] initWithFrame:NSMakeRect(224, 13, 146, 24)];
   self.copilotModelComboBox.font = [NSFont systemFontOfSize:11];
   self.copilotModelComboBox.hasVerticalScroller = YES;
   self.copilotModelComboBox.delegate = self;
@@ -2561,162 +2584,357 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSArray<NSString*>* initialModels = [[RigAICopilot sharedCopilot] availableModelsForProvider:config.provider apiKey:nil baseURL:nil];
   [self.copilotModelComboBox addItemsWithObjectValues:initialModels];
   self.copilotModelComboBox.stringValue = config.model.length ? config.model : (initialModels.firstObject ?: @"");
-  [content addSubview:self.copilotModelComboBox];
+  [engineStrip addSubview:self.copilotModelComboBox];
 
-  RigButton* refreshBtn = rigButton(content, @"↻", self, @selector(refreshCopilotModelsAction:), NSMakeRect(384, popH - 88, 28, 22));
+  RigButton* refreshBtn = rigButton(engineStrip, @"↻", self, @selector(refreshCopilotModelsAction:), NSMakeRect(373, 13, 26, 24));
   refreshBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
   refreshBtn.toolTip = @"Fetch latest models from provider API";
   self.copilotModelsRefreshBtn = refreshBtn;
 
-  RigButton* saveCfg = rigButton(content, @"Save Config", self, @selector(saveCopilotConfig:), NSMakeRect(418, popH - 88, 102, 22));
-  saveCfg.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
+  addLabel(engineStrip, @"API Key:", NSMakeRect(408, 14, 55, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], rigText());
 
-  // API Key row
-  NSTextField* keyLbl = [NSTextField labelWithString:@"API Key:"];
-  keyLbl.frame = NSMakeRect(20, popH - 116, 60, 18);
-  keyLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-  keyLbl.textColor = rigText();
-  [content addSubview:keyLbl];
-
-  self.copilotKeyField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(82, popH - 118, 438, 22)];
+  self.copilotKeyField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(465, 13, 160, 22)];
   self.copilotKeyField.font = [NSFont systemFontOfSize:11];
   self.copilotKeyField.stringValue = config.apiKey ?: @"";
   self.copilotKeyField.target = self;
   self.copilotKeyField.action = @selector(copilotKeyFieldAction:);
   self.copilotKeyField.delegate = self;
-  [content addSubview:self.copilotKeyField];
-  self.copilotURLField = [[NSTextField alloc] initWithFrame:NSMakeRect(82, popH - 146, 438, 22)];
+  [engineStrip addSubview:self.copilotKeyField];
+
+  addLabel(engineStrip, @"API URL:", NSMakeRect(635, 14, 55, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], rigText());
+
+  self.copilotURLField = [[NSTextField alloc] initWithFrame:NSMakeRect(692, 13, 180, 22)];
   self.copilotURLField.stringValue = config.baseURL ?: @"";
-  self.copilotURLField.placeholderString = @"HTTPS API URL or loopback Ollama URL";
+  self.copilotURLField.placeholderString = @"HTTPS API or Ollama URL";
   self.copilotURLField.font = [NSFont systemFontOfSize:11];
   self.copilotURLField.delegate = self;
   self.copilotURLField.target = self;
   self.copilotURLField.action = @selector(copilotKeyFieldAction:);
-  [content addSubview:self.copilotURLField];
-  NSTextField* urlLabel = [NSTextField labelWithString:@"API URL:"];
-  urlLabel.frame = NSMakeRect(20, popH - 144, 60, 18);
-  urlLabel.textColor = rigText();
-  [content addSubview:urlLabel];
-
-  self.copilotSendAudioButton = [NSButton checkboxWithTitle:@"Send recordings to cloud AI (optional; extra cost)" target:self action:@selector(copilotAudioUploadToggled:)];
-  self.copilotSendAudioButton.frame = NSMakeRect(20, popH - 172, 305, 22);
-  self.copilotSendAudioButton.font = [NSFont systemFontOfSize:10];
-  self.copilotSendAudioButton.state = config.sendAudio ? NSControlStateValueOn : NSControlStateValueOff;
-  [content addSubview:self.copilotSendAudioButton];
+  [engineStrip addSubview:self.copilotURLField];
 
   self.copilotSearxngButton = [NSButton checkboxWithTitle:@"Web gear research (SearXNG)" target:self action:@selector(copilotSearxngToggled:)];
-  self.copilotSearxngButton.frame = NSMakeRect(335, popH - 172, 185, 22);
-  self.copilotSearxngButton.font = [NSFont systemFontOfSize:10];
+  self.copilotSearxngButton.frame = NSMakeRect(885, 14, 195, 22);
+  self.copilotSearxngButton.font = [NSFont systemFontOfSize:10.5];
   self.copilotSearxngButton.state = (config.useSearxng || config.searxngURL.length) ? NSControlStateValueOn : NSControlStateValueOff;
   self.copilotSearxngButton.toolTip = @"Search the web for documented artist gear & rig rundowns using local SearXNG (auto-starts via ./searxng.sh if not running).";
-  [content addSubview:self.copilotSearxngButton];
+  [engineStrip addSubview:self.copilotSearxngButton];
+
+  self.copilotSendAudioButton = [NSButton checkboxWithTitle:@"Send recordings to cloud AI" target:self action:@selector(copilotAudioUploadToggled:)];
+  self.copilotSendAudioButton.frame = NSMakeRect(1088, 14, 220, 22);
+  self.copilotSendAudioButton.font = [NSFont systemFontOfSize:10.5];
+  self.copilotSendAudioButton.state = config.sendAudio ? NSControlStateValueOn : NSControlStateValueOff;
+  self.copilotSendAudioButton.toolTip = @"Optional: send audio recordings to cloud AI providers. Extra cost; disabled by default.";
+  [engineStrip addSubview:self.copilotSendAudioButton];
+
+  RigButton* saveCfg = rigButton(engineStrip, @"Save Config", self, @selector(saveCopilotConfig:), NSMakeRect(1318, 12, 110, 24));
+  saveCfg.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+
   [self updateCopilotProviderControlsForProvider:config.provider];
 
-  self.copilotModelsStatus = [NSTextField labelWithString:@""];
-  self.copilotModelsStatus.frame = NSMakeRect(20, popH - 184, 500, 12);
-  self.copilotModelsStatus.font = [NSFont systemFontOfSize:9];
-  self.copilotModelsStatus.textColor = rigDimText();
-  self.copilotModelsStatus.lineBreakMode = NSLineBreakByTruncatingTail;
-  [content addSubview:self.copilotModelsStatus];
+  // Main 3-Column Deck
+  RigPanel* card1 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  card1.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:card1];
 
-  // Query models on popover opening
-  [self refreshCopilotModelsUI];
+  RigPanel* card2 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  card2.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:card2];
 
-  // Separator 1
-  NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 186, popW - 40, 1)];
-  sep.boxType = NSBoxSeparator;
-  [content addSubview:sep];
+  RigPanel* card3 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  card3.translatesAutoresizingMaskIntoConstraints = NO;
+  [aiPane addSubview:card3];
 
-  // --- AUDIO RIFF SECTION ---
-  NSTextField* riffHeader = [NSTextField labelWithString:@"1. Your guitar — record your playing for matching"];
-  riffHeader.frame = NSMakeRect(20, popH - 204, 500, 18);
-  riffHeader.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
-  riffHeader.textColor = rigText();
-  [content addSubview:riffHeader];
+  [[card1.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
+  [[card1.topAnchor constraintEqualToAnchor:engineStrip.bottomAnchor constant:10] setActive:YES];
+  [[card1.bottomAnchor constraintEqualToAnchor:aiPane.bottomAnchor constant:-12] setActive:YES];
+  [[card1.widthAnchor constraintEqualToConstant:480] setActive:YES];
 
-  self.copilotRecordBtn = rigButton(content, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(20, popH - 236, 100, 26));
+  [[card2.leadingAnchor constraintEqualToAnchor:card1.trailingAnchor constant:16] setActive:YES];
+  [[card2.topAnchor constraintEqualToAnchor:card1.topAnchor] setActive:YES];
+  [[card2.bottomAnchor constraintEqualToAnchor:card1.bottomAnchor] setActive:YES];
+  [[card2.widthAnchor constraintEqualToConstant:480] setActive:YES];
+
+  [[card3.leadingAnchor constraintEqualToAnchor:card2.trailingAnchor constant:16] setActive:YES];
+  [[card3.topAnchor constraintEqualToAnchor:card1.topAnchor] setActive:YES];
+  [[card3.bottomAnchor constraintEqualToAnchor:card1.bottomAnchor] setActive:YES];
+  [[card3.trailingAnchor constraintEqualToAnchor:aiPane.trailingAnchor constant:-pad] setActive:YES];
+
+  const CGFloat cardH = 844.0;
+  const CGFloat contentW = 448.0;
+
+  auto addSep = [](NSView* parent, CGFloat y, CGFloat w) {
+    NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(16, y, w, 1)];
+    sep.boxType = NSBoxSeparator;
+    [parent addSubview:sep];
+  };
+
+  auto addInfoBox = [](NSView* parent, NSRect frame, NSString* title, NSString* body, NSColor* titleColor) {
+    NSView* box = [[NSView alloc] initWithFrame:frame];
+    box.wantsLayer = YES;
+    box.layer.backgroundColor = [NSColor colorWithSRGBRed:0.06 green:0.07 blue:0.09 alpha:0.75].CGColor;
+    box.layer.cornerRadius = 5.0;
+    box.layer.borderWidth = 1.0;
+    box.layer.borderColor = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.06].CGColor;
+    [parent addSubview:box];
+
+    NSTextField* t = [NSTextField labelWithString:title];
+    t.frame = NSMakeRect(10, frame.size.height - 20, frame.size.width - 20, 16);
+    t.font = [NSFont systemFontOfSize:10 weight:NSFontWeightBold];
+    t.textColor = titleColor;
+    rigApplyTracking(t, 0.8);
+    [box addSubview:t];
+
+    NSTextField* b = [NSTextField labelWithString:body];
+    b.frame = NSMakeRect(10, 6, frame.size.width - 20, frame.size.height - 26);
+    b.font = [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular];
+    b.textColor = rigDimText();
+    b.lineBreakMode = NSLineBreakByWordWrapping;
+    b.maximumNumberOfLines = 3;
+    [box addSubview:b];
+  };
+
+  // ----------------------------------------------------
+  // CARD 1: AI PROMPT & TONE CRAFTER
+  // ----------------------------------------------------
+  NSTextField* c1Title = addLabel(card1, @"✨ AI TONE CRAFTER", NSMakeRect(16, cardH - 30, contentW, 20),
+                                  [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigAccent());
+  rigApplyTracking(c1Title, 1.1);
+
+  NSTextField* c1Sub = addLabel(card1, @"NATURAL LANGUAGE TONE SYNTHESIS & REASONING", NSMakeRect(16, cardH - 46, contentW, 16),
+                                [NSFont systemFontOfSize:10 weight:NSFontWeightRegular], rigDimText());
+  rigApplyTracking(c1Sub, 0.7);
+  addSep(card1, cardH - 54, contentW);
+
+  addLabel(card1, @"Describe Artist, Song, or Tone Goal:", NSMakeRect(16, cardH - 74, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(16, cardH - 128, contentW, 50)];
+  self.copilotPromptInput.placeholderString = @"e.g. 'Tighten low-end chug and reduce fizz', 'Warm vintage blues lead', or 'Match this riff to Master of Puppets'";
+  self.copilotPromptInput.font = [NSFont systemFontOfSize:12];
+  self.copilotPromptInput.target = self;
+  self.copilotPromptInput.action = @selector(executeCopilotDial:);
+  [card1 addSubview:self.copilotPromptInput];
+
+  addLabel(card1, @"Preset Base Mode:", NSMakeRect(16, cardH - 152, 220, 18),
+           [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText());
+
+  self.copilotModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, cardH - 178, contentW, 24)];
+  [self.copilotModePopup addItemsWithTitles:@[@"New preset (build from scratch; neutral base)",
+                                              @"Modify current preset (load your saved preset first)",
+                                              @"Refine last proposal (same base as the DI audition)"]];
+  self.copilotModePopup.font = [NSFont systemFontOfSize:11];
+  [card1 addSubview:self.copilotModePopup];
+
+  addLabel(card1, @"Guitar & Pickup Specs (Optional):", NSMakeRect(16, cardH - 202, 250, 18),
+           [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText());
+
+  self.copilotGuitarInfo = [[NSTextField alloc] initWithFrame:NSMakeRect(16, cardH - 226, contentW, 22)];
+  self.copilotGuitarInfo.placeholderString = @"Optional: tuning (e.g. Drop D), pickups (humbucker/single), interface gain";
+  self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
+  [card1 addSubview:self.copilotGuitarInfo];
+
+  addLabel(card1, @"Save as Preset Name:", NSMakeRect(16, cardH - 250, 200, 18),
+           [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText());
+
+  self.copilotPresetNameField = [[NSTextField alloc] initWithFrame:NSMakeRect(16, cardH - 274, contentW, 22)];
+  self.copilotPresetNameField.font = [NSFont systemFontOfSize:11];
+  self.copilotPresetNameField.placeholderString = @"Preset name is filled in after Preview Tone (edit before Apply & Save)";
+  self.copilotPresetNameField.toolTip = @"Apply & Save creates a new preset with this name. A ' Copy N' suffix is added if the name already exists.";
+  self.copilotPresetNameField.stringValue = self.copilotProposal ? [self plannedCopilotPresetName] : @"";
+  [card1 addSubview:self.copilotPresetNameField];
+
+  // Action Buttons
+  self.copilotDialBtn = rigButton(card1, @"✨ Preview Tone", self, @selector(executeCopilotDial:), NSMakeRect(16, cardH - 316, 126, 30));
+  self.copilotDialBtn.primary = YES;
+  self.copilotDialBtn.enabled = ![RigAICopilot sharedCopilot].isProcessing;
+  self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+  self.copilotDialBtn.toolTip = @"Ask the selected AI provider for settings. Uses text and audio measurements by default; sends clips only with the cloud-audio option enabled.";
+
+  self.copilotApplyBtn = rigButton(card1, @"Apply & Save", self, @selector(applyCopilotProposal:), NSMakeRect(148, cardH - 316, 114, 30));
+  self.copilotApplyBtn.enabled = self.copilotProposal != nil;
+  self.copilotApplyBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+
+  self.copilotUndoBtn = rigButton(card1, @"A/B Toggle", self, @selector(undoCopilotDial:), NSMakeRect(268, cardH - 316, 94, 30));
+  self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
+  self.copilotUndoBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+
+  self.copilotCancelBtn = rigButton(card1, @"Cancel", self, @selector(cancelCopilotRequest:), NSMakeRect(368, cardH - 316, 68, 30));
+  self.copilotCancelBtn.enabled = [RigAICopilot sharedCopilot].isProcessing;
+  self.copilotCancelBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+
+  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(442, cardH - 312, 20, 20)];
+  self.copilotSpinner.style = NSProgressIndicatorStyleSpinning;
+  self.copilotSpinner.controlSize = NSControlSizeSmall;
+  self.copilotSpinner.displayedWhenStopped = NO;
+  [card1 addSubview:self.copilotSpinner];
+
+  addSep(card1, cardH - 330, contentW);
+
+  // Live Console Terminal
+  NSTextField* logHdr = addLabel(card1, @"AI LOG & PARAMETER TELEMETRY", NSMakeRect(16, cardH - 350, contentW, 18),
+                                 [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold], rigAccent());
+  rigApplyTracking(logHdr, 1.0);
+
+  NSTextField* logSub = addLabel(card1, @"Streaming tokens, decision reasoning, and knob deltas", NSMakeRect(16, cardH - 366, contentW, 14),
+                                 [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular], rigDimText());
+  rigApplyTracking(logSub, 0.6);
+
+  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 14, contentW, cardH - 380 - 14)];
+  scroll.hasVerticalScroller = YES;
+  scroll.borderType = NSBezelBorder;
+  scroll.autohidesScrollers = YES;
+
+  self.copilotOutputView = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
+  self.copilotOutputView.editable = NO;
+  self.copilotOutputView.selectable = YES;
+  self.copilotOutputView.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+  self.copilotOutputView.textColor = rigText();
+  self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.06 green:0.07 blue:0.09 alpha:1.0];
+  self.copilotOutputView.string = @"";
+  self.copilotLogBase = nil;
+  scroll.documentView = self.copilotOutputView;
+  [card1 addSubview:scroll];
+
+  // ----------------------------------------------------
+  // CARD 2: GUITAR RIFF & DI LAB
+  // ----------------------------------------------------
+  NSTextField* c2Title = addLabel(card2, @"🎸 GUITAR RIFF & DI LAB", NSMakeRect(16, cardH - 30, contentW, 20),
+                                  [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigOrange());
+  rigApplyTracking(c2Title, 1.1);
+
+  NSTextField* c2Sub = addLabel(card2, @"AUDIO CAPTURE & STEM SEPARATION", NSMakeRect(16, cardH - 46, contentW, 16),
+                                [NSFont systemFontOfSize:10 weight:NSFontWeightRegular], rigDimText());
+  rigApplyTracking(c2Sub, 0.7);
+  addSep(card2, cardH - 54, contentW);
+
+  // Section 1: Guitar DI
+  addLabel(card2, @"1. Your guitar — record your playing for matching", NSMakeRect(16, cardH - 80, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  self.copilotRecordBtn = rigButton(card2, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(16, cardH - 114, 116, 26));
   self.copilotRecordBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
   self.copilotRecordBtn.toolTip = @"Record your guitar, not the song. Captures raw DI (before the rig) and processed output. Required for Learn & Match; standalone app only.";
 
-  self.copilotPlayAlongBtn = rigButton(content, @"● Play Along", self, @selector(toggleCopilotPlayAlong:), NSMakeRect(125, popH - 236, 100, 26));
+  self.copilotPlayAlongBtn = rigButton(card2, @"● Play Along", self, @selector(toggleCopilotPlayAlong:), NSMakeRect(138, cardH - 114, 116, 26));
   self.copilotPlayAlongBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
   self.copilotPlayAlongBtn.toolTip = @"Play along with the loaded target sound. Plays the reference excerpt in your monitors/headphones while recording your guitar DI. Enables aligned note-by-note DTW tone matching.";
 
-  self.copilotPlayBtn = rigButton(content, @"▶ Play", self, @selector(playCopilotRiff:), NSMakeRect(230, popH - 236, 55, 26));
+  self.copilotPlayBtn = rigButton(card2, @"▶ Play", self, @selector(playCopilotRiff:), NSMakeRect(260, cardH - 114, 68, 26));
   self.copilotPlayBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotPlayBtn.enabled = NO;
 
-  self.copilotClearBtn = rigButton(content, @"✕ Clear", self, @selector(clearCopilotRiff:), NSMakeRect(290, popH - 236, 58, 26));
+  self.copilotClearBtn = rigButton(card2, @"✕ Clear", self, @selector(clearCopilotRiff:), NSMakeRect(334, cardH - 114, 68, 26));
   self.copilotClearBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotClearBtn.enabled = NO;
 
-  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(354, popH - 231, 166, 16)];
+  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(16, cardH - 144, 240, 16)];
   self.copilotRiffLevelBar.minValue = 0.0;
   self.copilotRiffLevelBar.maxValue = 1.0;
   self.copilotRiffLevelBar.indeterminate = NO;
   self.copilotRiffLevelBar.doubleValue = 0.0;
-  [content addSubview:self.copilotRiffLevelBar];
+  [card2 addSubview:self.copilotRiffLevelBar];
+
+  self.copilotGuidedButton = [NSButton checkboxWithTitle:@"Guided 20s take" target:nil action:nil];
+  self.copilotGuidedButton.frame = NSMakeRect(268, cardH - 146, 160, 20);
+  self.copilotGuidedButton.state = NSControlStateValueOn;
+  self.copilotGuidedButton.toolTip = @"Muted strings → chugs → chords → soft/hard notes → sustain. Substitute representative playing for clean/lead tones.";
+  [card2 addSubview:self.copilotGuidedButton];
 
   self.copilotRiffStatusLabel = [NSTextField labelWithString:@"No riff recorded. Play 5-10s to let AI evaluate attack, mud, and fizz."];
-  self.copilotRiffStatusLabel.frame = NSMakeRect(22, popH - 258, popW - 44, 16);
+  self.copilotRiffStatusLabel.frame = NSMakeRect(16, cardH - 168, contentW, 18);
   self.copilotRiffStatusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
   self.copilotRiffStatusLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightRegular];
   self.copilotRiffStatusLabel.textColor = rigDimText();
-  [content addSubview:self.copilotRiffStatusLabel];
+  [card2 addSubview:self.copilotRiffStatusLabel];
 
-  self.copilotGuidedButton = [NSButton checkboxWithTitle:@"Guided 20s take" target:nil action:nil];
-  self.copilotGuidedButton.frame = NSMakeRect(20, popH - 288, 150, 22);
-  self.copilotGuidedButton.state = NSControlStateValueOn;
-  self.copilotGuidedButton.toolTip = @"Muted strings → chugs → chords → soft/hard notes → sustain. Substitute representative playing for clean/lead tones.";
-  [content addSubview:self.copilotGuidedButton];
-  self.copilotTrackPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(175, popH - 288, 160, 24)];
-  [self.copilotTrackPopup addItemsWithTitles:@[@"Your guitar output", @"Your raw DI", @"Baseline (matched)", @"Candidate (matched)", @"Target sound (guitar stem)", @"Target backing stems"]];
-  [content addSubview:self.copilotTrackPopup];
-  self.copilotRenderBtn = rigButton(content, @"Render DI A/B", self, @selector(renderCopilotDI:), NSMakeRect(345, popH - 288, 175, 24));
+  addSep(card2, cardH - 180, contentW);
+
+  // Section 2: Audition & DI Render
+  addLabel(card2, @"Audition DI through proposals without live rig changes:", NSMakeRect(16, cardH - 202, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  self.copilotTrackPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, cardH - 232, 240, 24)];
+  [self.copilotTrackPopup addItemsWithTitles:@[@"Your guitar output",
+                                              @"Your raw DI",
+                                              @"Baseline (matched)",
+                                              @"Candidate (matched)",
+                                              @"Target sound (guitar stem)",
+                                              @"Target backing stems"]];
+  self.copilotTrackPopup.font = [NSFont systemFontOfSize:11];
+  [card2 addSubview:self.copilotTrackPopup];
+
+  self.copilotRenderBtn = rigButton(card2, @"Render DI A/B", self, @selector(renderCopilotDI:), NSMakeRect(264, cardH - 232, 170, 24));
+  self.copilotRenderBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotRenderBtn.toolTip = @"Render the same DI through baseline and proposal locally. No AI call, no live rig changes.";
-  RigButton* targetButton = rigButton(content, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 142, 24));
+
+  addSep(card2, cardH - 246, contentW);
+
+  // Section 3: Target Reference Sound
+  addLabel(card2, @"2. Load target sound to match (Demucs separates guitar locally):", NSMakeRect(16, cardH - 268, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  RigButton* targetButton = rigButton(card2, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(16, cardH - 300, 166, 26));
+  targetButton.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   targetButton.toolTip = @"Choose an audio file or song to match. Extracts the guitar stem locally via Demucs by default (no upload). Hold Option to load an already-isolated guitar track as-is.";
-  self.copilotTargetPlayBtn = rigButton(content, @"▶ Preview", self, @selector(toggleCopilotTargetPreview:), NSMakeRect(168, popH - 316, 80, 24));
+
+  self.copilotTargetPlayBtn = rigButton(card2, @"▶ Preview", self, @selector(toggleCopilotTargetPreview:), NSMakeRect(188, cardH - 300, 84, 26));
+  self.copilotTargetPlayBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotTargetPlayBtn.toolTip = @"Preview the extracted guitar stem (or loaded target sound) through your speakers/headphones.";
   self.copilotTargetPlayBtn.enabled = NO;
-  self.copilotTargetClearBtn = rigButton(content, @"Clear", self, @selector(clearCopilotReference:), NSMakeRect(254, popH - 316, 50, 24));
-  self.copilotDemucsSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(310, popH - 313, 18, 18)];
+
+  self.copilotTargetClearBtn = rigButton(card2, @"Clear", self, @selector(clearCopilotReference:), NSMakeRect(278, cardH - 300, 56, 26));
+  self.copilotTargetClearBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+
+  self.copilotDemucsSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(340, cardH - 296, 18, 18)];
   self.copilotDemucsSpinner.style = NSProgressIndicatorStyleSpinning;
   self.copilotDemucsSpinner.controlSize = NSControlSizeSmall;
   self.copilotDemucsSpinner.hidden = YES;
-  [content addSubview:self.copilotDemucsSpinner];
-  NSTextField* targetHint = [NSTextField labelWithString:@"extracts guitar stem locally · not uploaded"];
-  targetHint.frame = NSMakeRect(334, popH - 312, 186, 18);
-  targetHint.font = [NSFont systemFontOfSize:10]; targetHint.textColor = rigDimText();
-  [content addSubview:targetHint];
+  [card2 addSubview:self.copilotDemucsSpinner];
+
+  NSTextField* targetHint = addLabel(card2, @"local · not uploaded", NSMakeRect(364, cardH - 296, 95, 18),
+                                     [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular], rigDimText());
+  targetHint.toolTip = @"Demucs runs entirely offline on your Mac. No reference audio is uploaded to any cloud service.";
+
   self.copilotTargetStatus = [NSTextField labelWithString:@""];
-  self.copilotTargetStatus.frame = NSMakeRect(20, popH - 340, 214, 18);
+  self.copilotTargetStatus.frame = NSMakeRect(16, cardH - 326, contentW, 18);
   self.copilotTargetStatus.font = [NSFont systemFontOfSize:10];
   self.copilotTargetStatus.lineBreakMode = NSLineBreakByTruncatingTail;
-  [content addSubview:self.copilotTargetStatus];
-  // Which section of the target song to match (Auto = densest passage).
+  [card2 addSubview:self.copilotTargetStatus];
+
+  // Target Section row
+  addLabel(card2, @"Section:", NSMakeRect(16, cardH - 356, 50, 18),
+           [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText());
+
   NSString* sectionTip = @"Section of the target used for matching and AI context. Auto picks the densest passage; editing Start switches to manual. Play it via the track menu → Target sound.";
+
   self.copilotTargetAutoButton = [NSButton checkboxWithTitle:@"Auto" target:self action:@selector(changeCopilotTargetSection:)];
-  self.copilotTargetAutoButton.frame = NSMakeRect(238, popH - 341, 52, 20);
+  self.copilotTargetAutoButton.frame = NSMakeRect(70, cardH - 356, 55, 20);
   self.copilotTargetAutoButton.controlSize = NSControlSizeSmall;
   self.copilotTargetAutoButton.font = [NSFont systemFontOfSize:10];
   self.copilotTargetAutoButton.toolTip = sectionTip;
-  [content addSubview:self.copilotTargetAutoButton];
-  self.copilotTargetStartField = [[NSTextField alloc] initWithFrame:NSMakeRect(292, popH - 340, 44, 18)];
+  [card2 addSubview:self.copilotTargetAutoButton];
+
+  self.copilotTargetStartField = [[NSTextField alloc] initWithFrame:NSMakeRect(130, cardH - 356, 50, 18)];
   self.copilotTargetStartField.font = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular];
   self.copilotTargetStartField.placeholderString = @"start";
   self.copilotTargetStartField.target = self;
   self.copilotTargetStartField.action = @selector(changeCopilotTargetSection:);
   self.copilotTargetStartField.toolTip = sectionTip;
-  [content addSubview:self.copilotTargetStartField];
-  self.copilotTargetStartStepper = [[NSStepper alloc] initWithFrame:NSMakeRect(337, popH - 342, 15, 22)];
+  [card2 addSubview:self.copilotTargetStartField];
+
+  self.copilotTargetStartStepper = [[NSStepper alloc] initWithFrame:NSMakeRect(182, cardH - 358, 15, 22)];
   self.copilotTargetStartStepper.controlSize = NSControlSizeSmall;
-  self.copilotTargetStartStepper.minValue = 0; self.copilotTargetStartStepper.increment = 1;
-  self.copilotTargetStartStepper.valueWraps = NO; self.copilotTargetStartStepper.autorepeat = YES;
+  self.copilotTargetStartStepper.minValue = 0;
+  self.copilotTargetStartStepper.increment = 1;
+  self.copilotTargetStartStepper.valueWraps = NO;
+  self.copilotTargetStartStepper.autorepeat = YES;
   self.copilotTargetStartStepper.target = self;
   self.copilotTargetStartStepper.action = @selector(changeCopilotTargetSection:);
-  [content addSubview:self.copilotTargetStartStepper];
-  self.copilotTargetLengthPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(356, popH - 342, 66, 22)];
+  [card2 addSubview:self.copilotTargetStartStepper];
+
+  self.copilotTargetLengthPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(202, cardH - 358, 68, 22)];
   self.copilotTargetLengthPopup.controlSize = NSControlSizeSmall;
   self.copilotTargetLengthPopup.font = [NSFont systemFontOfSize:10];
   for (NSInteger seconds : {5, 10, 15, 20}) {
@@ -2727,151 +2945,178 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotTargetLengthPopup.target = self;
   self.copilotTargetLengthPopup.action = @selector(changeCopilotTargetSection:);
   self.copilotTargetLengthPopup.toolTip = sectionTip;
-  [content addSubview:self.copilotTargetLengthPopup];
+  [card2 addSubview:self.copilotTargetLengthPopup];
+
   self.copilotTargetRangeLabel = [NSTextField labelWithString:@""];
-  self.copilotTargetRangeLabel.frame = NSMakeRect(426, popH - 340, 96, 18);
+  self.copilotTargetRangeLabel.frame = NSMakeRect(276, cardH - 356, 170, 18);
   self.copilotTargetRangeLabel.font = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular];
   self.copilotTargetRangeLabel.textColor = rigDimText();
-  [content addSubview:self.copilotTargetRangeLabel];
-  self.copilotGuitarInfo = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 374, 500, 24)];
-  self.copilotGuitarInfo.placeholderString = @"Optional: tuning, pickup, interface gain / external pedals";
-  self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
-  [content addSubview:self.copilotGuitarInfo];
-  self.copilotModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, popH - 402, 500, 24)];
-  [self.copilotModePopup addItemsWithTitles:@[@"New preset (build from scratch; neutral base)", @"Modify current preset (load your saved preset first)", @"Refine last proposal (same base as the DI audition)"]];
-  [content addSubview:self.copilotModePopup];
-  self.copilotLocalMatchBtn = rigButton(content, @"Learn & Match", self, @selector(matchCopilotLocally:), NSMakeRect(20, popH - 436, 125, 26));
+  [card2 addSubview:self.copilotTargetRangeLabel];
+
+  addSep(card2, cardH - 370, contentW);
+
+  // Section 4: Workflow Guide Cards
+  NSTextField* guideHdr = addLabel(card2, @"REFERENCE MATCHING WORKFLOW GUIDE", NSMakeRect(16, cardH - 392, contentW, 18),
+                                   [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold], rigOrange());
+  rigApplyTracking(guideHdr, 1.0);
+
+  NSTextField* guideSub = addLabel(card2, @"Four-step discipline for professional album-grade matches", NSMakeRect(16, cardH - 408, contentW, 14),
+                                   [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular], rigDimText());
+  rigApplyTracking(guideSub, 0.6);
+
+  const CGFloat boxH = 92.0;
+  const CGFloat boxGap = 8.0;
+  CGFloat boxY = cardH - 424 - boxH;
+
+  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+             @"1. DI RECORDING & PLAY ALONG",
+             @"Record clean pickup signal without any amplifier saturation or pedals. Wear headphones and use 'Play Along' to match the timing and phrasing of the reference excerpt.",
+             rigOrange());
+
+  boxY -= (boxH + boxGap);
+  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+             @"2. LOCAL STEM SEPARATION",
+             @"Demucs runs on your Mac to cleanly separate the guitar track from drums, bass, and vocals. All audio processing stays strictly offline on your computer.",
+             rigOrange());
+
+  boxY -= (boxH + boxGap);
+  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+             @"3. LEARN & MATCH OPTIMIZATION",
+             @"The local DSP matcher analyzes acoustic feature profiles, ranking your installed NAM captures and cabinet IRs to recreate the target guitar sound.",
+             rigOrange());
+
+  boxY -= (boxH + boxGap);
+  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+             @"4. OFFLINE DI AUDITIONING",
+             @"Use 'Render DI A/B' to compare baseline and candidate proposals with your exact guitar take before committing any changes to your live setup.",
+             rigOrange());
+
+  // ----------------------------------------------------
+  // CARD 3: LOCAL SOUND MATCHER & SEARCH
+  // ----------------------------------------------------
+  NSTextField* c3Title = addLabel(card3, @"⚡ LOCAL SOUND MATCHER", NSMakeRect(16, cardH - 30, contentW, 20),
+                                  [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigGreen());
+  rigApplyTracking(c3Title, 1.1);
+
+  NSTextField* c3Sub = addLabel(card3, @"SPECTRAL ACOUSTIC MATCHING & GEAR RANKING", NSMakeRect(16, cardH - 46, contentW, 16),
+                                [NSFont systemFontOfSize:10 weight:NSFontWeightRegular], rigDimText());
+  rigApplyTracking(c3Sub, 0.7);
+  addSep(card3, cardH - 54, contentW);
+
+  // Section 1: Offline Training
+  addLabel(card3, @"Match your guitar DI against target sound locally:", NSMakeRect(16, cardH - 74, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  self.copilotLocalMatchBtn = rigButton(card3, @"⚡ Learn & Match", self, @selector(matchCopilotLocally:), NSMakeRect(16, cardH - 110, 180, 32));
+  self.copilotLocalMatchBtn.primary = YES;
+  self.copilotLocalMatchBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
   self.copilotLocalMatchBtn.toolTip = @"Train and compare locally: your raw guitar recording + target guitar sound. No cloud AI request or upload. May take minutes.";
-  self.copilotMatchCandidates = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(155, popH - 436, 155, 26)];
-  [self.copilotMatchCandidates addItemWithTitle:@"Local finalists"];
+
+  NSTextField* matchHint = addLabel(card3, @"Trains offline across local models", NSMakeRect(204, cardH - 104, 230, 20),
+                                    [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText());
+  matchHint.toolTip = @"Evaluates candidate NAM amp models and cabinet IRs using offline spectral matching.";
+
+  addSep(card3, cardH - 122, contentW);
+
+  // Section 2: Matching Enhancements
+  addLabel(card3, @"Algorithmic Enhancements & Search Options:", NSMakeRect(16, cardH - 144, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  self.copilotMatchMixEQButton = [NSButton checkboxWithTitle:@"Mix EQ (Console pins)" target:self action:@selector(selectCopilotLocalMatch:)];
+  self.copilotMatchMixEQButton.frame = NSMakeRect(16, cardH - 172, contentW, 22);
+  self.copilotMatchMixEQButton.font = [NSFont systemFontOfSize:11];
+  self.copilotMatchMixEQButton.state = NSControlStateValueOn;
+  self.copilotMatchMixEQButton.enabled = NO;
+  self.copilotMatchMixEQButton.toolTip = @"Gentle Console-pin EQ for what amp, cab and tone stack cannot explain (usually the target mix's EQ). Only offered when a real render showed it helps.";
+  [card3 addSubview:self.copilotMatchMixEQButton];
+
+  self.copilotMatchResearchButton = [NSButton checkboxWithTitle:@"Research gear with AI (text only)" target:self action:@selector(toggleCopilotMatchResearch:)];
+  self.copilotMatchResearchButton.frame = NSMakeRect(16, cardH - 198, contentW, 22);
+  self.copilotMatchResearchButton.font = [NSFont systemFontOfSize:11];
+  self.copilotMatchResearchButton.state = [RigAICopilot sharedCopilot].config.researchGearForLocalMatch ? NSControlStateValueOn : NSControlStateValueOff;
+  self.copilotMatchResearchButton.toolTip = @"Opt in: before matching, ask your configured AI provider/CLI which amps, cabs and pedals the prompt's artist/album/song used (cached afterwards). Sends only text — never audio.";
+  [card3 addSubview:self.copilotMatchResearchButton];
+
+  self.copilotMatchOnlineButton = [NSButton checkboxWithTitle:@"Search Tone3000 too" target:nil action:nil];
+  self.copilotMatchOnlineButton.frame = NSMakeRect(16, cardH - 224, contentW, 22);
+  self.copilotMatchOnlineButton.font = [NSFont systemFontOfSize:11];
+  self.copilotMatchOnlineButton.toolTip = @"Opt in to online amp search/download (up to 3) using your prompt/gear terms. No audio uploads. Local training remains offline.";
+  [card3 addSubview:self.copilotMatchOnlineButton];
+
+  self.copilotAccurateRescoreButton = [NSButton checkboxWithTitle:@"Accurate Demucs re-score (slow)" target:nil action:nil];
+  self.copilotAccurateRescoreButton.frame = NSMakeRect(16, cardH - 250, contentW, 22);
+  self.copilotAccurateRescoreButton.font = [NSFont systemFontOfSize:11];
+  self.copilotAccurateRescoreButton.state = NSControlStateValueOff;
+  self.copilotAccurateRescoreButton.toolTip = @"Opt in: mix finalist renders back into Demucs backing stems and re-separate them through Demucs before scoring, so candidates and target share the same separation artifacts.";
+  [card3 addSubview:self.copilotAccurateRescoreButton];
+
+  self.copilotEmbeddingRerankButton = [NSButton checkboxWithTitle:@"Embedding re-rank (CLAP)" target:nil action:nil];
+  self.copilotEmbeddingRerankButton.frame = NSMakeRect(16, cardH - 276, contentW, 22);
+  self.copilotEmbeddingRerankButton.font = [NSFont systemFontOfSize:11];
+  self.copilotEmbeddingRerankButton.state = NSControlStateValueOff;
+  self.copilotEmbeddingRerankButton.toolTip = @"Opt in: score finalists with audio embedding cosine distance (CLAP) and blend with acoustic feature distance.";
+  [card3 addSubview:self.copilotEmbeddingRerankButton];
+
+  addSep(card3, cardH - 288, contentW);
+
+  // Section 3: Finalists
+  addLabel(card3, @"Ranked Candidate Profiles:", NSMakeRect(16, cardH - 308, contentW, 18),
+           [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
+
+  self.copilotMatchCandidates = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, cardH - 336, contentW, 26)];
+  [self.copilotMatchCandidates addItemWithTitle:@"Local finalists (run Learn & Match)"];
+  self.copilotMatchCandidates.font = [NSFont systemFontOfSize:11];
   self.copilotMatchCandidates.enabled = NO;
   self.copilotMatchCandidates.target = self;
   self.copilotMatchCandidates.action = @selector(selectCopilotLocalMatch:);
-  [content addSubview:self.copilotMatchCandidates];
-  self.copilotMatchMixEQButton = [NSButton checkboxWithTitle:@"Mix EQ (Console pins)" target:self action:@selector(selectCopilotLocalMatch:)];
-  self.copilotMatchMixEQButton.frame = NSMakeRect(320, popH - 436, 205, 26);
-  self.copilotMatchMixEQButton.state = NSControlStateValueOn;
-  self.copilotMatchMixEQButton.enabled = NO;
-  self.copilotMatchMixEQButton.toolTip = @"Gentle Console-pin EQ for what amp, cab and tone stack cannot explain (usually the target mix's EQ). Only offered when a real render showed it helps; turn off to audition the same gear without it.";
-  [content addSubview:self.copilotMatchMixEQButton];
-  self.copilotMatchResearchButton = [NSButton checkboxWithTitle:@"Research gear with AI (text only)" target:self action:@selector(toggleCopilotMatchResearch:)];
-  self.copilotMatchResearchButton.frame = NSMakeRect(20, popH - 464, 260, 26);
-  self.copilotMatchResearchButton.state = [RigAICopilot sharedCopilot].config.researchGearForLocalMatch ? NSControlStateValueOn : NSControlStateValueOff;
-  self.copilotMatchResearchButton.toolTip = @"Opt in: before matching, ask your configured AI provider/CLI which amps, cabs and pedals the prompt's artist/album/song used (cached afterwards). Sends only the prompt text — never audio. Ranks and widens the local amp screen.";
-  [content addSubview:self.copilotMatchResearchButton];
-  self.copilotMatchOnlineButton = [NSButton checkboxWithTitle:@"Search Tone3000 too" target:nil action:nil];
-  self.copilotMatchOnlineButton.frame = NSMakeRect(320, popH - 464, 205, 26);
-  self.copilotMatchOnlineButton.toolTip = @"Opt in to online amp search/download (up to 3) using your prompt/gear terms. No audio uploads. Local training remains offline.";
-  [content addSubview:self.copilotMatchOnlineButton];
-  self.copilotAccurateRescoreButton = [NSButton checkboxWithTitle:@"Accurate Demucs re-score (slow)" target:nil action:nil];
-  self.copilotAccurateRescoreButton.frame = NSMakeRect(20, popH - 490, 280, 24);
-  self.copilotAccurateRescoreButton.state = NSControlStateValueOff;
-  self.copilotAccurateRescoreButton.toolTip = @"Opt in: mix finalist renders back into Demucs backing stems and re-separate them through Demucs before scoring, so candidates and target share the same separation artifacts.";
-  [content addSubview:self.copilotAccurateRescoreButton];
-  self.copilotEmbeddingRerankButton = [NSButton checkboxWithTitle:@"Embedding re-rank (CLAP)" target:nil action:nil];
-  self.copilotEmbeddingRerankButton.frame = NSMakeRect(320, popH - 490, 205, 24);
-  self.copilotEmbeddingRerankButton.state = NSControlStateValueOff;
-  self.copilotEmbeddingRerankButton.toolTip = @"Opt in: score finalists with audio embedding cosine distance (CLAP) and blend with acoustic feature distance.";
-  [content addSubview:self.copilotEmbeddingRerankButton];
+  [card3 addSubview:self.copilotMatchCandidates];
+
   self.copilotLocalMatchStatus = [NSTextField labelWithString:@""];
-  self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 530, 505, 36);
-  self.copilotLocalMatchStatus.font = [NSFont systemFontOfSize:10];
+  self.copilotLocalMatchStatus.frame = NSMakeRect(16, cardH - 396, contentW, 54);
+  self.copilotLocalMatchStatus.font = [NSFont systemFontOfSize:10.5];
   self.copilotLocalMatchStatus.lineBreakMode = NSLineBreakByWordWrapping;
-  self.copilotLocalMatchStatus.maximumNumberOfLines = 2;
-  [content addSubview:self.copilotLocalMatchStatus];
-  const CGFloat captureOffset = 286;
+  self.copilotLocalMatchStatus.maximumNumberOfLines = 3;
+  [card3 addSubview:self.copilotLocalMatchStatus];
 
-  // Separator 2
-  NSBox* sep2 = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 272 - captureOffset, popW - 40, 1)];
-  sep2.boxType = NSBoxSeparator;
-  [content addSubview:sep2];
+  addSep(card3, cardH - 408, contentW);
 
-  // Prompt input
-  NSTextField* pLbl = [NSTextField labelWithString:@"Describe Artist, Song, or Tone Adjustment:"];
-  pLbl.frame = NSMakeRect(20, popH - 294 - captureOffset, 350, 18);
-  pLbl.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
-  pLbl.textColor = rigText();
-  [content addSubview:pLbl];
+  // Section 4: Acoustic Distance & Diagnostics Readout
+  NSTextField* diagHdr = addLabel(card3, @"ACOUSTIC PROFILE INSPECTION", NSMakeRect(16, cardH - 428, contentW, 18),
+                                  [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold], rigGreen());
+  rigApplyTracking(diagHdr, 1.0);
 
-  self.copilotPromptInput = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 344 - captureOffset, popW - 40, 46)];
-  self.copilotPromptInput.placeholderString = @"e.g. 'Tighten low-end chug and reduce fizz', 'Warm vintage blues lead', or 'Match this riff to Master of Puppets'";
-  self.copilotPromptInput.font = [NSFont systemFontOfSize:12];
-  self.copilotPromptInput.target = self;
-  self.copilotPromptInput.action = @selector(executeCopilotDial:);
-  [content addSubview:self.copilotPromptInput];
+  NSTextField* diagSub = addLabel(card3, @"Spectral decomposition and tone stack optimization summary", NSMakeRect(16, cardH - 444, contentW, 14),
+                                  [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular], rigDimText());
+  rigApplyTracking(diagSub, 0.6);
 
-  // Action Buttons
-  self.copilotDialBtn = rigButton(content, @"Preview Tone", self, @selector(executeCopilotDial:), NSMakeRect(20, popH - 384 - captureOffset, 110, 30));
-  self.copilotDialBtn.primary = YES;
-  self.copilotDialBtn.enabled = ![RigAICopilot sharedCopilot].isProcessing;
-  self.copilotDialBtn.font = [NSFont systemFontOfSize:12 weight:NSFontWeightBold];
-  self.copilotDialBtn.toolTip = @"Ask the selected AI provider for settings. Uses text and audio measurements by default; sends clips only with the cloud-audio option enabled. Unlike Learn & Match, it does not locally train against the target.";
+  CGFloat boxY3 = cardH - 460 - boxH;
 
-  self.copilotApplyBtn = rigButton(content, @"Apply & Save", self, @selector(applyCopilotProposal:), NSMakeRect(140, popH - 384 - captureOffset, 110, 30));
-  self.copilotApplyBtn.enabled = self.copilotProposal != nil;
-  self.copilotUndoBtn = rigButton(content, @"A/B Toggle", self, @selector(undoCopilotDial:), NSMakeRect(260, popH - 384 - captureOffset, 100, 30));
-  self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo;
-  self.copilotUndoBtn.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+  addInfoBox(card3, NSMakeRect(16, boxY3, contentW, boxH),
+             @"HARMONIC & SPECTRAL FIT",
+             @"Extracts sub-bass bloom, mid-scoop contours, and high-frequency sparkle to match the acoustic envelope of the isolated target stem.",
+             rigGreen());
 
-  self.copilotCancelBtn = rigButton(content, @"Cancel", self, @selector(cancelCopilotRequest:), NSMakeRect(370, popH - 384 - captureOffset, 80, 30));
-  self.copilotCancelBtn.enabled = [RigAICopilot sharedCopilot].isProcessing;
-  self.copilotSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(470, popH - 380 - captureOffset, 22, 22)];
-  self.copilotSpinner.style = NSProgressIndicatorStyleSpinning;
-  self.copilotSpinner.controlSize = NSControlSizeSmall;
-  self.copilotSpinner.displayedWhenStopped = NO;
-  [content addSubview:self.copilotSpinner];
+  boxY3 -= (boxH + boxGap);
+  addInfoBox(card3, NSMakeRect(16, boxY3, contentW, boxH),
+             @"TONE STACK SEARCH",
+             @"Computes optimal Bass, Middle, Treble, Presence, and Depth knob positions for each candidate amplifier model to minimize spectral distance.",
+             rigGreen());
 
-  // Preset name row: shows exactly what Apply & Save will create; editable.
-  NSTextField* nameLbl = [NSTextField labelWithString:@"Save as:"];
-  nameLbl.frame = NSMakeRect(20, popH - 410 - captureOffset, 60, 18);
-  nameLbl.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-  nameLbl.textColor = rigText();
-  [content addSubview:nameLbl];
-  self.copilotPresetNameField = [[NSTextField alloc] initWithFrame:NSMakeRect(82, popH - 412 - captureOffset, popW - 102, 22)];
-  self.copilotPresetNameField.font = [NSFont systemFontOfSize:11];
-  self.copilotPresetNameField.placeholderString = @"Preset name is filled in after Preview Tone (edit before Apply & Save)";
-  self.copilotPresetNameField.toolTip = @"Apply & Save creates a new preset with this name. A ' Copy N' suffix is added if the name already exists.";
-  self.copilotPresetNameField.stringValue = self.copilotProposal ? [self plannedCopilotPresetName] : @"";
-  [content addSubview:self.copilotPresetNameField];
+  boxY3 -= (boxH + boxGap);
+  addInfoBox(card3, NSMakeRect(16, boxY3, contentW, boxH),
+             @"CABINET IR CONVOLUTION",
+             @"Identifies impulse responses with matching speaker cone breakup and acoustic early reflections to replicate the reference studio environment.",
+             rigGreen());
 
-  // Activity log / output scroll view
-  NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, popW - 40, popH - 440 - captureOffset)];
-  scroll.hasVerticalScroller = YES;
-  scroll.borderType = NSBezelBorder;
-  scroll.autohidesScrollers = YES;
+  boxY3 -= (boxH + boxGap);
+  addInfoBox(card3, NSMakeRect(16, boxY3, contentW, boxH),
+             @"CONSOLE MIX PIN CORRECTION",
+             @"Provides gentle, mathematically optimal pin EQ adjustments to bridge the gap between pure amplifier tone and commercial album mastering curves.",
+             rigGreen());
 
-  self.copilotOutputView = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
-  self.copilotOutputView.editable = NO;
-  self.copilotOutputView.selectable = YES;
-  self.copilotOutputView.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-  self.copilotOutputView.textColor = rigText();
-  self.copilotOutputView.backgroundColor = [NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0];
-  self.copilotOutputView.string = @"";
-  self.copilotLogBase = nil;
-  scroll.documentView = self.copilotOutputView;
-  [content addSubview:scroll];
-
-  __weak NAMRigUIController* weakProgressSelf = self;
-  [RigAICopilot sharedCopilot].progressHandler = ^(NSString* message) {
-    [weakProgressSelf appendCopilotLog:message];
-  };
-
+  // Trigger initial UI refreshes
+  [self refreshCopilotModelsUI];
   [self updateCopilotRiffUI];
-
-  NSPopover* pop = [[NSPopover alloc] init];
-  NSViewController* vc = [[NSViewController alloc] init];
-  vc.view = content;
-  pop.contentViewController = vc;
-  pop.behavior = NSPopoverBehaviorSemitransient;
-  pop.delegate = self;
-  pop.contentSize = content.frame.size;
-  _state->aiCopilotPopover = pop;
-
-  NSView* anchorView = [sender isKindOfClass:[NSView class]] ? (NSView*)sender : _state->aiCopilotBtn;
-  if (!anchorView) anchorView = _state->view;
-  [pop showRelativeToRect:anchorView.bounds ofView:anchorView preferredEdge:NSRectEdgeMaxY];
-  if ([RigAICopilot sharedCopilot].isProcessing) [self.copilotSpinner startAnimation:nil];
-  [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
 }
 
 - (void)appendCopilotLog:(NSString*)line {
@@ -4554,6 +4799,12 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   controller.authStatus.toolTip = @"Tone3000 sign-in and session status.";
   controller.status.toolTip = @"Tone library, search, download, and model-loading status.";
   [controller reloadLibrary:nil];
+}
+
+static void addAIToneMatcherPage(RigUIState* state, NSView* aiPane) {
+  if (state && state->uiController) {
+    [state->uiController setupAIToneMatcherPage:aiPane];
+  }
 }
 
 @interface NAMRigHeaderBar : NSView
@@ -6591,6 +6842,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[tonePane.bottomAnchor constraintEqualToAnchor:content.bottomAnchor] setActive:YES];
     state->tonePane = tonePane;
 
+    NSView* aiPane = [[NSView alloc] initWithFrame:NSZeroRect];
+    aiPane.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:aiPane];
+    [[aiPane.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
+    [[aiPane.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
+    [[aiPane.topAnchor constraintEqualToAnchor:content.topAnchor] setActive:YES];
+    [[aiPane.bottomAnchor constraintEqualToAnchor:content.bottomAnchor] setActive:YES];
+    state->aiPane = aiPane;
+
     // Top tab switcher & zoom control mounted in headerBar.
     state->rigTabBtn = rigButton(headerBar, @"RIG", state->uiController, @selector(switchTab:), NSZeroRect);
     state->rigTabBtn.tag = 0;
@@ -6610,23 +6870,25 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->toneTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
     state->toneTabBtn.toolTip = @"Browse, search, and download NAM captures and cabinet IRs from Tone3000.";
 
-    state->aiCopilotBtn = rigButton(headerBar, @"✨ AI Tone Tuning", state->uiController, @selector(openAICopilot:), NSZeroRect);
-    state->aiCopilotBtn.translatesAutoresizingMaskIntoConstraints = NO;
-    [[state->aiCopilotBtn.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:6] setActive:YES];
-    [[state->aiCopilotBtn.centerYAnchor constraintEqualToAnchor:headerBar.centerYAnchor] setActive:YES];
-    [[state->aiCopilotBtn.widthAnchor constraintEqualToConstant:140] setActive:YES];
-    [[state->aiCopilotBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
-    state->aiCopilotBtn.toolTip = @"AI Tone Tuning (⌘K): Describe any artist, song, or tone adjustment in plain English.";
+    state->aiTabBtn = rigButton(headerBar, @"✨ AI TONE MATCHER", state->uiController, @selector(switchTab:), NSZeroRect);
+    state->aiTabBtn.tag = 2;
+    state->aiTabBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    state->aiCopilotBtn = state->aiTabBtn;
+    [[state->aiTabBtn.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:6] setActive:YES];
+    [[state->aiTabBtn.centerYAnchor constraintEqualToAnchor:headerBar.centerYAnchor] setActive:YES];
+    [[state->aiTabBtn.widthAnchor constraintEqualToConstant:150] setActive:YES];
+    [[state->aiTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
+    state->aiTabBtn.toolTip = @"AI Tone Matcher (⌘K): Describe any artist, song, or match sound from reference audio.";
 
     // Rig header group (tuner, preset management, A/B compare):
-    // active in RIG tab, hidden in TONE3000 tab.
+    // active in RIG tab, hidden in TONE3000 and AI TONE tabs.
     NAMRigHeaderGroup* rigGroup = [[NAMRigHeaderGroup alloc] initWithFrame:NSZeroRect];
     rigGroup.translatesAutoresizingMaskIntoConstraints = NO;
     rigGroup.wantsLayer = YES;
     rigGroup.layer.masksToBounds = NO;
     [headerBar addSubview:rigGroup];
     state->rigHeaderGroup = rigGroup;
-    [[rigGroup.leadingAnchor constraintEqualToAnchor:state->aiCopilotBtn.trailingAnchor constant:14] setActive:YES];
+    [[rigGroup.leadingAnchor constraintEqualToAnchor:state->aiTabBtn.trailingAnchor constant:14] setActive:YES];
     [[rigGroup.trailingAnchor constraintEqualToAnchor:headerBar.trailingAnchor] setActive:YES];
     [[rigGroup.topAnchor constraintEqualToAnchor:headerBar.topAnchor] setActive:YES];
     [[rigGroup.bottomAnchor constraintEqualToAnchor:headerBar.bottomAnchor] setActive:YES];
@@ -7305,6 +7567,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     }
 
     addToneBrowser(state, tonePane);
+    addAIToneMatcherPage(state, aiPane);
     state->selectTab(0);
     [parent addSubview:state->view];
     state->applyZoom();                               // default 100%
