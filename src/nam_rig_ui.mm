@@ -122,6 +122,8 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) NSTextField* copilotGuitarInfo;
 @property(nonatomic, strong) RigButton* copilotRenderBtn;
 @property(nonatomic, strong) RigButton* copilotLocalMatchBtn;
+@property(nonatomic, strong) RigButton* copilotTargetPlayBtn;
+@property(nonatomic, strong) RigButton* copilotTargetClearBtn;
 @property(nonatomic, strong) NSTextField* copilotTargetStatus;
 @property(nonatomic, strong) NSButton* copilotTargetAutoButton;
 @property(nonatomic, strong) NSTextField* copilotTargetStartField;
@@ -243,6 +245,7 @@ static double copilotParseClock(NSString* text) {
 - (void)selectCopilotLocalMatch:(id)sender;
 - (void)importCopilotReference:(id)sender;
 - (void)clearCopilotReference:(id)sender;
+- (void)toggleCopilotTargetPreview:(id)sender;
 - (void)changeCopilotTargetSection:(id)sender;
 - (void)toggleCopilotMatchResearch:(id)sender;
 - (void)copilotSearxngToggled:(id)sender;
@@ -2505,6 +2508,11 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   RigAIConfig* config = [RigAICopilot sharedCopilot].config;
   config.allowLocalCLI = YES; // Automatic fallback, requested by the UI policy.
 
+  __weak NAMRigUIController* weakSelf = self;
+  [RigRiffRecorder sharedRecorder].onPlaybackFinished = ^{
+    [weakSelf updateCopilotRiffUI];
+  };
+
   const CGFloat popW = 540.0;
   const CGFloat popH = 900.0;
   RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, popW, popH)];
@@ -2662,20 +2670,23 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotGuidedButton.toolTip = @"Muted strings → chugs → chords → soft/hard notes → sustain. Substitute representative playing for clean/lead tones.";
   [content addSubview:self.copilotGuidedButton];
   self.copilotTrackPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(175, popH - 288, 160, 24)];
-  [self.copilotTrackPopup addItemsWithTitles:@[@"Your guitar output", @"Your raw DI", @"Baseline (matched)", @"Candidate (matched)", @"Target sound"]];
+  [self.copilotTrackPopup addItemsWithTitles:@[@"Your guitar output", @"Your raw DI", @"Baseline (matched)", @"Candidate (matched)", @"Target sound (guitar stem)", @"Target backing stems"]];
   [content addSubview:self.copilotTrackPopup];
   self.copilotRenderBtn = rigButton(content, @"Render DI A/B", self, @selector(renderCopilotDI:), NSMakeRect(345, popH - 288, 175, 24));
   self.copilotRenderBtn.toolTip = @"Render the same DI through baseline and proposal locally. No AI call, no live rig changes.";
-  RigButton* targetButton = rigButton(content, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 150, 24));
+  RigButton* targetButton = rigButton(content, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(20, popH - 316, 142, 24));
   targetButton.toolTip = @"Choose an audio file or song to match. Extracts the guitar stem locally via Demucs by default (no upload). Hold Option to load an already-isolated guitar track as-is.";
-  rigButton(content, @"Clear", self, @selector(clearCopilotReference:), NSMakeRect(178, popH - 316, 55, 24));
-  self.copilotDemucsSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(242, popH - 313, 18, 18)];
+  self.copilotTargetPlayBtn = rigButton(content, @"▶ Preview", self, @selector(toggleCopilotTargetPreview:), NSMakeRect(168, popH - 316, 80, 24));
+  self.copilotTargetPlayBtn.toolTip = @"Preview the extracted guitar stem (or loaded target sound) through your speakers/headphones.";
+  self.copilotTargetPlayBtn.enabled = NO;
+  self.copilotTargetClearBtn = rigButton(content, @"Clear", self, @selector(clearCopilotReference:), NSMakeRect(254, popH - 316, 50, 24));
+  self.copilotDemucsSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(310, popH - 313, 18, 18)];
   self.copilotDemucsSpinner.style = NSProgressIndicatorStyleSpinning;
   self.copilotDemucsSpinner.controlSize = NSControlSizeSmall;
   self.copilotDemucsSpinner.hidden = YES;
   [content addSubview:self.copilotDemucsSpinner];
   NSTextField* targetHint = [NSTextField labelWithString:@"extracts guitar stem locally · not uploaded"];
-  targetHint.frame = NSMakeRect(268, popH - 312, 252, 18);
+  targetHint.frame = NSMakeRect(334, popH - 312, 186, 18);
   targetHint.font = [NSFont systemFontOfSize:10]; targetHint.textColor = rigDimText();
   [content addSubview:targetHint];
   self.copilotTargetStatus = [NSTextField labelWithString:@""];
@@ -3450,9 +3461,26 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (r.isPlaying) {
     [r stopPlayback];
   } else {
-    NSArray* tracks = @[@"processed", @"di", @"baseline", @"candidate", @"reference"];
+    NSArray* tracks = @[@"processed", @"di", @"baseline", @"candidate", @"reference", @"backing"];
     NSInteger i = self.copilotTrackPopup.indexOfSelectedItem;
-    [r playTrack:tracks[i >= 0 ? i : 0]];
+    if (i >= 0 && i < (NSInteger)tracks.count) {
+      [r playTrack:tracks[i]];
+    }
+  }
+  [self updateCopilotRiffUI];
+}
+
+- (void)toggleCopilotTargetPreview:(id)sender {
+  (void)sender;
+  RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+  if (r.isPlaying && ([r.currentPlayingTrack isEqualToString:@"reference"] || [r.currentPlayingTrack isEqualToString:@"target"])) {
+    [r stopPlayback];
+  } else {
+    [r stopPlayback];
+    if (self.copilotTrackPopup.numberOfItems > 4) {
+      [self.copilotTrackPopup selectItemAtIndex:4];
+    }
+    [r playTrack:@"reference"];
   }
   [self updateCopilotRiffUI];
 }
@@ -3543,28 +3571,56 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
   self.copilotCancelBtn.enabled = self.copilotLocalMatching || self.copilotDemucsRunning || [RigAICopilot sharedCopilot].isProcessing;
   self.copilotRecordBtn.toolTip = r.renderHandler ? @"Record YOUR guitar: raw DI before processing plus the rig output. Needed for Learn & Match." : @"Record Riff requires the standalone Axe FX app (captures raw DI + processed output).";
-  NSArray* available = @[@(r.recordedWavData.length > 0), @(r.recordedDIWavData.length > 0),
-      @(r.baselineWavData.length > 0), @(r.candidateWavData.length > 0), @(r.referenceWavData.length > 0)];
+  const BOOL hasBacking = (r.referenceBackingFrames.length > 0 && r.referenceBackingWavData.length > 0);
+  NSArray* available = @[
+    @(r.recordedWavData.length > 0),
+    @(r.recordedDIWavData.length > 0),
+    @(r.baselineWavData.length > 0),
+    @(r.candidateWavData.length > 0),
+    @(r.referenceWavData.length > 0),
+    @(hasBacking)
+  ];
   self.copilotTrackPopup.autoenablesItems = NO;
-  for (NSUInteger i = 0; i < available.count; ++i) [self.copilotTrackPopup itemAtIndex:i].enabled = [available[i] boolValue];
-  NSInteger selected = self.copilotTrackPopup.indexOfSelectedItem;
-  if (selected < 0 || ![available[selected] boolValue]) {
-    for (NSUInteger i = 0; i < available.count; ++i) if ([available[i] boolValue]) { [self.copilotTrackPopup selectItemAtIndex:i]; break; }
+  for (NSUInteger i = 0; i < available.count && i < (NSUInteger)self.copilotTrackPopup.numberOfItems; ++i) {
+    [self.copilotTrackPopup itemAtIndex:i].enabled = [available[i] boolValue];
   }
+  NSInteger selected = self.copilotTrackPopup.indexOfSelectedItem;
+  if (selected < 0 || selected >= (NSInteger)available.count || ![available[selected] boolValue]) {
+    for (NSUInteger i = 0; i < available.count && i < (NSUInteger)self.copilotTrackPopup.numberOfItems; ++i) {
+      if ([available[i] boolValue]) { [self.copilotTrackPopup selectItemAtIndex:i]; break; }
+    }
+  }
+
+  const BOOL targetIsPlaying = r.isPlaying && ([r.currentPlayingTrack isEqualToString:@"reference"] ||
+                                               [r.currentPlayingTrack isEqualToString:@"target"] ||
+                                               (r.currentPlayingTrack == nil && self.copilotTrackPopup.indexOfSelectedItem == 4));
+  self.copilotTargetPlayBtn.title = targetIsPlaying ? @"❚❚ Stop" : @"▶ Preview";
+  self.copilotTargetPlayBtn.enabled = (r.referenceWavData.length > 0) && !busy && !self.copilotDemucsRunning;
+  self.copilotTargetPlayBtn.toolTip = targetIsPlaying ? @"Stop target sound preview." :
+      ([r.referenceSource isEqualToString:@"demucs"] ? @"Preview the extracted guitar stem through system audio." : @"Preview the loaded target guitar sound.");
+
+  self.copilotPlayBtn.enabled = (r.recordedWavData.length > 0 || r.referenceWavData.length > 0) && !busy;
+  self.copilotPlayBtn.title = r.isPlaying ? @"❚❚ Stop" : @"▶ Play";
+  self.copilotClearBtn.enabled = r.recordedWavData.length > 0 && !busy;
+  self.copilotTargetClearBtn.enabled = r.referenceTotalDuration > 0 && !busy && !self.copilotDemucsRunning;
+
   if (r.isRecording) {
     self.copilotRiffStatusLabel.stringValue = r.guidance;
     self.copilotPlayBtn.enabled = NO; self.copilotClearBtn.enabled = NO; return;
   }
-  self.copilotPlayBtn.enabled = r.recordedWavData.length > 0 || r.referenceWavData.length > 0;
-  self.copilotClearBtn.enabled = r.recordedWavData.length > 0 && !busy;
+
   if (r.recordedWavData.length > 0) {
-    self.copilotPlayBtn.title = r.isPlaying ? @"❚❚ Stop" : @"▶ Play";
     self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
       @"Your guitar: %@ · %.1fs · output peak %.1f dBFS",
       r.recordedDIFrames.length ? @"raw DI + output" : @"recorded output", r.recordedDuration, r.peakDbfs];
     self.copilotRiffStatusLabel.textColor = [NSColor systemGreenColor];
+  } else if (r.referenceWavData.length > 0) {
+    self.copilotRiffStatusLabel.stringValue = r.isPlaying ?
+        [NSString stringWithFormat:@"Playing %@… (click ❚❚ Stop or ▶ Preview to pause)", self.copilotTrackPopup.titleOfSelectedItem ?: @"target sound"] :
+        [NSString stringWithFormat:@"Target loaded: %@ · click ▶ Preview to audition",
+            [r.referenceSource isEqualToString:@"demucs"] ? @"Demucs guitar stem" : @"guitar track"];
+    self.copilotRiffStatusLabel.textColor = r.isPlaying ? [NSColor systemBlueColor] : rigDimText();
   } else {
-    self.copilotPlayBtn.title = @"▶ Play";
     self.copilotRiffStatusLabel.stringValue = @"Your guitar: no recording. Record Riff captures raw DI + output.";
     self.copilotRiffStatusLabel.textColor = rigDimText();
   }
@@ -3604,7 +3660,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 - (void)clearCopilotReference:(id)sender {
   if (self.copilotLocalMatching) return;
   self.copilotLocalMatches = nil;
-  [[RigRiffRecorder sharedRecorder] clearReference]; [self updateCopilotRiffUI];
+  RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+  [r stopPlayback];
+  [r clearReference];
+  [self updateCopilotRiffUI];
 }
 
 - (void)changeCopilotTargetSection:(id)sender {
@@ -3800,10 +3859,14 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
       [weakSelf demucsFinishedWithError:loaded ? nil : (loadErr.localizedDescription ?: @"Failed to load guitar stem.")];
       if (loaded) {
-        [weakSelf.copilotTrackPopup selectItemAtIndex:4]; // Switch to "Target sound" in the track popup
+        if (weakSelf.copilotTrackPopup.numberOfItems > 4) {
+          [weakSelf.copilotTrackPopup selectItemAtIndex:4]; // Switch to "Target sound (guitar stem)" in the track popup
+        }
         weakSelf.copilotLocalMatches = nil;
-        [weakSelf resetCopilotLog:[NSString stringWithFormat:@"Demucs: guitar stem extracted and loaded.\n%@",
+        [r playTrack:@"reference"]; // Immediately audition the extracted guitar stem
+        [weakSelf resetCopilotLog:[NSString stringWithFormat:@"Demucs: guitar stem extracted and loaded.\n▶ Previewing extracted stem (click ❚❚ Stop or ▶ Preview to pause/replay).\n%@",
             r.referenceAnalysis]];
+        [weakSelf updateCopilotRiffUI];
       }
     });
   });

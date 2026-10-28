@@ -255,9 +255,11 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 @property(nonatomic, readwrite) float peakDbfs, rmsDbfs, crestFactorDb, lowBandDbfs, lowMidDbfs, highMidDbfs, trebleDbfs, airDbfs;
 @property(nonatomic, readwrite, copy) NSString* audioAnalysisSummary;
 @property(nonatomic, readwrite, nullable) NSData* referenceWavData;
+@property(nonatomic, readwrite, nullable) NSData* referenceBackingWavData;
 @property(nonatomic, readwrite, nullable) NSData* referenceFrames;
 @property(nonatomic, readwrite, nullable) NSData* referenceBackingFrames;
 @property(nonatomic, strong, nullable) NSData* referenceBackingFullFrames;
+@property(nonatomic, readwrite, copy, nullable) NSString* currentPlayingTrack;
 @property(nonatomic, readwrite) double referenceSampleRate;
 @property(nonatomic, readwrite) NSUInteger referenceChannels;
 @property(nonatomic, readwrite) BOOL referenceIsFullMix;
@@ -391,15 +393,45 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 - (void)playRecording { [self playTrack:@"processed"]; }
 - (void)playTrack:(NSString*)track {
   [self stopPlayback];
-  NSData* data = [@{@"processed":_recordedWavData ?: NSData.data, @"di":_recordedDIWavData ?: NSData.data,
-      @"baseline":_baselineWavData ?: NSData.data, @"candidate":_candidateWavData ?: NSData.data,
-      @"reference":_referenceWavData ?: NSData.data} objectForKey:track];
-  if (!data.length) return;
-  _player = [[NSSound alloc] initWithData:data]; _player.delegate = self; _isPlaying = [_player play];
+  _currentPlayingTrack = [track copy];
+  NSDictionary* dict = @{
+    @"processed": _recordedWavData ?: NSData.data,
+    @"di": _recordedDIWavData ?: NSData.data,
+    @"baseline": _baselineWavData ?: NSData.data,
+    @"candidate": _candidateWavData ?: NSData.data,
+    @"reference": _referenceWavData ?: NSData.data,
+    @"target": _referenceWavData ?: NSData.data,
+    @"backing": _referenceBackingWavData ?: NSData.data,
+  };
+  NSData* data = dict[track];
+  if (!data.length) {
+    _currentPlayingTrack = nil;
+    return;
+  }
+  _player = [[NSSound alloc] initWithData:data];
+  _player.delegate = self;
+  _isPlaying = [_player play];
+  if (!_isPlaying) {
+    _currentPlayingTrack = nil;
+  }
 }
-- (void)stopPlayback { [_player stop]; _player = nil; _isPlaying = NO; }
+- (void)stopPlayback {
+  [_player stop];
+  _player = nil;
+  _isPlaying = NO;
+  _currentPlayingTrack = nil;
+}
 - (void)sound:(NSSound*)sound didFinishPlaying:(BOOL)flag {
-  if (sound == _player) _isPlaying = NO;
+  if (sound == _player) {
+    _isPlaying = NO;
+    _currentPlayingTrack = nil;
+    _player = nil;
+    if (self.onPlaybackFinished) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.onPlaybackFinished) self.onPlaybackFinished();
+      });
+    }
+  }
   if (sound == _playAlongPlayer) {
     _playAlongPlayer = nil;
     _playingAlong = NO;
@@ -456,6 +488,12 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   }
   const float* section = x + first * channels;
   _referenceWavData = wav(section, count, uint16_t(channels), rate);
+  if (_referenceBackingFrames.length) {
+    const float* bSection = static_cast<const float*>(_referenceBackingFrames.bytes);
+    _referenceBackingWavData = wav(bSection, count, uint16_t(channels), rate);
+  } else {
+    _referenceBackingWavData = nil;
+  }
   NSString* kind = _referenceIsFullMix ? @"full mix" : [_referenceSource isEqualToString:@"demucs"] ? @"isolated guitar · Demucs stem" : @"isolated guitar";
   _referenceAnalysis = [NSString stringWithFormat:@"TARGET REFERENCE (%@, %.1fs section %@–%@ of %@%@, %@). %@\n%@",
       kind, count / rate, clock(first / rate), clock((first + count) / rate), clock(_referenceTotalDuration),
@@ -464,7 +502,7 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
       summary(@"Reference", analyze(section, count, channels, rate))];
 }
 - (void)clearReference {
-  _referenceWavData = nil; _referenceFrames = nil; _referenceFullFrames = nil;
+  _referenceWavData = nil; _referenceBackingWavData = nil; _referenceFrames = nil; _referenceFullFrames = nil;
   _referenceBackingFrames = nil; _referenceBackingFullFrames = nil; _referenceAnalysis = @"";
   _referenceSampleRate = 0; _referenceChannels = 0; _referenceIsFullMix = NO; _referenceSource = @"";
   _referenceTotalDuration = 0; _referenceTruncated = NO; _referenceSelectionStart = 0; _referenceSelectionLength = 0;

@@ -107,6 +107,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("--break-system-packages", matcher)
         self.assertIn("--user", matcher)
 
+    def test_target_demucs_preview_ui(self):
+        ui = (ROOT / "src/nam_rig_ui.mm").read_text()
+        rec_h = (ROOT / "src/rig_riff_recorder.h").read_text()
+        rec_m = (ROOT / "src/rig_riff_recorder.mm").read_text()
+        self.assertIn("copilotTargetPlayBtn", ui)
+        self.assertIn("toggleCopilotTargetPreview:", ui)
+        self.assertIn("referenceBackingWavData", rec_h)
+        self.assertIn("currentPlayingTrack", rec_h)
+        self.assertIn("onPlaybackFinished", rec_h)
+        self.assertIn('"backing"', rec_m)
+        self.assertIn('[r playTrack:@"reference"]', ui)
+
 
 if __name__ == "__main__":
     unittest.main()

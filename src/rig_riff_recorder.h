@@ -64,6 +64,7 @@ NSData* _Nullable rigWavDataFromFloatSamples(const float* samples, size_t frames
 @property (nonatomic, readonly) NSInteger guidedSegmentIndex;
 @property (nonatomic, readonly) BOOL isGuided;
 @property (nonatomic, readonly, nullable) NSData* referenceWavData;
+@property (nonatomic, readonly, nullable) NSData* referenceBackingWavData;
 // Selected 5–20 s section of the reference as original interleaved float samples
 // (not clamped WAV). referenceWavData and referenceAnalysis follow the selection.
 @property (nonatomic, readonly, nullable) NSData* referenceFrames;
@@ -110,8 +111,10 @@ NSData* _Nullable rigWavDataFromFloatSamples(const float* samples, size_t frames
 - (void)stopRecording;
 - (void)clearRecording;
 - (void)playRecording;
-- (void)playTrack:(NSString*)track; // processed, di, baseline, candidate, reference
+- (void)playTrack:(NSString*)track; // processed, di, baseline, candidate, reference, backing
 - (void)stopPlayback;
+@property (nonatomic, readonly, copy, nullable) NSString* currentPlayingTrack;
+@property (nonatomic, copy, nullable) void (^onPlaybackFinished)(void);
 
 // Load an external processed-riff WAV (the raw DI cannot be reconstructed).
 - (BOOL)loadAudioFromURL:(NSURL*)fileURL error:(NSError* _Nullable * _Nullable)error;
