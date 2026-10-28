@@ -1,9 +1,11 @@
 // Paired DI/output capture. Only fixed-buffer copies and atomics run in CoreAudio.
 #import "rig_riff_recorder.h"
+#import <AudioToolbox/AudioToolbox.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -128,6 +130,72 @@ NSData* decode(NSURL* url, double& rate, NSUInteger& channels, NSError** error) 
   }
   return [NSData dataWithBytes:out.data() length:out.size() * sizeof(float)];
 }
+
+// Any CoreAudio-readable mono/stereo file as interleaved float. Songs are kept
+// whole (up to 128 MB of samples) so the user can pick the section to match.
+constexpr size_t kMaxReferenceSamples = size_t(32) * 1024 * 1024;
+NSData* decodeReference(NSURL* url, double& rate, NSUInteger& channels, BOOL& truncated, NSError** error) {
+  auto fail = [&](NSString* text) -> NSData* { if (error) *error = failure(text); return nil; };
+  ExtAudioFileRef file = nullptr;
+  if (ExtAudioFileOpenURL((__bridge CFURLRef)url, &file) != noErr || !file)
+    return fail(@"Could not read this audio file. Use WAV, AIFF, MP3, M4A/AAC, ALAC or FLAC.");
+  std::unique_ptr<OpaqueExtAudioFile, OSStatus (*)(ExtAudioFileRef)> guard(file, ExtAudioFileDispose);
+  AudioStreamBasicDescription format{}; UInt32 size = sizeof(format);
+  if (ExtAudioFileGetProperty(file, kExtAudioFileProperty_FileDataFormat, &size, &format) != noErr)
+    return fail(@"Could not read the audio file format.");
+  rate = format.mSampleRate; channels = format.mChannelsPerFrame;
+  if ((channels != 1 && channels != 2) || !std::isfinite(rate) || rate < 22050 || rate > kMaxRate)
+    return fail(@"Use a mono or stereo file at 22.05–192 kHz.");
+  AudioStreamBasicDescription client{};
+  client.mSampleRate = rate; client.mFormatID = kAudioFormatLinearPCM;
+  client.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+  client.mBitsPerChannel = 32; client.mChannelsPerFrame = UInt32(channels); client.mFramesPerPacket = 1;
+  client.mBytesPerFrame = client.mBytesPerPacket = UInt32(sizeof(float) * channels);
+  if (ExtAudioFileSetProperty(file, kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client) != noErr)
+    return fail(@"Could not decode this audio file to float samples.");
+  SInt64 fileFrames = 0; size = sizeof(fileFrames);
+  ExtAudioFileGetProperty(file, kExtAudioFileProperty_FileLengthFrames, &size, &fileFrames);
+  const size_t maxFrames = kMaxReferenceSamples / channels;
+  std::vector<float> out, chunk(8192 * channels);
+  out.reserve(std::min<size_t>(size_t(std::max<SInt64>(0, fileFrames)), maxFrames) * channels);
+  truncated = NO;
+  while (true) {
+    const size_t have = out.size() / channels;
+    if (have >= maxFrames) { truncated = fileFrames > SInt64(maxFrames); break; }
+    UInt32 frames = UInt32(std::min<size_t>(8192, maxFrames - have));
+    AudioBufferList list{};
+    list.mNumberBuffers = 1;
+    list.mBuffers[0] = {UInt32(channels), UInt32(frames * sizeof(float) * channels), chunk.data()};
+    if (ExtAudioFileRead(file, &frames, &list) != noErr) return fail(@"Decoding failed partway through the file.");
+    if (!frames) break;
+    out.insert(out.end(), chunk.begin(), chunk.begin() + frames * channels);
+  }
+  if (out.size() < size_t(rate * .25) * channels) return fail(@"The audio file is empty or too short.");
+  for (float x : out) if (!std::isfinite(x)) return fail(@"Audio contains non-finite samples.");
+  return [NSData dataWithBytes:out.data() length:out.size() * sizeof(float)];
+}
+
+// Start frame of the most energetic window of `count` frames (250 ms resolution).
+size_t densestWindow(const float* x, size_t frames, size_t channels, size_t count, double rate) {
+  if (frames <= count) return 0;
+  const size_t chunk = std::max<size_t>(1, size_t(rate * .25)), chunks = frames / chunk;
+  std::vector<double> prefix(chunks + 1, 0);
+  for (size_t c = 0; c < chunks; ++c) {
+    double sum = 0;
+    for (size_t i = c * chunk * channels; i < (c + 1) * chunk * channels; ++i) sum += double(x[i]) * x[i];
+    prefix[c + 1] = prefix[c] + sum;
+  }
+  const size_t span = std::max<size_t>(1, count / chunk);
+  size_t best = 0; double bestEnergy = -1;
+  for (size_t c = 0; c + span <= chunks; ++c) {
+    if (prefix[c + span] - prefix[c] > bestEnergy) { bestEnergy = prefix[c + span] - prefix[c]; best = c; }
+  }
+  return std::min(best * chunk, frames - count);
+}
+NSString* clock(double seconds) {
+  const long s = std::lround(std::max(0.0, seconds));
+  return [NSString stringWithFormat:@"%ld:%02ld", s / 60, s % 60];
+}
 } // namespace
 
 void rigRiffRecorderPushPair(const float* di, const float* left, const float* right,
@@ -181,6 +249,13 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 @property(nonatomic, readwrite) double referenceSampleRate;
 @property(nonatomic, readwrite) NSUInteger referenceChannels;
 @property(nonatomic, readwrite) BOOL referenceIsFullMix;
+@property(nonatomic, readwrite, copy) NSString* referenceSource;
+@property(nonatomic, readwrite) NSTimeInterval referenceTotalDuration;
+@property(nonatomic, readwrite) BOOL referenceTruncated;
+@property(nonatomic, readwrite) NSTimeInterval referenceSelectionStart;
+@property(nonatomic, readwrite) NSTimeInterval referenceSelectionLength;
+@property(nonatomic, readwrite) BOOL referenceSelectionAuto;
+@property(nonatomic, strong, nullable) NSData* referenceFullFrames;
 @property(nonatomic, readwrite, copy) NSString* referenceAnalysis;
 @property(nonatomic, readwrite, nullable) NSData* baselineWavData;
 @property(nonatomic, readwrite, nullable) NSData* candidateWavData;
@@ -193,7 +268,7 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   dispatch_once(&once, ^{ instance = [RigRiffRecorder new]; }); return instance;
 }
 - (instancetype)init {
-  if ((self = [super init])) { [self clearRecording]; _referenceAnalysis = @""; _recordingMetadata = @{}; }
+  if ((self = [super init])) { [self clearRecording]; _referenceAnalysis = @""; _referenceSource = @""; _recordingMetadata = @{}; }
   return self;
 }
 - (BOOL)isRecording { return g_recording.load(std::memory_order_acquire); }
@@ -303,47 +378,43 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   return YES;
 }
 - (BOOL)loadReferenceFromURL:(NSURL*)url fullMix:(BOOL)fullMix error:(NSError**)error {
-  double rate = 0; NSUInteger channels = 0; NSData* audio = decode(url, rate, channels, error);
-  if (!audio) return NO;
-  size_t n = audio.length / (channels * sizeof(float)); const auto* x = static_cast<const float*>(audio.bytes);
-
-  // Smart trimming: find the densest 20-second passage using a sliding window over 1-second RMS chunks.
-  const size_t windowFrames = static_cast<size_t>(rate * 20.0);
-  const size_t chunkFrames  = static_cast<size_t>(rate * 1.0);
-  const float* xBest = x; size_t nBest = n;
-  if (n > windowFrames && chunkFrames > 0) {
-    size_t numChunks = n / chunkFrames;
-    std::vector<double> chunkRMS(numChunks);
-    for (size_t c = 0; c < numChunks; ++c) {
-      double sum = 0;
-      const float* p = x + c * chunkFrames * channels;
-      for (size_t i = 0; i < chunkFrames * channels; ++i) sum += double(p[i]) * p[i];
-      chunkRMS[c] = std::sqrt(sum / std::max<size_t>(1, chunkFrames * channels));
-    }
-    size_t windowChunks = windowFrames / chunkFrames;
-    double windowSum = 0;
-    for (size_t c = 0; c < std::min(windowChunks, numChunks); ++c) windowSum += chunkRMS[c];
-    double bestSum = windowSum; size_t bestStart = 0;
-    for (size_t c = windowChunks; c < numChunks; ++c) {
-      windowSum += chunkRMS[c] - chunkRMS[c - windowChunks];
-      if (windowSum > bestSum) { bestSum = windowSum; bestStart = c - windowChunks + 1; }
-    }
-    xBest = x + bestStart * chunkFrames * channels;
-    nBest = std::min(windowFrames, n - bestStart * chunkFrames);
-  }
-
-  _referenceFrames = audio; _referenceSampleRate = rate;
-  _referenceChannels = channels; _referenceIsFullMix = fullMix;
-  _referenceWavData = wav(xBest, nBest, channels, rate);
-  _referenceAnalysis = [NSString stringWithFormat:@"TARGET REFERENCE (%@, %.1fs window of %.1fs total). %@\n%@",
-      fullMix ? @"full mix" : @"isolated guitar", nBest / rate, n / rate,
-      fullMix ? @"Contains other instruments/mastering: do NOT match its raw spectrum or loudness as guitar EQ." : @"Different performance/tuning may affect spectral comparisons.",
-      summary(@"Reference", analyze(xBest, nBest, channels, rate))];
+  return [self loadReferenceFromURL:url fullMix:fullMix source:fullMix ? @"mix" : @"stem" error:error];
+}
+- (BOOL)loadReferenceFromURL:(NSURL*)url fullMix:(BOOL)fullMix source:(NSString*)source error:(NSError**)error {
+  double rate = 0; NSUInteger channels = 0; BOOL truncated = NO;
+  NSData* audio = decodeReference(url, rate, channels, truncated, error);
+  if (!audio) return NO; // Keep the old reference when import fails.
+  _referenceFullFrames = audio; _referenceSampleRate = rate; _referenceChannels = channels;
+  _referenceIsFullMix = fullMix; _referenceSource = [source copy] ?: @"stem"; _referenceTruncated = truncated;
+  _referenceTotalDuration = audio.length / (channels * sizeof(float)) / rate;
+  [self selectReferenceStart:0 length:20 automatic:YES];
   return YES;
 }
+- (void)selectReferenceStart:(NSTimeInterval)start length:(NSTimeInterval)length automatic:(BOOL)automatic {
+  if (!_referenceFullFrames.length || !_referenceChannels || _referenceSampleRate <= 0) return;
+  const size_t channels = _referenceChannels; const double rate = _referenceSampleRate;
+  const size_t total = _referenceFullFrames.length / (channels * sizeof(float));
+  const auto* x = static_cast<const float*>(_referenceFullFrames.bytes);
+  const double seconds = std::clamp(std::isfinite(length) ? length : 20.0, 5.0, 20.0);
+  const size_t count = std::min(total, size_t(seconds * rate));
+  const size_t first = automatic ? densestWindow(x, total, channels, count, rate) :
+      std::min(size_t(std::max(0.0, std::isfinite(start) ? start : 0.0) * rate), total - count);
+  _referenceSelectionAuto = automatic; _referenceSelectionStart = first / rate; _referenceSelectionLength = count / rate;
+  _referenceFrames = [_referenceFullFrames subdataWithRange:NSMakeRange(first * channels * sizeof(float), count * channels * sizeof(float))];
+  const float* section = x + first * channels;
+  _referenceWavData = wav(section, count, uint16_t(channels), rate);
+  NSString* kind = _referenceIsFullMix ? @"full mix" : [_referenceSource isEqualToString:@"demucs"] ? @"isolated guitar · Demucs stem" : @"isolated guitar";
+  _referenceAnalysis = [NSString stringWithFormat:@"TARGET REFERENCE (%@, %.1fs section %@–%@ of %@%@, %@). %@\n%@",
+      kind, count / rate, clock(first / rate), clock((first + count) / rate), clock(_referenceTotalDuration),
+      _referenceTruncated ? @" (file truncated)" : @"", automatic ? @"auto-selected densest passage" : @"user-selected",
+      _referenceIsFullMix ? @"Contains other instruments/mastering: do NOT match its raw spectrum or loudness as guitar EQ." : @"Different performance/tuning may affect spectral comparisons.",
+      summary(@"Reference", analyze(section, count, channels, rate))];
+}
 - (void)clearReference {
-  _referenceWavData = nil; _referenceFrames = nil; _referenceAnalysis = @"";
-  _referenceSampleRate = 0; _referenceChannels = 0; _referenceIsFullMix = NO;
+  _referenceWavData = nil; _referenceFrames = nil; _referenceFullFrames = nil; _referenceAnalysis = @"";
+  _referenceSampleRate = 0; _referenceChannels = 0; _referenceIsFullMix = NO; _referenceSource = @"";
+  _referenceTotalDuration = 0; _referenceTruncated = NO; _referenceSelectionStart = 0; _referenceSelectionLength = 0;
+  _referenceSelectionAuto = NO;
 }
 - (void)renderBaseline:(RigPreset*)baseline candidate:(RigPreset*)candidate completion:(void (^)(NSError*))completion {
   if (_isRendering) { completion(failure(@"A DI render is already running.")); return; }

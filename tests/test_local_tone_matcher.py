@@ -26,6 +26,16 @@ class LocalToneTests(unittest.TestCase):
                             "-framework", "Cocoa", "-o", binary], cwd=ROOT, check=True)
             subprocess.run([binary, str(Path(temp) / "training")], check=True, timeout=30)
 
+    @unittest.skipUnless(sys.platform == "darwin", "CoreAudio decoding requires macOS")
+    def test_reference_selection(self):
+        """Recorder: whole-song references, Auto/manual section selection, compressed formats."""
+        with tempfile.TemporaryDirectory(prefix="axe-riff-recorder-", dir=os.environ.get("TMPDIR")) as temp:
+            binary = str(Path(temp) / "recorder")
+            subprocess.run(["clang++", "-O2", "-std=c++20", "-fobjc-arc", "-UNDEBUG", "-Isrc",
+                            "tests/verify_riff_recorder.mm", "src/rig_riff_recorder.mm",
+                            "-framework", "Cocoa", "-framework", "AudioToolbox", "-o", binary], cwd=ROOT, check=True)
+            subprocess.run([binary], check=True, timeout=60, env={**os.environ, "TMPDIR": temp})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,17 @@ static NSString* popupTooltip(NSString* purpose, NSPopUpButton* popup) {
 static NSString* stageName(NSInteger stage) {
   return stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
 }
+// Target-section times: "m:ss" for display; accepts "m:ss" or plain seconds.
+static NSString* copilotClock(double seconds) {
+  const long s = std::lround(std::max(0.0, seconds));
+  return [NSString stringWithFormat:@"%ld:%02ld", s / 60, s % 60];
+}
+static double copilotParseClock(NSString* text) {
+  NSArray<NSString*>* parts = [[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] componentsSeparatedByString:@":"];
+  double seconds = 0;
+  for (NSString* part in parts) seconds = seconds * 60 + part.doubleValue;
+  return std::isfinite(seconds) ? std::max(0.0, seconds) : 0;
+}
 
 #import "rig_theme.h"
 #import "rig_widgets.h"
@@ -111,6 +122,11 @@ static NSString* stageName(NSInteger stage) {
 @property(nonatomic, strong) RigButton* copilotRenderBtn;
 @property(nonatomic, strong) RigButton* copilotLocalMatchBtn;
 @property(nonatomic, strong) NSTextField* copilotTargetStatus;
+@property(nonatomic, strong) NSButton* copilotTargetAutoButton;
+@property(nonatomic, strong) NSTextField* copilotTargetStartField;
+@property(nonatomic, strong) NSStepper* copilotTargetStartStepper;
+@property(nonatomic, strong) NSPopUpButton* copilotTargetLengthPopup;
+@property(nonatomic, strong) NSTextField* copilotTargetRangeLabel;
 @property(nonatomic, strong) NSTextField* copilotLocalMatchStatus;
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
 @property(nonatomic, strong) NSPopUpButton* copilotMatchCandidates;
@@ -220,6 +236,7 @@ static NSString* stageName(NSInteger stage) {
 - (void)selectCopilotLocalMatch:(id)sender;
 - (void)importCopilotReference:(id)sender;
 - (void)clearCopilotReference:(id)sender;
+- (void)changeCopilotTargetSection:(id)sender;
 - (void)copilotSearxngToggled:(id)sender;
 - (void)appendCopilotLog:(NSString*)line;
 - (void)resetCopilotLog:(NSString*)header;
@@ -2650,10 +2667,49 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   targetHint.font = [NSFont systemFontOfSize:10]; targetHint.textColor = rigDimText();
   [content addSubview:targetHint];
   self.copilotTargetStatus = [NSTextField labelWithString:@""];
-  self.copilotTargetStatus.frame = NSMakeRect(20, popH - 340, 500, 18);
+  self.copilotTargetStatus.frame = NSMakeRect(20, popH - 340, 214, 18);
   self.copilotTargetStatus.font = [NSFont systemFontOfSize:10];
   self.copilotTargetStatus.lineBreakMode = NSLineBreakByTruncatingTail;
   [content addSubview:self.copilotTargetStatus];
+  // Which section of the target song to match (Auto = densest passage).
+  NSString* sectionTip = @"Section of the target used for matching and AI context. Auto picks the densest passage; editing Start switches to manual. Play it via the track menu → Target sound.";
+  self.copilotTargetAutoButton = [NSButton checkboxWithTitle:@"Auto" target:self action:@selector(changeCopilotTargetSection:)];
+  self.copilotTargetAutoButton.frame = NSMakeRect(238, popH - 341, 52, 20);
+  self.copilotTargetAutoButton.controlSize = NSControlSizeSmall;
+  self.copilotTargetAutoButton.font = [NSFont systemFontOfSize:10];
+  self.copilotTargetAutoButton.toolTip = sectionTip;
+  [content addSubview:self.copilotTargetAutoButton];
+  self.copilotTargetStartField = [[NSTextField alloc] initWithFrame:NSMakeRect(292, popH - 340, 44, 18)];
+  self.copilotTargetStartField.font = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular];
+  self.copilotTargetStartField.placeholderString = @"start";
+  self.copilotTargetStartField.target = self;
+  self.copilotTargetStartField.action = @selector(changeCopilotTargetSection:);
+  self.copilotTargetStartField.toolTip = sectionTip;
+  [content addSubview:self.copilotTargetStartField];
+  self.copilotTargetStartStepper = [[NSStepper alloc] initWithFrame:NSMakeRect(337, popH - 342, 15, 22)];
+  self.copilotTargetStartStepper.controlSize = NSControlSizeSmall;
+  self.copilotTargetStartStepper.minValue = 0; self.copilotTargetStartStepper.increment = 1;
+  self.copilotTargetStartStepper.valueWraps = NO; self.copilotTargetStartStepper.autorepeat = YES;
+  self.copilotTargetStartStepper.target = self;
+  self.copilotTargetStartStepper.action = @selector(changeCopilotTargetSection:);
+  [content addSubview:self.copilotTargetStartStepper];
+  self.copilotTargetLengthPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(356, popH - 342, 66, 22)];
+  self.copilotTargetLengthPopup.controlSize = NSControlSizeSmall;
+  self.copilotTargetLengthPopup.font = [NSFont systemFontOfSize:10];
+  for (NSInteger seconds : {5, 10, 15, 20}) {
+    [self.copilotTargetLengthPopup addItemWithTitle:[NSString stringWithFormat:@"%ld s", (long)seconds]];
+    self.copilotTargetLengthPopup.lastItem.tag = seconds;
+  }
+  [self.copilotTargetLengthPopup selectItemWithTag:20];
+  self.copilotTargetLengthPopup.target = self;
+  self.copilotTargetLengthPopup.action = @selector(changeCopilotTargetSection:);
+  self.copilotTargetLengthPopup.toolTip = sectionTip;
+  [content addSubview:self.copilotTargetLengthPopup];
+  self.copilotTargetRangeLabel = [NSTextField labelWithString:@""];
+  self.copilotTargetRangeLabel.frame = NSMakeRect(426, popH - 340, 96, 18);
+  self.copilotTargetRangeLabel.font = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular];
+  self.copilotTargetRangeLabel.textColor = rigDimText();
+  [content addSubview:self.copilotTargetRangeLabel];
   self.copilotGuitarInfo = [[NSTextField alloc] initWithFrame:NSMakeRect(20, popH - 374, 500, 24)];
   self.copilotGuitarInfo.placeholderString = @"Optional: tuning, pickup, interface gain / external pedals";
   self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
@@ -3369,11 +3425,29 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotLocalMatchBtn.toolTip = matchStatus;
   NSString* targetStatus = !r.referenceFrames.length ? @"Target sound: not loaded — choose the guitar sound you want to match." :
       (r.referenceIsFullMix ? @"Target sound: full song mix — AI context only; local matching needs guitar-only audio." :
-       [NSString stringWithFormat:@"Target sound: guitar-only reference · %.1fs · loaded locally, not uploaded",
-           r.referenceFrames.length / (r.referenceChannels * sizeof(float) * r.referenceSampleRate)]);
+       [NSString stringWithFormat:@"Target: %@ · %.0fs section · local, not uploaded",
+           [r.referenceSource isEqualToString:@"demucs"] ? @"Demucs guitar stem" : @"guitar-only track", r.referenceSelectionLength]);
   self.copilotTargetStatus.stringValue = targetStatus;
-  self.copilotTargetStatus.toolTip = targetStatus;
+  self.copilotTargetStatus.toolTip = r.referenceFrames.length ? r.referenceAnalysis : targetStatus;
   self.copilotTargetStatus.textColor = r.referenceIsFullMix ? [NSColor systemOrangeColor] : rigDimText();
+  const BOOL hasTarget = r.referenceTotalDuration > 0;
+  const BOOL sectionEditable = hasTarget && !busy && !self.copilotDemucsRunning;
+  for (NSControl* control in @[self.copilotTargetAutoButton, self.copilotTargetStartField,
+                               self.copilotTargetStartStepper, self.copilotTargetLengthPopup])
+    control.enabled = sectionEditable;
+  self.copilotTargetAutoButton.state = !hasTarget || r.referenceSelectionAuto ? NSControlStateValueOn : NSControlStateValueOff;
+  // Do not overwrite a start time the user is typing.
+  if (!self.copilotTargetStartField.currentEditor)
+    self.copilotTargetStartField.stringValue = hasTarget ? copilotClock(r.referenceSelectionStart) : @"";
+  self.copilotTargetStartStepper.maxValue = std::max(0.0, r.referenceTotalDuration - r.referenceSelectionLength);
+  self.copilotTargetStartStepper.doubleValue = r.referenceSelectionStart;
+  if (hasTarget) {
+    const NSInteger lengthTag = std::clamp<NSInteger>((std::lround(r.referenceSelectionLength) + 4) / 5 * 5, 5, 20);
+    [self.copilotTargetLengthPopup selectItemWithTag:lengthTag];
+  }
+  self.copilotTargetRangeLabel.stringValue = hasTarget ?
+      [NSString stringWithFormat:@"of %@%@", copilotClock(r.referenceTotalDuration), r.referenceTruncated ? @"+" : @""] : @"";
+  self.copilotTargetRangeLabel.toolTip = r.referenceTruncated ? @"Very long file: only the first part fits in memory." : nil;
   self.copilotMatchCandidates.enabled = self.copilotLocalMatches.count > 0 && !busy;
   self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
@@ -3441,6 +3515,24 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (self.copilotLocalMatching) return;
   self.copilotLocalMatches = nil;
   [[RigRiffRecorder sharedRecorder] clearReference]; [self updateCopilotRiffUI];
+}
+
+- (void)changeCopilotTargetSection:(id)sender {
+  RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+  if (r.referenceTotalDuration <= 0 || self.copilotLocalMatching || self.copilotDemucsRunning ||
+      r.isRendering || r.isRecording) { [self updateCopilotRiffUI]; return; }
+  double start = r.referenceSelectionStart;
+  BOOL automatic = r.referenceSelectionAuto;
+  if (sender == self.copilotTargetAutoButton) automatic = self.copilotTargetAutoButton.state == NSControlStateValueOn;
+  else if (sender == self.copilotTargetStartStepper) { start = self.copilotTargetStartStepper.doubleValue; automatic = NO; }
+  else if (sender == self.copilotTargetStartField) { start = copilotParseClock(self.copilotTargetStartField.stringValue); automatic = NO; }
+  const double length = MAX(5, self.copilotTargetLengthPopup.selectedTag);
+  [r stopPlayback];
+  [r selectReferenceStart:start length:length automatic:automatic];
+  // Finalists were measured against the previous section.
+  self.copilotLocalMatches = nil;
+  [self resetCopilotLog:r.referenceAnalysis];
+  [self updateCopilotRiffUI];
 }
 
 - (void)extractDemucsStem:(id)sender {
@@ -3637,6 +3729,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       NSError* loadErr = nil;
       BOOL loaded = [r loadReferenceFromURL:[NSURL fileURLWithPath:guitarWavCopy]
                                     fullMix:NO
+                                     source:@"demucs"
                                       error:&loadErr];
       // Clean up temp files after loading (data is now in memory).
       [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];

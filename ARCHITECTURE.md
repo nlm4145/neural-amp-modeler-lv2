@@ -45,6 +45,13 @@ The Copilot drawer's **Learn & Match** action is separate from **Preview Tone**:
 it requires an unclipped paired raw DI take and **Load target sound…** with a target track
 (which extracts the isolated guitar stem locally via Demucs by default). The drawer separately shows
 **Your guitar**, **Target sound**, and the reason matching is disabled.
+Targets decode through CoreAudio `ExtAudioFile` (WAV/AIFF/MP3/M4A/ALAC/FLAC/CAF) and keep
+the whole song in memory (bounded to 32 M samples; longer files are truncated and
+flagged). The target row's **Auto / Start / Length (5–20 s)** controls pick the section
+(`-[RigRiffRecorder selectReferenceStart:length:automatic:]`); Auto picks the densest
+window at 250 ms resolution. `referenceFrames`, `referenceWavData` and `referenceAnalysis`
+always describe the selected section, and changing it discards finalists.
+`referenceSource` records `demucs`, `stem` or `mix`.
 Local matching does not require AI credentials, send audio, or apply/save anything automatically.
 **Search Tone3000 too** is an explicit, default-off text-only amp search/download;
 otherwise only the installed library is consulted.
@@ -65,11 +72,17 @@ unchanged. Cab B is off. Six continuous controls are searched: amp drive, bass,
 mid, treble, cabinet low/high cuts. Pedal and OD selection are not optimized yet.
 
 The matcher freezes inputs on the main thread and does all model loading,
-rendering, feature extraction and training on a utility queue. It chooses the
-most energetic contiguous 1.5-second DI/target excerpts without normalizing DI.
-Scoring uses 11 bandpass-energy features relative to active-window RMS, plus
-low-weight crest/dynamics features. Stereo energy is measured per channel, not
-downmixed. This is approximate feature distance in dB, **not** a confidence or
+rendering, feature extraction and training on a utility queue. It chooses up to
+three non-overlapping, most energetic 1.5-second DI/target excerpts (chronological,
+each at least 25% of the loudest window's energy) without normalizing DI; DI excerpts
+are joined with 250 ms gaps into one render and measured separately, then averaged.
+Feature set v2 (`local_tone_learning.h`, `kFeatureVersion`): 22 1/3-octave band
+energies (80 Hz–10 kHz) relative to active-window RMS; crest and dynamic range;
+per-region (<400 Hz / 400–2500 Hz / >2500 Hz) band kurtosis and spectral flatness
+(fixed 42.7 ms Blackman-Harris frames sampled on a fixed 23.4 Hz grid, so sample
+rate does not change the analysis); and median post-onset decay slope. `distance()`
+is a weighted RMS (gentle equal-loudness band tilt; texture features down-weighted).
+Stereo energy is measured per channel, not downmixed. This is approximate feature distance in dB, **not** a confidence or
 perceptual-accuracy percentage; different performances/tunings can bias results.
 
 The best rendered gear seed supplies 13 local training examples (neutral plus

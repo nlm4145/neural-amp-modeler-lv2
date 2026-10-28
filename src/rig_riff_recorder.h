@@ -61,10 +61,19 @@ typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
 @property (nonatomic, readonly) NSInteger guidedSegmentIndex;
 @property (nonatomic, readonly) BOOL isGuided;
 @property (nonatomic, readonly, nullable) NSData* referenceWavData;
-@property (nonatomic, readonly, nullable) NSData* referenceFrames; // Original interleaved float samples, not clamped WAV.
+// Selected 5–20 s section of the reference as original interleaved float samples
+// (not clamped WAV). referenceWavData and referenceAnalysis follow the selection.
+@property (nonatomic, readonly, nullable) NSData* referenceFrames;
 @property (nonatomic, readonly) double referenceSampleRate;
 @property (nonatomic, readonly) NSUInteger referenceChannels;
 @property (nonatomic, readonly) BOOL referenceIsFullMix;
+// @"demucs" (extracted stem), @"stem" (user-supplied guitar track) or @"mix".
+@property (nonatomic, readonly, copy) NSString* referenceSource;
+@property (nonatomic, readonly) NSTimeInterval referenceTotalDuration; // Whole decoded file (bounded).
+@property (nonatomic, readonly) BOOL referenceTruncated; // File was longer than the in-memory bound.
+@property (nonatomic, readonly) NSTimeInterval referenceSelectionStart;
+@property (nonatomic, readonly) NSTimeInterval referenceSelectionLength;
+@property (nonatomic, readonly) BOOL referenceSelectionAuto;
 @property (nonatomic, readonly, copy) NSString* referenceAnalysis;
 @property (nonatomic, copy, nullable) RigRiffRenderHandler renderHandler;
 @property (nonatomic, readonly) BOOL isRendering;
@@ -97,7 +106,14 @@ typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
 
 // Load an external processed-riff WAV (the raw DI cannot be reconstructed).
 - (BOOL)loadAudioFromURL:(NSURL*)fileURL error:(NSError* _Nullable * _Nullable)error;
+// References decode any CoreAudio format (WAV/AIFF/MP3/M4A/ALAC/FLAC/CAF) and keep
+// the whole song (bounded) so a section can be selected; auto-selects the
+// densest 20 s.
 - (BOOL)loadReferenceFromURL:(NSURL*)fileURL fullMix:(BOOL)fullMix error:(NSError**)error;
+- (BOOL)loadReferenceFromURL:(NSURL*)fileURL fullMix:(BOOL)fullMix source:(NSString*)source error:(NSError**)error;
+// Length is clamped to 5–20 s (or the whole file if shorter). Automatic picks the
+// most energetic window of that length and ignores start.
+- (void)selectReferenceStart:(NSTimeInterval)start length:(NSTimeInterval)length automatic:(BOOL)automatic;
 - (void)clearReference;
 - (void)invalidatePreview;
 - (void)renderBaseline:(RigPreset*)baseline candidate:(RigPreset*)candidate

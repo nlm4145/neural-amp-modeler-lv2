@@ -44,23 +44,35 @@ NSArray* numbers(const Features& values) {
   for (double v : values) [out addObject:@(v)];
   return out;
 }
-// Keep the raw amplitude; take the most energetic contiguous 1.5 seconds.
-// This avoids training on the guided recording's muted-string pre-roll.
-NSData* excerpt(NSData* data, double rate, size_t channels) {
+// Keep the raw amplitude; take up to three non-overlapping 1.5-second windows,
+// loudest first, so one riff section (or the guided recording's muted-string
+// pre-roll) cannot dominate. Returned in chronological order.
+struct Span { size_t start, count; };
+std::vector<Span> excerpts(NSData* data, double rate, size_t channels) {
   const auto* samples = static_cast<const float*>(data.bytes);
-  size_t frames = data.length / (channels * sizeof(float));
-  size_t count = std::min(frames, size_t(rate * 1.5)), best = 0;
-  double energy = 0;
-  for (size_t i = 0; i < count * channels; ++i) energy += double(samples[i]) * samples[i];
-  double maxEnergy = energy;
-  for (size_t f = count; f < frames; ++f) {
-    for (size_t c = 0; c < channels; ++c) {
-      double a = samples[f * channels + c], b = samples[(f - count) * channels + c];
-      energy += a * a - b * b;
-    }
-    if (energy > maxEnergy) { maxEnergy = energy; best = f - count + 1; }
+  const size_t frames = data.length / (channels * sizeof(float));
+  const size_t count = std::min(frames, size_t(rate * 1.5));
+  if (frames <= count) return {{0, frames}};
+  std::vector<double> prefix(frames + 1, 0);
+  for (size_t f = 0; f < frames; ++f) {
+    double e = 0;
+    for (size_t c = 0; c < channels; ++c) e += double(samples[f * channels + c]) * samples[f * channels + c];
+    prefix[f + 1] = prefix[f] + e;
   }
-  return [data subdataWithRange:NSMakeRange(best * channels * sizeof(float), count * channels * sizeof(float))];
+  std::vector<std::pair<double, size_t>> windows;
+  const size_t hop = std::max<size_t>(1, size_t(rate * .05));
+  for (size_t start = 0; start + count <= frames; start += hop) windows.emplace_back(prefix[start + count] - prefix[start], start);
+  windows.emplace_back(prefix[frames] - prefix[frames - count], frames - count);
+  std::sort(windows.begin(), windows.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+  std::vector<Span> chosen;
+  for (const auto& [energy, start] : windows) {
+    if (chosen.size() == 3 || energy < windows.front().first * .25) break;
+    bool overlaps = false;
+    for (const auto& span : chosen) overlaps |= start < span.start + span.count && span.start < start + count;
+    if (!overlaps) chosen.push_back({start, count});
+  }
+  std::sort(chosen.begin(), chosen.end(), [](const Span& x, const Span& y) { return x.start < y.start; });
+  return chosen;
 }
 }
 
@@ -163,9 +175,23 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         Measurement input = measure(static_cast<const float*>(di.bytes), di.length / sizeof(float), 1, rate);
         if (input.peak >= 1) throw std::runtime_error("Raw DI reaches full scale. Lower interface input gain and record an unclipped take before local training.");
         measure(static_cast<const float*>(target.bytes), target.length / (channels * sizeof(float)), channels, targetRate);
-        NSData* dry = excerpt(di, rate, 1);
-        NSData* reference = excerpt(target, targetRate, channels);
-        Measurement goal = measure(static_cast<const float*>(reference.bytes), reference.length / (channels * sizeof(float)), channels, targetRate);
+        // DI excerpts are joined with 250 ms of silence (longer than the cab IR
+        // tail) so each candidate needs a single render; each is measured alone.
+        std::vector<Span> renderSpans;
+        NSMutableData* joined = [NSMutableData data];
+        const size_t gap = size_t(rate * .25);
+        for (const Span& span : excerpts(di, rate, 1)) {
+          if (joined.length) [joined increaseLengthBy:gap * sizeof(float)];
+          renderSpans.push_back({joined.length / sizeof(float), span.count});
+          [joined appendBytes:static_cast<const float*>(di.bytes) + span.start length:span.count * sizeof(float)];
+        }
+        NSData* dry = joined;
+        std::vector<Measurement> goals;
+        const auto* targetSamples = static_cast<const float*>(target.bytes);
+        const std::vector<Span> targetSpans = excerpts(target, targetRate, channels);
+        for (const Span& span : targetSpans)
+          goals.push_back(measure(targetSamples + span.start * channels, span.count, channels, targetRate));
+        Measurement goal = average(goals);
         const size_t renderFrames = dry.length / sizeof(float);
         auto evaluate = [&](RigPreset* p, BOOL retain) -> Measurement {
           checkCancel(); ++renders;
@@ -173,14 +199,18 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
           checkCancel();
           if (renderError || audio.length < renderFrames * 2 * sizeof(float) || audio.length % (2 * sizeof(float)))
             throw std::runtime_error((renderError.localizedDescription ?: @"Renderer returned an incomplete candidate.").UTF8String);
-          Measurement m = measure(static_cast<const float*>(audio.bytes), renderFrames, 2, rate);
+          const auto* rendered = static_cast<const float*>(audio.bytes);
+          std::vector<Measurement> parts;
+          for (const Span& span : renderSpans) parts.push_back(measure(rendered + span.start * 2, span.count, 2, rate));
+          Measurement m = average(parts);
+          for (size_t i = 0; i < renderFrames * 2; ++i) m.peak = std::max(m.peak, double(std::fabs(rendered[i])));
           if (retain) {
             RigLocalToneMatch* match = [RigLocalToneMatch new]; match.preset = p;
             match.score = distance(m.features, goal.features); [matches addObject:match];
           }
           return m;
         };
-        report(@"LOCAL MATCH — analyzing short active excerpts. Comparing relative spectrum and dynamics, not exact artist-tone identity. Live rig unchanged; no audio uploaded.");
+        report(@"LOCAL MATCH — analyzing up to three active excerpts. Comparing 1/3-octave balance, saturation texture and dynamics, not exact artist-tone identity. Live rig unchanged; no audio uploaded.");
         for (NSUInteger i = 0; i < frozenSeeds.count; ++i) {
           checkCancel();
           RigPreset* p = frozenSeeds[i];
@@ -264,7 +294,8 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         NSMutableArray* gear = [NSMutableArray array];
         for (size_t s = 0; s < 4; ++s) [gear addObject:@([anchor stageAtIndex:s]->path.c_str())];
         NSString* runID = NSUUID.UUID.UUIDString;
-        NSMutableDictionary* record = [@{@"version":@1, @"run_id":runID, @"method":@"local-ridge-surrogate-v1",
+        NSMutableDictionary* record = [@{@"version":@2, @"run_id":runID, @"method":@"local-ridge-surrogate-v2",
+            @"feature_version":@(kFeatureVersion), @"di_excerpts":@(renderSpans.size()), @"target_excerpts":@(targetSpans.size()),
             @"created_at":NSDate.date.description, @"render_count":@(renders), @"training_examples":examplesJSON,
             @"coefficients":coefficients, @"anchor_gear":gear, @"target_features":numbers(goal.features),
             @"initial_score":@(initialScore), @"best_score":@(matches.firstObject.score),

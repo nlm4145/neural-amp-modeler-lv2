@@ -90,6 +90,28 @@ int main(int argc, char** argv) {
     assert(winners.firstObject.score <= [record[@"initial_score"] doubleValue] + 1e-4);
     assert(winners.firstObject.score < [record[@"initial_score"] doubleValue] * .9);
     std::printf("PASS local matcher improved real measured distance %.3f -> %.3f dB\n", [record[@"initial_score"] doubleValue], winners.firstObject.score);
+    // Longer takes are measured over up to three non-overlapping loud excerpts.
+    {
+      std::vector<float> longRaw(size_t(rate * 6));
+      for (size_t i = 0; i < longRaw.size(); ++i) {
+        double gain = (i / size_t(rate)) % 2 ? .02 : .1; // Alternating loud/quiet seconds.
+        longRaw[i] = float(gain * std::sin(2 * M_PI * 220 * i / rate));
+      }
+      NSData* longDI = [NSData dataWithBytes:longRaw.data() length:longRaw.size() * sizeof(float)];
+      NSError* error = nil; NSData* longTarget = render(goal, longDI, rate, &error);
+      assert(longTarget && !error);
+      longTarget = [longTarget subdataWithRange:NSMakeRange(0, longDI.length * 2)];
+      done = NO; __block NSDictionary* longRecord;
+      [matcher matchDI:longDI rate:rate target:longTarget targetRate:rate targetChannels:2 seeds:@[base] renderer:render
+          cacheDirectory:cache progress:nil completion:^(NSArray* matches, NSDictionary* metadata, NSError* matchError) {
+        if (matchError) std::fprintf(stderr, "%s\n", matchError.localizedDescription.UTF8String);
+        assert(matches.count && !matchError); longRecord = metadata; done = YES;
+      }];
+      deadline = [NSDate dateWithTimeIntervalSinceNow:90];
+      while (!done && deadline.timeIntervalSinceNow > 0) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+      assert(done && [longRecord[@"di_excerpts"] integerValue] == 3 && [longRecord[@"target_excerpts"] integerValue] == 3);
+      assert([longRecord[@"version"] integerValue] == 2 && [longRecord[@"feature_version"] integerValue] == NAMRig::LocalTone::kFeatureVersion);
+    }
     // Cancellation completes once, without publishing a candidate or mutating the base.
     done = NO;
     [matcher matchDI:di rate:rate target:target targetRate:rate targetChannels:2 seeds:@[base] renderer:render cacheDirectory:cache

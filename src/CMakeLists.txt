@@ -286,11 +286,12 @@ if (APPLE)
 	find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
 	find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 	find_library(COREIMAGE_FRAMEWORK CoreImage REQUIRED)
+	find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
 	target_link_libraries(neural_amp_modeler_rig PRIVATE ${ACCELERATE_FRAMEWORK})
 	add_executable(verify_riff_recorder EXCLUDE_FROM_ALL
 		../tests/verify_riff_recorder.mm rig_riff_recorder.mm)
 	target_include_directories(verify_riff_recorder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-	target_link_libraries(verify_riff_recorder PRIVATE ${COCOA_FRAMEWORK})
+	target_link_libraries(verify_riff_recorder PRIVATE ${COCOA_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK})
 	target_compile_options(verify_riff_recorder PRIVATE -fobjc-arc -UNDEBUG)
 	add_executable(verify_riff_renderer EXCLUDE_FROM_ALL ../tests/verify_riff_renderer.mm
 		rig_riff_renderer.mm $<TARGET_OBJECTS:rig_dsp_core>)
@@ -365,7 +366,7 @@ if (APPLE)
 
 	add_library(neural_amp_modeler_rig_ui MODULE $<TARGET_OBJECTS:rig_ui_core>)
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
-	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK})
+	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
 	set_target_properties(neural_amp_modeler_rig_ui PROPERTIES
 		PREFIX ""
@@ -401,7 +402,7 @@ if (APPLE)
 			${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK}
 			${SECURITY_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${IMAGEIO_FRAMEWORK}
 			${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK}
-			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK})
+			${COREAUDIO_FRAMEWORK} ${AUDIOUNIT_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK})
 		target_compile_options(axe_fx_standalone PRIVATE -fobjc-arc -mmacosx-version-min=11.0)
 		target_link_options(axe_fx_standalone PRIVATE "-Wl,-platform_version,macos,11.0,14.5")
 		set_target_properties(axe_fx_standalone PROPERTIES

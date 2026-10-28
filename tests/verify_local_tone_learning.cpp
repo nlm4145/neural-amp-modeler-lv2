@@ -24,6 +24,47 @@ int main() {
       .05f * std::sin(2 * 3.141592653589793 * 2500 * i / 44100);
   auto differentRate = measure(otherRate.data(), otherRate.size(), 1, 44100);
   assert(distance(a.features, differentRate.features) < .15);
+  // FFT agrees with a naive DFT.
+  {
+    std::vector<double> re(64), im(64, 0), x(64);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = re[i] = std::sin(.7 * i) + .3 * std::cos(2.1 * i * i);
+    fft(re, im);
+    for (size_t k = 0; k < x.size(); ++k) {
+      double r = 0, m = 0;
+      for (size_t n = 0; n < x.size(); ++n) {
+        r += x[n] * std::cos(2 * 3.141592653589793 * k * n / x.size());
+        m -= x[n] * std::sin(2 * 3.141592653589793 * k * n / x.size());
+      }
+      assert(std::fabs(r - re[k]) < 1e-9 && std::fabs(m - im[k]) < 1e-9);
+    }
+  }
+  // Saturation texture: a hard-driven chord is flatter/denser than a clean one.
+  {
+    std::vector<float> clean(48000), driven(48000);
+    for (size_t i = 0; i < clean.size(); ++i) {
+      double t = i / 48000.0, x = std::sin(2 * 3.141592653589793 * 110 * t) +
+          std::sin(2 * 3.141592653589793 * 164.8 * t) + std::sin(2 * 3.141592653589793 * 220 * t);
+      clean[i] = static_cast<float>(.05 * x);
+      driven[i] = static_cast<float>(.3 * std::tanh(8 * x));
+    }
+    auto c = measure(clean.data(), clean.size(), 1, 48000), d = measure(driven.data(), driven.size(), 1, 48000);
+    for (size_t r = 0; r < kRegions; ++r) assert(d.features[kFlatnessIndex + r] > c.features[kFlatnessIndex + r] + 3);
+    assert(d.features[kCrestIndex] < c.features[kCrestIndex]);
+    assert(distance(c.features, d.features) > 1);
+  }
+  // Decay slope: plucked notes that die faster measure steeper.
+  {
+    auto plucks = [](double decayPerSecond) {
+      std::vector<float> x(96000);
+      for (size_t i = 0; i < x.size(); ++i) {
+        double t = (i % 24000) / 48000.0;
+        x[i] = static_cast<float>(.2 * std::exp(-decayPerSecond * t) * std::sin(2 * 3.141592653589793 * 196 * i / 48000));
+      }
+      return measure(x.data(), x.size(), 1, 48000).features[kDecayIndex];
+    };
+    double slow = plucks(2), fast = plucks(10);
+    assert(slow < 0 && fast < slow - 2);
+  }
   bool rejected = false;
   signal[0] = std::numeric_limits<float>::quiet_NaN();
   try { measure(signal.data(), signal.size(), 1, 48000); } catch (...) { rejected = true; }
@@ -48,5 +89,5 @@ int main() {
   // Degenerate perturbations at control limits remain finite via ridge regularization.
   examples.assign(13, Example{}); model.train(examples);
   for (double x : model.predict(test)) assert(std::isfinite(x));
-  std::puts("PASS local features: level invariance, stereo phase, finite/silent guards, learned predictions");
+  std::puts("PASS local features v2: level/rate invariance, stereo phase, FFT, saturation texture, decay slope, guards, learned predictions");
 }

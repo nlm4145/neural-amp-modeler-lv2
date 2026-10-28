@@ -1,6 +1,7 @@
 // verify_riff_recorder.mm — unit test for RigRiffRecorder
 #import <Foundation/Foundation.h>
 #import "rig_riff_recorder.h"
+#import <AudioToolbox/AudioToolbox.h>
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -167,6 +168,60 @@ int main() {
     assert(recorder.recordedWavData == previous);
     [NSFileManager.defaultManager removeItemAtURL:file error:nil];
     [recorder clearRecording]; [recorder clearReference];
+
+    // Long references keep the whole song; Auto picks the loud section, manual
+    // selections are clamped, and compressed formats decode via CoreAudio.
+    {
+      const double rate = 48000; const size_t total = size_t(rate * 60);
+      std::vector<float> song(total);
+      for (size_t i = 0; i < total; ++i) {
+        const double t = i / rate, gain = t >= 30 && t < 50 ? .5 : .02;
+        song[i] = float(gain * std::sin(2 * M_PI * 196 * t));
+      }
+      auto write = [&](NSURL* url, AudioFileTypeID type, AudioFormatID formatID) {
+        AudioStreamBasicDescription pcm{}; pcm.mSampleRate = rate; pcm.mFormatID = kAudioFormatLinearPCM;
+        pcm.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked; pcm.mBitsPerChannel = 32;
+        pcm.mChannelsPerFrame = 1; pcm.mFramesPerPacket = 1; pcm.mBytesPerFrame = pcm.mBytesPerPacket = 4;
+        AudioStreamBasicDescription fileFormat = pcm;
+        if (formatID == kAudioFormatMPEG4AAC) { fileFormat = {}; fileFormat.mSampleRate = rate; fileFormat.mFormatID = formatID; fileFormat.mChannelsPerFrame = 1; }
+        ExtAudioFileRef out = nullptr;
+        assert(ExtAudioFileCreateWithURL((__bridge CFURLRef)url, type, &fileFormat, nullptr, kAudioFileFlags_EraseFile, &out) == noErr);
+        assert(ExtAudioFileSetProperty(out, kExtAudioFileProperty_ClientDataFormat, sizeof(pcm), &pcm) == noErr);
+        for (size_t at = 0; at < total; at += 4096) {
+          UInt32 frames = UInt32(std::min<size_t>(4096, total - at));
+          AudioBufferList list{}; list.mNumberBuffers = 1;
+          list.mBuffers[0] = {1, UInt32(frames * sizeof(float)), song.data() + at};
+          assert(ExtAudioFileWrite(out, frames, &list) == noErr);
+        }
+        ExtAudioFileDispose(out);
+      };
+      NSURL* wavURL = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]]];
+      NSURL* m4aURL = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"m4a"]]];
+      write(wavURL, kAudioFileWAVEType, kAudioFormatLinearPCM);
+      write(m4aURL, kAudioFileM4AType, kAudioFormatMPEG4AAC);
+      assert([recorder loadReferenceFromURL:wavURL fullMix:NO source:@"demucs" error:&importError]);
+      assert(std::fabs(recorder.referenceTotalDuration - 60) < .01 && !recorder.referenceTruncated);
+      assert([recorder.referenceSource isEqualToString:@"demucs"] && recorder.referenceSelectionAuto);
+      assert(std::fabs(recorder.referenceSelectionStart - 30) < .3 && std::fabs(recorder.referenceSelectionLength - 20) < .01);
+      assert(recorder.referenceFrames.length == size_t(rate * 20) * sizeof(float));
+      assert([recorder.referenceAnalysis containsString:@"Demucs"] && [recorder.referenceAnalysis containsString:@"0:30"]);
+      [recorder selectReferenceStart:5 length:10 automatic:NO];
+      assert(!recorder.referenceSelectionAuto && std::fabs(recorder.referenceSelectionStart - 5) < .001);
+      assert(recorder.referenceFrames.length == size_t(rate * 10) * sizeof(float));
+      assert(static_cast<const float*>(recorder.referenceFrames.bytes)[0] == song[size_t(rate * 5)]);
+      [recorder selectReferenceStart:58 length:2 automatic:NO]; // Clamped to 5 s inside the file.
+      assert(std::fabs(recorder.referenceSelectionLength - 5) < .001 && std::fabs(recorder.referenceSelectionStart - 55) < .001);
+      NSData* kept = recorder.referenceFrames;
+      assert(![recorder loadReferenceFromURL:file fullMix:NO error:&importError]); // Missing file keeps the old target.
+      assert(recorder.referenceFrames == kept);
+      assert([recorder loadReferenceFromURL:m4aURL fullMix:NO error:&importError]);
+      assert(std::fabs(recorder.referenceTotalDuration - 60) < .2 && [recorder.referenceSource isEqualToString:@"stem"]);
+      assert(std::fabs(recorder.referenceSelectionStart - 30) < .5);
+      [NSFileManager.defaultManager removeItemAtURL:wavURL error:nil];
+      [NSFileManager.defaultManager removeItemAtURL:m4aURL error:nil];
+      [recorder clearReference];
+      assert(recorder.referenceTotalDuration == 0 && !recorder.referenceFrames && recorder.referenceSource.length == 0);
+    }
     assert(!recorder.referenceFrames && recorder.referenceChannels == 0 && recorder.referenceSampleRate == 0);
 
     std::cout << "PASS verify_riff_recorder" << std::endl;
