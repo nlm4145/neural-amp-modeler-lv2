@@ -91,6 +91,8 @@ NSData* _Nullable rigWavDataFromFloatSamples(const float* samples, size_t frames
 // Acoustic & spectral analysis of the recorded audio
 @property (nonatomic, readonly) float peakDbfs;
 @property (nonatomic, readonly) float rmsDbfs;
+@property (nonatomic, readonly) float diPeakDbfs;
+@property (nonatomic, readonly) BOOL isDIClipped;
 @property (nonatomic, readonly) float crestFactorDb; // Dynamic punch (peak - rms)
 @property (nonatomic, readonly) float lowBandDbfs;   // < 150 Hz (chug, rumble, bass)
 @property (nonatomic, readonly) float lowMidDbfs;   // 150 - 600 Hz (boxiness, warmth)

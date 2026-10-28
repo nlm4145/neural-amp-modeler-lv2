@@ -3523,6 +3523,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSMutableArray<NSString*>* missing = [NSMutableArray array];
   if (!r.renderHandler) [missing addObject:@"Open standalone Axe FX to record raw guitar"];
   if (!r.recordedDIFrames.length) [missing addObject:@"record your guitar (raw DI)"];
+  else if (r.isDIClipped) [missing addObject:@"lower interface gain & re-record (raw DI clipped)"];
   if (!r.referenceFrames.length) [missing addObject:@"load a target guitar sound"];
   else if (r.referenceIsFullMix) [missing addObject:@"use a guitar-only target, not a full song mix"];
   if (r.recordingMetadata[@"warning"]) [missing addObject:@"re-record without changing the rig"];
@@ -3610,10 +3611,16 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }
 
   if (r.recordedWavData.length > 0) {
-    self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
-      @"Your guitar: %@ · %.1fs · output peak %.1f dBFS",
-      r.recordedDIFrames.length ? @"raw DI + output" : @"recorded output", r.recordedDuration, r.peakDbfs];
-    self.copilotRiffStatusLabel.textColor = [NSColor systemGreenColor];
+    if (r.isDIClipped) {
+      self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
+        @"Your guitar: raw DI CLIPPED (%.1f dBFS) — lower interface gain & re-record", r.diPeakDbfs];
+      self.copilotRiffStatusLabel.textColor = [NSColor systemRedColor];
+    } else {
+      self.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:
+        @"Your guitar: %@ · %.1fs · output peak %.1f dBFS",
+        r.recordedDIFrames.length ? @"raw DI + output" : @"recorded output", r.recordedDuration, r.peakDbfs];
+      self.copilotRiffStatusLabel.textColor = [NSColor systemGreenColor];
+    }
   } else if (r.referenceWavData.length > 0) {
     self.copilotRiffStatusLabel.stringValue = r.isPlaying ?
         [NSString stringWithFormat:@"Playing %@… (click ❚❚ Stop or ▶ Preview to pause)", self.copilotTrackPopup.titleOfSelectedItem ?: @"target sound"] :
@@ -3900,6 +3907,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (r.recordingMetadata[@"warning"]) {
     [self appendCopilotLog:@"Record a new paired take: the rig changed during the previous take."]; return;
   }
+  if (r.isDIClipped) {
+    [self appendCopilotLog:@"❌ Raw DI reaches full scale (0 dBFS clipping). Lower interface input gain and record an unclipped take before local training."]; return;
+  }
   if (_state->unconfirmedRecordingStage() >= 0) {
     [self appendCopilotLog:@"Wait for active models to finish loading before starting local matching."]; _state->sendGet(); return;
   }
@@ -3991,7 +4001,13 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
           if (!weakSelf || !alive || !*alive) return;
           weakSelf.copilotLocalMatching = NO; [weakSelf.copilotSpinner stopAnimation:nil];
           if (generation != weakSelf.copilotLocalMatchGeneration) { [weakSelf appendCopilotLog:@"Local matching cancelled; live rig unchanged."]; [weakSelf updateCopilotRiffUI]; return; }
-          if (error) { [weakSelf appendCopilotLog:error.localizedDescription]; [weakSelf updateCopilotRiffUI]; return; }
+          if (error) {
+            [weakSelf appendCopilotLog:[NSString stringWithFormat:@"❌ %@", error.localizedDescription]];
+            [weakSelf updateCopilotRiffUI];
+            weakSelf.copilotLocalMatchStatus.stringValue = [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
+            weakSelf.copilotLocalMatchStatus.textColor = [NSColor systemRedColor];
+            return;
+          }
           // A different take/reference may have been loaded through another route.
           RigRiffRecorder* now = [RigRiffRecorder sharedRecorder];
           if (now.recordedDIFrames != di || now.referenceFrames != target) {

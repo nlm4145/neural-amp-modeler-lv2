@@ -253,6 +253,8 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 @property(nonatomic, readwrite) BOOL isPlaying;
 @property(nonatomic, readwrite) BOOL isRendering;
 @property(nonatomic, readwrite) float peakDbfs, rmsDbfs, crestFactorDb, lowBandDbfs, lowMidDbfs, highMidDbfs, trebleDbfs, airDbfs;
+@property(nonatomic, readwrite) float diPeakDbfs;
+@property(nonatomic, readwrite) BOOL isDIClipped;
 @property(nonatomic, readwrite, copy) NSString* audioAnalysisSummary;
 @property(nonatomic, readwrite, nullable) NSData* referenceWavData;
 @property(nonatomic, readwrite, nullable) NSData* referenceBackingWavData;
@@ -357,10 +359,18 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   Stats s = analyze(wet, n, 2, _recordedSampleRate); [self setStats:s];
   NSMutableString* text = [NSMutableString stringWithFormat:@"Take %.1fs, %.0f Hz; engine latency %lu frames. DI precedes all app processing; external hardware may still color it. Do not infer pickup type or hardware gain from these measurements.\n%@",
       _recordedDuration, _recordedSampleRate, (unsigned long)_latencyFrames, summary(@"Processed output", s)];
+  _isDIClipped = NO;
+  _diPeakDbfs = -120.0f;
   if (_recordedDIFrames.length) {
     const auto* di = static_cast<const float*>(_recordedDIFrames.bytes);
     _recordedDIWavData = wav(di, n, 1, _recordedSampleRate);
-    [text appendFormat:@"\n%@", summary(@"Raw DI (not normalized)", analyze(di, n, 1, _recordedSampleRate))];
+    Stats diStats = analyze(di, n, 1, _recordedSampleRate);
+    _diPeakDbfs = diStats.peak;
+    _isDIClipped = (diStats.clipped > 0 || diStats.peak >= -0.01f);
+    [text appendFormat:@"\n%@", summary(@"Raw DI (not normalized)", diStats)];
+    if (_isDIClipped) {
+      [text appendString:@"\n⚠️ WARNING: Raw guitar DI clipped at full scale (0 dBFS). Lower your audio interface input gain and re-record an unclipped take before tone matching."];
+    }
     if (_guided) {
       const double boundaries[] = {0, 2, 6, 10, 15, 20};
       NSArray* labels = @[@"Muted strings / noise", @"Chugs", @"Power chords", @"Soft/hard single notes", @"Sustain/decay"];
@@ -388,6 +398,7 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   { CaptureGuard guard; g_recording.store(false); g_frames.store(0); g_peak.store(0); g_latency = 0; _pending = NO; }
   _wetFrames = nil; _recordedWavData = nil; _recordedDIWavData = nil; _recordedDIFrames = nil;
   _recordingPreset = nil; _recordingMetadata = @{}; _recordedDuration = 0; _latencyFrames = 0;
+  _isDIClipped = NO; _diPeakDbfs = -120.0f;
   Stats s; s.bands.fill(-120); [self setStats:s]; _audioAnalysisSummary = @"No riff recorded.";
 }
 - (void)playRecording { [self playTrack:@"processed"]; }
