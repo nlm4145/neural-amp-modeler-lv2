@@ -129,6 +129,8 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) NSTextField* copilotTargetRangeLabel;
 @property(nonatomic, strong) NSTextField* copilotLocalMatchStatus;
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
+@property(nonatomic, strong) NSButton* copilotMatchResearchButton;
+@property(nonatomic, strong) NSButton* copilotMatchMixEQButton;
 @property(nonatomic, strong) NSPopUpButton* copilotMatchCandidates;
 @property(nonatomic, strong) NSArray<RigLocalToneMatch*>* copilotLocalMatches;
 @property(nonatomic) BOOL copilotLocalMatching;
@@ -237,6 +239,7 @@ static double copilotParseClock(NSString* text) {
 - (void)importCopilotReference:(id)sender;
 - (void)clearCopilotReference:(id)sender;
 - (void)changeCopilotTargetSection:(id)sender;
+- (void)toggleCopilotMatchResearch:(id)sender;
 - (void)copilotSearxngToggled:(id)sender;
 - (void)appendCopilotLog:(NSString*)line;
 - (void)resetCopilotLog:(NSString*)header;
@@ -2725,17 +2728,28 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotMatchCandidates.target = self;
   self.copilotMatchCandidates.action = @selector(selectCopilotLocalMatch:);
   [content addSubview:self.copilotMatchCandidates];
+  self.copilotMatchMixEQButton = [NSButton checkboxWithTitle:@"Mix EQ (Console pins)" target:self action:@selector(selectCopilotLocalMatch:)];
+  self.copilotMatchMixEQButton.frame = NSMakeRect(320, popH - 436, 205, 26);
+  self.copilotMatchMixEQButton.state = NSControlStateValueOn;
+  self.copilotMatchMixEQButton.enabled = NO;
+  self.copilotMatchMixEQButton.toolTip = @"Gentle Console-pin EQ for what amp, cab and tone stack cannot explain (usually the target mix's EQ). Only offered when a real render showed it helps; turn off to audition the same gear without it.";
+  [content addSubview:self.copilotMatchMixEQButton];
+  self.copilotMatchResearchButton = [NSButton checkboxWithTitle:@"Research gear with AI (text only)" target:self action:@selector(toggleCopilotMatchResearch:)];
+  self.copilotMatchResearchButton.frame = NSMakeRect(20, popH - 464, 260, 26);
+  self.copilotMatchResearchButton.state = [RigAICopilot sharedCopilot].config.researchGearForLocalMatch ? NSControlStateValueOn : NSControlStateValueOff;
+  self.copilotMatchResearchButton.toolTip = @"Opt in: before matching, ask your configured AI provider/CLI which amps, cabs and pedals the prompt's artist/album/song used (cached afterwards). Sends only the prompt text — never audio. Ranks and widens the local amp screen.";
+  [content addSubview:self.copilotMatchResearchButton];
   self.copilotMatchOnlineButton = [NSButton checkboxWithTitle:@"Search Tone3000 too" target:nil action:nil];
-  self.copilotMatchOnlineButton.frame = NSMakeRect(320, popH - 436, 205, 26);
-  self.copilotMatchOnlineButton.toolTip = @"Opt in to one online amp search/download using your prompt/gear terms. No audio uploads. Local training remains offline.";
+  self.copilotMatchOnlineButton.frame = NSMakeRect(320, popH - 464, 205, 26);
+  self.copilotMatchOnlineButton.toolTip = @"Opt in to online amp search/download (up to 3) using your prompt/gear terms. No audio uploads. Local training remains offline.";
   [content addSubview:self.copilotMatchOnlineButton];
   self.copilotLocalMatchStatus = [NSTextField labelWithString:@""];
-  self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 478, 505, 36);
+  self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 506, 505, 36);
   self.copilotLocalMatchStatus.font = [NSFont systemFontOfSize:10];
   self.copilotLocalMatchStatus.lineBreakMode = NSLineBreakByWordWrapping;
   self.copilotLocalMatchStatus.maximumNumberOfLines = 2;
   [content addSubview:self.copilotLocalMatchStatus];
-  const CGFloat captureOffset = 232;
+  const CGFloat captureOffset = 260;
 
   // Separator 2
   NSBox* sep2 = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 272 - captureOffset, popW - 40, 1)];
@@ -3449,6 +3463,11 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       [NSString stringWithFormat:@"of %@%@", copilotClock(r.referenceTotalDuration), r.referenceTruncated ? @"+" : @""] : @"";
   self.copilotTargetRangeLabel.toolTip = r.referenceTruncated ? @"Very long file: only the first part fits in memory." : nil;
   self.copilotMatchCandidates.enabled = self.copilotLocalMatches.count > 0 && !busy;
+  const NSInteger selectedMatch = self.copilotMatchCandidates.indexOfSelectedItem;
+  self.copilotMatchMixEQButton.enabled = !busy && selectedMatch >= 0 && selectedMatch < (NSInteger)self.copilotLocalMatches.count &&
+      self.copilotLocalMatches[(NSUInteger)selectedMatch].presetWithoutMixEQ != nil;
+  self.copilotMatchResearchButton.enabled = !busy;
+  self.copilotMatchOnlineButton.enabled = !busy;
   self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
   self.copilotCancelBtn.enabled = self.copilotLocalMatching || self.copilotDemucsRunning || [RigAICopilot sharedCopilot].isProcessing;
@@ -3784,7 +3803,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotLocalMatching = YES;
   const NSUInteger generation = ++self.copilotLocalMatchGeneration;
   [r stopPlayback]; [r invalidatePreview];
-  [self resetCopilotLog:@"LEARN & MATCH LOCALLY — experimental, live rig unchanged. No provider request or audio upload. This can take minutes; Cancel stops after the current render."];
+  const BOOL research = self.copilotMatchResearchButton.state == NSControlStateValueOn;
+  [self resetCopilotLog:research ? @"LEARN & MATCH LOCALLY — experimental, live rig unchanged. Gear research sends the prompt text only (no audio). This can take minutes; Cancel stops after the current render."
+                                 : @"LEARN & MATCH LOCALLY — experimental, live rig unchanged. No provider request or audio upload. This can take minutes; Cancel stops after the current render."];
   [self updateCopilotRiffUI]; [self.copilotSpinner startAnimation:nil];
   NSData* di = r.recordedDIFrames; double rate = r.recordedSampleRate;
   NSData* target = r.referenceFrames; double targetRate = r.referenceSampleRate;
@@ -3796,31 +3817,56 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSString* cache = [RigLocalToneMatcher trainingDirectory];
   __weak NAMRigUIController* weakSelf = self;
   auto alive = _state->isAlive;
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+  void (^buildAndMatch)(void) = ^{ dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     @autoreleasepool {
       NSMutableArray* catalog = [NSMutableArray array];
       NSMutableArray* messages = [NSMutableArray array];
+      NSUInteger onlineAmps = 0;
       if (online && query.length) {
         // Explicit download opt-in; only text search terms go to Tone3000.
-        NSArray* gearQueries = rigAISuggestGearQueries(query);
-        NSString* search = gearQueries.firstObject ?: query;
-        Tone3000FetchResult* fetch = tone3000FetchBestProfile(search, 1, root);
-        if (fetch.success && fetch.relativePath.length) {
-          [catalog addObject:@{@"stage":@1, @"path":fetch.relativePath}];
-          [messages addObject:[NSString stringWithFormat:@"Tone3000 candidate downloaded: %@ (not applied).", fetch.toneTitle]];
-        } else [messages addObject:fetch.statusMessage ?: @"Tone3000 search found no candidate; using installed models."];
+        NSMutableArray<NSString*>* searches = [[rigAISuggestGearQueries(query) subarrayWithRange:
+            NSMakeRange(0, MIN(3u, rigAISuggestGearQueries(query).count))] mutableCopy];
+        if (!searches.count) [searches addObject:query];
+        for (NSString* search in searches) {
+          Tone3000FetchResult* fetch = tone3000FetchBestProfile(search, 1, root);
+          if (fetch.success && fetch.relativePath.length) {
+            [catalog addObject:@{@"stage":@1, @"path":fetch.relativePath}]; ++onlineAmps;
+            [messages addObject:[NSString stringWithFormat:@"Tone3000 candidate downloaded: %@ (not applied).", fetch.toneTitle]];
+          } else [messages addObject:fetch.statusMessage ?: [NSString stringWithFormat:@"Tone3000 search for \"%@\" found no candidate.", search]];
+        }
       }
-      [catalog addObjectsFromArray:rigAILibraryCandidates(root, query, 24)];
-      NSArray* seeds = rigLocalToneSeeds(live, catalog, root);
+      NSUInteger totals[3] = {}, maxScores[3] = {};
+      NSArray* library = rigAILibraryCandidatesWithTotalsAndScores(root, query, 60, totals, maxScores);
+      [catalog addObjectsFromArray:library];
+      RigLocalTonePlan* plan = rigLocalTonePlan(live, catalog, root);
+      // Widen the amp screen only when the prompt or research actually ranked amps.
+      if (maxScores[1] == 0 && plan.amps.count > 4 + onlineAmps)
+        plan.amps = [plan.amps subarrayWithRange:NSMakeRange(0, 4 + onlineAmps)];
+      NSDictionary* gear = query.length ? rigAIGearResearchMatching(query, NO) : nil;
+      NSString* pedalText = [[gear[@"pedals"] isKindOfClass:NSArray.class] ? gear[@"pedals"] : @[] componentsJoinedByString:@" "].lowercaseString;
+      for (NSString* word in @[@"drive", @"screamer", @"boost", @"ts9", @"ts808", @"ts-9", @"ts-808", @"klon", @"sd-1"])
+        if ([pedalText containsString:word]) plan.preferOverdrive = YES;
+      if (pedalText.length && maxScores[0] > 0) {
+        NSMutableArray* pedals = [NSMutableArray array];
+        for (NSDictionary* item in library) {
+          if ([item[@"stage"] unsignedIntegerValue] != 0 || pedals.count >= 2) continue;
+          NSString* path = rigAIResolveModel(root, item[@"path"], 0, nil);
+          if (path.length) [pedals addObject:path];
+        }
+        plan.pedals = pedals;
+      }
+      if (gear) [messages addObject:[NSString stringWithFormat:@"Using gear research: %@", rigAIGearResearchSummary(gear)]];
       dispatch_async(dispatch_get_main_queue(), ^{
         if (!weakSelf || !alive || !*alive || generation != weakSelf.copilotLocalMatchGeneration) {
           if (weakSelf) { weakSelf.copilotLocalMatching = NO; [weakSelf.copilotSpinner stopAnimation:nil]; [weakSelf updateCopilotRiffUI]; }
           return;
         }
         for (NSString* line in messages) [weakSelf appendCopilotLog:line];
-        [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Bounded gear search: %lu dry rigs (base plus up to 3 amps × 2 cabs). Training optimizes amp drive, bass/mid/treble and cab cuts; not a new NAM capture.", (unsigned long)seeds.count]];
+        [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Gear search: %lu amp(s)%@, %lu cab IR(s) screened offline%@. Optimizes amp drive (plus OD/power stage options), cab, bass/mid/treble, cab cuts and optional mix EQ; not a new NAM capture.",
+            (unsigned long)plan.amps.count, plan.amps.count > 4 ? @" (quick screen, best 4 at full quality)" : @"",
+            (unsigned long)plan.cabs.count, plan.pedals.count ? [NSString stringWithFormat:@", %lu researched pedal(s)", (unsigned long)plan.pedals.count] : @""]];
         [[RigLocalToneMatcher sharedMatcher] matchDI:di rate:rate target:target targetRate:targetRate targetChannels:channels
-            seeds:seeds renderer:renderer cacheDirectory:cache progress:^(NSString* line) {
+            plan:plan renderer:renderer cacheDirectory:cache progress:^(NSString* line) {
           if (weakSelf && alive && *alive && generation == weakSelf.copilotLocalMatchGeneration) [weakSelf appendCopilotLog:line];
         } completion:^(NSArray<RigLocalToneMatch*>* matches, NSDictionary* metadata, NSError* error) {
           if (!weakSelf || !alive || !*alive) return;
@@ -3833,14 +3879,19 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
             [weakSelf appendCopilotLog:@"Take or target changed; local results discarded."]; [weakSelf updateCopilotRiffUI]; return;
           }
           NSMutableDictionary* provenance = [metadata mutableCopy];
-          [provenance removeObjectForKey:@"training_examples"]; [provenance removeObjectForKey:@"coefficients"];
-          provenance[@"provider"] = @"local"; provenance[@"model"] = @"ridge-surrogate-v1";
+          // Presets keep the summary; per-run detail stays in the training record.
+          [provenance removeObjectsForKeys:@[@"evaluations", @"screening", @"finalists", @"target_features"]];
+          provenance[@"provider"] = @"local"; provenance[@"model"] = @"local-screen-v1";
           provenance[@"token_cost"] = @0; provenance[@"prompt"] = query;
-          for (RigLocalToneMatch* match in matches) match.preset.aiMetadata = [provenance mutableCopy];
+          for (RigLocalToneMatch* match in matches) {
+            match.preset.aiMetadata = [provenance mutableCopy];
+            match.presetWithoutMixEQ.aiMetadata = [provenance mutableCopy];
+          }
           weakSelf.copilotLocalMatches = matches;
           [weakSelf.copilotMatchCandidates removeAllItems];
           for (NSUInteger i = 0; i < matches.count; ++i) [weakSelf.copilotMatchCandidates addItemWithTitle:
               [NSString stringWithFormat:@"#%lu · %.2f dB distance", (unsigned long)i + 1, matches[i].score]];
+          for (NSUInteger i = 0; i < matches.count; ++i) [weakSelf.copilotMatchCandidates itemAtIndex:i].toolTip = matches[i].preset.name;
           [weakSelf.copilotMatchCandidates selectItemAtIndex:0];
           [weakSelf selectCopilotLocalMatch:nil];
           if (metadata[@"training_file"]) [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Local training record (features/settings only, no audio): %@", metadata[@"training_file"]]];
@@ -3849,7 +3900,31 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
         }];
       });
     }
-  });
+  }); };
+  // Opt-in, text-only gear research first (cached entries skip the provider call).
+  if (research && query.length && !rigAIGearResearchMatching(query, YES)) {
+    [self appendCopilotLog:@"Researching the documented gear for the prompt (text only, no audio)…"];
+    [ai researchGearForPrompt:query completion:^(NSDictionary* found, NSString* failure) {
+      if (!weakSelf || !alive || !*alive) return;
+      if (generation != weakSelf.copilotLocalMatchGeneration) {
+        weakSelf.copilotLocalMatching = NO; [weakSelf.copilotSpinner stopAnimation:nil];
+        [weakSelf appendCopilotLog:@"Local matching cancelled; live rig unchanged."]; [weakSelf updateCopilotRiffUI];
+        return;
+      }
+      if (!found) [weakSelf appendCopilotLog:[NSString stringWithFormat:@"Gear research skipped (%@); matching with the library keyword ranking.", failure ?: @"no reply"]];
+      buildAndMatch();
+    }];
+  } else {
+    if (research && !query.length) [self appendCopilotLog:@"Gear research needs an artist/album/song in the prompt; matching without it."];
+    buildAndMatch();
+  }
+}
+
+- (void)toggleCopilotMatchResearch:(id)sender {
+  RigAICopilot* ai = [RigAICopilot sharedCopilot];
+  ai.config.researchGearForLocalMatch = self.copilotMatchResearchButton.state == NSControlStateValueOn;
+  NSError* error = nil;
+  if (![ai.config saveToDisk:&error]) [self appendCopilotLog:[NSString stringWithFormat:@"Could not save the research setting: %@", error.localizedDescription]];
 }
 
 - (void)selectCopilotLocalMatch:(id)sender {
@@ -3858,26 +3933,40 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSInteger index = self.copilotMatchCandidates.indexOfSelectedItem;
   if (index < 0 || index >= (NSInteger)self.copilotLocalMatches.count) return;
   RigLocalToneMatch* match = self.copilotLocalMatches[(NSUInteger)index];
+  const BOOL mixEQ = match.presetWithoutMixEQ && self.copilotMatchMixEQButton.state == NSControlStateValueOn;
+  RigPreset* chosen = match.presetWithoutMixEQ && !mixEQ ? match.presetWithoutMixEQ : match.preset;
+  const double score = match.presetWithoutMixEQ && !mixEQ ? match.scoreWithoutMixEQ : match.score;
   RigAICopilotResult* result = [RigAICopilotResult new];
   result.presetName = [NSString stringWithFormat:@"Local Match %@", self.copilotPromptInput.stringValue.length ? self.copilotPromptInput.stringValue : @"Guitar"];
-  result.explanation = [NSString stringWithFormat:@"Locally trained and verified candidate #%ld. Relative feature distance %.2f dB (lower is better, not an accuracy percentage). Compare with the target by ear; different playing/tuning affects the score.", (long)index + 1, match.score];
-  result.thought = @"Ridge-regression surrogate trained on real DI renders; final settings verified by the engine. No new NAM model was trained. Captured input amplitude and oversampling were preserved.";
+  result.explanation = [NSString stringWithFormat:@"Locally matched and engine-verified candidate #%ld%@. Relative feature distance %.2f dB (lower is better, not an accuracy percentage). Compare with the target by ear; different playing/tuning affects the score.",
+      (long)index + 1, match.presetWithoutMixEQ ? (mixEQ ? @" with mix EQ" : @" without mix EQ") : @"", score];
+  result.thought = @"Amp drive searched with real amp renders; cab, tone stack, cuts and optional Console-pin mix EQ fitted offline (exact for these linear stages) and verified by the engine. No new NAM model was trained. Captured input amplitude and oversampling were preserved.";
   NSMutableDictionary* controls = [NSMutableDictionary dictionary];
-  for (const auto& kv : match.preset.allControls) {
+  for (const auto& kv : chosen.allControls) {
     if (kv.second == [self.copilotBasePreset controlForPort:kv.first]) continue;
     const char* symbol = NAMRig::rigControlSymbol(kv.first);
     if (symbol) controls[@(symbol)] = @(kv.second);
   }
-  result.controls = controls; result.proposedPreset = match.preset;
+  result.controls = controls; result.proposedPreset = chosen;
   result.proposedPreset.name = result.presetName;
   result.tokenUsageSummary = @"Local training · no provider tokens · $0 AI cost";
   self.copilotProposal = result;
   self.copilotPresetNameField.stringValue = result.presetName;
   self.copilotAuditionContext = nil;
   [[RigRiffRecorder sharedRecorder] invalidatePreview];
-  [self appendCopilotLog:[NSString stringWithFormat:@"✅ LOCAL PREVIEW READY — %@\nAmp: %@\nCab: %@", result.explanation,
-      @([match.preset stageAtIndex:1]->path.c_str()).lastPathComponent,
-      [match.preset stageAtIndex:2]->path.empty() ? @"included in capture" : @([match.preset stageAtIndex:2]->path.c_str()).lastPathComponent]];
+  NSMutableString* gear = [NSMutableString stringWithFormat:@"Amp: %@ (drive %+.1f dB)\nCab: %@\nTone stack: bass %+.1f, mid %+.1f, treble %+.1f dB; low cut %.0f Hz",
+      @([chosen stageAtIndex:1]->path.c_str()).lastPathComponent, [chosen controlForPort:22],
+      [chosen stageAtIndex:2]->path.empty() ? @"included in capture" : @([chosen stageAtIndex:2]->path.c_str()).lastPathComponent,
+      [chosen controlForPort:12], [chosen controlForPort:13], [chosen controlForPort:14], [chosen controlForPort:26]];
+  if (![chosen stageAtIndex:0]->path.empty() && [chosen controlForPort:7] >= .5)
+    [gear appendFormat:@"\nPedal: %@", @([chosen stageAtIndex:0]->path.c_str()).lastPathComponent];
+  if (mixEQ) {
+    [gear appendString:@"\nMix EQ (Console pins):"];
+    for (size_t band = 0; band < NAMRig::kPinEqBandCount; ++band)
+      [gear appendFormat:@" %.0f Hz %+.1f", [chosen controlForPort:NAMRig::pinEqPort(NAMRig::PinEqPane::CabConsole, band, NAMRig::kPinFreq)],
+          [chosen controlForPort:NAMRig::pinEqPort(NAMRig::PinEqPane::CabConsole, band, NAMRig::kPinGain)]];
+  }
+  [self appendCopilotLog:[NSString stringWithFormat:@"✅ LOCAL PREVIEW READY — %@\n%@", result.explanation, gear]];
   [self updateCopilotRiffUI];
 }
 
@@ -3913,6 +4002,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (self.copilotLocalMatching) {
     ++self.copilotLocalMatchGeneration;
     [[RigLocalToneMatcher sharedMatcher] cancel];
+    [[RigAICopilot sharedCopilot] cancelProcessing]; // Opt-in gear research, if running.
     [self appendCopilotLog:@"Cancelling local matching after the current render/search completes…"];
     return;
   }
@@ -3970,7 +4060,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
         meta[@"prompt"] = prompt ?: @"";
         meta[@"preset_name"] = name;
         meta[@"provider"] = isLocal ? @"local" : ([RigAICopilot sharedCopilot].config.provider ?: @"");
-        meta[@"model"] = isLocal ? @"ridge-surrogate-v1" : ([RigAICopilot sharedCopilot].config.model ?: @"");
+        meta[@"model"] = isLocal ? @"local-screen-v1" : ([RigAICopilot sharedCopilot].config.model ?: @"");
         meta[@"input_tokens"] = @(proposal.inputTokens);
         meta[@"output_tokens"] = @(proposal.outputTokens);
         meta[@"input_cost"] = @(proposal.inputCost);

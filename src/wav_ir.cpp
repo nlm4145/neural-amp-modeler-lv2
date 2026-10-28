@@ -236,6 +236,14 @@ unsigned WavIR::channelCount(const char* path) {
 
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
                                    int maxBlockSize, int channel) {
+  auto taps = loadTaps(path, hostRate, channel);
+  // Store response-based scales so normalization can change without reloading
+  // or destructively altering the corrected taps.
+  return std::unique_ptr<WavIR>(
+      new WavIR(std::move(taps), hostRate, maxBlockSize));
+}
+
+std::vector<float> WavIR::loadTaps(const char* path, double hostRate, int channel) {
   uint32_t sourceRate = 0;
   const auto sourceTaps = readWav(path, sourceRate, channel);
   auto taps = resample(sourceTaps, sourceRate, hostRate);
@@ -260,11 +268,7 @@ std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
     }
   }
   if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
-
-  // Store response-based scales so normalization can change without reloading
-  // or destructively altering the corrected taps.
-  return std::unique_ptr<WavIR>(
-      new WavIR(std::move(taps), hostRate, maxBlockSize));
+  return taps;
 }
 
 // Completed kBlock input block: FFT it into the delay line, accumulate

@@ -5,12 +5,29 @@
 #include <memory>
 
 NS_ASSUME_NONNULL_BEGIN
-// Dry, conservative gear seeds: base rig plus at most 3 amps x 2 cabs from
-// the metadata shortlist. Does not load models or touch the live rig.
-NSArray<RigPreset*>* rigLocalToneSeeds(RigPreset* base, NSArray<NSDictionary*>* catalog, NSString* libraryRoot);
+// Dry candidate plan. `base` has effects, compressors, power/transformer/speaker
+// coloration, Cab B, the tone stack, cab cuts and Console pins neutralized; input
+// calibration, oversampling and any pedal/OD are kept. `amps` (current amp first,
+// at most 24; more than 4 get a quick screen) are rendered with the cab off; every WAV in `cabs` is screened offline
+// by FFT convolution. Does not load models or touch the live rig.
+@interface RigLocalTonePlan : NSObject
+@property(nonatomic, strong) RigPreset* base;
+@property(nonatomic, copy) NSArray<NSString*>* amps;
+@property(nonatomic, copy) NSArray<NSString*>* cabs;
+@property(nonatomic, copy, nullable) NSString* currentCab; // The live rig's cab IR (starting-point score), if any.
+@property(nonatomic, copy, nullable) NSArray<NSString*>* pedals; // Pedal captures tried once on the leading amp (at most 2).
+@property(nonatomic) BOOL preferOverdrive; // Gear research documents an OD/boost: always search OD drive.
+@end
+// Cabs: the current cab, catalog cabs, then every WAV under <libraryRoot>/Cab (max 400).
+RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* catalog, NSString* libraryRoot);
 @interface RigLocalToneMatch : NSObject
 @property(nonatomic, strong) RigPreset* preset;
-@property(nonatomic) double score; // Relative feature distance in dB; not a perceptual confidence percentage.
+@property(nonatomic) double score; // Relative feature distance in dB from a real engine render; not a perceptual confidence percentage.
+@property(nonatomic) double offlineScore; // The same distance predicted offline (amp render ⊛ IR + post EQ).
+// When Console-pin "mix EQ" was kept (it lowered the real score), the same gear
+// without it; nil otherwise.
+@property(nonatomic, strong, nullable) RigPreset* presetWithoutMixEQ;
+@property(nonatomic) double scoreWithoutMixEQ;
 @end
 
 @interface RigLocalToneMatcher : NSObject {
@@ -20,10 +37,10 @@ NSArray<RigPreset*>* rigLocalToneSeeds(RigPreset* base, NSArray<NSDictionary*>* 
 + (NSString*)trainingDirectory;
 @property(nonatomic, readonly) BOOL isRunning;
 // All inputs are frozen on the main thread; work runs locally off audio/UI threads.
-// Returns up to three REAL-rendered finalists, never surrogate-only predictions.
+// Returns up to three REAL-rendered finalists, never offline-only predictions.
 - (void)matchDI:(NSData*)di rate:(double)rate target:(NSData*)target
     targetRate:(double)targetRate targetChannels:(NSUInteger)channels
-         seeds:(NSArray<RigPreset*>*)seeds renderer:(RigRiffRenderHandler)renderer
+          plan:(RigLocalTonePlan*)plan renderer:(RigRiffRenderHandler)renderer
 cacheDirectory:(NSString*)cacheDirectory progress:(void (^ _Nullable)(NSString*))progress
     completion:(void (^)(NSArray<RigLocalToneMatch*>* _Nullable, NSDictionary* _Nullable, NSError* _Nullable))completion;
 - (void)cancel;

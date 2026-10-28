@@ -40,11 +40,12 @@ inline void fft(std::vector<double>& re, std::vector<double>& im) {
     j ^= bit;
     if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
   }
+  // Twiddles once per stage (n trig calls in total), not once per butterfly.
   for (size_t len = 2; len <= n; len <<= 1) {
     const double angle = -2 * 3.14159265358979323846 / len;
-    for (size_t i = 0; i < n; i += len) {
-      for (size_t k = 0; k < len / 2; ++k) {
-        const double c = std::cos(angle * k), s = std::sin(angle * k);
+    for (size_t k = 0; k < len / 2; ++k) {
+      const double c = std::cos(angle * k), s = std::sin(angle * k);
+      for (size_t i = 0; i < n; i += len) {
         const size_t a = i + k, b = a + len / 2;
         const double tr = re[b] * c - im[b] * s, ti = re[b] * s + im[b] * c;
         re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;

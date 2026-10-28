@@ -364,9 +364,10 @@ if (APPLE)
 		../deps/NeuralAudio/deps/RTNeural/modules/json)
 	target_compile_options(rig_ui_core PRIVATE -fobjc-arc -mmacosx-version-min=11.0)
 
-	add_library(neural_amp_modeler_rig_ui MODULE $<TARGET_OBJECTS:rig_ui_core>)
+	# The local tone matcher screens cab IRs offline (WavIR taps + FFT convolution).
+	add_library(neural_amp_modeler_rig_ui MODULE $<TARGET_OBJECTS:rig_ui_core> dsp_accel.cpp wav_ir.cpp)
 	target_include_directories(neural_amp_modeler_rig_ui PRIVATE ../deps/lv2/include)
-	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK})
+	target_link_libraries(neural_amp_modeler_rig_ui PRIVATE ${COCOA_FRAMEWORK} ${AUTHENTICATIONSERVICES_FRAMEWORK} ${SECURITY_FRAMEWORK} ${IMAGEIO_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COREIMAGE_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK} ${ACCELERATE_FRAMEWORK})
 	target_compile_options(neural_amp_modeler_rig_ui PRIVATE -fobjc-arc)
 	set_target_properties(neural_amp_modeler_rig_ui PROPERTIES
 		PREFIX ""

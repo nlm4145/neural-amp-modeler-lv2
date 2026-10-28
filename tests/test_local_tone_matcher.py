@@ -23,8 +23,17 @@ class LocalToneTests(unittest.TestCase):
             binary = str(Path(temp) / "matcher")
             subprocess.run(["clang++", "-O2", "-std=c++20", "-fobjc-arc", "-Wno-incomplete-implementation", "-Isrc",
                             "tests/verify_local_tone_matcher.mm", "src/rig_local_tone_matcher.mm", "src/rig_ai_support.mm",
-                            "-framework", "Cocoa", "-o", binary], cwd=ROOT, check=True)
-            subprocess.run([binary, str(Path(temp) / "training")], check=True, timeout=30)
+                            "src/wav_ir.cpp", "src/dsp_accel.cpp",
+                            "-framework", "Cocoa", "-framework", "Accelerate", "-o", binary], cwd=ROOT, check=True)
+            subprocess.run([binary, str(Path(temp) / "training")], check=True, timeout=120)
+
+    def test_post_eq(self):
+        """Offline mirror of the post-cab linear section and the verified tone-stack fit."""
+        with tempfile.TemporaryDirectory(prefix="axe-local-post-eq-", dir=os.environ.get("TMPDIR")) as temp:
+            binary = str(Path(temp) / "post_eq")
+            subprocess.run(["clang++", "-O2", "-std=c++17", "-Isrc", "tests/verify_local_tone_post_eq.cpp", "-o", binary],
+                           cwd=ROOT, check=True)
+            subprocess.run([binary], check=True, timeout=60)
 
     @unittest.skipUnless(sys.platform == "darwin", "CoreAudio decoding requires macOS")
     def test_reference_selection(self):

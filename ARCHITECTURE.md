@@ -52,9 +52,15 @@ flagged). The target row's **Auto / Start / Length (5–20 s)** controls pick th
 window at 250 ms resolution. `referenceFrames`, `referenceWavData` and `referenceAnalysis`
 always describe the selected section, and changing it discards finalists.
 `referenceSource` records `demucs`, `stem` or `mix`.
-Local matching does not require AI credentials, send audio, or apply/save anything automatically.
-**Search Tone3000 too** is an explicit, default-off text-only amp search/download;
-otherwise only the installed library is consulted.
+Local matching does not require AI credentials, never sends audio, and never applies/saves
+anything automatically. Two explicit, default-off, text-only opt-ins exist:
+**Research gear with AI (text only)** (persisted as `local_match_research` in
+`ai-config.json`) runs `-[RigAICopilot researchGearForPrompt:completion:]` before
+matching when the prompt has no cached research — one provider/CLI call with the
+Preview Tone config, SearXNG option and timeouts; Cancel stops it. Cached research is
+always used (it ranks the library via `rigAISuggestGearQueries`).
+**Search Tone3000 too** downloads up to 3 amps for the top gear queries.
+Otherwise only the installed library is consulted.
 
 Cloud audio transport is a separate, default-off provider-setting option:
 **Send recordings to cloud AI** attaches both player clips and the target only
@@ -65,11 +71,28 @@ an API key takes precedence; otherwise the installed signed-in Claude/Codex/agy
 CLI is used with its existing permissions. No CLI is installed or authenticated
 automatically, and API defaults retain `sendAudio=NO`.
 
-`rigLocalToneSeeds` builds a bounded shortlist (current gear plus at most three
-amps × two cabs), respecting amp/full-rig metadata. Seeds bypass gate, compressors,
-space effects and extra power coloration. Input calibration and oversampling stay
-unchanged. Cab B is off. Six continuous controls are searched: amp drive, bass,
-mid, treble, cabinet low/high cuts. Pedal and OD selection are not optimized yet.
+`rigLocalTonePlan` builds a dry base plus candidate lists: amps (current first, then
+catalog amps, one per profile key preferring `rigAIHighestCapacityVariant`; at most 24)
+and cab IRs (current cab, catalog cabs, then every WAV under
+`<library>/Cab`; at most 400). The base bypasses gate, compressors, space effects,
+power/transformer/speaker coloration and Cab B, and neutralizes the linear post-cab
+section (Bass/Mid/Treble 0, cuts off, Cab Console pin gains 0, console rack on so cuts
+can apply). Input calibration, oversampling and any pedal/OD stay unchanged. The UI
+(`matchCopilotLocally:`) builds the catalog with `rigAILibraryCandidatesWithTotalsAndScores`
+(limit 60) and keeps more than 4 amps only when the prompt/research ranked any amp
+(`maxScores[1] > 0`). With research, `plan.preferOverdrive` is set when its pedals
+mention an overdrive/boost, and up to 2 top-ranked installed pedal captures become
+`plan.pedals`.
+
+**Why offline cab/EQ screening is exact.** With those bypasses, everything after the
+amp model is linear and time-invariant (`processPostChain`): cab IR → cab low/high cut
+→ Console pins (both only when a cab was processed and the console rack is on) → DC
+blocker → Bass (150 Hz low shelf) / Mid (700 Hz bell) / Treble (3 kHz high shelf),
+all RBJ biquads at Q 0.707. Linear filters commute, so an amp rendered once with the
+cab off can be convolved with any IR (`WavIR::loadTaps`: the engine's exact resampled,
+170 ms-tapered taps; FFT overlap-add via `DSP::RealFFT`) and re-voiced with
+`local_tone_post_eq.h` (`applyPostEq`, mirroring the engine via `pin_eq.h`
+coefficients). The real-engine smoke test checks offline vs. engine scores agree.
 
 The matcher freezes inputs on the main thread and does all model loading,
 rendering, feature extraction and training on a utility queue. It chooses up to
@@ -85,25 +108,56 @@ is a weighted RMS (gentle equal-loudness band tilt; texture features down-weight
 Stereo energy is measured per channel, not downmixed. This is approximate feature distance in dB, **not** a confidence or
 perceptual-accuracy percentage; different performances/tunings can bias results.
 
-The best rendered gear seed supplies 13 local training examples (neutral plus
-positive/negative perturbations for each control). A ridge-regression surrogate
-predicts 256 bounded parameter sets. Its best three predictions are re-rendered;
-only real measurements determine the finalists, including the original seed and
-training examples. Finalists also undergo measured output-headroom correction.
+Search (`local-screen-v1`; at most one quick render per amp when there are more than
+4, plus 4 full amp renders + 20 search + 12 verification renders):
+0. Quick screen (more than 4 amps): every amp renders one 0.75 s excerpt (+ pre-roll)
+   at ≤ True 2x oversampling; each is scored by the best one-shot fit over all cabs.
+   The current amp plus the best 3 others continue at full quality.
+1. Each remaining amp is rendered once with the cab off; every cab IR is scored offline
+   with a one-shot band-model fit of the tone stack and cuts (`solveLinear`), in
+   parallel. The top 3 cabs per amp form its shortlist.
+2. Every amp-side render is scored by verified offline fits on its shortlist:
+   `fitLinear` (band-model solve with measured correction, then damped Gauss-Newton on
+   bass/mid/treble and low cut against all features, finite-difference Jacobians from
+   real measurements of the EQ'd audio — no engine renders), then `fitMixEq`: six
+   gentle Cab Console pins (100 Hz low shelf, 250/600/1500/3500 Hz bells at Q 0.9,
+   8 kHz high shelf; ±6 dB) fitted **jointly** with the tone stack and low cut. Pins and
+   tone stack overlap, so both are ridged (pins more) toward the smallest adjustment.
+   The search objective allows mix EQ, so gear and drive are not bent to imitate the
+   target mix's EQ.
+3. Nonlinear controls use real amp-only renders: trust-region rounds on amp drive
+   (±6/±3/±1.5 dB on the best amp, ±6 on the runner-up), probing then rendering the
+   minimum of a quadratic fitted to all comparable renders. The leading amp also tries
+   an OD push (and, if it helps, OD was already on, or `preferOverdrive`, a joint
+   drive/OD-drive round), the power stage at defaults, and each `plan.pedals` capture
+   once (pedals that fail to load are skipped).
+4. All cabs are re-screened on the two best renders. The three best distinct
+   amp/cab candidates are rebuilt as full presets and **verified by full engine
+   renders**; finalists are ranked by those real scores (offline scores are kept as
+   `offlineScore`) and undergo measured output-headroom correction. Each finalist's
+   joint fit is first polished offline from a neutral tone stack as well (within
+   0.02 dB the smaller adjustment wins). It is rendered without mix EQ, and — if the
+   offline fit says the pins help by > 0.02 dB — with it; mix EQ is kept only if the
+   engine score improves by > 0.01 dB (`RigLocalToneMatch.presetWithoutMixEQ`). The
+   drawer's **Mix EQ (Console pins)** toggle switches between the two before A/B or Apply.
 Users choose a finalist, run **Render DI A/B** on the full take, and explicitly
 **Apply & Save** through the existing acknowledgement/rollback path. Finalists
 retain local provenance instead of the currently selected cloud provider.
 
-Training features/settings/coefficients (no raw audio) are saved as per-run JSON
-under `~/Library/Application Support/Axe FX/Local Tone Training/`. V1 retrains
-per session; these records are not yet reused or a newly trained NAM capture.
+Run records (version 3: quick and full screening, every evaluation's controls/pedal/
+cab/score, finalists with fitted EQ, mix-EQ pins and offline/engine scores, target
+features; no raw audio) are saved
+as per-run JSON under `~/Library/Application Support/Axe FX/Local Tone Training/`.
+They are not yet reused and are not a newly trained NAM capture. Presets saved from a
+finalist keep only the summary (`model = local-screen-v1`). NAM-format cab captures
+are not screened (WAV IRs only); full-rig amps skip the cab and console stages.
 Cancellation is cooperative between renders; an individual render or opted-in
 online search must finish. Closing the drawer/rig cancels or discards the work.
 No heavy work is added to the audio callback and no LV2 ports are added.
 
 Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 `cmake --build build --target verify_local_match_engine -j8`, then
-`build/src/verify_local_match_engine <temporary-training-dir> [optional-amp.nam]`.
+`build/src/verify_local_match_engine <temporary-training-dir> <amp.nam> [cab-ir-folder]` (asserts offline and engine scores agree and the hidden cab wins).
 
 ## Port map (rig plugin) — APPEND-ONLY, never renumber
 

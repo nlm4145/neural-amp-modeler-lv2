@@ -51,6 +51,8 @@ typedef NS_ENUM(NSInteger, RigAITaskStatus) {
 @property(nonatomic) BOOL allowLocalCLI; // Automatic UI fallback; always respects CLI permissions.
 @property(nonatomic) BOOL sendAudio; // Explicit opt-in; telemetry-only by default to limit cost.
 @property(nonatomic) BOOL useSearxng; // Checkbox toggle: automatically queries or spins up local SearXNG
+// Learn & Match opt-in: text-only gear research before local matching. Default off.
+@property(nonatomic) BOOL researchGearForLocalMatch;
 // Optional self-hosted SearXNG instance URL for platform-agnostic gear web search (defaults to http://localhost:8080).
 // When set, the gear research step fetches live web results before calling the AI provider.
 @property(nonatomic, copy, nullable) NSString* searxngURL;
@@ -150,6 +152,13 @@ void rigAICalculateTokenCost(NSString* _Nullable provider, NSString* _Nullable m
                 basePreset:(nullable RigPreset*)basePreset
                  withState:(nullable RigUIState*)state
          completionHandler:(void (^)(RigAICopilotResult* _Nullable result, NSError* _Nullable error))completionHandler;
+
+// Text-only gear research (artist/album/song -> documented amps/cabs/pedals) for the
+// local matcher. Returns the cached entry when present; otherwise one provider/CLI call
+// with the Preview Tone config, SearXNG option and timeouts. Never sends audio. Occupies
+// the copilot while running (cancelProcessing stops it). Completion on the main thread.
+- (void)researchGearForPrompt:(NSString*)prompt
+                   completion:(void (^)(NSDictionary* _Nullable research, NSString* _Nullable failure))completion;
 
 + (NSDictionary*)contextForPreset:(RigPreset*)preset compact:(BOOL)compact;
 + (nullable RigPreset*)presetForResult:(RigAICopilotResult*)result base:(RigPreset*)base error:(NSError**)error;

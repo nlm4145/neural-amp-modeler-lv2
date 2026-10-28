@@ -153,6 +153,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
   if ([dict[@"allow_local_cli"] isKindOfClass:NSNumber.class]) c.allowLocalCLI = [dict[@"allow_local_cli"] boolValue];
   c.sendAudio = [dict[@"send_audio"] isKindOfClass:NSNumber.class] && [dict[@"send_audio"] boolValue];
   if ([dict[@"use_searxng"] isKindOfClass:NSNumber.class]) c.useSearxng = [dict[@"use_searxng"] boolValue];
+  c.researchGearForLocalMatch = [dict[@"local_match_research"] isKindOfClass:NSNumber.class] && [dict[@"local_match_research"] boolValue];
   if ([dict[@"searxng_url"] isKindOfClass:NSString.class]) {
     c.searxngURL = dict[@"searxng_url"];
     if (dict[@"use_searxng"] == nil) c.useSearxng = c.searxngURL.length > 0;
@@ -219,6 +220,7 @@ extern NSDictionary<NSNumber*, NSString*>* rigPortToSymbolMap();
     @"temperature": @(self.temperature)
   } mutableCopy];
   dict[@"use_searxng"] = @(self.useSearxng);
+  dict[@"local_match_research"] = @(self.researchGearForLocalMatch);
   if (self.useSearxng) {
     dict[@"searxng_url"] = self.searxngURL.length ? self.searxngURL : @"http://localhost:8080";
   }
@@ -1666,6 +1668,55 @@ static NSDictionary* rigAICLIEnvironment() {
 
 // Documented gear for the request, from the cache or a short preliminary model call. Returns nil
 // when unavailable; the main request then relies on library keyword search alone.
+// Immutable-for-this-request copy of the editable config.
+- (RigAIConfig*)requestConfigSnapshot {
+  RigAIConfig* cfg = [RigAIConfig new];
+  cfg.provider = self.config.provider;
+  cfg.model = self.config.model;
+  cfg.baseURL = self.config.baseURL;
+  cfg.apiKey = self.config.effectiveApiKey;
+  cfg.temperature = self.config.temperature;
+  cfg.allowLocalCLI = self.config.allowLocalCLI;
+  cfg.sendAudio = self.config.sendAudio;
+  cfg.useSearxng = self.config.useSearxng;
+  cfg.searxngURL = self.config.useSearxng ? (self.config.searxngURL.length ? self.config.searxngURL : @"http://localhost:8080") : nil;
+  return cfg;
+}
+
+- (void)researchGearForPrompt:(NSString*)prompt
+                   completion:(void (^)(NSDictionary* _Nullable research, NSString* _Nullable failure))completion {
+  NSAssert(NSThread.isMainThread, @"Start gear research on the main thread");
+  NSDictionary* cached = rigAIGearResearchMatching(prompt, YES);
+  if (cached) { completion(cached, nil); return; }
+  if (self.isProcessing || self.isApplying) { completion(nil, @"another AI request is running"); return; }
+  if (![prompt isKindOfClass:NSString.class] || !prompt.length || prompt.length > 8192) {
+    completion(nil, @"describe the artist, album or song in the prompt first"); return;
+  }
+  RigAIConfig* cfg = [self requestConfigSnapshot];
+  NSString* provider = cfg.provider.lowercaseString;
+  NSString* localCLI = cfg.allowLocalCLI ? [RigAICopilot detectLocalCLIForProvider:provider] : nil;
+  if (![provider isEqualToString:@"ollama"] && ![provider isEqualToString:@"custom"] &&
+      cfg.effectiveApiKey.length == 0 && !localCLI) {
+    completion(nil, @"no AI provider is configured (API key or signed-in local CLI)"); return;
+  }
+  // Occupies the copilot like any request, so Cancel and the timeout stop it.
+  NSString* requestID = NSUUID.UUID.UUIDString;
+  self.requestID = requestID;
+  self.isProcessing = YES;
+  const NSTimeInterval timeoutSeconds = (localCLI ? kRigAIGearResearchCLITimeout : kRigAIGearResearchHTTPTimeout) + 20;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if ([self.requestID isEqualToString:requestID]) [self timeoutProcessingForRequestID:requestID timeoutSeconds:timeoutSeconds];
+  });
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSDictionary* research = [self researchGearForPrompt:prompt presetContext:nil config:cfg localCLI:localCLI requestID:requestID];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      const BOOL current = [self.requestID isEqualToString:requestID];
+      if (current) [self finishRequest:requestID result:nil error:nil];
+      completion(current ? research : nil, current ? (research ? nil : @"no usable reply") : @"cancelled");
+    });
+  });
+}
+
 - (nullable NSDictionary*)researchGearForPrompt:(NSString*)prompt
                                   presetContext:(nullable NSString*)presetContext
                                          config:(RigAIConfig*)cfg
@@ -1761,16 +1812,7 @@ static NSDictionary* rigAICLIEnvironment() {
         userInfo:@{NSLocalizedDescriptionKey: @"Use a request up to 8192 characters and audio context up to 32768 characters."}]);
     return;
   }
-  RigAIConfig* cfg = [RigAIConfig new]; // Immutable-for-this-request copy of editable config.
-  cfg.provider = self.config.provider;
-  cfg.model = self.config.model;
-  cfg.baseURL = self.config.baseURL;
-  cfg.apiKey = self.config.effectiveApiKey;
-  cfg.temperature = self.config.temperature;
-  cfg.allowLocalCLI = self.config.allowLocalCLI;
-  cfg.sendAudio = self.config.sendAudio;
-  cfg.useSearxng = self.config.useSearxng;
-  cfg.searxngURL = self.config.useSearxng ? (self.config.searxngURL.length ? self.config.searxngURL : @"http://localhost:8080") : nil;
+  RigAIConfig* cfg = [self requestConfigSnapshot];
   NSString* apiKey = [cfg effectiveApiKey];
   NSString* provider = cfg.provider.lowercaseString;
   BOOL isOllama = [provider isEqualToString:@"ollama"];

@@ -26,6 +26,9 @@ public:
   // the source file's inter-channel balance is preserved.
   static void linkStereoNormalization(WavIR& left, WavIR& right) noexcept;
   static unsigned channelCount(const char* path);
+  // The exact taps load() convolves with (resampled, transfer-scaled, 170 ms
+  // tapered), before normalization. Used for offline cab screening.
+  static std::vector<float> loadTaps(const char* path, double hostRate, int channel = -1);
   static constexpr double kMaxSeconds = 0.17;
   ~WavIR();
   // normalizationMode: 1 peak, 2 loudness; all other values use loudness.
