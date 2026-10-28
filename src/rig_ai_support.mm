@@ -223,9 +223,46 @@ NSString* rigAIResolvePackCapture(NSString* root, NSString* target, NSUInteger s
   BOOL isDirectory = NO;
   NSString* full = [root stringByAppendingPathComponent:target];
   if (![NSFileManager.defaultManager fileExistsAtPath:full isDirectory:&isDirectory] || !isDirectory) return nil;
+
+  NSString* lowerQuery = query.lowercaseString ?: @"";
   NSMutableArray<NSString*>* tokens = [NSMutableArray array];
-  for (NSString* t in [query.lowercaseString componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet])
+  for (NSString* t in [lowerQuery componentsSeparatedByCharactersInSet:NSCharacterSet.alphanumericCharacterSet.invertedSet])
     if (t.length > 2) [tokens addObject:t];
+
+  // Gain and voicing intent from query / context
+  const BOOL wantsClean = [lowerQuery containsString:@"clean"] || [lowerQuery containsString:@"acoustic"] ||
+                          [lowerQuery containsString:@"jazz"] || [lowerQuery containsString:@"ambient"] ||
+                          [lowerQuery containsString:@"pristine"] || [lowerQuery containsString:@"sparkle"] ||
+                          [lowerQuery containsString:@"twang"] || [lowerQuery containsString:@"country"] ||
+                          [lowerQuery containsString:@"funk"] || [lowerQuery containsString:@"cln"] ||
+                          [lowerQuery containsString:@"warm clean"];
+
+  const BOOL wantsHeavy = [lowerQuery containsString:@"metal"] || [lowerQuery containsString:@"heavy"] ||
+                          [lowerQuery containsString:@"distort"] || [lowerQuery containsString:@"high gain"] ||
+                          [lowerQuery containsString:@"highgain"] || [lowerQuery containsString:@"gain"] ||
+                          [lowerQuery containsString:@"chug"] || [lowerQuery containsString:@"riff"] ||
+                          [lowerQuery containsString:@"drop"] || [lowerQuery containsString:@"djent"] ||
+                          [lowerQuery containsString:@"thrash"] || [lowerQuery containsString:@"death"] ||
+                          [lowerQuery containsString:@"slipknot"] || [lowerQuery containsString:@"metallica"] ||
+                          [lowerQuery containsString:@"pantera"] || [lowerQuery containsString:@"slayer"] ||
+                          [lowerQuery containsString:@"korn"] || [lowerQuery containsString:@"deftones"] ||
+                          [lowerQuery containsString:@"gojira"] || [lowerQuery containsString:@"meshuggah"] ||
+                          [lowerQuery containsString:@"lamb of god"] || [lowerQuery containsString:@"hard rock"] ||
+                          [lowerQuery containsString:@"grunge"] || [lowerQuery containsString:@"punk"] ||
+                          [lowerQuery containsString:@"aggressive"] || [lowerQuery containsString:@"saturat"] ||
+                          [lowerQuery containsString:@"breakdown"] || [lowerQuery containsString:@"core"] ||
+                          [lowerQuery containsString:@"shred"] || [lowerQuery containsString:@"burn"];
+
+  const BOOL wantsCrunch = [lowerQuery containsString:@"crunch"] || [lowerQuery containsString:@"crnch"] ||
+                           [lowerQuery containsString:@"rock"] || [lowerQuery containsString:@"blues"] ||
+                           [lowerQuery containsString:@"overdrive"] || [lowerQuery containsString:@"breakup"] ||
+                           [lowerQuery containsString:@"plexi"] || [lowerQuery containsString:@"vintage"];
+
+  const BOOL wantsPreamp = [lowerQuery containsString:@"preamp"] || [lowerQuery containsString:@"[pre]"];
+  const BOOL wantsPoweramp = [lowerQuery containsString:@"poweramp"] || [lowerQuery containsString:@"[pow]"];
+  const BOOL wantsBoost = [lowerQuery containsString:@"boost"] || [lowerQuery containsString:@"ts9"] ||
+                          [lowerQuery containsString:@"od808"] || [lowerQuery containsString:@"screamer"];
+
   NSString* best = nil;
   NSInteger bestScore = NSIntegerMin;
   for (NSString* inner in [NSFileManager.defaultManager enumeratorAtPath:full]) {
@@ -234,10 +271,67 @@ NSString* rigAIResolvePackCapture(NSString* root, NSString* target, NSUInteger s
     NSString* name = inner.lowercaseString;
     NSInteger score = 0;
     for (NSString* t in tokens) if ([name containsString:t]) score += 4;
-    // Without other hints, prefer a plain rhythm capture over boosted, lead, clean or solo variants.
-    if ([name containsString:@"rhythm"] || [name containsString:@"rhy"]) score += 2;
-    for (NSString* variant in @[@"boost", @"lead", @"solo", @"clean", @"cln", @"fuzz"])
-      if ([name containsString:variant] && ![tokens containsObject:variant]) score -= 1;
+
+    if (stage == 1) { // Amp stage
+      const BOOL isClean = [name containsString:@"clean"] || [name containsString:@"cln"] ||
+                           [name containsString:@"ch1"] || [name containsString:@"channel 1"] ||
+                           [name containsString:@"channel1"] || [name containsString:@"acoustic"];
+      const BOOL isLead = [name containsString:@"lead"] || [name containsString:@"ld"] ||
+                          [name containsString:@"high gain"] || [name containsString:@"higain"] ||
+                          [name containsString:@"hg"] || [name containsString:@"ch3"] ||
+                          [name containsString:@"ch4"] || [name containsString:@"channel 3"] ||
+                          [name containsString:@"channel 4"] || [name containsString:@"modern"] ||
+                          [name containsString:@"ultra"] || [name containsString:@"red"] ||
+                          [name containsString:@"fire"] || [name containsString:@"burn"];
+      const BOOL isCrunch = [name containsString:@"crunch"] || [name containsString:@"crnch"] ||
+                            [name containsString:@"rhythm"] || [name containsString:@"rhy"] ||
+                            [name containsString:@"rhyt"] || [name containsString:@"ch2"] ||
+                            [name containsString:@"channel 2"] || [name containsString:@"blue"] ||
+                            [name containsString:@"vintage"] || [name containsString:@"drive"] ||
+                            [name containsString:@"raw"];
+      const BOOL isPre = [name containsString:@"[pre]"] || [name containsString:@"-pre-"] ||
+                         [name containsString:@"_pre_"] || [name containsString:@"preamp"];
+      const BOOL isPow = [name containsString:@"[pow]"] || [name containsString:@"-pow-"] ||
+                         [name containsString:@"_pow_"] || [name containsString:@"poweramp"];
+      const BOOL isFullAmp = [name containsString:@"[amp]"] || [name containsString:@"-amp-"] ||
+                             [name containsString:@"_amp_"] || [name containsString:@"head"];
+      const BOOL isBoosted = [name containsString:@"boost"] || [name containsString:@"ts9"] ||
+                             [name containsString:@"od808"] || [name containsString:@"fortin"];
+
+      // Strongly prefer full amplifier head captures over isolated preamp or poweramp slices
+      if (isFullAmp) score += 2;
+      if (isPre && !wantsPreamp) score -= 5;
+      if (isPow && !wantsPoweramp) score -= 8;
+
+      // Voicing alignment based on gain intent
+      if (wantsClean && !wantsHeavy) {
+        if (isClean) score += 6;
+        if (isCrunch) score -= 3;
+        if (isLead) score -= 8;
+      } else if (wantsHeavy) {
+        if (isLead) score += 5;
+        if (isCrunch) score += 2;
+        if (isClean) score -= 10; // Heavily penalize clean channel for heavy/metal tone
+      } else if (wantsCrunch) {
+        if (isCrunch) score += 4;
+        if (isLead) score += 1;
+        if (isClean) score -= 4;
+      } else {
+        // Neutral / general electric guitar: active amp channels rank ahead of clean
+        if (isCrunch) score += 2;
+        if (isLead) score += 2;
+        if (isClean) score -= 2;
+      }
+
+      if ([name containsString:@"rhythm"] || [name containsString:@"rhy"]) score += 2;
+      if (isBoosted && !wantsBoost) score -= 1;
+    } else {
+      // Pedals / Cabinets
+      if ([name containsString:@"rhythm"] || [name containsString:@"rhy"]) score += 2;
+      for (NSString* variant in @[@"boost", @"lead", @"solo", @"clean", @"cln", @"fuzz"])
+        if ([name containsString:variant] && ![tokens containsObject:variant]) score -= 1;
+    }
+
     if (score > bestScore || (score == bestScore && [relative localizedStandardCompare:best] == NSOrderedAscending)) {
       best = relative;
       bestScore = score;
@@ -406,6 +500,20 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
   const BOOL wantsChainsawOrFuzz = [lowerQuery containsString:@"chainsaw"] || [lowerQuery containsString:@"hm2"] ||
                                    [lowerQuery containsString:@"hm-2"] || [lowerQuery containsString:@"fuzz"] ||
                                    [lowerQuery containsString:@"doom"] || [lowerQuery containsString:@"sludge"];
+  const BOOL wantsHeavyOrMetal = [lowerQuery containsString:@"metal"] || [lowerQuery containsString:@"heavy"] ||
+                                 [lowerQuery containsString:@"distort"] || [lowerQuery containsString:@"high gain"] ||
+                                 [lowerQuery containsString:@"highgain"] || [lowerQuery containsString:@"gain"] ||
+                                 [lowerQuery containsString:@"chug"] || [lowerQuery containsString:@"drop"] ||
+                                 [lowerQuery containsString:@"slipknot"] || [lowerQuery containsString:@"metallica"] ||
+                                 [lowerQuery containsString:@"pantera"] || [lowerQuery containsString:@"slayer"] ||
+                                 [lowerQuery containsString:@"korn"] || [lowerQuery containsString:@"djent"] ||
+                                 [lowerQuery containsString:@"thrash"] || [lowerQuery containsString:@"death"] ||
+                                 [lowerQuery containsString:@"hard rock"] || [lowerQuery containsString:@"aggressive"];
+  const BOOL wantsCleanTone = [lowerQuery containsString:@"clean"] || [lowerQuery containsString:@"acoustic"] ||
+                              [lowerQuery containsString:@"jazz"] || [lowerQuery containsString:@"ambient"] ||
+                              [lowerQuery containsString:@"pristine"] || [lowerQuery containsString:@"sparkle"] ||
+                              [lowerQuery containsString:@"twang"] || [lowerQuery containsString:@"country"] ||
+                              [lowerQuery containsString:@"funk"];
   NSDirectoryEnumerator* en = [NSFileManager.defaultManager enumeratorAtPath:root];
   NSMutableDictionary* manifests = [NSMutableDictionary dictionary];
   for (NSUInteger s = 0; s < 3; ++s) {
@@ -459,15 +567,35 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
       if (matchesToken(token, primaryText)) score += 4;
       else if (matchesToken(token, searchable)) score += 2;
     }
-    if (score > 0 && stage == 1 && !wantsChainsawOrFuzz) {
+    if (score > 0 && stage == 1) {
       NSString* fileLower = relative.lastPathComponent.lowercaseString;
-      if ([fileLower containsString:@"chainsaw"] || [fileLower containsString:@"jugendstil"] ||
-          [fileLower containsString:@"hm300"] || [fileLower containsString:@"pickle"] ||
-          [fileLower containsString:@"fuzz"]) {
+      if (!wantsChainsawOrFuzz) {
+        if ([fileLower containsString:@"chainsaw"] || [fileLower containsString:@"jugendstil"] ||
+            [fileLower containsString:@"hm300"] || [fileLower containsString:@"pickle"] ||
+            [fileLower containsString:@"fuzz"]) {
+          score = score > 3 ? score - 3 : 1;
+        } else if ([fileLower containsString:@"noboost"] || [fileLower containsString:@"no-boost"] ||
+                   [fileLower containsString:@"od808"] || [fileLower containsString:@"ts9"]) {
+          score += 1;
+        }
+      }
+      const BOOL isCleanFile = [fileLower containsString:@"clean"] || [fileLower containsString:@"cln"] ||
+                               [fileLower containsString:@"ch1"] || [fileLower containsString:@"channel 1"];
+      const BOOL isLeadFile = [fileLower containsString:@"lead"] || [fileLower containsString:@"high gain"] ||
+                              [fileLower containsString:@"higain"] || [fileLower containsString:@"hg"] ||
+                              [fileLower containsString:@"ch3"] || [fileLower containsString:@"ch4"] ||
+                              [fileLower containsString:@"modern"] || [fileLower containsString:@"ultra"] ||
+                              [fileLower containsString:@"red"];
+      const BOOL isPreFile = [fileLower containsString:@"[pre]"] || [fileLower containsString:@"preamp"];
+      if (isPreFile && ![lowerQuery containsString:@"preamp"]) {
         score = score > 3 ? score - 3 : 1;
-      } else if ([fileLower containsString:@"noboost"] || [fileLower containsString:@"no-boost"] ||
-                 [fileLower containsString:@"od808"] || [fileLower containsString:@"ts9"]) {
-        score += 1;
+      }
+      if (wantsHeavyOrMetal) {
+        if (isCleanFile) score = score > 4 ? score - 4 : 1;
+        else if (isLeadFile) score += 2;
+      } else if (wantsCleanTone) {
+        if (isCleanFile) score += 3;
+        else if (isLeadFile) score = score > 4 ? score - 4 : 1;
       }
     }
     item[@"score"] = @(score);
@@ -476,7 +604,21 @@ NSArray<NSDictionary*>* rigAILibraryCandidatesWithTotalsAndScores(NSString* root
   }
   [items sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
     NSComparisonResult score = [b[@"score"] compare:a[@"score"]];
-    return score == NSOrderedSame ? [a[@"path"] compare:b[@"path"]] : score;
+    if (score != NSOrderedSame) return score;
+    if (wantsHeavyOrMetal) {
+      NSString* aName = [a[@"path"] lastPathComponent].lowercaseString;
+      NSString* bName = [b[@"path"] lastPathComponent].lowercaseString;
+      BOOL aClean = [aName containsString:@"clean"] || [aName containsString:@"cln"];
+      BOOL bClean = [bName containsString:@"clean"] || [bName containsString:@"cln"];
+      if (aClean != bClean) return aClean ? NSOrderedDescending : NSOrderedAscending;
+    } else if (wantsCleanTone) {
+      NSString* aName = [a[@"path"] lastPathComponent].lowercaseString;
+      NSString* bName = [b[@"path"] lastPathComponent].lowercaseString;
+      BOOL aClean = [aName containsString:@"clean"] || [aName containsString:@"cln"];
+      BOOL bClean = [bName containsString:@"clean"] || [bName containsString:@"cln"];
+      if (aClean != bClean) return aClean ? NSOrderedAscending : NSOrderedDescending;
+    }
+    return [a[@"path"] compare:b[@"path"]];
   }];
   // Balanced shortlist: neither a huge amp family nor cab pack can crowd out the other stages.
   // Pedals get a small share; amps and cabs split the rest.
@@ -1106,6 +1248,19 @@ NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullabl
       "Treble/Sizzle (8 kHz)",
       "Air/Fizz (12 kHz)"
     };
+
+    if (player.crest > 0.0f && ref.crest > 0.0f) {
+      float crestDelta = player.crest - ref.crest;
+      [out appendFormat:@"• Signal Dynamics & Saturation: Delta %+.1f dB (Player %.1f vs Ref %.1f dB crest factor) — ",
+          crestDelta, player.crest, ref.crest];
+      if (ref.crest < 11.5f && crestDelta > 3.0f) {
+        [out appendString:@"Target reference is heavily saturated/compressed (high-gain distortion or heavy overdrive). Player take has much wider dynamic range (clean/uncompressed). Select a high-gain/lead amplifier channel or engage overdrive to match reference saturation.\n"];
+      } else if (ref.crest > 14.0f && crestDelta < -3.0f) {
+        [out appendString:@"Target reference has wide dynamic headroom (clean or edge-of-breakup tone). Player take is more saturated/compressed. Lower pre-gain/drive or select a clean amp channel to preserve dynamic touch.\n"];
+      } else {
+        [out appendString:@"Saturation level and dynamic compression closely align with reference.\n"];
+      }
+    }
 
     for (int i = 0; i < 8; ++i) {
       float normalizedPlayerBand = player.bands[i] - rmsOffset;

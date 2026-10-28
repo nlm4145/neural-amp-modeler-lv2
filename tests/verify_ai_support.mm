@@ -171,6 +171,18 @@ int main(int argc, char** argv) {
     CHECK(!rigAIResolvePackCapture(root, @"Cab/CabA", 1, @""));
     CHECK(!rigAIResolvePackCapture(root, @"../library", 1, @""));
 
+    NSString* packDir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"axe-pack-%@", [NSUUID UUID].UUIDString]];
+    NSString* packAmpDir = [packDir stringByAppendingPathComponent:@"Amp/Multi"];
+    [NSFileManager.defaultManager createDirectoryAtPath:packAmpDir withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"fixture" writeToFile:[packAmpDir stringByAppendingPathComponent:@"[AMP] Clean.nam"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"fixture" writeToFile:[packAmpDir stringByAppendingPathComponent:@"[AMP] Lead.nam"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"fixture" writeToFile:[packAmpDir stringByAppendingPathComponent:@"[PRE] Rhythm.nam"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    CHECK([rigAIResolvePackCapture(packDir, @"Amp/Multi", 1, @"Slipknot - Before I forget") isEqual:@"Amp/Multi/[AMP] Lead.nam"]);
+    CHECK([rigAIResolvePackCapture(packDir, @"Amp/Multi", 1, @"clean jazz") isEqual:@"Amp/Multi/[AMP] Clean.nam"]);
+    CHECK([rigAIResolvePackCapture(packDir, @"Amp/Multi", 1, @"") isEqual:@"Amp/Multi/[AMP] Lead.nam"]);
+    [NSFileManager.defaultManager removeItemAtPath:packDir error:nil];
+
     // Profile key extraction and variant comparison (Custom > A2 > A1, capacity)
     CHECK([rigAIProfileKey(@"Amp-Dialled-xSTD.nam") isEqual:@"ampdialled"]);
     CHECK([rigAIProfileKey(@"Amp Dialled (A2).nam") isEqual:@"ampdialled"]);
@@ -205,6 +217,13 @@ int main(int argc, char** argv) {
     CHECK([deltaGuidance containsString:@"palm-mute"]);
     CHECK([deltaGuidance.lowercaseString containsString:@"pick attack"]);
     CHECK([deltaGuidance containsString:@"sizzle"]);
+
+    // Dynamic crest factor saturation delta check
+    NSString* saturatedRef = @"Reference: peak -1.0 dBFS; RMS -8.5; crest 7.5 dB; clipped samples 0; broad filter estimates at 90/250/500/1000/2000/4000/8000/12000 Hz: -22.0/-15.0/-20.0/-22.0/-20.0/-20.0/-26.0/-44.0 dBFS";
+    NSString* cleanPlayer = @"Player take: peak -2.0 dBFS; RMS -18.0; crest 16.0 dB; clipped samples 0; broad filter estimates at 90/250/500/1000/2000/4000/8000/12000 Hz: -18.0/-15.0/-20.0/-22.0/-20.0/-26.0/-20.0/-38.0 dBFS";
+    NSString* satGuidance = rigAIAcousticDeltaGuidance(cleanPlayer, saturatedRef);
+    CHECK([satGuidance containsString:@"heavily saturated"]);
+    CHECK([satGuidance containsString:@"high-gain"]);
 
     // Combined audio description parsing
     NSString* combinedDesc = [NSString stringWithFormat:@"PLAYER TAKE:\n%@\n\nTARGET REFERENCE:\n%@", playerTake, refTake];

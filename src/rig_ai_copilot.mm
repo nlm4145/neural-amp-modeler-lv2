@@ -2031,10 +2031,17 @@ static NSDictionary* rigAICLIEnvironment() {
 
           // The AI may name a pack folder from the index; pick a concrete capture inside it.
           NSString* libraryRoot = [[weakSelf class] libraryRootPath];
+          NSMutableString* resolveContext = [NSMutableString stringWithString:candidateQuery ?: @""];
+          if (result.genre.length) [resolveContext appendFormat:@" %@", result.genre];
+          if (result.artist.length) [resolveContext appendFormat:@" %@", result.artist];
+          if (result.song.length) [resolveContext appendFormat:@" %@", result.song];
+          if (result.thought.length) [resolveContext appendFormat:@" %@", result.thought];
+          if (result.explanation.length) [resolveContext appendFormat:@" %@", result.explanation];
+          if (audioDescription.length) [resolveContext appendFormat:@" %@", audioDescription];
           for (NSUInteger stage = 0; stage < 3; ++stage) {
             NSString* path = stage == 0 ? result.pedalPath : (stage == 1 ? result.ampPath : result.cabPath);
             if (!path.length || rigAIIsNoneModel(path)) continue;
-            NSString* capture = rigAIResolvePackCapture(libraryRoot, path, stage, candidateQuery);
+            NSString* capture = rigAIResolvePackCapture(libraryRoot, path, stage, resolveContext);
             if (!capture.length) continue;
             if (stage == 0) result.pedalPath = capture;
             else if (stage == 1) result.ampPath = capture;
