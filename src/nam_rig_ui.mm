@@ -2880,17 +2880,34 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (!view) return;
   NSDateFormatter* formatter = [NSDateFormatter new];
   formatter.dateFormat = @"HH:mm:ss";
-  NSString* stamped = [NSString stringWithFormat:@"[%@] %@", [formatter stringFromDate:NSDate.date], line];
+  NSString* stamped = [line containsString:@"\n"] ?
+      [NSString stringWithFormat:@"[%@]\n%@", [formatter stringFromDate:NSDate.date], line] :
+      [NSString stringWithFormat:@"[%@] %@", [formatter stringFromDate:NSDate.date], line];
   NSString* current = self.copilotLogBase ?: view.string ?: @"";
   NSString* next = current.length ? [NSString stringWithFormat:@"%@\n%@", current, stamped] : stamped;
   self.copilotLogBase = next;
   view.string = next;
   [view scrollRangeToVisible:NSMakeRange(next.length, 0)];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [view scrollRangeToVisible:NSMakeRange(view.string.length, 0)];
+    NSScrollView* sv = view.enclosingScrollView;
+    if (sv) {
+      NSPoint bottom = NSMakePoint(0, std::max<CGFloat>(0.0, NSMaxY(view.frame) - NSHeight(sv.contentView.bounds)));
+      [sv.contentView scrollToPoint:bottom];
+      [sv reflectScrolledClipView:sv.contentView];
+    }
+  });
 }
 
 - (void)resetCopilotLog:(NSString*)header {
   self.copilotLogBase = header ?: @"";
   self.copilotOutputView.string = self.copilotLogBase;
+  NSTextView* view = self.copilotOutputView;
+  if (view) {
+    [view scrollRangeToVisible:NSMakeRange(0, 0)];
+    NSScrollView* sv = view.enclosingScrollView;
+    if (sv) [sv.contentView scrollToPoint:NSMakePoint(0, 0)];
+  }
 }
 
 - (void)setCopilotLiveLine:(NSString*)line {
@@ -2901,6 +2918,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   NSString* next = line.length ? (base.length ? [NSString stringWithFormat:@"%@\n%@", base, line] : line) : base;
   view.string = next;
   [view scrollRangeToVisible:NSMakeRange(next.length, 0)];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [view scrollRangeToVisible:NSMakeRange(view.string.length, 0)];
+    NSScrollView* sv = view.enclosingScrollView;
+    if (sv) {
+      NSPoint bottom = NSMakePoint(0, std::max<CGFloat>(0.0, NSMaxY(view.frame) - NSHeight(sv.contentView.bounds)));
+      [sv.contentView scrollToPoint:bottom];
+      [sv reflectScrolledClipView:sv.contentView];
+    }
+  });
 }
 
 - (NSString*)plannedCopilotPresetName {
@@ -3908,7 +3934,28 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     [self appendCopilotLog:@"Record a new paired take: the rig changed during the previous take."]; return;
   }
   if (r.isDIClipped) {
-    [self appendCopilotLog:@"❌ Raw DI reaches full scale (0 dBFS clipping). Lower interface input gain and record an unclipped take before local training."]; return;
+    NSString* alert =
+      @"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+       "❌ TONE MATCHING HALTED: GUITAR INPUT SIGNAL TOO LOUD\n"
+       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+       "Your raw guitar DI reached digital maximum (0.0 dBFS clipping)\n"
+       "on your audio interface.\n\n"
+       "Why this matters:\n"
+       "  Digital clipping chops off the tops of your guitar sound waves\n"
+       "  into square-wave buzz. If the AI matched tone on this take, it\n"
+       "  would mistake digital distortion for amplifier drive and dial in\n"
+       "  incorrect gain, cabinet cuts, and EQ.\n\n"
+       "HOW TO FIX (3 quick steps):\n"
+       "  1. Turn down the physical Gain knob on your audio interface.\n"
+       "     (Strum your hardest chords: keep the halo green/amber, never red).\n"
+       "  2. Click '✕ Clear' above to discard this clipped take.\n"
+       "  3. Click '● Play Along' or '● Record Riff' to record an unclipped take.\n"
+       "  4. Click 'Learn & Match' again.\n"
+       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+    [self appendCopilotLog:alert];
+    self.copilotLocalMatchStatus.stringValue = @"Error: Guitar input clipped at 0 dBFS. Lower interface gain & re-record.";
+    self.copilotLocalMatchStatus.textColor = [NSColor systemRedColor];
+    return;
   }
   if (_state->unconfirmedRecordingStage() >= 0) {
     [self appendCopilotLog:@"Wait for active models to finish loading before starting local matching."]; _state->sendGet(); return;
@@ -4002,9 +4049,21 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
           weakSelf.copilotLocalMatching = NO; [weakSelf.copilotSpinner stopAnimation:nil];
           if (generation != weakSelf.copilotLocalMatchGeneration) { [weakSelf appendCopilotLog:@"Local matching cancelled; live rig unchanged."]; [weakSelf updateCopilotRiffUI]; return; }
           if (error) {
-            [weakSelf appendCopilotLog:[NSString stringWithFormat:@"❌ %@", error.localizedDescription]];
+            NSString* errText = error.localizedDescription ?: @"Local matching error";
+            NSString* banner = [NSString stringWithFormat:
+              @"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+               "❌ TONE MATCHING HALTED: %@\n"
+               "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+               "%@\n\n"
+               "HOW TO PROCEED:\n"
+               "  • If the input clipped: turn down interface Gain, Clear, and re-record.\n"
+               "  • If active models changed: wait for loading to complete, then retry.\n"
+               "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+               [errText containsString:@"clipping"] || [errText containsString:@"full scale"] ? @"INPUT TOO LOUD (0 dBFS)" : @"ERROR",
+               errText];
+            [weakSelf appendCopilotLog:banner];
             [weakSelf updateCopilotRiffUI];
-            weakSelf.copilotLocalMatchStatus.stringValue = [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
+            weakSelf.copilotLocalMatchStatus.stringValue = [NSString stringWithFormat:@"Error: %@", errText];
             weakSelf.copilotLocalMatchStatus.textColor = [NSColor systemRedColor];
             return;
           }
