@@ -10,7 +10,7 @@ class WorkflowTests(unittest.TestCase):
     def test_separate_player_target_and_upload(self):
         ui = (ROOT / "src/nam_rig_ui.mm").read_text()
         for label in ["Your guitar — record your playing",
-                      "2. Load target sound…", "not uploaded",
+                      "Load target sound…", "not uploaded",
                       "Send recordings to cloud AI", "Claude uses audio measurements only",
                       "To enable: "]:
             self.assertIn(label, ui)

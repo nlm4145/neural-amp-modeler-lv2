@@ -131,6 +131,7 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) NSPopUpButton* copilotTargetLengthPopup;
 @property(nonatomic, strong) NSTextField* copilotTargetRangeLabel;
 @property(nonatomic, strong) NSTextField* copilotLocalMatchStatus;
+@property(nonatomic, strong) NSTextField* copilotWorkflowStatus;
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
 @property(nonatomic, strong) NSButton* copilotMatchResearchButton;
 @property(nonatomic, strong) NSButton* copilotAccurateRescoreButton;
@@ -2810,7 +2811,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   addSep(card2, cardH - 54, contentW);
 
   // Section 1: Guitar DI
-  addLabel(card2, @"1. Your guitar — record your playing for matching", NSMakeRect(16, cardH - 80, contentW, 18),
+  addLabel(card2, @"Your guitar — record your playing for matching", NSMakeRect(16, cardH - 80, contentW, 18),
            [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
 
   self.copilotRecordBtn = rigButton(card2, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(16, cardH - 114, 116, 26));
@@ -2872,10 +2873,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   addSep(card2, cardH - 246, contentW);
 
   // Section 3: Target Reference Sound
-  addLabel(card2, @"2. Load target sound to match (Demucs separates guitar locally):", NSMakeRect(16, cardH - 268, contentW, 18),
+  addLabel(card2, @"Target sound to match (Demucs separates guitar locally):", NSMakeRect(16, cardH - 268, contentW, 18),
            [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
 
-  RigButton* targetButton = rigButton(card2, @"2. Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(16, cardH - 300, 166, 26));
+  RigButton* targetButton = rigButton(card2, @"Load target sound…", self, @selector(importCopilotReference:), NSMakeRect(16, cardH - 300, 166, 26));
   targetButton.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   targetButton.toolTip = @"Choose an audio file or song to match. Extracts the guitar stem locally via Demucs by default (no upload). Hold Option to load an already-isolated guitar track as-is.";
 
@@ -2960,35 +2961,36 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
                                    [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold], rigOrange());
   rigApplyTracking(guideHdr, 1.0);
 
-  NSTextField* guideSub = addLabel(card2, @"Four-step discipline for professional album-grade matches", NSMakeRect(16, cardH - 408, contentW, 14),
-                                   [NSFont systemFontOfSize:9.5 weight:NSFontWeightRegular], rigDimText());
-  rigApplyTracking(guideSub, 0.6);
+  self.copilotWorkflowStatus = addLabel(card2, @"", NSMakeRect(16, cardH - 420, contentW, 28),
+                                       [NSFont systemFontOfSize:10 weight:NSFontWeightMedium], rigGreen());
+  self.copilotWorkflowStatus.lineBreakMode = NSLineBreakByWordWrapping;
+  self.copilotWorkflowStatus.maximumNumberOfLines = 2;
 
   const CGFloat boxH = 92.0;
   const CGFloat boxGap = 8.0;
   CGFloat boxY = cardH - 424 - boxH;
 
   addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
-             @"1. DI RECORDING & PLAY ALONG",
-             @"Record clean pickup signal without any amplifier saturation or pedals. Wear headphones and use 'Play Along' to match the timing and phrasing of the reference excerpt.",
+             @"1. PREPARE YOUR TWO INPUTS",
+             @"Load target sound and record your guitar with Record Riff, in either order. For Play Along, load and preview the target section first, then record through headphones.",
              rigOrange());
 
   boxY -= (boxH + boxGap);
   addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
-             @"2. LOCAL STEM SEPARATION",
-             @"Demucs runs on your Mac to cleanly separate the guitar track from drums, bass, and vocals. All audio processing stays strictly offline on your computer.",
+             @"2. RUN LEARN & MATCH",
+             @"Once the target guitar and unclipped raw DI are ready, click Learn & Match in the right panel. It compares installed amps and cabs locally. Research and online search are optional.",
              rigOrange());
 
   boxY -= (boxH + boxGap);
   addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
-             @"3. LEARN & MATCH OPTIMIZATION",
-             @"The local DSP matcher analyzes acoustic feature profiles, ranking your installed NAM captures and cabinet IRs to recreate the target guitar sound.",
+             @"3. LISTEN & COMPARE",
+             @"Choose a ranked candidate, then click Render DI A/B. Use the track menu and Play to compare Baseline and Candidate; Preview plays the target. Changing candidates requires a new render.",
              rigOrange());
 
   boxY -= (boxH + boxGap);
   addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
-             @"4. OFFLINE DI AUDITIONING",
-             @"Use 'Render DI A/B' to compare baseline and candidate proposals with your exact guitar take before committing any changes to your live setup.",
+             @"4. APPLY & SAVE WHEN READY",
+             @"When you like the sound, name the preset and click Apply & Save in the left panel. This updates your live rig and saves the preset. Listening first is recommended, not required.",
              rigOrange());
 
   // ----------------------------------------------------
@@ -3798,10 +3800,38 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (!r.referenceFrames.length) [missing addObject:@"load a target guitar sound"];
   else if (r.referenceIsFullMix) [missing addObject:@"use a guitar-only target, not a full song mix"];
   if (r.recordingMetadata[@"warning"]) [missing addObject:@"re-record without changing the rig"];
-  self.copilotLocalMatchBtn.enabled = !missing.count && !busy;
-  NSString* matchStatus = self.copilotLocalMatching ? @"Training locally… no AI charge. Cancel stops after the current render." :
+  self.copilotLocalMatchBtn.enabled = !missing.count && !busy && !self.copilotDemucsRunning;
+  NSString* nextStep;
+  if (self.copilotDemucsRunning)
+    nextStep = @"Step 1: Separating the target guitar… wait for extraction to finish.";
+  else if (self.copilotLocalMatching)
+    nextStep = @"Step 2: Matching your take… wait for ranked candidates, or Cancel.";
+  else if (r.isRecording || countingDown)
+    nextStep = @"Step 1: Record your guitar, then Stop when your take is complete.";
+  else if (r.isRendering)
+    nextStep = @"Step 3: Rendering your DI comparison… wait for playback to be ready.";
+  else if (busy)
+    nextStep = @"Wait for the current AI request or preset application to finish before continuing.";
+  else if (!r.renderHandler)
+    nextStep = @"Step 1: Open standalone Axe FX to capture raw guitar DI for matching.";
+  else if (!r.referenceFrames.length || r.referenceIsFullMix)
+    nextStep = @"Step 1: Load target sound, then Preview and choose its section. You can record DI first.";
+  else if (!r.recordedDIFrames.length)
+    nextStep = @"Step 1: Click Play Along with headphones, or Record Riff, to capture your guitar DI.";
+  else if (r.isDIClipped || r.recordingMetadata[@"warning"])
+    nextStep = r.isDIClipped ? @"Step 1: Lower interface gain and record again; your raw DI clipped." :
+        @"Step 1: Record again without changing the rig during the take.";
+  else if (self.copilotLocalMatches.count && self.copilotProposal) {
+    nextStep = r.baselineWavData.length && r.candidateWavData.length ?
+        @"Step 3 → 4: Compare Baseline / Candidate using Play. Like it? Name it, then Apply & Save." :
+        @"Step 3: Choose a ranked candidate, then Render DI A/B to hear it before applying.";
+  } else
+    nextStep = @"Step 2: Both inputs are ready. Click Learn & Match in the right panel.";
+  self.copilotWorkflowStatus.stringValue = nextStep;
+  self.copilotWorkflowStatus.toolTip = nextStep;
+  NSString* matchStatus = self.copilotDemucsRunning ? nextStep : self.copilotLocalMatching ? @"Training locally… no AI charge. Cancel stops after the current render." :
       (missing.count ? [@"To enable: " stringByAppendingString:[missing componentsJoinedByString:@"; "]] :
-       (busy ? @"Finish recording/rendering before local matching." : @"Ready: Learn & Match → Render DI A/B → listen → Apply & Save. No AI charge."));
+       (busy ? @"Finish recording/rendering before local matching." : nextStep));
   self.copilotLocalMatchStatus.stringValue = matchStatus;
   self.copilotLocalMatchStatus.toolTip = matchStatus;
   self.copilotLocalMatchStatus.textColor = missing.count ? [NSColor systemOrangeColor] : rigDimText();

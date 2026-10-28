@@ -45,6 +45,10 @@ The Copilot drawer's **Learn & Match** action is separate from **Preview Tone**:
 it requires an unclipped paired raw DI take and **Load target sound…** with a target track
 (which extracts the isolated guitar stem locally via Demucs by default). The drawer separately shows
 **Your guitar**, **Target sound**, and the reason matching is disabled.
+The workflow guide shows the next action from current capture, target, matching, and render state.
+Target import and ordinary DI recording can happen in either order; Play Along requires the selected
+target first. Both inputs precede Learn & Match, then candidate selection precedes Render DI A/B.
+Listening before Apply & Save is recommended rather than enforced.
 Targets decode through CoreAudio `ExtAudioFile` (WAV/AIFF/MP3/M4A/ALAC/FLAC/CAF) and keep
 the whole song in memory (bounded to 32 M samples; longer files are truncated and
 flagged). The target row's **Auto / Start / Length (5–20 s)** controls pick the section
