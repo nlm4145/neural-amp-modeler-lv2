@@ -162,6 +162,10 @@ target features; no raw audio) are saved as per-run JSON under
   retrieve cached renders across screening and search phases.
 
 ### Demucs-Aware Scoring & Symmetric Re-Scoring (Phase D)
+- **Separation Quality**: Reference import and finalist re-extraction share `rigDemucsArguments`:
+  `htdemucs_6s`, four shifted predictions, 50% chunk overlap, and float32 WAV output.
+  This trades longer processing for reduced artifacts; the experimental guitar model can still
+  discard guitar content. Stereo is preserved, and no corrective EQ is applied to the reference.
 - **Band De-weighting**: When `referenceSource == @"demucs"` (e.g. guitar isolated via local Demucs),
   frequencies below 100 Hz (bass/kick bleed) and above 8000 Hz (source separation smear and phase
   cancelation) are de-weighted at $0.3\times$ in the feature distance calculation.

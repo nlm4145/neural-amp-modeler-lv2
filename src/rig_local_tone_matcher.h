@@ -57,6 +57,8 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^ _Nullable)(NSString*)
 @end
 
 NSString* _Nullable findPython3(void);
+// Shared separation settings for reference import and symmetric re-scoring.
+NSArray<NSString*>* rigDemucsArguments(NSString* inputPath, NSString* outputDirectory, BOOL guitarOnly);
 BOOL checkDemucsDependencies(NSString* python3);
 BOOL ensureDemucsInstalled(NSString* python3, void (^ _Nullable logger)(NSString* msg), NSError** _Nullable error);
 

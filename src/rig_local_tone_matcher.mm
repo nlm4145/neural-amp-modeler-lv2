@@ -323,7 +323,7 @@ NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, double& out
   [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir withIntermediateDirectories:YES attributes:nil error:nil];
   NSTask* task = [NSTask new];
   task.launchPath = python3;
-  task.arguments = @[@"-m", @"demucs", @"--name=htdemucs_6s", @"--two-stems=guitar", @"--out", tmpDir, mixWavPath];
+  task.arguments = rigDemucsArguments(mixWavPath, tmpDir, YES);
   task.standardOutput = [NSPipe pipe];
   NSPipe* errPipe = [NSPipe pipe];
   task.standardError = errPipe;
@@ -421,6 +421,19 @@ NSArray<NSNumber*>* scoreEmbeddings(NSString* python3, NSString* targetWav, NSAr
   return [dists isKindOfClass:[NSArray class]] ? dists : nil;
 }
 } // namespace
+
+NSArray<NSString*>* rigDemucsArguments(NSString* inputPath, NSString* outputDirectory, BOOL guitarOnly) {
+  // Average shifted predictions and overlap chunks more generously to reduce
+  // separation artifacts. Both paths must use the same inference settings.
+  NSMutableArray<NSString*>* args = [NSMutableArray arrayWithArray:@[
+    @"-m", @"demucs", @"--name=htdemucs_6s",
+    @"--shifts=4", @"--overlap=0.5", @"--float32"
+  ]];
+  // This changes output packaging only; Demucs still estimates all six stems.
+  if (guitarOnly) [args addObject:@"--two-stems=guitar"];
+  [args addObjectsFromArray:@[@"--out", outputDirectory, inputPath]];
+  return args;
+}
 
 NSString* findPython3(void) {
   const char* venv = getenv("VIRTUAL_ENV");

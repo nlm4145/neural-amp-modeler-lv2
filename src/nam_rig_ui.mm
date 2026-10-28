@@ -3973,7 +3973,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotDemucsRunning = YES;
   self.copilotDemucsSpinner.hidden = NO;
   [self.copilotDemucsSpinner startAnimation:nil];
-  [self resetCopilotLog:[NSString stringWithFormat:@"Demucs: separating guitar stem from \"%@\"...",
+  [self resetCopilotLog:[NSString stringWithFormat:@"Demucs: separating guitar stem from \"%@\" (higher quality: 4 shifts, 50%% overlap; takes longer)...",
       inputURL.lastPathComponent]];
   [self updateCopilotRiffUI];
 
@@ -4011,16 +4011,11 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
     // ── 3. Run Demucs ────────────────────────────────────────────────────
     // htdemucs_6s provides a dedicated guitar stem (guitar.wav) distinct
-    // from bass, drums, vocals, piano, and other. --two-stems merges all
-    // non-target stems and loses that precision.
+    // from bass, drums, vocals, piano, and other. Save all stems so the
+    // backing remains available for symmetric re-scoring.
     NSTask* demucsTask = [NSTask new];
     demucsTask.launchPath = python3;
-    demucsTask.arguments = @[
-      @"-m", @"demucs",
-      @"--name=htdemucs_6s",
-      @"--out", tmpDir,
-      inputURL.path
-    ];
+    demucsTask.arguments = rigDemucsArguments(inputURL.path, tmpDir, NO);
     NSPipe* demucsPipe = [NSPipe pipe];
     demucsTask.standardOutput = demucsPipe;
     demucsTask.standardError = demucsPipe; // Demucs progress goes to stderr
