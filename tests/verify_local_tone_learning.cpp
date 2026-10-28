@@ -24,6 +24,29 @@ int main() {
       .05f * std::sin(2 * 3.141592653589793 * 2500 * i / 44100);
   auto differentRate = measure(otherRate.data(), otherRate.size(), 1, 44100);
   assert(distance(a.features, differentRate.features) < .15);
+  // Demucs returns native 44.1 kHz audio even for a 96 kHz DI render.
+  // Preserve excerpt times and reject truncated output before touching samples.
+  {
+    const std::vector<Span> diSpans{{0, 144000}, {168000, 144000}, {336000, 144000}};
+    const auto nativeSpans = spansAtRate(diSpans, 96000, 44100);
+    assert(nativeSpans.back().start == 154350 && nativeSpans.back().count == 66150);
+    std::vector<float> extracted(220500 * 2);
+    for (size_t i = 0; i < 220500; ++i)
+      extracted[2 * i] = extracted[2 * i + 1] = .1f * std::sin(2 * M_PI * 250 * i / 44100);
+    bool rejected = false;
+    try { measureSpans(extracted.data(), 220500, 2, diSpans, 96000); }
+    catch (const std::runtime_error&) { rejected = true; }
+    assert(rejected);
+    const auto native = measureSpans(extracted.data(), 220500, 2, nativeSpans, 44100);
+    for (double feature : native.features) assert(std::isfinite(feature));
+    for (const auto& invalid : std::vector<std::vector<Span>>{
+        {{220500, 256}}, {{220501, 256}}, {{1, SIZE_MAX}}, {{0, 220501}}}) {
+      rejected = false;
+      try { measureSpans(extracted.data(), 220500, 2, invalid, 44100); }
+      catch (const std::runtime_error&) { rejected = true; }
+      assert(rejected);
+    }
+  }
   // FFT agrees with a naive DFT.
   {
     std::vector<double> re(64), im(64, 0), x(64);

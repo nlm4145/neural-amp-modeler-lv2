@@ -48,7 +48,6 @@ NSString* symbol(uint32_t port) { return @(rigControlSymbol(port)); }
 // Keep the raw amplitude; take up to three non-overlapping 1.5-second windows,
 // loudest first, so one riff section (or the guided recording's muted-string
 // pre-roll) cannot dominate. Returned in chronological order.
-struct Span { size_t start, count; };
 std::vector<Span> excerpts(NSData* data, double rate, size_t channels) {
   const auto* samples = static_cast<const float*>(data.bytes);
   const size_t frames = data.length / (channels * sizeof(float));
@@ -75,12 +74,6 @@ std::vector<Span> excerpts(NSData* data, double rate, size_t channels) {
   std::sort(chosen.begin(), chosen.end(), [](const Span& x, const Span& y) { return x.start < y.start; });
   return chosen;
 }
-Measurement measureSpans(const float* audio, size_t channels, const std::vector<Span>& spans, double rate) {
-  std::vector<Measurement> parts;
-  for (const Span& span : spans) parts.push_back(measure(audio + span.start * channels, span.count, channels, rate));
-  return average(parts);
-}
-
 // FFT overlap-add convolution (Accelerate via DSP::RealFFT); output has x's length.
 std::vector<float> convolve(const std::vector<float>& x, const std::vector<float>& h) {
   size_t block = 256;
@@ -319,7 +312,7 @@ struct LocalToneMemory {
   }
 };
 
-NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared_ptr<std::atomic<bool>> cancelled, NSError** error) {
+NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, double& outputRate, NSUInteger& outputChannels, std::shared_ptr<std::atomic<bool>> cancelled, NSError** error) {
   NSError* ensureErr = nil;
   if (!ensureDemucsInstalled(python3, nil, &ensureErr)) {
     if (error) *error = ensureErr;
@@ -369,8 +362,8 @@ NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared
   }
   NSData* audio = nil;
   if (guitarWav) {
-    double rate = 0; NSUInteger channels = 0; BOOL trunc = NO;
-    audio = rigDecodeReference([NSURL fileURLWithPath:guitarWav], rate, channels, trunc, error);
+    BOOL trunc = NO;
+    audio = rigDecodeReference([NSURL fileURLWithPath:guitarWav], outputRate, outputChannels, trunc, error);
   }
   [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
   return audio;
@@ -735,10 +728,10 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         // imitate the target mix's EQ (pins only exist when a cab is processed).
         auto verifiedFit = [&](const Evaluation& e, size_t cab) {
           size_t ch = 1; const std::vector<float> audio = cabbed(e, cab, ch);
-          const Measurement neutral = measureSpans(audio.data(), ch, e.pre.spans, rate);
+          const Measurement neutral = measureSpans(audio.data(), audio.size() / ch, ch, e.pre.spans, rate);
           auto measureWith = [&](const PostEq& eq) {
             std::vector<float> y = audio; applyPostEq(eq, y.data(), y.size() / ch, ch, rate);
-            return measureSpans(y.data(), ch, e.pre.spans, rate).features;
+            return measureSpans(y.data(), y.size() / ch, ch, e.pre.spans, rate).features;
           };
           Fits fits;
           fits.tone = fitLinear(neutral.features, goal.features, rate, fixedEq(cab), measureWith, 3, weights);
@@ -755,7 +748,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             if (cancelled->load()) return;
             try {
               size_t ch = 1; const std::vector<float> audio = cabbed(*e, i, ch);
-              const Measurement m = measureSpans(audio.data(), ch, e->pre.spans, rate);
+              const Measurement m = measureSpans(audio.data(), audio.size() / ch, ch, e->pre.spans, rate);
               out[i].first = solveLinear(m.features, goal.features, rate, fixedEq(i), weights).score;
             } catch (...) {}
           });
@@ -855,7 +848,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
                 writeRenderCache(qCacheFile, probe.pre);
               }
               double score = 1e300;
-              if (fullRig[a]) score = solveLinear(measureSpans(probe.pre.audio.data(), 1, probe.pre.spans, rate).features,
+              if (fullRig[a]) score = solveLinear(measureSpans(probe.pre.audio.data(), probe.pre.audio.size(), 1, probe.pre.spans, rate).features,
                                                   goal.features, rate, fixedEq(SIZE_MAX), weights).score;
               else if (!cabs.empty()) score = screen(probe).front().first;
               quickScores.push_back({score, a});
@@ -892,7 +885,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
               if (!fullRig[a] && currentCab.length)
                 for (size_t i = 0; i < cabs.size(); ++i) if ([cabs[i].path isEqualToString:currentCab]) cab = i;
               size_t ch = 1; const std::vector<float> neutral = cabbed(evaluations[index], cab, ch);
-              initialScore = distance(measureSpans(neutral.data(), ch, evaluations[index].pre.spans, rate).features, goal.features, weights);
+              initialScore = distance(measureSpans(neutral.data(), neutral.size() / ch, ch, evaluations[index].pre.spans, rate).features, goal.features, weights);
             }
             scoreEvaluation(index);
             const Evaluation& e = evaluations[index];
@@ -1093,7 +1086,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         auto measureReal = [&](RigPreset* preset) -> RealRender {
           NSData* audio = render(preset);
           const auto* rendered = static_cast<const float*>(audio.bytes);
-          Measurement m = measureSpans(rendered, 2, renderSpans, rate);
+          Measurement m = measureSpans(rendered, audio.length / (2 * sizeof(float)), 2, renderSpans, rate);
           for (size_t i = 0; i < renderFrames * 2; ++i) m.peak = std::max(m.peak, double(std::fabs(rendered[i])));
           return {m, audio};
         };
@@ -1145,7 +1138,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             size_t ch = 1; const std::vector<float> audio = cabbed(e, c.cab, ch);
             auto measureWith = [&](const PostEq& eq) {
               std::vector<float> y = audio; applyPostEq(eq, y.data(), y.size() / ch, ch, rate);
-              return measureSpans(y.data(), ch, e.pre.spans, rate).features;
+              return measureSpans(y.data(), y.size() / ch, ch, e.pre.spans, rate).features;
             };
             auto size = [](const PostEq& eq) {
               double sum = eq.bass * eq.bass + eq.mid * eq.mid + eq.treble * eq.treble;
@@ -1239,7 +1232,9 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         checkCancel();
 
         // ── 4. Opt-in accurate Demucs re-score ──────────────────────────────
-        if (plan.accurateRescore && plan.referenceBackingFrames.length && matches.count > 0) {
+        if (plan.accurateRescore && plan.referenceBackingFrames.length && (targetRate != rate || channels != 2))
+          report(@"Skipping accurate Demucs re-score: backing audio must be stereo at the DI sample rate. Keeping verified finalists.");
+        if (plan.accurateRescore && plan.referenceBackingFrames.length && matches.count > 0 && targetRate == rate && channels == 2) {
           NSString* py3 = findPython3();
           if (py3.length) {
             report(@"Running accurate Demucs re-score on finalists (symmetric separation artifacts)…");
@@ -1253,19 +1248,28 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
                 if (finalAudio.length && !rErr) {
                   const auto* finalSamples = static_cast<const float*>(finalAudio.bytes);
                   const size_t finalFrames = finalAudio.length / (2 * sizeof(float));
-                  const size_t mixFrames = std::min(finalFrames, backingFrames);
-                  std::vector<float> mixAudio(mixFrames * 2);
-                  for (size_t i = 0; i < mixFrames * 2; ++i) mixAudio[i] = finalSamples[i] + backingSamples[i];
+                  const size_t mixFrames = std::max(finalFrames, backingFrames);
+                  std::vector<float> mixAudio(mixFrames * 2, 0.0f);
+                  for (size_t i = 0; i < finalFrames * 2; ++i) mixAudio[i] += finalSamples[i];
+                  for (size_t i = 0; i < backingFrames * 2; ++i) mixAudio[i] += backingSamples[i];
                   NSData* mixWav = rigWavDataFromFloatSamples(mixAudio.data(), mixFrames, 2, rate);
                   NSString* tmpMixPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
                       [NSString stringWithFormat:@"axefx-mix-%@.wav", NSUUID.UUID.UUIDString]];
                   if ([mixWav writeToFile:tmpMixPath atomically:YES]) {
                     NSError* demucsErr = nil;
-                    NSData* reExtracted = demucsExtractGuitar(py3, tmpMixPath, cancelled, &demucsErr);
+                    double extractedRate = 0; NSUInteger extractedChannels = 0;
+                    NSData* reExtracted = demucsExtractGuitar(py3, tmpMixPath, extractedRate, extractedChannels, cancelled, &demucsErr);
+                    checkCancel();
                     [[NSFileManager defaultManager] removeItemAtPath:tmpMixPath error:nil];
                     if (reExtracted.length) {
                       const auto* reSamples = static_cast<const float*>(reExtracted.bytes);
-                      Measurement reM = measureSpans(reSamples, 2, renderSpans, rate);
+                      // Demucs writes at its own sample rate (usually 44.1 kHz).
+                      // Translate excerpt times instead of treating those samples as DI-rate audio.
+                      const auto extractedSpans = spansAtRate(renderSpans, rate, extractedRate);
+                      if (extractedChannels != 1 && extractedChannels != 2)
+                        throw std::runtime_error("Demucs returned an invalid channel layout.");
+                      Measurement reM = measureSpans(reSamples, reExtracted.length / (extractedChannels * sizeof(float)),
+                                                     extractedChannels, extractedSpans, extractedRate);
                       double reScore = distance(reM.features, goal.features, weights);
                       report([NSString stringWithFormat:@"  Accurate Demucs re-score for %@: %.2f → %.2f dB",
                           match.preset.name, match.score, reScore]);

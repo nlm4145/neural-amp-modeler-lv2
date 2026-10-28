@@ -214,6 +214,34 @@ inline Measurement average(const std::vector<Measurement>& parts) {
   return out;
 }
 
+struct Span { size_t start, count; };
+inline std::vector<Span> spansAtRate(const std::vector<Span>& spans, double fromRate, double toRate) {
+  if (!std::isfinite(fromRate) || !std::isfinite(toRate) || fromRate < 22050 || fromRate > 192000 ||
+      toRate < 22050 || toRate > 192000)
+    throw std::runtime_error("Invalid excerpt sample rate.");
+  std::vector<Span> result;
+  for (const Span& span : spans) {
+    const size_t start = size_t(std::llround(span.start * toRate / fromRate));
+    const size_t end = size_t(std::llround((span.start + span.count) * toRate / fromRate));
+    result.push_back({start, end - start});
+  }
+  return result;
+}
+// Validate every span before pointer arithmetic. Never silently shorten a span:
+// candidates must be scored over the same excerpt durations.
+inline Measurement measureSpans(const float* audio, size_t frames, size_t channels,
+                                const std::vector<Span>& spans, double rate) {
+  if (!audio || (channels != 1 && channels != 2))
+    throw std::runtime_error("Invalid excerpt audio format.");
+  for (const Span& span : spans)
+    if (span.start > frames || span.count > frames - span.start)
+      throw std::runtime_error("Audio is too short for the requested matching excerpts.");
+  std::vector<Measurement> parts;
+  for (const Span& span : spans)
+    parts.push_back(measure(audio + span.start * channels, span.count, channels, rate));
+  return average(parts);
+}
+
 using Weights = Features;
 // Band weights follow a gentle equal-loudness tilt; texture features count less
 // because they are noisier across different performances.
