@@ -11,11 +11,14 @@ browser = (ROOT / "src/rig_tone_browser.mm").read_text()
 # Verify pane and tab state declarations
 assert "rigPane" in state, "RigUIState missing rigPane"
 assert "tonePane" in state, "RigUIState missing tonePane"
+assert "aiPane" in state, "RigUIState missing aiPane"
 assert "rigTabBtn" in state, "RigUIState missing rigTabBtn"
 assert "toneTabBtn" in state, "RigUIState missing toneTabBtn"
+assert "aiTabBtn" in state, "RigUIState missing aiTabBtn"
 assert "selectTab(NSInteger tab)" in state, "RigUIState missing selectTab method"
 assert "rigPane.hidden = (tab != 0)" in state, "selectTab must toggle rigPane.hidden"
 assert "tonePane.hidden = (tab != 1)" in state, "selectTab must toggle tonePane.hidden"
+assert "aiPane.hidden = (tab != 2)" in state, "selectTab must toggle aiPane.hidden"
 
 # Verify 1280x980 base size in UI state and standalone app
 assert "baseH = 980.0" in state, "Base height must be 980.0"
@@ -24,8 +27,10 @@ assert "NSMakeRect(0, 0, 1520, 980)" in standalone, "Standalone window must be 1
 # Verify UI elements and wiring
 assert '@"RIG"' in ui, "UI missing RIG tab button title"
 assert '@"TONE3000"' in ui, "UI missing TONE3000 tab button title"
+assert '@"✨ AI TONE MATCHER"' in ui, "UI missing AI TONE MATCHER tab button title"
 assert "switchTab:" in ui, "NAMRigUIController missing switchTab: action"
 assert "addToneBrowser(state, tonePane)" in ui, "ToneBrowser must be mounted to tonePane"
+assert "addAIToneMatcherPage(state, aiPane)" in ui, "AIToneMatcherPage must be mounted to aiPane"
 assert "[rigPane addSubview:boxRow]" in ui, "Stage boxes must be mounted to rigPane"
 assert "expansionSlot" in ui, "Empty expansion space must be present on rigPane"
 assert "state->selectTab(0)" in ui, "Initial tab selection must default to Rig (0)"

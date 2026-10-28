@@ -54,7 +54,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_local_match_demucs_rescore_is_opt_in(self):
         ui = (ROOT / "src/nam_rig_ui.mm").read_text()
-        drawer = ui.split("- (void)openAICopilot:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        drawer = (ui.split("- (void)setupAIToneMatcherPage:(NSView*)aiPane {", 1)[1] if "- (void)setupAIToneMatcherPage:(NSView*)aiPane {" in ui
+                  else ui.split("- (void)openAICopilot:(id)sender {", 1)[1]).split("\n- (void)", 1)[0]
         self.assertIn("Accurate Demucs re-score (slow)", drawer)
         self.assertIn("self.copilotAccurateRescoreButton.state = NSControlStateValueOff;", drawer)
         update = ui.split("- (void)updateCopilotRiffUI {", 1)[1].split("\n}\n", 1)[0]
@@ -83,7 +84,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_embedding_rerank_ui(self):
         ui = (ROOT / "src/nam_rig_ui.mm").read_text()
-        drawer = ui.split("- (void)openAICopilot:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        drawer = (ui.split("- (void)setupAIToneMatcherPage:(NSView*)aiPane {", 1)[1] if "- (void)setupAIToneMatcherPage:(NSView*)aiPane {" in ui
+                  else ui.split("- (void)openAICopilot:(id)sender {", 1)[1]).split("\n- (void)", 1)[0]
         self.assertIn("Embedding re-rank (CLAP)", drawer)
         self.assertIn("self.copilotEmbeddingRerankButton.state = NSControlStateValueOff;", drawer)
         update = ui.split("- (void)updateCopilotRiffUI {", 1)[1].split("\n}\n", 1)[0]
