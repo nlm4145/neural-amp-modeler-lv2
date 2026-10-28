@@ -109,6 +109,7 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) RigButton* copilotCancelBtn;
 @property(nonatomic, strong) RigAICopilotResult* copilotProposal;
 @property(nonatomic, strong) RigButton* copilotRecordBtn;
+@property(nonatomic, strong) RigButton* copilotPlayAlongBtn;
 @property(nonatomic, strong) RigButton* copilotPlayBtn;
 @property(nonatomic, strong) RigButton* copilotClearBtn;
 @property(nonatomic, strong) NSTextField* copilotRiffStatusLabel;
@@ -131,10 +132,12 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
 @property(nonatomic, strong) NSButton* copilotMatchResearchButton;
 @property(nonatomic, strong) NSButton* copilotAccurateRescoreButton;
+@property(nonatomic, strong) NSButton* copilotEmbeddingRerankButton;
 @property(nonatomic, strong) NSButton* copilotMatchMixEQButton;
 @property(nonatomic, strong) NSPopUpButton* copilotMatchCandidates;
 @property(nonatomic, strong) NSArray<RigLocalToneMatch*>* copilotLocalMatches;
 @property(nonatomic) BOOL copilotLocalMatching;
+@property(nonatomic) BOOL copilotRecordIsPlayAlong;
 @property(nonatomic) NSUInteger copilotLocalMatchGeneration;
 @property(nonatomic, strong) RigPreset* copilotBasePreset;
 @property(nonatomic, strong) NSDictionary* copilotBaseContext;
@@ -231,6 +234,7 @@ static double copilotParseClock(NSString* text) {
 - (void)applyCopilotProposal:(id)sender;
 - (void)cancelCopilotRequest:(id)sender;
 - (void)toggleCopilotRecordRiff:(id)sender;
+- (void)toggleCopilotPlayAlong:(id)sender;
 - (void)playCopilotRiff:(id)sender;
 - (void)clearCopilotRiff:(id)sender;
 - (void)updateCopilotRiffUI;
@@ -2622,19 +2626,23 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   riffHeader.textColor = rigText();
   [content addSubview:riffHeader];
 
-  self.copilotRecordBtn = rigButton(content, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(20, popH - 236, 110, 26));
+  self.copilotRecordBtn = rigButton(content, @"● Record Riff", self, @selector(toggleCopilotRecordRiff:), NSMakeRect(20, popH - 236, 100, 26));
   self.copilotRecordBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
   self.copilotRecordBtn.toolTip = @"Record your guitar, not the song. Captures raw DI (before the rig) and processed output. Required for Learn & Match; standalone app only.";
 
-  self.copilotPlayBtn = rigButton(content, @"▶ Play", self, @selector(playCopilotRiff:), NSMakeRect(136, popH - 236, 68, 26));
+  self.copilotPlayAlongBtn = rigButton(content, @"● Play Along", self, @selector(toggleCopilotPlayAlong:), NSMakeRect(125, popH - 236, 100, 26));
+  self.copilotPlayAlongBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
+  self.copilotPlayAlongBtn.toolTip = @"Play along with the loaded target sound. Plays the reference excerpt in your monitors/headphones while recording your guitar DI. Enables aligned note-by-note DTW tone matching.";
+
+  self.copilotPlayBtn = rigButton(content, @"▶ Play", self, @selector(playCopilotRiff:), NSMakeRect(230, popH - 236, 55, 26));
   self.copilotPlayBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotPlayBtn.enabled = NO;
 
-  self.copilotClearBtn = rigButton(content, @"✕ Clear", self, @selector(clearCopilotRiff:), NSMakeRect(210, popH - 236, 64, 26));
+  self.copilotClearBtn = rigButton(content, @"✕ Clear", self, @selector(clearCopilotRiff:), NSMakeRect(290, popH - 236, 58, 26));
   self.copilotClearBtn.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   self.copilotClearBtn.enabled = NO;
 
-  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(284, popH - 231, 236, 16)];
+  self.copilotRiffLevelBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(354, popH - 231, 166, 16)];
   self.copilotRiffLevelBar.minValue = 0.0;
   self.copilotRiffLevelBar.maxValue = 1.0;
   self.copilotRiffLevelBar.indeterminate = NO;
@@ -2749,6 +2757,11 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotAccurateRescoreButton.state = NSControlStateValueOff;
   self.copilotAccurateRescoreButton.toolTip = @"Opt in: mix finalist renders back into Demucs backing stems and re-separate them through Demucs before scoring, so candidates and target share the same separation artifacts.";
   [content addSubview:self.copilotAccurateRescoreButton];
+  self.copilotEmbeddingRerankButton = [NSButton checkboxWithTitle:@"Embedding re-rank (CLAP)" target:nil action:nil];
+  self.copilotEmbeddingRerankButton.frame = NSMakeRect(320, popH - 490, 205, 24);
+  self.copilotEmbeddingRerankButton.state = NSControlStateValueOff;
+  self.copilotEmbeddingRerankButton.toolTip = @"Opt in: score finalists with audio embedding cosine distance (CLAP) and blend with acoustic feature distance.";
+  [content addSubview:self.copilotEmbeddingRerankButton];
   self.copilotLocalMatchStatus = [NSTextField labelWithString:@""];
   self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 530, 505, 36);
   self.copilotLocalMatchStatus.font = [NSFont systemFontOfSize:10];
@@ -3253,6 +3266,31 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }];
 }
 
+- (void)toggleCopilotPlayAlong:(id)sender {
+  (void)sender;
+  if (self.copilotLocalMatching) return;
+  RigRiffRecorder* recorder = [RigRiffRecorder sharedRecorder];
+  if (recorder.isRecording || (self.copilotRiffTimer && self.copilotRecordCountdown > 0)) {
+    const BOOL wasCountdown = !recorder.isRecording;
+    [recorder stopPlayAlong];
+    [self.copilotRiffTimer invalidate];
+    self.copilotRiffTimer = nil;
+    self.copilotRecordCountdown = 0;
+    self.copilotRecordIsPlayAlong = NO;
+    [self setCopilotLiveLine:nil];
+    [self appendCopilotLog:wasCountdown ? @"Play-along cancelled before it started." :
+        [NSString stringWithFormat:@"■ Play-along stopped at %.1f s.", recorder.recordedDuration]];
+    [self updateCopilotRiffUI];
+  } else {
+    if (!recorder.referenceFrames.length) {
+      [self appendCopilotLog:@"Load a target sound before starting Play Along."];
+      return;
+    }
+    self.copilotRecordIsPlayAlong = YES;
+    [self startCopilotRecordingWithGuided:NO playAlong:YES];
+  }
+}
+
 - (void)toggleCopilotRecordRiff:(id)sender {
   (void)sender;
   if (self.copilotLocalMatching) return;
@@ -3263,130 +3301,147 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     [self.copilotRiffTimer invalidate];
     self.copilotRiffTimer = nil;
     self.copilotRecordCountdown = 0;
+    self.copilotRecordIsPlayAlong = NO;
     [self setCopilotLiveLine:nil];
     [self appendCopilotLog:wasCountdown ? @"Recording cancelled before it started." :
         [NSString stringWithFormat:@"■ Stopped manually at %.1f s. Describe the tone you want and press Preview Tone.", recorder.recordedDuration]];
     [self updateCopilotRiffUI];
   } else {
-    if (!_state || [RigAICopilot sharedCopilot].isProcessing || recorder.isRendering) return;
-    if ([RigAICopilot sharedCopilot].isApplying) {
-      [self appendCopilotLog:@"⚠️ Wait for the tone application to finish before recording a paired take."]; return;
-    }
-    if (self.copilotRiffTimer) return; // countdown already running
-    const int pendingStage = _state->unconfirmedRecordingStage();
-    if (pendingStage >= 0) {
-      const char* roles[] = {"Pedal", "Amp", "Cab A", "Cab B"};
-      NSString* selected = [NSString stringWithUTF8String:_state->selectedPaths[pendingStage].c_str()];
-      NSString* confirmed = [NSString stringWithUTF8String:_state->confirmedPaths[pendingStage].c_str()];
-      [self appendCopilotLog:[NSString stringWithFormat:
-          @"⚠️ Recording blocked: %s is enabled but its model is not confirmed (selected: %@; engine: %@). Refreshing engine status. If this persists, reload that stage or bypass it before recording.",
-          roles[pendingStage], selected.length ? selected.lastPathComponent : @"none",
-          confirmed.length ? confirmed.lastPathComponent : @"none"]];
-      _state->sendGet();
-      return;
-    }
+    self.copilotRecordIsPlayAlong = NO;
     const BOOL guided = self.copilotGuidedButton.state == NSControlStateValueOn;
-    self.copilotLocalMatches = nil;
-    self.copilotProposal = nil; self.copilotApplyBtn.enabled = NO;
-    self.copilotAuditionContext = nil;
-    if (self.copilotModePopup.indexOfSelectedItem == 2) [self.copilotModePopup selectItemAtIndex:0];
-    self.copilotRenderBtn.enabled = NO; self.copilotDialBtn.enabled = NO;
-    self.copilotPlayBtn.enabled = NO;
-    self.copilotClearBtn.enabled = NO;
-    self.copilotRiffStatusLabel.textColor = [NSColor systemRedColor];
+    [self startCopilotRecordingWithGuided:guided playAlong:NO];
+  }
+}
 
-    NSMutableString* plan = [NSMutableString stringWithString:guided ? @"GUIDED 20-SECOND TAKE — follow each step when it appears below. A beep marks each step change.\n" :
-        @"FREE TAKE (up to 20 s) — play a representative riff with soft and hard picking and a note that fades.\n"];
-    if (guided) {
-      for (NSDictionary* segment in [RigRiffRecorder guidedPlan])
-        [plan appendFormat:@"  %@–%@ s  %@ — %@\n", segment[@"start"], segment[@"end"], segment[@"label"], segment[@"instruction"]];
-    }
-    [plan appendString:@"Keep guitar volume, pickup and interface gain unchanged during the take. Do not touch rig controls."];
-    [self resetCopilotLog:plan];
-    self.copilotRecordCountdown = 3;
-    self.copilotLastGuidedSegment = -1;
-    self.copilotRecordBtn.title = @"■ Cancel";
-    self.copilotRiffStatusLabel.stringValue = @"Get ready… recording starts in 3";
-    [self setCopilotLiveLine:@"⏳ Get ready… 3"];
-    NSBeep();
+- (void)startCopilotRecordingWithGuided:(BOOL)guided playAlong:(BOOL)playAlong {
+  RigRiffRecorder* recorder = [RigRiffRecorder sharedRecorder];
+  if (!_state || [RigAICopilot sharedCopilot].isProcessing || recorder.isRendering) return;
+  if ([RigAICopilot sharedCopilot].isApplying) {
+    [self appendCopilotLog:@"⚠️ Wait for the tone application to finish before recording a paired take."]; return;
+  }
+  if (self.copilotRiffTimer) return; // countdown already running
+  const int pendingStage = _state->unconfirmedRecordingStage();
+  if (pendingStage >= 0) {
+    const char* roles[] = {"Pedal", "Amp", "Cab A", "Cab B"};
+    NSString* selected = [NSString stringWithUTF8String:_state->selectedPaths[pendingStage].c_str()];
+    NSString* confirmed = [NSString stringWithUTF8String:_state->confirmedPaths[pendingStage].c_str()];
+    [self appendCopilotLog:[NSString stringWithFormat:
+        @"⚠️ Recording blocked: %s is enabled but its model is not confirmed (selected: %@; engine: %@). Refreshing engine status. If this persists, reload that stage or bypass it before recording.",
+        roles[pendingStage], selected.length ? selected.lastPathComponent : @"none",
+        confirmed.length ? confirmed.lastPathComponent : @"none"]];
+    _state->sendGet();
+    return;
+  }
+  self.copilotLocalMatches = nil;
+  self.copilotProposal = nil; self.copilotApplyBtn.enabled = NO;
+  self.copilotAuditionContext = nil;
+  if (self.copilotModePopup.indexOfSelectedItem == 2) [self.copilotModePopup selectItemAtIndex:0];
+  self.copilotRenderBtn.enabled = NO; self.copilotDialBtn.enabled = NO;
+  self.copilotPlayBtn.enabled = NO;
+  self.copilotClearBtn.enabled = NO;
+  self.copilotRiffStatusLabel.textColor = [NSColor systemRedColor];
 
-    __weak NAMRigUIController* weakSelf = self;
-    NSDate* countdownStart = NSDate.date;
-    self.copilotRiffTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer* timer) {
-      if (!weakSelf) { [timer invalidate]; return; }
-      RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
-      RigUIState* state = weakSelf.state;
+  NSMutableString* plan = [NSMutableString string];
+  if (playAlong) {
+    [plan appendString:@"PLAY-ALONG TAKE — listen to the target sound in your monitors/headphones and play the same riff. Audio will be aligned note-by-note via DTW.\n"];
+  } else if (guided) {
+    [plan appendString:@"GUIDED 20-SECOND TAKE — follow each step when it appears below. A beep marks each step change.\n"];
+    for (NSDictionary* segment in [RigRiffRecorder guidedPlan])
+      [plan appendFormat:@"  %@–%@ s  %@ — %@\n", segment[@"start"], segment[@"end"], segment[@"label"], segment[@"instruction"]];
+  } else {
+    [plan appendString:@"FREE TAKE (up to 20 s) — play a representative riff with soft and hard picking and a note that fades.\n"];
+  }
+  [plan appendString:@"Keep guitar volume, pickup and interface gain unchanged during the take. Do not touch rig controls."];
+  [self resetCopilotLog:plan];
+  self.copilotRecordCountdown = 3;
+  self.copilotLastGuidedSegment = -1;
+  if (playAlong) self.copilotPlayAlongBtn.title = @"■ Cancel";
+  else self.copilotRecordBtn.title = @"■ Cancel";
+  self.copilotRiffStatusLabel.stringValue = @"Get ready… recording starts in 3";
+  [self setCopilotLiveLine:@"⏳ Get ready… 3"];
+  NSBeep();
+
+  __weak NAMRigUIController* weakSelf = self;
+  NSDate* countdownStart = NSDate.date;
+  self.copilotRiffTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer* timer) {
+    if (!weakSelf) { [timer invalidate]; return; }
+    RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
+    RigUIState* state = weakSelf.state;
+    if (weakSelf.copilotRecordCountdown > 0) {
+      const NSInteger left = (NSInteger)std::ceil(3.0 + countdownStart.timeIntervalSinceNow);
+      if (left == weakSelf.copilotRecordCountdown) return;
+      weakSelf.copilotRecordCountdown = std::max<NSInteger>(0, left);
+      NSBeep();
       if (weakSelf.copilotRecordCountdown > 0) {
-        // Three-second pre-roll so the player can get both hands on the guitar.
-        const NSInteger left = (NSInteger)std::ceil(3.0 + countdownStart.timeIntervalSinceNow);
-        if (left == weakSelf.copilotRecordCountdown) return;
-        weakSelf.copilotRecordCountdown = std::max<NSInteger>(0, left);
-        NSBeep();
-        if (weakSelf.copilotRecordCountdown > 0) {
-          weakSelf.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:@"Get ready… recording starts in %ld", (long)weakSelf.copilotRecordCountdown];
-          [weakSelf setCopilotLiveLine:[NSString stringWithFormat:@"⏳ Get ready… %ld", (long)weakSelf.copilotRecordCountdown]];
-          return;
-        }
-        if (!state || !*state->isAlive) { [timer invalidate]; weakSelf.copilotRiffTimer = nil; return; }
-        // A selection or stage power may have changed during the pre-roll.
-        if (state->unconfirmedRecordingStage() >= 0 || [RigAICopilot sharedCopilot].isApplying) {
-          [timer invalidate]; weakSelf.copilotRiffTimer = nil;
-          [weakSelf setCopilotLiveLine:nil];
-          [weakSelf appendCopilotLog:@"⚠️ Recording cancelled: an active model changed during the countdown. Wait for loading, then press Record Riff again."];
-          state->sendGet();
-          [weakSelf updateCopilotRiffUI];
-          return;
-        }
-        [r startRecordingGuided:guided];
-        r.recordingPreset = [RigPreset captureFromState:state name:state->presetManager.currentPresetName ?: @"Recorded rig"];
-        r.recordingMetadata = @{@"player_context":weakSelf.copilotGuitarInfo.stringValue ?: @"unknown",
-            @"hardware_input_gain":@"unknown unless supplied by player", @"captured_at":NSDate.date.description};
-        weakSelf.copilotRecordBtn.title = @"■ Stop (0:00)";
-        [weakSelf appendCopilotLog:@"● Recording started."];
+        weakSelf.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:@"Get ready… recording starts in %ld", (long)weakSelf.copilotRecordCountdown];
+        [weakSelf setCopilotLiveLine:[NSString stringWithFormat:@"⏳ Get ready… %ld", (long)weakSelf.copilotRecordCountdown]];
         return;
       }
-      if (state && *state->isAlive && r.recordingPreset) {
-        NSDictionary* before = [RigAICopilot contextForPreset:r.recordingPreset compact:NO];
-        NSDictionary* now = [RigAICopilot contextForPreset:[RigPreset captureFromState:state name:r.recordingPreset.name] compact:NO];
-        if (![before isEqual:now]) {
-          NSMutableDictionary* metadata = [r.recordingMetadata mutableCopy];
-          metadata[@"warning"] = @"Rig changed during this take; processed audio may not correspond to the starting snapshot. Record again for reliable analysis.";
-          r.recordingMetadata = metadata;
-        }
-      }
-      if (!r.isRecording) {
-        [r stopRecording]; // Finalize even when the audio callback reached the limit.
-        [timer invalidate];
-        weakSelf.copilotRiffTimer = nil;
+      if (!state || !*state->isAlive) { [timer invalidate]; weakSelf.copilotRiffTimer = nil; return; }
+      if (state->unconfirmedRecordingStage() >= 0 || [RigAICopilot sharedCopilot].isApplying) {
+        [timer invalidate]; weakSelf.copilotRiffTimer = nil;
         [weakSelf setCopilotLiveLine:nil];
-        [weakSelf appendCopilotLog:[NSString stringWithFormat:@"■ Take complete: %.1f s, peak %.1f dBFS%@. Describe the tone you want and press Preview Tone.",
-            r.recordedDuration, r.peakDbfs, r.recordingMetadata[@"warning"] ? @" — WARNING: rig changed during the take; record again" : @""]];
+        [weakSelf appendCopilotLog:@"⚠️ Recording cancelled: an active model changed during the countdown. Wait for loading, then press Record Riff again."];
+        state->sendGet();
         [weakSelf updateCopilotRiffUI];
         return;
       }
-      weakSelf.copilotRecordBtn.title = [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration];
-      weakSelf.copilotRiffLevelBar.doubleValue = r.currentPeakLevel;
-      const NSInteger segmentIndex = r.guidedSegmentIndex;
-      NSArray* plan = [RigRiffRecorder guidedPlan];
-      if (segmentIndex >= 0 && segmentIndex < (NSInteger)plan.count) {
-        NSDictionary* segment = plan[(NSUInteger)segmentIndex];
-        if (segmentIndex != weakSelf.copilotLastGuidedSegment) {
-          weakSelf.copilotLastGuidedSegment = segmentIndex;
-          NSBeep();
-          [weakSelf appendCopilotLog:[NSString stringWithFormat:@"▶ STEP %ld/%lu — %@: %@", (long)segmentIndex + 1,
-              (unsigned long)plan.count, segment[@"label"], segment[@"instruction"]]];
-        }
-        const double remaining = [segment[@"end"] doubleValue] - r.recordedDuration;
-        NSString* next = segmentIndex + 1 < (NSInteger)plan.count ? plan[(NSUInteger)segmentIndex + 1][@"label"] : @"stop";
-        weakSelf.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:@"STEP %ld/%lu · %@ · %.0f s left · next: %@",
-            (long)segmentIndex + 1, (unsigned long)plan.count, segment[@"label"], std::max(0.0, remaining), next];
-        [weakSelf setCopilotLiveLine:[NSString stringWithFormat:@"   %@ … %.0f s left (next: %@)", segment[@"label"], std::max(0.0, remaining), next]];
-      } else {
-        weakSelf.copilotRiffStatusLabel.stringValue = r.guidance;
-        [weakSelf setCopilotLiveLine:[NSString stringWithFormat:@"   Recording… %.0f s (max 20 s)", r.recordedDuration]];
+      if (playAlong) [r startPlayAlong];
+      else [r startRecordingGuided:guided];
+      r.recordingPreset = [RigPreset captureFromState:state name:state->presetManager.currentPresetName ?: @"Recorded rig"];
+      r.recordingMetadata = @{@"player_context":weakSelf.copilotGuitarInfo.stringValue ?: @"unknown",
+          @"hardware_input_gain":@"unknown unless supplied by player", @"captured_at":NSDate.date.description,
+          @"play_along":@(playAlong)};
+      if (playAlong) weakSelf.copilotPlayAlongBtn.title = @"■ Stop (0:00)";
+      else weakSelf.copilotRecordBtn.title = @"■ Stop (0:00)";
+      [weakSelf appendCopilotLog:playAlong ? @"● Play-along recording started." : @"● Recording started."];
+      return;
+    }
+    if (state && *state->isAlive && r.recordingPreset) {
+      NSDictionary* before = [RigAICopilot contextForPreset:r.recordingPreset compact:NO];
+      NSDictionary* now = [RigAICopilot contextForPreset:[RigPreset captureFromState:state name:r.recordingPreset.name] compact:NO];
+      if (![before isEqual:now]) {
+        NSMutableDictionary* metadata = [r.recordingMetadata mutableCopy];
+        metadata[@"warning"] = @"Rig changed during this take; processed audio may not correspond to the starting snapshot. Record again for reliable analysis.";
+        r.recordingMetadata = metadata;
       }
-    }];
-  }
+    }
+    if (!r.isRecording) {
+      [r stopRecording];
+      [timer invalidate];
+      weakSelf.copilotRiffTimer = nil;
+      weakSelf.copilotRecordIsPlayAlong = NO;
+      [weakSelf setCopilotLiveLine:nil];
+      [weakSelf appendCopilotLog:[NSString stringWithFormat:@"■ Take complete: %.1f s, peak %.1f dBFS%@. Describe the tone you want and press Preview Tone.",
+          r.recordedDuration, r.peakDbfs, r.recordingMetadata[@"warning"] ? @" — WARNING: rig changed during the take; record again" : @""]];
+      [weakSelf updateCopilotRiffUI];
+      return;
+    }
+    NSString* stopTitle = [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration];
+    if (playAlong) weakSelf.copilotPlayAlongBtn.title = stopTitle;
+    else weakSelf.copilotRecordBtn.title = stopTitle;
+    weakSelf.copilotRiffLevelBar.doubleValue = r.currentPeakLevel;
+    const NSInteger segmentIndex = r.guidedSegmentIndex;
+    NSArray* planSegs = [RigRiffRecorder guidedPlan];
+    if (segmentIndex >= 0 && segmentIndex < (NSInteger)planSegs.count) {
+      NSDictionary* segment = planSegs[(NSUInteger)segmentIndex];
+      if (segmentIndex != weakSelf.copilotLastGuidedSegment) {
+        weakSelf.copilotLastGuidedSegment = segmentIndex;
+        NSBeep();
+        [weakSelf appendCopilotLog:[NSString stringWithFormat:@"● %.0f–%.0fs: %@ (%@)",
+            [segment[@"start"] doubleValue], [segment[@"end"] doubleValue], segment[@"label"], segment[@"instruction"]]];
+      }
+      [weakSelf setCopilotLiveLine:[NSString stringWithFormat:@"▶ %d:%02d  %@ — %@",
+          (int)r.recordedDuration / 60, (int)r.recordedDuration % 60, segment[@"label"], segment[@"instruction"]]];
+      weakSelf.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:@"%@ (%d:%02d)",
+          segment[@"label"], (int)r.recordedDuration / 60, (int)r.recordedDuration % 60];
+    } else {
+      [weakSelf setCopilotLiveLine:[NSString stringWithFormat:@"▶ %d:%02d recording…",
+          (int)r.recordedDuration / 60, (int)r.recordedDuration % 60]];
+      weakSelf.copilotRiffStatusLabel.stringValue = [NSString stringWithFormat:@"Recording… (%d:%02d)",
+          (int)r.recordedDuration / 60, (int)r.recordedDuration % 60];
+    }
+  }];
 }
 
 - (void)playCopilotRiff:(id)sender {
@@ -3420,14 +3475,22 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 - (void)updateCopilotRiffUI {
   RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
   const BOOL countingDown = self.copilotRiffTimer && !r.isRecording && self.copilotRecordCountdown > 0;
-  self.copilotRecordBtn.title = r.isRecording ? [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration] :
-      (countingDown ? @"■ Cancel" : @"● Record Riff");
+  const BOOL normalCountingDown = countingDown && !self.copilotRecordIsPlayAlong;
+  const BOOL normalRecording = r.isRecording && !self.copilotRecordIsPlayAlong;
+  self.copilotRecordBtn.title = normalRecording ? [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration] :
+      (normalCountingDown ? @"■ Cancel" : @"● Record Riff");
+  const BOOL playAlongCountingDown = countingDown && self.copilotRecordIsPlayAlong;
+  const BOOL playAlongRecording = r.isRecording && self.copilotRecordIsPlayAlong;
+  self.copilotPlayAlongBtn.title = playAlongRecording ? [NSString stringWithFormat:@"■ Stop (0:%02d)", (int)r.recordedDuration] :
+      (playAlongCountingDown ? @"■ Cancel" : @"● Play Along");
   self.copilotRiffLevelBar.doubleValue = r.isRecording ? r.currentPeakLevel : 0.0;
   const BOOL busy = self.copilotLocalMatching || r.isRendering || r.isRecording || countingDown ||
       [RigAICopilot sharedCopilot].isProcessing || [RigAICopilot sharedCopilot].isApplying;
   self.copilotRenderBtn.enabled = r.renderHandler && r.recordedDIFrames.length && self.copilotProposal && !busy;
   self.copilotDialBtn.enabled = !busy;
   self.copilotRecordBtn.enabled = r.renderHandler && !self.copilotLocalMatching && !r.isRendering &&
+      ![RigAICopilot sharedCopilot].isProcessing && ![RigAICopilot sharedCopilot].isApplying;
+  self.copilotPlayAlongBtn.enabled = r.renderHandler && r.referenceFrames.length > 0 && !self.copilotLocalMatching && !r.isRendering &&
       ![RigAICopilot sharedCopilot].isProcessing && ![RigAICopilot sharedCopilot].isApplying;
   NSMutableArray<NSString*>* missing = [NSMutableArray array];
   if (!r.renderHandler) [missing addObject:@"Open standalone Axe FX to record raw guitar"];
@@ -3475,6 +3538,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotMatchResearchButton.enabled = !busy;
   self.copilotMatchOnlineButton.enabled = !busy;
   self.copilotAccurateRescoreButton.enabled = !busy && [r.referenceSource isEqualToString:@"demucs"];
+  self.copilotEmbeddingRerankButton.enabled = !busy;
   self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
   self.copilotCancelBtn.enabled = self.copilotLocalMatching || self.copilotDemucsRunning || [RigAICopilot sharedCopilot].isProcessing;
@@ -3841,6 +3905,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   const BOOL research = self.copilotMatchResearchButton.state == NSControlStateValueOn;
   const BOOL accurateRescore = self.copilotAccurateRescoreButton.state == NSControlStateValueOn &&
                                [r.referenceSource isEqualToString:@"demucs"];
+  const BOOL embeddingRerank = self.copilotEmbeddingRerankButton.state == NSControlStateValueOn;
+  const BOOL playAlong = r.isPlayingAlong;
   NSData* backing = r.referenceBackingFrames;
   NSString* refSource = r.referenceSource;
   [self resetCopilotLog:research ? @"LEARN & MATCH LOCALLY — experimental, live rig unchanged. Gear research sends the prompt text only (no audio). This can take minutes; Cancel stops after the current render."
@@ -3881,6 +3947,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       plan.referenceSource = refSource;
       plan.accurateRescore = accurateRescore;
       plan.referenceBackingFrames = backing;
+      plan.embeddingRerank = embeddingRerank;
+      plan.playAlong = playAlong;
       // Widen the amp screen only when the prompt or research actually ranked amps.
       if (maxScores[1] == 0 && plan.amps.count > 4 + onlineAmps)
         plan.amps = [plan.amps subarrayWithRange:NSMakeRange(0, 4 + onlineAmps)];
@@ -3931,8 +3999,13 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
           }
           weakSelf.copilotLocalMatches = matches;
           [weakSelf.copilotMatchCandidates removeAllItems];
-          for (NSUInteger i = 0; i < matches.count; ++i) [weakSelf.copilotMatchCandidates addItemWithTitle:
-              [NSString stringWithFormat:@"#%lu · %.2f dB distance", (unsigned long)i + 1, matches[i].score]];
+          for (NSUInteger i = 0; i < matches.count; ++i) {
+            RigLocalToneMatch* m = matches[i];
+            NSMutableString* title = [NSMutableString stringWithFormat:@"#%lu · %.2f dB distance", (unsigned long)i + 1, m.score];
+            if (m.alignmentConfident) [title appendString:@" (aligned)"];
+            if (m.embeddingDistance >= 0.0) [title appendFormat:@" (emb: %.2f)", m.embeddingDistance];
+            [weakSelf.copilotMatchCandidates addItemWithTitle:title];
+          }
           for (NSUInteger i = 0; i < matches.count; ++i) [weakSelf.copilotMatchCandidates itemAtIndex:i].toolTip = matches[i].preset.name;
           [weakSelf.copilotMatchCandidates selectItemAtIndex:0];
           [weakSelf selectCopilotLocalMatch:nil];
@@ -4007,6 +4080,13 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     for (size_t band = 0; band < NAMRig::kPinEqBandCount; ++band)
       [gear appendFormat:@" %.0f Hz %+.1f", [chosen controlForPort:NAMRig::pinEqPort(NAMRig::PinEqPane::CabConsole, band, NAMRig::kPinFreq)],
           [chosen controlForPort:NAMRig::pinEqPort(NAMRig::PinEqPane::CabConsole, band, NAMRig::kPinGain)]];
+  }
+  if (match.alignmentConfident) {
+    [gear appendFormat:@"\nDTW alignment: confident (%.1f%% onset match, %.2f dB aligned distance)",
+        match.alignmentConfidence * 100.0, match.alignedDistance];
+  }
+  if (match.embeddingDistance >= 0.0) {
+    [gear appendFormat:@"\nCLAP embedding distance: %.3f", match.embeddingDistance];
   }
   [self appendCopilotLog:[NSString stringWithFormat:@"✅ LOCAL PREVIEW READY — %@\n%@", result.explanation, gear]];
   [self updateCopilotRiffUI];

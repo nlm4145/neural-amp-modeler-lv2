@@ -1,5 +1,6 @@
 #import "rig_local_tone_matcher.h"
 #include "local_tone_post_eq.h"
+#include "local_tone_align.h"
 #include "rig_control_metadata.h"
 #include "dsp_accel.h"
 #include "wav_ir.h"
@@ -388,6 +389,58 @@ NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared
   }
   [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
   return audio;
+}
+
+NSArray<NSNumber*>* scoreEmbeddings(NSString* python3, NSString* targetWav, NSArray<NSString*>* candidateWavs,
+                                    std::shared_ptr<std::atomic<bool>> cancelled, NSError** error) {
+  NSString* script = [[NSBundle mainBundle] pathForResource:@"tone_embed" ofType:@"py"];
+  if (!script.length) {
+    NSArray<NSString*>* searches = @[
+      @"scripts/tone_embed.py",
+      @"../scripts/tone_embed.py",
+      @"../../scripts/tone_embed.py",
+      @"/Users/personal/Documents/Github/neural-amp-modeler-lv2/scripts/tone_embed.py"
+    ];
+    for (NSString* rel in searches) {
+      if ([[NSFileManager defaultManager] fileExistsAtPath:rel]) { script = rel; break; }
+    }
+  }
+  if (!script.length) {
+    if (error) *error = failure(@"scripts/tone_embed.py not found");
+    return nil;
+  }
+
+  NSMutableArray* args = [NSMutableArray arrayWithObjects:script, @"--target", targetWav, @"--candidates", nil];
+  [args addObjectsFromArray:candidateWavs];
+
+  NSTask* task = [NSTask new];
+  task.launchPath = python3;
+  task.arguments = args;
+  NSPipe* outPipe = [NSPipe pipe];
+  task.standardOutput = outPipe;
+  task.standardError = [NSPipe pipe];
+  if (![task launchAndReturnError:error]) return nil;
+
+  while (task.isRunning) {
+    if (cancelled && cancelled->load()) {
+      [task terminate];
+      if (error) *error = failure(@"Cancelled");
+      return nil;
+    }
+    [NSThread sleepForTimeInterval:0.05];
+  }
+  [task waitUntilExit];
+  if (task.terminationStatus != 0) {
+    if (error) *error = failure([NSString stringWithFormat:@"Embedding script failed with status %d", task.terminationStatus]);
+    return nil;
+  }
+
+  NSData* outData = [[outPipe fileHandleForReading] readDataToEndOfFile];
+  if (!outData.length) return nil;
+  NSDictionary* json = [NSJSONSerialization JSONObjectWithData:outData options:0 error:nil];
+  if (![json isKindOfClass:[NSDictionary class]] || ![json[@"status"] isEqualToString:@"ok"]) return nil;
+  NSArray* dists = json[@"distances"];
+  return [dists isKindOfClass:[NSArray class]] ? dists : nil;
 }
 } // namespace
 
@@ -936,24 +989,28 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         }
         const size_t searchRenders = renders - searchStart;
         report([NSString stringWithFormat:@"Verifying %lu finalist(s) with full engine renders…", (unsigned long)finalists.size()]);
-        auto measureReal = [&](RigPreset* preset) {
+        struct RealRender {
+          Measurement measurement;
+          NSData* audio;
+        };
+        auto measureReal = [&](RigPreset* preset) -> RealRender {
           NSData* audio = render(preset);
           const auto* rendered = static_cast<const float*>(audio.bytes);
           Measurement m = measureSpans(rendered, 2, renderSpans, rate);
           for (size_t i = 0; i < renderFrames * 2; ++i) m.peak = std::max(m.peak, double(std::fabs(rendered[i])));
-          return m;
+          return {m, audio};
         };
         // Real render plus measured output-headroom correction (which cannot
         // improve the loudness-invariant score).
-        auto verify = [&](RigPreset* preset) {
-          Measurement m = measureReal(preset);
-          if (m.peak > .85) {
-            const double output = [preset controlForPort:5] + 20 * std::log10(.85 / m.peak);
+        auto verify = [&](RigPreset* preset) -> RealRender {
+          RealRender r = measureReal(preset);
+          if (r.measurement.peak > .85) {
+            const double output = [preset controlForPort:5] + 20 * std::log10(.85 / r.measurement.peak);
             [preset setControl:5 value:std::max(-20.0, output)];
-            m = measureReal(preset);
-            if (m.peak >= 1) throw std::runtime_error("Candidate cannot reach safe output headroom within the control range.");
+            r = measureReal(preset);
+            if (r.measurement.peak >= 1) throw std::runtime_error("Candidate cannot reach safe output headroom within the control range.");
           }
-          return m;
+          return r;
         };
         size_t mixKept = 0;
         NSMutableArray* finalistJSON = [NSMutableArray array];
@@ -1009,20 +1066,53 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
           }
           RigPreset* p = build(fits.tone.eq);
           RigLocalToneMatch* match = [RigLocalToneMatch new];
-          match.preset = p; match.score = distance(verify(p).features, goal.features, weights); match.offlineScore = fits.tone.score;
+          RealRender verP = verify(p);
+          const double statScore = distance(verP.measurement.features, goal.features, weights);
+          match.preset = p; match.score = statScore; match.offlineScore = fits.tone.score;
+
+          // DTW alignment with target
+          if (verP.audio.length && target.length) {
+            const float* candAudio = static_cast<const float*>(verP.audio.bytes);
+            const size_t candFrames = verP.audio.length / (2 * sizeof(float));
+            const float* targAudio = static_cast<const float*>(target.bytes);
+            const size_t targFrames = target.length / (channels * sizeof(float));
+            AlignmentResult align = alignAudio(candAudio, candFrames, 2, targAudio, targFrames, channels, rate, isDemucs);
+            if (align.confident) {
+              match.alignmentConfident = YES;
+              match.alignmentConfidence = align.confidence;
+              match.alignedDistance = align.alignedDistance;
+              match.score = align.blendedScore(statScore);
+              report([NSString stringWithFormat:@"  aligned DTW for %@ (confidence %.2f): stat %.2f dB, note-by-note %.2f dB -> blended %.2f dB",
+                  p.name, align.confidence, statScore, align.alignedDistance, match.score]);
+            }
+          }
           [matches addObject:match];
           // Mix EQ (Console pins, jointly re-fitted with the tone stack): kept only
           // when the real engine render agrees it helps.
           const LinearFit& mix = fits.mixed;
           if (mix.score < fits.tone.score - .02) {
             RigPreset* q = build(mix.eq);
-            const double mixed = distance(verify(q).features, goal.features, weights);
+            RealRender verQ = verify(q);
+            double mixed = distance(verQ.measurement.features, goal.features, weights);
+            AlignmentResult alignQ;
+            if (match.alignmentConfident && verQ.audio.length) {
+              const float* candAudio = static_cast<const float*>(verQ.audio.bytes);
+              const size_t candFrames = verQ.audio.length / (2 * sizeof(float));
+              const float* targAudio = static_cast<const float*>(target.bytes);
+              const size_t targFrames = target.length / (channels * sizeof(float));
+              alignQ = alignAudio(candAudio, candFrames, 2, targAudio, targFrames, channels, rate, isDemucs);
+              if (alignQ.confident) mixed = alignQ.blendedScore(mixed);
+            }
             report([NSString stringWithFormat:@"  mix EQ (Console pins %+.1f/%+.1f/%+.1f/%+.1f/%+.1f/%+.1f dB): engine %.2f → %.2f dB%@",
                 mix.eq.pins[0].gainDb, mix.eq.pins[1].gainDb, mix.eq.pins[2].gainDb, mix.eq.pins[3].gainDb,
                 mix.eq.pins[4].gainDb, mix.eq.pins[5].gainDb, match.score, mixed, mixed < match.score - .01 ? @"" : @" — not kept"]);
             if (mixed < match.score - .01) {
               match.presetWithoutMixEQ = p; match.scoreWithoutMixEQ = match.score;
               match.preset = q; match.score = mixed; match.offlineScore = mix.score; ++mixKept;
+              if (alignQ.confident) {
+                match.alignedDistance = alignQ.alignedDistance;
+                match.alignmentConfidence = alignQ.confidence;
+              }
             }
           }
           const LinearFit& kept = match.presetWithoutMixEQ ? mix : fits.tone;
@@ -1038,7 +1128,11 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
               @"eq":@{@"bass":@(eqKept.bass), @"mid":@(eqKept.mid), @"treble":@(eqKept.treble),
                       @"low_cut":@(eqKept.lowCut), @"high_cut":@(eqKept.highCut)},
               @"mix_eq_pins":pins, @"offline_score":@(match.offlineScore), @"real_score":@(match.score),
-              @"score_without_mix_eq":@(match.presetWithoutMixEQ ? match.scoreWithoutMixEQ : match.score)}];
+              @"score_without_mix_eq":@(match.presetWithoutMixEQ ? match.scoreWithoutMixEQ : match.score),
+              @"alignment_confident":@(match.alignmentConfident),
+              @"alignment_confidence":@(match.alignmentConfidence),
+              @"aligned_distance":@(match.alignedDistance),
+              @"embedding_distance":@(match.embeddingDistance)}];
           report([NSString stringWithFormat:@"  %@: offline %.2f dB, engine %.2f dB", match.preset.name, match.offlineScore, match.score]);
         }
         if (!matches.count) throw std::runtime_error("No finalist could be verified.");
@@ -1094,6 +1188,51 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
           }
         }
 
+        // ── 5. Opt-in embedding re-rank (CLAP / scripts/tone_embed.py) ──────
+        if (plan.embeddingRerank && matches.count > 0) {
+          NSString* py3 = findPython3();
+          if (py3.length) {
+            report(@"Scoring finalists with audio embedding cosine distance (CLAP)…");
+            NSString* tmpTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"axefx-emb-target-%@.wav", NSUUID.UUID.UUIDString]];
+            NSData* targetWav = rigWavDataFromFloatSamples(static_cast<const float*>(target.bytes),
+                                                           target.length / (channels * sizeof(float)), (uint16_t)channels, targetRate);
+            if ([targetWav writeToFile:tmpTarget atomically:YES]) {
+              NSMutableArray<NSString*>* candWavPaths = [NSMutableArray array];
+              for (size_t mi = 0; mi < matches.count; ++mi) {
+                NSData* candData = render(matches[mi].preset);
+                NSString* tmpCand = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                    [NSString stringWithFormat:@"axefx-emb-cand-%lu-%@.wav", (unsigned long)mi, NSUUID.UUID.UUIDString]];
+                if (candData.length) {
+                  const auto* candSamples = static_cast<const float*>(candData.bytes);
+                  const size_t candF = candData.length / (2 * sizeof(float));
+                  NSData* candWav = rigWavDataFromFloatSamples(candSamples, candF, 2, rate);
+                  [candWav writeToFile:tmpCand atomically:YES];
+                }
+                [candWavPaths addObject:tmpCand];
+              }
+              NSError* embErr = nil;
+              NSArray<NSNumber*>* distances = scoreEmbeddings(py3, tmpTarget, candWavPaths, cancelled, &embErr);
+              [[NSFileManager defaultManager] removeItemAtPath:tmpTarget error:nil];
+              for (NSString* cp in candWavPaths) [[NSFileManager defaultManager] removeItemAtPath:cp error:nil];
+              if (distances && distances.count == matches.count) {
+                for (NSUInteger mi = 0; mi < matches.count; ++mi) {
+                  matches[mi].embeddingDistance = [distances[mi] doubleValue];
+                  const double combined = matches[mi].score + 0.5 * matches[mi].embeddingDistance;
+                  report([NSString stringWithFormat:@"  Embedding re-score for %@: dist %.3f (%.2f dB -> combined %.2f)",
+                      matches[mi].preset.name, matches[mi].embeddingDistance, matches[mi].score, combined]);
+                  matches[mi].score = combined;
+                }
+                [matches sortUsingComparator:^NSComparisonResult(RigLocalToneMatch* a, RigLocalToneMatch* b) {
+                  return a.score < b.score ? NSOrderedAscending : a.score > b.score ? NSOrderedDescending : NSOrderedSame;
+                }];
+              }
+            }
+          } else {
+            report(@"Python 3 not found; skipping embedding re-score.");
+          }
+        }
+
         NSMutableArray* evaluationsJSON = [NSMutableArray array];
         for (const auto& e : evaluations) {
           NSMutableDictionary* controls = [NSMutableDictionary dictionary];
@@ -1122,6 +1261,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             @"created_at":NSDate.date.description, @"render_count":@(renders), @"search_renders":@(searchRenders),
             @"cached_renders":@(cachedRenders), @"prior_runs_found":@(totalPriorRuns),
             @"demucs_weighted":@(isDemucs), @"accurate_rescore":@(plan.accurateRescore),
+            @"embedding_rerank":@(plan.embeddingRerank), @"play_along":@(plan.playAlong),
             @"amps_screened":@(amps.count), @"amps_full":@(fullAmps.size()), @"quick_renders":@(quickRenders),
             @"quick_screening":quickScreening, @"mix_eq_kept":@(mixKept), @"pedals_tried":@(pedals.count),
             @"cabs_screened":@(cabs.size()), @"screening":screening,

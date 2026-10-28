@@ -20,6 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, nullable) NSString* referenceSource; // @"demucs", @"stem", or @"mix"
 @property(nonatomic) BOOL accurateRescore; // Re-extract finalists through Demucs with backing stems to match separation artifacts.
 @property(nonatomic, copy, nullable) NSData* referenceBackingFrames; // Non-guitar Demucs stem audio for symmetric re-scoring.
+@property(nonatomic) BOOL embeddingRerank; // Score finalists with CLAP / local embedding cosine distance.
+@property(nonatomic) BOOL playAlong; // Recorded in play-along mode; enables DTW onset alignment.
 @end
 // Cabs: the current cab, catalog cabs, then every WAV under <libraryRoot>/Cab (max 400).
 RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* catalog, NSString* libraryRoot);
@@ -31,6 +33,10 @@ RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* cata
 // without it; nil otherwise.
 @property(nonatomic, strong, nullable) RigPreset* presetWithoutMixEQ;
 @property(nonatomic) double scoreWithoutMixEQ;
+@property(nonatomic) double alignedDistance;
+@property(nonatomic) double alignmentConfidence;
+@property(nonatomic) BOOL alignmentConfident;
+@property(nonatomic) double embeddingDistance;
 @end
 
 @interface RigLocalToneMatcher : NSObject {

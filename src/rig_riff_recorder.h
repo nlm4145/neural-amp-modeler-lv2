@@ -103,6 +103,10 @@ NSData* _Nullable rigWavDataFromFloatSamples(const float* samples, size_t frames
 // guided: 0-2s muted strings, 2-6s chugs, 6-10s chords,
 // 10-15s soft/hard single notes, 15-20s sustained note and decay.
 - (void)startRecordingGuided:(BOOL)guided;
+// Play along: plays target sound in monitors/headphones while recording guitar DI
+- (void)startPlayAlong;
+- (void)stopPlayAlong;
+@property (nonatomic, readonly) BOOL isPlayingAlong;
 - (void)stopRecording;
 - (void)clearRecording;
 - (void)playRecording;

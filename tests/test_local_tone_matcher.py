@@ -35,6 +35,14 @@ class LocalToneTests(unittest.TestCase):
                            cwd=ROOT, check=True)
             subprocess.run([binary], check=True, timeout=60)
 
+    def test_alignment(self):
+        """DTW onset alignment and aligned distance for play-along takes."""
+        with tempfile.TemporaryDirectory(prefix="axe-local-align-", dir=os.environ.get("TMPDIR")) as temp:
+            binary = str(Path(temp) / "align")
+            subprocess.run(["clang++", "-O2", "-std=c++20", "-Isrc", "tests/verify_local_tone_align.cpp", "-o", binary],
+                           cwd=ROOT, check=True)
+            subprocess.run([binary], check=True, timeout=60)
+
     @unittest.skipUnless(sys.platform == "darwin", "CoreAudio decoding requires macOS")
     def test_reference_selection(self):
         """Recorder: whole-song references, Auto/manual section selection, compressed formats."""

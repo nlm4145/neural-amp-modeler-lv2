@@ -63,6 +63,36 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("const BOOL accurateRescore = self.copilotAccurateRescoreButton.state == NSControlStateValueOn &&", match)
         self.assertIn("plan.accurateRescore = accurateRescore;", match)
 
+    def test_play_along_and_dtw_alignment_ui(self):
+        ui = (ROOT / "src/nam_rig_ui.mm").read_text()
+        rec = (ROOT / "src/rig_riff_recorder.h").read_text()
+        self.assertIn("● Play Along", ui)
+        self.assertIn("copilotPlayAlongBtn", ui)
+        self.assertIn("- (void)toggleCopilotPlayAlong:(id)sender;", ui)
+        self.assertIn("startPlayAlong", rec)
+        self.assertIn("stopPlayAlong", rec)
+        self.assertIn("isPlayingAlong", rec)
+        update = ui.split("- (void)updateCopilotRiffUI {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("self.copilotPlayAlongBtn.title =", update)
+        self.assertIn("self.copilotPlayAlongBtn.enabled =", update)
+        match = ui.split("- (void)matchCopilotLocally:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        self.assertIn("plan.playAlong = playAlong;", match)
+        self.assertIn("(aligned)", match)
+        select = ui.split("- (void)selectCopilotLocalMatch:(id)sender {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("DTW alignment:", select)
+
+    def test_embedding_rerank_ui(self):
+        ui = (ROOT / "src/nam_rig_ui.mm").read_text()
+        drawer = ui.split("- (void)openAICopilot:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        self.assertIn("Embedding re-rank (CLAP)", drawer)
+        self.assertIn("self.copilotEmbeddingRerankButton.state = NSControlStateValueOff;", drawer)
+        update = ui.split("- (void)updateCopilotRiffUI {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("self.copilotEmbeddingRerankButton.enabled = !busy;", update)
+        match = ui.split("- (void)matchCopilotLocally:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        self.assertIn("plan.embeddingRerank = embeddingRerank;", match)
+        self.assertIn("(emb: %.2f)", match)
+        select = ui.split("- (void)selectCopilotLocalMatch:(id)sender {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("CLAP embedding distance:", select)
 
 
 if __name__ == "__main__":

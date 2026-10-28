@@ -238,10 +238,12 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 
 @interface RigRiffRecorder () <NSSoundDelegate> {
   NSSound* _player;
-  BOOL _pending, _guided;
+  NSSound* _playAlongPlayer;
+  BOOL _pending, _guided, _playingAlong;
   NSData* _wetFrames;
   NSUInteger _previewGeneration;
 }
+@property(nonatomic, readwrite) BOOL isPlayingAlong;
 @property(nonatomic, readwrite) NSTimeInterval recordedDuration;
 @property(nonatomic, readwrite) double recordedSampleRate;
 @property(nonatomic, readwrite, nullable) NSData* recordedWavData;
@@ -314,11 +316,29 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   CaptureGuard guard; g_frames.store(0); g_hasDI = false; _pending = YES;
   g_recording.store(true, std::memory_order_release);
 }
+- (void)startPlayAlong {
+  [self clearRecording]; _guided = NO; _playingAlong = YES;
+  if (_referenceWavData.length) {
+    _playAlongPlayer = [[NSSound alloc] initWithData:_referenceWavData];
+    _playAlongPlayer.delegate = self;
+    [_playAlongPlayer play];
+  }
+  CaptureGuard guard; g_frames.store(0); g_hasDI = false; _pending = YES;
+  g_recording.store(true, std::memory_order_release);
+}
+- (void)stopPlayAlong {
+  if (_playAlongPlayer) { [_playAlongPlayer stop]; _playAlongPlayer = nil; }
+  _playingAlong = NO;
+  [self stopRecording];
+}
+- (BOOL)isPlayingAlong { return _playingAlong; }
 - (void)setStats:(const Stats&)s {
   _peakDbfs = s.peak; _rmsDbfs = s.rms; _crestFactorDb = std::max(0.f, s.peak - s.rms);
   _lowBandDbfs = s.bands[0]; _lowMidDbfs = s.bands[1]; _highMidDbfs = s.bands[2]; _trebleDbfs = s.bands[3]; _airDbfs = s.bands[4];
 }
 - (void)stopRecording {
+  if (_playAlongPlayer) { [_playAlongPlayer stop]; _playAlongPlayer = nil; }
+  _playingAlong = NO;
   if (!_pending) return;
   {
     CaptureGuard guard; g_recording.store(false, std::memory_order_release); _pending = NO;
@@ -360,6 +380,8 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   ++_previewGeneration; _isRendering = NO; _baselineWavData = nil; _candidateWavData = nil; _candidateAnalysis = @"";
 }
 - (void)clearRecording {
+  if (_playAlongPlayer) { [_playAlongPlayer stop]; _playAlongPlayer = nil; }
+  _playingAlong = NO;
   [self stopPlayback]; [self invalidatePreview];
   { CaptureGuard guard; g_recording.store(false); g_frames.store(0); g_peak.store(0); g_latency = 0; _pending = NO; }
   _wetFrames = nil; _recordedWavData = nil; _recordedDIWavData = nil; _recordedDIFrames = nil;
@@ -376,7 +398,14 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   _player = [[NSSound alloc] initWithData:data]; _player.delegate = self; _isPlaying = [_player play];
 }
 - (void)stopPlayback { [_player stop]; _player = nil; _isPlaying = NO; }
-- (void)sound:(NSSound*)sound didFinishPlaying:(BOOL)flag { if (sound == _player) _isPlaying = NO; }
+- (void)sound:(NSSound*)sound didFinishPlaying:(BOOL)flag {
+  if (sound == _player) _isPlaying = NO;
+  if (sound == _playAlongPlayer) {
+    _playAlongPlayer = nil;
+    _playingAlong = NO;
+    if (self.isRecording) [self stopRecording];
+  }
+}
 - (BOOL)loadAudioFromURL:(NSURL*)url error:(NSError**)error {
   double rate = 0; NSUInteger channels = 0; NSData* audio = decode(url, rate, channels, error);
   if (!audio) return NO; // Keep the old take when import fails.

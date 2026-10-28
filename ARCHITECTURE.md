@@ -170,6 +170,23 @@ target features; no raw audio) are saved as per-run JSON under
 - **Accurate Demucs Re-score (Opt-in)**: Checkbox `"Accurate Demucs re-score (slow)"` in the AI Copilot
   drawer mixes verified finalist renders with the backing stems and re-runs local Demucs guitar
   extraction offline before scoring, ensuring finalists and target share identical separation artifacts.
+
+### Play-Along Recording & DTW Note-by-Note Alignment (Phase E)
+- **Play-Along Recording**: Added `copilotPlayAlongBtn` ("● Play Along") in `NAMRigUIController` and `startPlayAlong` / `stopPlayAlong` in `RigRiffRecorder`. When recording, the loaded target sound section is played back through monitors/headphones via an isolated `AVAudioPlayer` (`_playAlongPlayer`) while simultaneously capturing the user's guitar DI without stopping the target playback or mixing it into DI.
+- **Dynamic Time Warping (DTW) Aligner (`src/local_tone_align.h`)**: Header-only, dependency-free audio onset and spectral alignment:
+  - Onset envelope computed via spectral flux on half-wave rectified STFT magnitudes with a 10 ms hop.
+  - Normalized cross-correlation across onset envelopes extracts coarse time lag.
+  - Sakoe-Chiba banded DTW maps candidate frames to target frames within a constrained window around the coarse offset lag.
+  - Voiced-frame spectral distance: computes octave-band spectral level differences across aligned frames.
+  - Scoring blend: when normalized cross-correlation peak $\ge 0.5$, score is blended as $0.5 \cdot \text{stat} + 0.5 \cdot \text{aligned}$. Otherwise, falls back to statistics-only score.
+
+### CLAP Audio Embedding Re-Ranking (Phase E)
+- **CLAP Embedding Script (`scripts/tone_embed.py`)**: CLI taking `--target <path>`, `--candidates <path1> ...`, with `--mock` option and optional LAION-CLAP integration, returning cosine embedding distances in JSON.
+- **Opt-in Embedding Re-ranking**: Behind the `"Embedding re-rank (CLAP)"` checkbox in the AI Copilot drawer (`copilotEmbeddingRerankButton`). When active, verified finalist renders are scored with `tone_embed.py`, blending cosine embedding distance: $\text{score} = \text{score} + 0.5 \cdot d_{\text{embed}}$.
+
+### Unified "Match Tone" Flow (Phase E)
+- **Unified Pipeline**: Learn & Match integrates prompt research (optional) $\to$ amp screening $\to$ cab IR screening $\to$ gain-staging optimization $\to$ analytic tone stack & mix EQ fit $\to$ verified full-engine renders $\to$ DTW alignment $\to$ optional Demucs re-score $\to$ optional CLAP embedding re-rank $\to$ ranked finalists.
+- Candidate popups and gear log display DTW confidence, aligned distances, and embedding distances alongside tone stack and mix EQ pins.
 Cancellation is cooperative between renders; an individual render or opted-in
 online search must finish. Closing the drawer/rig cancels or discards the work.
 No heavy work is added to the audio callback and no LV2 ports are added.

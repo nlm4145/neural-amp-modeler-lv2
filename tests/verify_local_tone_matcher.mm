@@ -189,6 +189,11 @@ int main(int argc, char** argv) {
     assert([record[@"quick_renders"] integerValue] == quick);
     assert([record[@"amps_full"] integerValue] == (NSInteger)std::min<NSUInteger>(amps.count, 4));
     assert([record[@"render_count"] integerValue] <= quick + 4 + 20 + 12);
+    assert([record[@"embedding_rerank"] isKindOfClass:[NSNumber class]]);
+    assert([record[@"play_along"] isKindOfClass:[NSNumber class]]);
+    NSArray* finalistRecords = record[@"finalists"];
+    assert(finalistRecords.count > 0);
+    assert(finalistRecords[0][@"alignment_confident"] != nil);
     assert([NSFileManager.defaultManager fileExistsAtPath:record[@"training_file"]]);
     assert(![record[@"audio_stored"] boolValue]);
     RigLocalToneMatch* best = winners.firstObject;
@@ -197,10 +202,13 @@ int main(int argc, char** argv) {
       NSError* error = nil; NSData* audio = render(winner.preset, di, rate, &error); assert(audio && !error);
       auto measured = measure(static_cast<const float*>(audio.bytes), raw.size(), 2, rate);
       auto reference = measure(static_cast<const float*>(target.bytes), raw.size(), 2, rate);
-      assert(std::fabs(winner.score - distance(measured.features, reference.features)) < 1e-5);
+      const double statDist = distance(measured.features, reference.features);
+      const double expectedScore = winner.alignmentConfident ? (0.5 * statDist + 0.5 * winner.alignedDistance) : statDist;
+      assert(std::fabs(winner.score - expectedScore) < 1e-5);
       assert(measured.peak < 1);
       // Offline prediction (amp render ⊛ IR + post EQ) agrees with the full render.
-      std::printf("  finalist %s: offline %.3f, engine %.3f dB\n", winner.preset.name.UTF8String, winner.offlineScore, winner.score);
+      std::printf("  finalist %s: offline %.3f, engine %.3f dB (aligned: %d, dist: %.3f)\n",
+          winner.preset.name.UTF8String, winner.offlineScore, winner.score, winner.alignmentConfident, winner.alignedDistance);
       assert(std::fabs(winner.score - winner.offlineScore) < .2);
     }
     const double initial = [record[@"initial_score"] doubleValue];
