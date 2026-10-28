@@ -55,4 +55,9 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^ _Nullable)(NSString*)
     completion:(void (^)(NSArray<RigLocalToneMatch*>* _Nullable, NSDictionary* _Nullable, NSError* _Nullable))completion;
 - (void)cancel;
 @end
+
+NSString* _Nullable findPython3(void);
+BOOL checkDemucsDependencies(NSString* python3);
+BOOL ensureDemucsInstalled(NSString* python3, void (^ _Nullable logger)(NSString* msg), NSError** _Nullable error);
+
 NS_ASSUME_NONNULL_END

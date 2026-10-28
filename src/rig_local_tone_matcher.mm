@@ -319,33 +319,12 @@ struct LocalToneMemory {
   }
 };
 
-NSString* findPython3() {
-  NSArray<NSString*>* pythonCandidates = @[
-    @"/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
-    @"/usr/local/bin/python3",
-    @"/opt/homebrew/bin/python3",
-    @"/usr/bin/python3",
-  ];
-  for (NSString* c in pythonCandidates) {
-    if ([[NSFileManager defaultManager] isExecutableFileAtPath:c]) return c;
-  }
-  NSTask* which = [NSTask new];
-  which.launchPath = @"/bin/zsh";
-  which.arguments = @[@"-lc", @"which python3 2>/dev/null"];
-  NSPipe* p = [NSPipe pipe];
-  which.standardOutput = p;
-  which.standardError = [NSPipe pipe];
-  if ([which launchAndReturnError:nil]) {
-    [which waitUntilExit];
-    NSData* d = [[p fileHandleForReading] readDataToEndOfFile];
-    NSString* found = [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]
-        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (found.length && [[NSFileManager defaultManager] isExecutableFileAtPath:found]) return found;
-  }
-  return nil;
-}
-
 NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared_ptr<std::atomic<bool>> cancelled, NSError** error) {
+  NSError* ensureErr = nil;
+  if (!ensureDemucsInstalled(python3, nil, &ensureErr)) {
+    if (error) *error = ensureErr;
+    return nil;
+  }
   NSString* tmpDir = [NSTemporaryDirectory() stringByAppendingPathComponent:
       [NSString stringWithFormat:@"axefx-rescore-%@", [[NSUUID UUID] UUIDString]]];
   [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -353,7 +332,8 @@ NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared
   task.launchPath = python3;
   task.arguments = @[@"-m", @"demucs", @"--name=htdemucs_6s", @"--two-stems=guitar", @"--out", tmpDir, mixWavPath];
   task.standardOutput = [NSPipe pipe];
-  task.standardError = [NSPipe pipe];
+  NSPipe* errPipe = [NSPipe pipe];
+  task.standardError = errPipe;
   NSError* launchErr = nil;
   if (![task launchAndReturnError:&launchErr]) {
     [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
@@ -370,8 +350,13 @@ NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared
     [NSThread sleepForTimeInterval:0.05];
   }
   if (task.terminationStatus != 0) {
+    NSData* errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
+    NSString* errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] ?: @"";
     [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
-    if (error) *error = failure([NSString stringWithFormat:@"Demucs failed with status %d", task.terminationStatus]);
+    if (error) {
+      *error = failure([NSString stringWithFormat:@"Demucs failed with status %d: %@",
+          task.terminationStatus, [errStr stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]]);
+    }
     return nil;
   }
   NSString* guitarWav = nil;
@@ -443,6 +428,118 @@ NSArray<NSNumber*>* scoreEmbeddings(NSString* python3, NSString* targetWav, NSAr
   return [dists isKindOfClass:[NSArray class]] ? dists : nil;
 }
 } // namespace
+
+NSString* findPython3(void) {
+  const char* venv = getenv("VIRTUAL_ENV");
+  if (venv && *venv) {
+    NSString* venvPy = [NSString stringWithFormat:@"%s/bin/python3", venv];
+    if ([[NSFileManager defaultManager] isExecutableFileAtPath:venvPy]) return venvPy;
+  }
+  NSString* appSupportPy = [@"~/Library/Application Support/Axe FX/venv/bin/python3" stringByExpandingTildeInPath];
+  if ([[NSFileManager defaultManager] isExecutableFileAtPath:appSupportPy]) return appSupportPy;
+
+  NSArray<NSString*>* pythonCandidates = @[
+    @"/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+    @"/usr/local/bin/python3",
+    @"/opt/homebrew/bin/python3",
+    @"/usr/bin/python3",
+  ];
+  for (NSString* c in pythonCandidates) {
+    if ([[NSFileManager defaultManager] isExecutableFileAtPath:c]) return c;
+  }
+  NSTask* which = [NSTask new];
+  which.launchPath = @"/bin/zsh";
+  which.arguments = @[@"-lc", @"which python3 2>/dev/null"];
+  NSPipe* p = [NSPipe pipe];
+  which.standardOutput = p;
+  which.standardError = [NSPipe pipe];
+  if ([which launchAndReturnError:nil]) {
+    [which waitUntilExit];
+    NSData* d = [[p fileHandleForReading] readDataToEndOfFile];
+    NSString* found = [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (found.length && [[NSFileManager defaultManager] isExecutableFileAtPath:found]) return found;
+  }
+  return nil;
+}
+
+BOOL checkDemucsDependencies(NSString* python3) {
+  if (!python3.length || ![[NSFileManager defaultManager] isExecutableFileAtPath:python3]) return NO;
+  NSTask* task = [NSTask new];
+  task.launchPath = python3;
+  task.arguments = @[@"-c", @"import demucs.separate, numpy, torch"];
+  task.standardOutput = [NSPipe pipe];
+  task.standardError = [NSPipe pipe];
+  if (![task launchAndReturnError:nil]) return NO;
+  [task waitUntilExit];
+  return task.terminationStatus == 0;
+}
+
+static BOOL runPipCommand(NSString* python3, NSArray<NSString*>* packages, NSArray<NSString*>* flags, NSString** outError) {
+  NSTask* task = [NSTask new];
+  task.launchPath = python3;
+  NSMutableArray<NSString*>* args = [NSMutableArray arrayWithObjects:@"-m", @"pip", @"install", @"--quiet", nil];
+  if (flags.count) [args addObjectsFromArray:flags];
+  [args addObjectsFromArray:packages];
+  task.arguments = args;
+  NSPipe* pipe = [NSPipe pipe];
+  task.standardOutput = pipe;
+  task.standardError = pipe;
+  NSError* err = nil;
+  if (![task launchAndReturnError:&err]) {
+    if (outError) *outError = err.localizedDescription ?: @"Failed to launch pip";
+    return NO;
+  }
+  [task waitUntilExit];
+  if (task.terminationStatus != 0) {
+    NSData* d = [[pipe fileHandleForReading] readDataToEndOfFile];
+    NSString* s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] ?: @"";
+    if (outError) *outError = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return NO;
+  }
+  return YES;
+}
+
+BOOL ensureDemucsInstalled(NSString* python3, void (^ _Nullable logger)(NSString* msg), NSError** _Nullable error) {
+  if (checkDemucsDependencies(python3)) {
+    return YES;
+  }
+
+  if (logger) {
+    logger(@"Demucs or its dependencies (numpy, torch) not found. Installing via pip (one-time, ~400 MB model downloads on first use)…");
+  }
+
+  // Demucs requires numpy for waveform encoding & transformer models, but demucs wheel metadata omits numpy and PyTorch wheels no longer include it.
+  NSArray<NSString*>* packages = @[@"demucs", @"numpy"];
+  NSString* pipErr = nil;
+  BOOL ok = runPipCommand(python3, packages, @[], &pipErr);
+  if (!ok) {
+    if ([pipErr containsString:@"externally-managed-environment"]) {
+      if (logger) logger(@"Retrying pip install with --break-system-packages…");
+      ok = runPipCommand(python3, packages, @[@"--break-system-packages"], &pipErr);
+    } else if ([pipErr containsString:@"Permission denied"] || [pipErr containsString:@"[Errno 13]"]) {
+      if (logger) logger(@"Retrying pip install with --user…");
+      ok = runPipCommand(python3, packages, @[@"--user"], &pipErr);
+    }
+  }
+
+  if (!checkDemucsDependencies(python3)) {
+    if (!ok && [pipErr containsString:@"externally-managed-environment"]) {
+      runPipCommand(python3, packages, @[@"--user", @"--break-system-packages"], &pipErr);
+    }
+    if (!checkDemucsDependencies(python3)) {
+      NSString* msg = [NSString stringWithFormat:@"Failed to install Demucs dependencies. %@",
+          pipErr.length ? pipErr : @"import demucs.separate, numpy, torch failed after installation."];
+      if (error) *error = [NSError errorWithDomain:@"NAMDemucs" code:1 userInfo:@{NSLocalizedDescriptionKey: msg}];
+      return NO;
+    }
+  }
+
+  if (logger) {
+    logger(@"Demucs and dependencies installed. Separating stems…");
+  }
+  return YES;
+}
 
 RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* catalog, NSString* root) {
   RigPreset* dry = clone(base);

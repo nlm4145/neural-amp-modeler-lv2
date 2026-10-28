@@ -94,6 +94,19 @@ class WorkflowTests(unittest.TestCase):
         select = ui.split("- (void)selectCopilotLocalMatch:(id)sender {", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("CLAP embedding distance:", select)
 
+    def test_demucs_installs_all_dependencies_locally(self):
+        ui = (ROOT / "src/nam_rig_ui.mm").read_text()
+        matcher = (ROOT / "src/rig_local_tone_matcher.mm").read_text()
+        hdr = (ROOT / "src/rig_local_tone_matcher.h").read_text()
+        self.assertIn("ensureDemucsInstalled", hdr)
+        self.assertIn("checkDemucsDependencies", hdr)
+        self.assertIn("ensureDemucsInstalled(python3,", ui)
+        self.assertIn("checkDemucsDependencies", matcher)
+        self.assertIn("import demucs.separate, numpy, torch", matcher)
+        self.assertIn('"demucs", @"numpy"', matcher)
+        self.assertIn("--break-system-packages", matcher)
+        self.assertIn("--user", matcher)
+
 
 if __name__ == "__main__":
     unittest.main()

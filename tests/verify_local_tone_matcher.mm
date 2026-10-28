@@ -284,6 +284,19 @@ int main(int argc, char** argv) {
           (long)[demucsRecord[@"prior_runs_found"] integerValue]);
     }
 
+    // Demucs installation and dependencies check (demucs, numpy, torch).
+    {
+      NSString* py3 = findPython3();
+      assert(py3.length && [NSFileManager.defaultManager isExecutableFileAtPath:py3]);
+      NSError* installErr = nil;
+      BOOL ok = ensureDemucsInstalled(py3, ^(NSString* msg) {
+        std::printf("  [demucs-dep] %s\n", [msg UTF8String]);
+      }, &installErr);
+      assert(ok && !installErr);
+      assert(checkDemucsDependencies(py3));
+      std::printf("PASS Demucs dependencies (demucs, numpy, torch) verified with %s\n", [py3 UTF8String]);
+    }
+
     // Cancellation completes once, without publishing a candidate or mutating the base.
     done = NO;
     [matcher matchDI:di rate:rate target:target targetRate:rate targetChannels:2 plan:plan renderer:render cacheDirectory:cache

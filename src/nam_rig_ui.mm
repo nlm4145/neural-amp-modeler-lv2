@@ -3649,36 +3649,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   __weak NAMRigUIController* weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     // ── 1. Find python3 ──────────────────────────────────────────────────
-    NSArray<NSString*>* pythonCandidates = @[
-      @"/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
-      @"/usr/local/bin/python3",
-      @"/opt/homebrew/bin/python3",
-      @"/usr/bin/python3",
-    ];
-    // Also honour the user's PATH by trying `which python3`
-    NSString* python3 = nil;
-    for (NSString* candidate in pythonCandidates) {
-      if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
-        python3 = candidate; break;
-      }
-    }
-    if (!python3) {
-      // fallback: ask shell
-      NSTask* which = [NSTask new];
-      which.launchPath = @"/bin/zsh";
-      which.arguments = @[@"-lc", @"which python3 2>/dev/null"];
-      NSPipe* p = [NSPipe pipe];
-      which.standardOutput = p;
-      which.standardError = [NSPipe pipe];
-      if ([which launchAndReturnError:nil]) {
-        [which waitUntilExit];
-        NSData* d = [[p fileHandleForReading] readDataToEndOfFile];
-        NSString* found = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
-        found = [found stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (found.length && [[NSFileManager defaultManager] isExecutableFileAtPath:found])
-          python3 = found;
-      }
-    }
+    NSString* python3 = findPython3();
     if (!python3) {
       dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf demucsFinishedWithError:@"Python 3 not found. Install Python from python.org or via Homebrew (brew install python)."];
@@ -3686,44 +3657,19 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       return;
     }
 
-    // ── 2. Check / install demucs ────────────────────────────────────────
-    NSTask* checkTask = [NSTask new];
-    checkTask.launchPath = python3;
-    checkTask.arguments = @[@"-c", @"import demucs"];
-    checkTask.standardOutput = [NSPipe pipe];
-    checkTask.standardError = [NSPipe pipe];
-    BOOL demucsInstalled = [checkTask launchAndReturnError:nil] && ({ [checkTask waitUntilExit]; checkTask.terminationStatus == 0; });
+    // ── 2. Check / install demucs and all dependencies ───────────────────
+    NSError* installErr = nil;
+    BOOL demucsReady = ensureDemucsInstalled(python3, ^(NSString* msg) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf appendCopilotLog:msg];
+      });
+    }, &installErr);
 
-    if (!demucsInstalled) {
+    if (!demucsReady) {
       dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf appendCopilotLog:@"Demucs not found. Installing via pip (one-time, ~400 MB model downloads on first use)…"];
+        [weakSelf demucsFinishedWithError:installErr.localizedDescription ?: @"Failed to install Demucs and its dependencies."];
       });
-      NSTask* installTask = [NSTask new];
-      installTask.launchPath = python3;
-      installTask.arguments = @[@"-m", @"pip", @"install", @"--quiet", @"demucs"];
-      NSPipe* installOut = [NSPipe pipe];
-      installTask.standardOutput = installOut;
-      installTask.standardError = installOut;
-      NSError* installLaunchErr = nil;
-      if (![installTask launchAndReturnError:&installLaunchErr]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-          [weakSelf demucsFinishedWithError:[NSString stringWithFormat:@"pip install failed: %@", installLaunchErr.localizedDescription]];
-        });
-        return;
-      }
-      [installTask waitUntilExit];
-      if (installTask.terminationStatus != 0) {
-        NSData* errData = [[installOut fileHandleForReading] availableData];
-        NSString* errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] ?: @"";
-        dispatch_async(dispatch_get_main_queue(), ^{
-          [weakSelf demucsFinishedWithError:[NSString stringWithFormat:@"pip install demucs failed (exit %d). %@",
-              installTask.terminationStatus, [errStr stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]]];
-        });
-        return;
-      }
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf appendCopilotLog:@"Demucs installed. Separating stems…"];
-      });
+      return;
     }
 
     // ── 3. Run Demucs ────────────────────────────────────────────────────
