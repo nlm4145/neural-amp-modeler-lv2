@@ -52,6 +52,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("result.proposedPreset = chosen;", select)
         self.assertIn("Mix EQ (Console pins)", ui)
 
+    def test_local_match_demucs_rescore_is_opt_in(self):
+        ui = (ROOT / "src/nam_rig_ui.mm").read_text()
+        drawer = ui.split("- (void)openAICopilot:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        self.assertIn("Accurate Demucs re-score (slow)", drawer)
+        self.assertIn("self.copilotAccurateRescoreButton.state = NSControlStateValueOff;", drawer)
+        update = ui.split("- (void)updateCopilotRiffUI {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('self.copilotAccurateRescoreButton.enabled = !busy && [r.referenceSource isEqualToString:@"demucs"];', update)
+        match = ui.split("- (void)matchCopilotLocally:(id)sender {", 1)[1].split("\n- (void)", 1)[0]
+        self.assertIn("const BOOL accurateRescore = self.copilotAccurateRescoreButton.state == NSControlStateValueOn &&", match)
+        self.assertIn("plan.accurateRescore = accurateRescore;", match)
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
     assert(argc >= 2);
     NSString* cache = @(argv[1]);
     [NSFileManager.defaultManager createDirectoryAtPath:cache withIntermediateDirectories:YES attributes:nil error:nil];
+    [NSFileManager.defaultManager removeItemAtPath:[RigLocalToneMatcher renderCacheDirectory] error:nil];
     const double rate = 48000;
     // Plucked two-note figure: decays and onsets give the texture features something to see.
     std::vector<float> raw(size_t(rate * 1.2));
@@ -243,6 +244,38 @@ int main(int argc, char** argv) {
       assert([longRecord[@"feature_version"] integerValue] == kFeatureVersion);
     }
 #endif
+
+    // Phase D: Demucs-aware weights, render cache reuse, and training prior reuse.
+    {
+      NSString* firstTrainingFile = record[@"training_file"];
+      assert(firstTrainingFile && [NSFileManager.defaultManager fileExistsAtPath:firstTrainingFile]);
+      NSString* copyTrainingFile = [cache stringByAppendingPathComponent:@"prior-synthetic-run.json"];
+      [NSFileManager.defaultManager removeItemAtPath:copyTrainingFile error:nil];
+      assert([NSFileManager.defaultManager copyItemAtPath:firstTrainingFile toPath:copyTrainingFile error:nil]);
+
+      RigLocalTonePlan* demucsPlan = rigLocalTonePlan(live, @[], @"/not-a-library");
+      demucsPlan.amps = @[amps.lastObject];
+      demucsPlan.cabs = @[cabB];
+      demucsPlan.currentCab = cabB;
+      demucsPlan.referenceSource = @"demucs";
+
+      done = NO; __block NSDictionary* demucsRecord = nil;
+      [matcher matchDI:di rate:rate target:target targetRate:rate targetChannels:2 plan:demucsPlan renderer:render
+          cacheDirectory:cache progress:nil completion:^(NSArray* matches, NSDictionary* metadata, NSError* error) {
+        assert(!error && matches.count);
+        demucsRecord = metadata;
+        done = YES;
+      }];
+      wait(&done, 120);
+      assert(done);
+      assert([demucsRecord[@"demucs_weighted"] boolValue]);
+      assert([demucsRecord[@"cached_renders"] integerValue] > 0);
+      assert([demucsRecord[@"prior_runs_found"] integerValue] >= 2);
+      std::printf("PASS Phase D: demucs_weighted=YES, cached_renders=%ld, prior_runs_found=%ld\n",
+          (long)[demucsRecord[@"cached_renders"] integerValue],
+          (long)[demucsRecord[@"prior_runs_found"] integerValue]);
+    }
+
     // Cancellation completes once, without publishing a candidate or mutating the base.
     done = NO;
     [matcher matchDI:di rate:rate target:target targetRate:rate targetChannels:2 plan:plan renderer:render cacheDirectory:cache

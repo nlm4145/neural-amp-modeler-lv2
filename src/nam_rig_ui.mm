@@ -130,6 +130,7 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) NSTextField* copilotLocalMatchStatus;
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
 @property(nonatomic, strong) NSButton* copilotMatchResearchButton;
+@property(nonatomic, strong) NSButton* copilotAccurateRescoreButton;
 @property(nonatomic, strong) NSButton* copilotMatchMixEQButton;
 @property(nonatomic, strong) NSPopUpButton* copilotMatchCandidates;
 @property(nonatomic, strong) NSArray<RigLocalToneMatch*>* copilotLocalMatches;
@@ -2501,7 +2502,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   config.allowLocalCLI = YES; // Automatic fallback, requested by the UI policy.
 
   const CGFloat popW = 540.0;
-  const CGFloat popH = 874.0;
+  const CGFloat popH = 900.0;
   RigPanel* content = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, popW, popH)];
   content.wantsLayer = YES;
 
@@ -2743,13 +2744,18 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotMatchOnlineButton.frame = NSMakeRect(320, popH - 464, 205, 26);
   self.copilotMatchOnlineButton.toolTip = @"Opt in to online amp search/download (up to 3) using your prompt/gear terms. No audio uploads. Local training remains offline.";
   [content addSubview:self.copilotMatchOnlineButton];
+  self.copilotAccurateRescoreButton = [NSButton checkboxWithTitle:@"Accurate Demucs re-score (slow)" target:nil action:nil];
+  self.copilotAccurateRescoreButton.frame = NSMakeRect(20, popH - 490, 280, 24);
+  self.copilotAccurateRescoreButton.state = NSControlStateValueOff;
+  self.copilotAccurateRescoreButton.toolTip = @"Opt in: mix finalist renders back into Demucs backing stems and re-separate them through Demucs before scoring, so candidates and target share the same separation artifacts.";
+  [content addSubview:self.copilotAccurateRescoreButton];
   self.copilotLocalMatchStatus = [NSTextField labelWithString:@""];
-  self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 506, 505, 36);
+  self.copilotLocalMatchStatus.frame = NSMakeRect(20, popH - 530, 505, 36);
   self.copilotLocalMatchStatus.font = [NSFont systemFontOfSize:10];
   self.copilotLocalMatchStatus.lineBreakMode = NSLineBreakByWordWrapping;
   self.copilotLocalMatchStatus.maximumNumberOfLines = 2;
   [content addSubview:self.copilotLocalMatchStatus];
-  const CGFloat captureOffset = 260;
+  const CGFloat captureOffset = 286;
 
   // Separator 2
   NSBox* sep2 = [[NSBox alloc] initWithFrame:NSMakeRect(20, popH - 272 - captureOffset, popW - 40, 1)];
@@ -3468,6 +3474,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       self.copilotLocalMatches[(NSUInteger)selectedMatch].presetWithoutMixEQ != nil;
   self.copilotMatchResearchButton.enabled = !busy;
   self.copilotMatchOnlineButton.enabled = !busy;
+  self.copilotAccurateRescoreButton.enabled = !busy && [r.referenceSource isEqualToString:@"demucs"];
   self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
   self.copilotCancelBtn.enabled = self.copilotLocalMatching || self.copilotDemucsRunning || [RigAICopilot sharedCopilot].isProcessing;
@@ -3721,15 +3728,17 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       return;
     }
 
-    // ── 4. Find guitar.wav in Demucs output ─────────────────────────────
+    // ── 4. Find guitar.wav and backing stems in Demucs output ───────────
     // Demucs writes: <tmpDir>/<model>/<trackBasename>/guitar.wav
     NSString* guitarWav = nil;
+    NSMutableArray<NSString*>* otherStems = [NSMutableArray array];
     NSDirectoryEnumerator* enumerator = [[NSFileManager defaultManager]
         enumeratorAtPath:tmpDir];
     for (NSString* entry in enumerator) {
       if ([entry.lastPathComponent isEqualToString:@"guitar.wav"]) {
         guitarWav = [tmpDir stringByAppendingPathComponent:entry];
-        break;
+      } else if ([entry.pathExtension.lowercaseString isEqualToString:@"wav"]) {
+        [otherStems addObject:[tmpDir stringByAppendingPathComponent:entry]];
       }
     }
     if (!guitarWav) {
@@ -3740,8 +3749,33 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       return;
     }
 
+    NSString* backingWav = nil;
+    if (otherStems.count > 0) {
+      double rate = 0; NSUInteger channels = 0; BOOL trunc = NO;
+      NSData* firstAudio = rigDecodeReference([NSURL fileURLWithPath:otherStems[0]], rate, channels, trunc, nil);
+      if (firstAudio.length && channels > 0) {
+        size_t samples = firstAudio.length / sizeof(float);
+        std::vector<float> acc(samples);
+        std::memcpy(acc.data(), firstAudio.bytes, firstAudio.length);
+        for (size_t i = 1; i < otherStems.count; ++i) {
+          double sRate = 0; NSUInteger sChan = 0; BOOL sTrunc = NO;
+          NSData* sAudio = rigDecodeReference([NSURL fileURLWithPath:otherStems[i]], sRate, sChan, sTrunc, nil);
+          if (sAudio.length && sRate == rate && sChan == channels) {
+            const auto* s = static_cast<const float*>(sAudio.bytes);
+            size_t n = std::min(samples, sAudio.length / sizeof(float));
+            for (size_t j = 0; j < n; ++j) acc[j] += s[j];
+          }
+        }
+        size_t frames = samples / channels;
+        NSData* backingData = rigWavDataFromFloatSamples(acc.data(), frames, uint16_t(channels), rate);
+        backingWav = [tmpDir stringByAppendingPathComponent:@"backing.wav"];
+        [backingData writeToFile:backingWav atomically:YES];
+      }
+    }
+
     // ── 5. Load stem as reference on main thread ─────────────────────────
     NSString* guitarWavCopy = guitarWav;
+    NSString* backingWavCopy = backingWav;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!weakSelf) return;
       RigRiffRecorder* r = [RigRiffRecorder sharedRecorder];
@@ -3749,6 +3783,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       BOOL loaded = [r loadReferenceFromURL:[NSURL fileURLWithPath:guitarWavCopy]
                                     fullMix:NO
                                      source:@"demucs"
+                            backingAudioURL:backingWavCopy ? [NSURL fileURLWithPath:backingWavCopy] : nil
                                       error:&loadErr];
       // Clean up temp files after loading (data is now in memory).
       [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
@@ -3804,6 +3839,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   const NSUInteger generation = ++self.copilotLocalMatchGeneration;
   [r stopPlayback]; [r invalidatePreview];
   const BOOL research = self.copilotMatchResearchButton.state == NSControlStateValueOn;
+  const BOOL accurateRescore = self.copilotAccurateRescoreButton.state == NSControlStateValueOn &&
+                               [r.referenceSource isEqualToString:@"demucs"];
+  NSData* backing = r.referenceBackingFrames;
+  NSString* refSource = r.referenceSource;
   [self resetCopilotLog:research ? @"LEARN & MATCH LOCALLY — experimental, live rig unchanged. Gear research sends the prompt text only (no audio). This can take minutes; Cancel stops after the current render."
                                  : @"LEARN & MATCH LOCALLY — experimental, live rig unchanged. No provider request or audio upload. This can take minutes; Cancel stops after the current render."];
   [self updateCopilotRiffUI]; [self.copilotSpinner startAnimation:nil];
@@ -3839,6 +3878,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
       NSArray* library = rigAILibraryCandidatesWithTotalsAndScores(root, query, 60, totals, maxScores);
       [catalog addObjectsFromArray:library];
       RigLocalTonePlan* plan = rigLocalTonePlan(live, catalog, root);
+      plan.referenceSource = refSource;
+      plan.accurateRescore = accurateRescore;
+      plan.referenceBackingFrames = backing;
       // Widen the amp screen only when the prompt or research actually ranked amps.
       if (maxScores[1] == 0 && plan.amps.count > 4 + onlineAmps)
         plan.amps = [plan.amps subarrayWithRange:NSMakeRange(0, 4 + onlineAmps)];

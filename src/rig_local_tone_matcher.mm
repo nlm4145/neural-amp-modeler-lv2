@@ -4,6 +4,7 @@
 #include "dsp_accel.h"
 #include "wav_ir.h"
 #import "rig_ai_support.h"
+#import <CommonCrypto/CommonDigest.h>
 #include <map>
 
 @implementation RigLocalTonePlan
@@ -140,6 +141,254 @@ bool sameControls(const Controls& a, const Controls& b) {
   for (const auto& [port, value] : a) if (!b.count(port) || std::fabs(b.at(port) - value) > 1e-3) return false;
   return true;
 }
+
+// ── Local derived render cache (LRU, 500 MB bounded) ────────────────────────
+NSString* renderCacheKey(NSData* inputAudio, NSString* ampPath, const Controls& controls, size_t pedal,
+                         NSString* pedalPath, double rate, uint32_t osIn, uint32_t osOut) {
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256_CTX ctx;
+  CC_SHA256_Init(&ctx);
+  if (inputAudio.length) CC_SHA256_Update(&ctx, inputAudio.bytes, (CC_LONG)inputAudio.length);
+  if (ampPath.length) CC_SHA256_Update(&ctx, ampPath.UTF8String, (CC_LONG)ampPath.length);
+  if (pedalPath.length) CC_SHA256_Update(&ctx, pedalPath.UTF8String, (CC_LONG)pedalPath.length);
+  CC_SHA256_Update(&ctx, &pedal, sizeof(pedal));
+  CC_SHA256_Update(&ctx, &rate, sizeof(rate));
+  CC_SHA256_Update(&ctx, &osIn, sizeof(osIn));
+  CC_SHA256_Update(&ctx, &osOut, sizeof(osOut));
+  for (const auto& [port, val] : controls) {
+    float f = static_cast<float>(val);
+    CC_SHA256_Update(&ctx, &port, sizeof(port));
+    CC_SHA256_Update(&ctx, &f, sizeof(f));
+  }
+  CC_SHA256_Final(digest, &ctx);
+  NSMutableString* hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) [hex appendFormat:@"%02x", digest[i]];
+  return hex;
+}
+
+void maintainRenderCache(NSString* dir, uint64_t maxBytes = 500ULL * 1024 * 1024, uint64_t targetBytes = 400ULL * 1024 * 1024) {
+  NSFileManager* fm = [NSFileManager defaultManager];
+  [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSArray* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+  uint64_t total = 0;
+  NSMutableArray* entries = [NSMutableArray array];
+  for (NSString* f in files) {
+    if (![f.pathExtension isEqualToString:@"cache"]) continue;
+    NSString* p = [dir stringByAppendingPathComponent:f];
+    NSDictionary* attrs = [fm attributesOfItemAtPath:p error:nil];
+    uint64_t size = [attrs fileSize];
+    NSDate* mod = attrs.fileModificationDate ?: NSDate.distantPast;
+    total += size;
+    [entries addObject:@{@"path": p, @"size": @(size), @"date": mod}];
+  }
+  if (total <= maxBytes) return;
+  [entries sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+    return [a[@"date"] compare:b[@"date"]]; // Oldest first
+  }];
+  for (NSDictionary* entry in entries) {
+    if (total <= targetBytes) break;
+    [fm removeItemAtPath:entry[@"path"] error:nil];
+    total -= [entry[@"size"] unsignedLongLongValue];
+  }
+}
+
+bool readRenderCache(NSString* cachePath, Compact& outCompact) {
+  NSData* d = [NSData dataWithContentsOfFile:cachePath];
+  if (!d || d.length < 24) return false;
+  const uint8_t* bytes = static_cast<const uint8_t*>(d.bytes);
+  if (std::memcmp(bytes, "NAMC", 4) != 0) return false;
+  uint32_t ver = 0; std::memcpy(&ver, bytes + 4, 4);
+  if (ver != 1) return false;
+  uint64_t audioCount = 0, spanCount = 0;
+  std::memcpy(&audioCount, bytes + 8, 8);
+  std::memcpy(&spanCount, bytes + 16, 8);
+  size_t expected = 24 + spanCount * sizeof(Span) + audioCount * sizeof(float);
+  if (d.length != expected) return false;
+  outCompact.spans.resize(spanCount);
+  std::memcpy(outCompact.spans.data(), bytes + 24, spanCount * sizeof(Span));
+  outCompact.audio.resize(audioCount);
+  std::memcpy(outCompact.audio.data(), bytes + 24 + spanCount * sizeof(Span), audioCount * sizeof(float));
+  [[NSFileManager defaultManager] setAttributes:@{NSFileModificationDate: NSDate.date} ofItemAtPath:cachePath error:nil];
+  return true;
+}
+
+void writeRenderCache(NSString* cachePath, const Compact& compact) {
+  NSMutableData* d = [NSMutableData dataWithCapacity:24 + compact.spans.size() * sizeof(Span) + compact.audio.size() * sizeof(float)];
+  [d appendBytes:"NAMC" length:4];
+  uint32_t ver = 1; [d appendBytes:&ver length:4];
+  uint64_t audioCount = compact.audio.size(), spanCount = compact.spans.size();
+  [d appendBytes:&audioCount length:8];
+  [d appendBytes:&spanCount length:8];
+  if (spanCount) [d appendBytes:compact.spans.data() length:spanCount * sizeof(Span)];
+  if (audioCount) [d appendBytes:compact.audio.data() length:audioCount * sizeof(float)];
+  [d writeToFile:cachePath atomically:YES];
+}
+
+// ── Prior memory across runs ────────────────────────────────────────────────
+struct LocalToneMemory {
+  static void pruneOldRecords(NSString* trainingDir, size_t maxRecords = 500) {
+    if (!trainingDir.length) return;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSArray* files = [fm contentsOfDirectoryAtPath:trainingDir error:nil];
+    if (files.count <= maxRecords) return;
+    NSMutableArray* paths = [NSMutableArray array];
+    for (NSString* f in files) {
+      if ([f.pathExtension isEqualToString:@"json"]) {
+        NSString* p = [trainingDir stringByAppendingPathComponent:f];
+        NSDictionary* attrs = [fm attributesOfItemAtPath:p error:nil];
+        NSDate* d = attrs.fileModificationDate ?: NSDate.distantPast;
+        [paths addObject:@{@"path": p, @"date": d}];
+      }
+    }
+    if (paths.count <= maxRecords) return;
+    [paths sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+      return [a[@"date"] compare:b[@"date"]];
+    }];
+    while (paths.count > maxRecords) {
+      [fm removeItemAtPath:paths.firstObject[@"path"] error:nil];
+      [paths removeObjectAtIndex:0];
+    }
+  }
+
+  struct Prior {
+    bool hasPrior = false;
+    size_t runCount = 0;
+    std::map<uint32_t, std::pair<double, double>> coefficients; // port -> {g, h}
+  };
+
+  static Prior loadPriorForAmp(NSString* trainingDir, NSString* ampKey) {
+    Prior prior;
+    if (!ampKey.length || !trainingDir.length) return prior;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSArray* files = [fm contentsOfDirectoryAtPath:trainingDir error:nil];
+    if (!files.count) return prior;
+
+    double sumG = 0, sumH = 0;
+    size_t count = 0;
+    for (NSString* f in files) {
+      if (![f.pathExtension isEqualToString:@"json"]) continue;
+      NSString* p = [trainingDir stringByAppendingPathComponent:f];
+      NSData* data = [NSData dataWithContentsOfFile:p];
+      if (!data) continue;
+      NSDictionary* dict = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+      if (![dict isKindOfClass:[NSDictionary class]]) continue;
+      NSArray* evals = dict[@"evaluations"];
+      if (![evals isKindOfClass:[NSArray class]]) continue;
+
+      std::vector<std::pair<double, double>> points;
+      for (NSDictionary* ev in evals) {
+        if (![ev isKindOfClass:[NSDictionary class]]) continue;
+        NSString* k = ev[@"amp_key"];
+        if (!k.length && ev[@"amp"]) k = rigAIProfileKey([ev[@"amp"] lastPathComponent]);
+        if (![k isEqualToString:ampKey]) continue;
+        NSDictionary* ctrl = ev[@"controls"];
+        NSNumber* driveVal = ctrl[@"drive"] ?: ctrl[@"amp_drive"];
+        NSNumber* sc = ev[@"score"];
+        if (driveVal && sc && sc.doubleValue > 0 && sc.doubleValue < 1e299) {
+          points.push_back({driveVal.doubleValue, sc.doubleValue});
+        }
+      }
+      if (points.size() >= 3) {
+        std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+        double centerDrive = points.front().first;
+        double sxx = 0, sx4 = 0, sxy = 0, sx2y = 0;
+        size_t n = 0;
+        for (const auto& [x, y] : points) {
+          double dx = x - centerDrive;
+          double dx2 = dx * dx;
+          sxx += dx2; sx4 += dx2 * dx2;
+          sxy += dx * y; sx2y += dx2 * y;
+          ++n;
+        }
+        if (n >= 3 && sxx > 1e-4) {
+          double h = (n * sx2y - sxx * (sxy / sxx)) / (n * sx4 - sxx * sxx + 1e-6);
+          double g = sxy / sxx;
+          sumG += g;
+          sumH += std::max(0.01, h);
+          ++count;
+        }
+      }
+    }
+    if (count > 0) {
+      prior.hasPrior = true;
+      prior.runCount = count;
+      prior.coefficients[kDrivePort] = {sumG / count, sumH / count};
+    }
+    return prior;
+  }
+};
+
+NSString* findPython3() {
+  NSArray<NSString*>* pythonCandidates = @[
+    @"/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+    @"/usr/local/bin/python3",
+    @"/opt/homebrew/bin/python3",
+    @"/usr/bin/python3",
+  ];
+  for (NSString* c in pythonCandidates) {
+    if ([[NSFileManager defaultManager] isExecutableFileAtPath:c]) return c;
+  }
+  NSTask* which = [NSTask new];
+  which.launchPath = @"/bin/zsh";
+  which.arguments = @[@"-lc", @"which python3 2>/dev/null"];
+  NSPipe* p = [NSPipe pipe];
+  which.standardOutput = p;
+  which.standardError = [NSPipe pipe];
+  if ([which launchAndReturnError:nil]) {
+    [which waitUntilExit];
+    NSData* d = [[p fileHandleForReading] readDataToEndOfFile];
+    NSString* found = [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (found.length && [[NSFileManager defaultManager] isExecutableFileAtPath:found]) return found;
+  }
+  return nil;
+}
+
+NSData* demucsExtractGuitar(NSString* python3, NSString* mixWavPath, std::shared_ptr<std::atomic<bool>> cancelled, NSError** error) {
+  NSString* tmpDir = [NSTemporaryDirectory() stringByAppendingPathComponent:
+      [NSString stringWithFormat:@"axefx-rescore-%@", [[NSUUID UUID] UUIDString]]];
+  [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSTask* task = [NSTask new];
+  task.launchPath = python3;
+  task.arguments = @[@"-m", @"demucs", @"--name=htdemucs_6s", @"--two-stems=guitar", @"--out", tmpDir, mixWavPath];
+  task.standardOutput = [NSPipe pipe];
+  task.standardError = [NSPipe pipe];
+  NSError* launchErr = nil;
+  if (![task launchAndReturnError:&launchErr]) {
+    [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+    if (error) *error = launchErr;
+    return nil;
+  }
+  while (task.isRunning) {
+    if (cancelled && cancelled->load()) {
+      [task terminate];
+      [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+      if (error) *error = failure(@"Cancelled");
+      return nil;
+    }
+    [NSThread sleepForTimeInterval:0.05];
+  }
+  if (task.terminationStatus != 0) {
+    [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+    if (error) *error = failure([NSString stringWithFormat:@"Demucs failed with status %d", task.terminationStatus]);
+    return nil;
+  }
+  NSString* guitarWav = nil;
+  NSDirectoryEnumerator* enumerator = [[NSFileManager defaultManager] enumeratorAtPath:tmpDir];
+  for (NSString* entry in enumerator) {
+    if ([entry.lastPathComponent isEqualToString:@"guitar.wav"]) {
+      guitarWav = [tmpDir stringByAppendingPathComponent:entry];
+      break;
+    }
+  }
+  NSData* audio = nil;
+  if (guitarWav) {
+    double rate = 0; NSUInteger channels = 0; BOOL trunc = NO;
+    audio = rigDecodeReference([NSURL fileURLWithPath:guitarWav], rate, channels, trunc, error);
+  }
+  [[NSFileManager defaultManager] removeItemAtPath:tmpDir error:nil];
+  return audio;
+}
 } // namespace
 
 RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* catalog, NSString* root) {
@@ -200,6 +449,9 @@ RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* cata
 + (NSString*)trainingDirectory {
   return [@"~/Library/Application Support/Axe FX/Local Tone Training" stringByExpandingTildeInPath];
 }
++ (NSString*)renderCacheDirectory {
+  return [@"~/Library/Caches/Axe FX/LocalMatch" stringByExpandingTildeInPath];
+}
 - (void)cancel { if (_cancelled) _cancelled->store(true); }
 - (void)matchDI:(NSData*)di rate:(double)rate target:(NSData*)target
     targetRate:(double)targetRate targetChannels:(NSUInteger)channels
@@ -236,6 +488,12 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
       try {
         auto checkCancel = [&] { if (cancelled->load()) throw std::runtime_error("Local matching cancelled; live rig unchanged."); };
         checkCancel();
+        LocalToneMemory::pruneOldRecords(cacheDirectory, 500);
+        const bool isDemucs = [plan.referenceSource isEqualToString:@"demucs"];
+        const Weights weights = defaultWeights(isDemucs);
+        size_t cachedRenders = 0;
+        NSString* renderCacheDir = [RigLocalToneMatcher renderCacheDirectory];
+        maintainRenderCache(renderCacheDir);
         // Validate all raw samples before choosing excerpts, including input clipping.
         Measurement input = measure(static_cast<const float*>(di.bytes), di.length / sizeof(float), 1, rate);
         if (input.peak >= 1) throw std::runtime_error("Raw DI reaches full scale. Lower interface input gain and record an unclipped take before local training.");
@@ -333,8 +591,8 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             return measureSpans(y.data(), ch, e.pre.spans, rate).features;
           };
           Fits fits;
-          fits.tone = fitLinear(neutral.features, goal.features, rate, fixedEq(cab), measureWith);
-          fits.mixed = fitMixEq(fits.tone, goal.features, rate, measureWith, 2);
+          fits.tone = fitLinear(neutral.features, goal.features, rate, fixedEq(cab), measureWith, 3, weights);
+          fits.mixed = fitMixEq(fits.tone, goal.features, rate, measureWith, 2, weights);
           return fits;
         };
         // Predicted (one-shot) score of every cab, in parallel; best first.
@@ -348,7 +606,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             try {
               size_t ch = 1; const std::vector<float> audio = cabbed(*e, i, ch);
               const Measurement m = measureSpans(audio.data(), ch, e->pre.spans, rate);
-              out[i].first = solveLinear(m.features, goal.features, rate, fixedEq(i)).score;
+              out[i].first = solveLinear(m.features, goal.features, rate, fixedEq(i), weights).score;
             } catch (...) {}
           });
           checkCancel();
@@ -380,8 +638,19 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         auto renderEvaluation = [&](size_t amp, const Controls& controls, size_t pedal) {
           Evaluation e; e.amp = amp; e.pedal = pedal;
           for (const auto& [port, value] : controls) e.controls[port] = clampToContract(port, value);
-          NSData* audio = render(ampPreset(amp, e.controls, pedal));
-          e.pre = compactMono(static_cast<const float*>(audio.bytes), audio.length / (2 * sizeof(float)), renderSpans, preroll);
+          NSString* pedalPath = pedal != SIZE_MAX && pedal < pedals.count ? pedals[pedal] : @"";
+          uint32_t osIn = uint32_t([base controlForPort:20]), osOut = uint32_t([base controlForPort:21]);
+          NSString* key = renderCacheKey(dry, amps[amp], e.controls, pedal, pedalPath, rate, osIn, osOut);
+          NSString* cacheFile = [renderCacheDir stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"cache"]];
+          Compact cached;
+          if (readRenderCache(cacheFile, cached)) {
+            e.pre = std::move(cached);
+            ++cachedRenders;
+          } else {
+            NSData* audio = render(ampPreset(amp, e.controls, pedal));
+            e.pre = compactMono(static_cast<const float*>(audio.bytes), audio.length / (2 * sizeof(float)), renderSpans, preroll);
+            writeRenderCache(cacheFile, e.pre);
+          }
           evaluations.push_back(std::move(e));
           return evaluations.size() - 1;
         };
@@ -421,14 +690,23 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             try {
               RigPreset* p = ampPreset(a, baseControls, SIZE_MAX);
               for (uint32_t port : {20u, 21u}) if ([p controlForPort:port] > 4) [p setControl:port value:4]; // True 2x
-              const size_t before = renders;
-              NSData* audio = renderInput(p, quick);
-              quickRenders += renders - before;
+              NSString* qKey = renderCacheKey(quick, amps[a], baseControls, SIZE_MAX, @"", rate, 4, 4);
+              NSString* qCacheFile = [renderCacheDir stringByAppendingPathComponent:[qKey stringByAppendingPathExtension:@"cache"]];
               Evaluation probe; probe.amp = a;
-              probe.pre = compactMono(static_cast<const float*>(audio.bytes), audio.length / (2 * sizeof(float)), quickSpans, 0);
+              Compact qCached;
+              if (readRenderCache(qCacheFile, qCached)) {
+                probe.pre = std::move(qCached);
+                ++cachedRenders;
+              } else {
+                const size_t before = renders;
+                NSData* audio = renderInput(p, quick);
+                quickRenders += renders - before;
+                probe.pre = compactMono(static_cast<const float*>(audio.bytes), audio.length / (2 * sizeof(float)), quickSpans, 0);
+                writeRenderCache(qCacheFile, probe.pre);
+              }
               double score = 1e300;
               if (fullRig[a]) score = solveLinear(measureSpans(probe.pre.audio.data(), 1, probe.pre.spans, rate).features,
-                                                  goal.features, rate, fixedEq(SIZE_MAX)).score;
+                                                  goal.features, rate, fixedEq(SIZE_MAX), weights).score;
               else if (!cabs.empty()) score = screen(probe).front().first;
               quickScores.push_back({score, a});
               [quickScreening addObject:@{@"amp":amps[a], @"score":@(score < 1e299 ? score : -1)}];
@@ -464,7 +742,7 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
               if (!fullRig[a] && currentCab.length)
                 for (size_t i = 0; i < cabs.size(); ++i) if ([cabs[i].path isEqualToString:currentCab]) cab = i;
               size_t ch = 1; const std::vector<float> neutral = cabbed(evaluations[index], cab, ch);
-              initialScore = distance(measureSpans(neutral.data(), ch, evaluations[index].pre.spans, rate).features, goal.features);
+              initialScore = distance(measureSpans(neutral.data(), ch, evaluations[index].pre.spans, rate).features, goal.features, weights);
             }
             scoreEvaluation(index);
             const Evaluation& e = evaluations[index];
@@ -504,14 +782,27 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         // Trust-region rounds: probe ±r per dimension, fit a quadratic (in step
         // units) to every comparable evaluation, render its predicted minimum,
         // re-center on the best real evaluation, shrink r.
+        size_t totalPriorRuns = 0;
         auto search = [&](size_t amp, Controls center, const std::vector<Dim>& dims, const std::vector<double>& radii) {
           const size_t d = dims.size(), terms = 1 + 2 * d + (d == 2 ? 1 : 0);
-          for (double r : radii) {
+          NSString* ampKey = rigAIProfileKey(amps[amp].lastPathComponent);
+          const auto prior = LocalToneMemory::loadPriorForAmp(cacheDirectory, ampKey);
+          if (prior.hasPrior) totalPriorRuns = std::max(totalPriorRuns, prior.runCount);
+          for (size_t rIdx = 0; rIdx < radii.size(); ++rIdx) {
+            const double r = radii[rIdx];
             std::vector<Controls> probes;
-            for (const Dim& dim : dims) for (double sign : {-1.0, 1.0}) {
-              Controls c = center; c[dim.port] += sign * r * dim.step; probes.push_back(c);
+            if (rIdx == 0 && prior.hasPrior && prior.runCount >= 2) {
+              for (const Dim& dim : dims) {
+                double sign = 1.0;
+                if (prior.coefficients.count(dim.port) && prior.coefficients.at(dim.port).first > 0) sign = -1.0;
+                Controls c = center; c[dim.port] += sign * r * dim.step; probes.push_back(c);
+              }
+            } else {
+              for (const Dim& dim : dims) for (double sign : {-1.0, 1.0}) {
+                Controls c = center; c[dim.port] += sign * r * dim.step; probes.push_back(c);
+              }
+              if (d == 2) { Controls c = center; for (const Dim& dim : dims) c[dim.port] += .7 * r * dim.step; probes.push_back(c); }
             }
-            if (d == 2) { Controls c = center; for (const Dim& dim : dims) c[dim.port] += .7 * r * dim.step; probes.push_back(c); }
             for (const Controls& c : probes) { if (!budgetLeft()) return; evaluate(amp, c); }
             auto basis = [&](const Controls& c) {
               std::vector<double> phi{1};
@@ -532,6 +823,21 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             }
             bool solved = points >= terms;
             for (size_t i = 1; i < terms && solved; ++i) system[i][i] += 1e-3;
+            if (prior.hasPrior && solved) {
+              for (size_t dIdx = 0; dIdx < dims.size(); ++dIdx) {
+                uint32_t p = dims[dIdx].port;
+                if (prior.coefficients.count(p)) {
+                  const auto& [priorG, priorH] = prior.coefficients.at(p);
+                  const size_t gTerm = 1 + 2 * dIdx;
+                  const size_t hTerm = 2 + 2 * dIdx;
+                  const double lambdaPrior = 0.05 * std::min(prior.runCount, size_t(5));
+                  system[gTerm][terms] += lambdaPrior * priorG;
+                  system[gTerm][gTerm] += lambdaPrior;
+                  system[hTerm][terms] += lambdaPrior * priorH;
+                  system[hTerm][hTerm] += lambdaPrior;
+                }
+              }
+            }
             for (size_t col = 0; col < terms && solved; ++col) {
               size_t pivot = col;
               for (size_t row = col + 1; row < terms; ++row) if (std::fabs(system[row][col]) > std::fabs(system[pivot][col])) pivot = row;
@@ -695,22 +1001,22 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             LinearFit neutral = fits.tone;
             neutral.eq.bass = neutral.eq.mid = neutral.eq.treble = 0;
             neutral.predicted = measureWith(neutral.eq);
-            neutral.score = distance(neutral.predicted, goal.features);
-            const LinearFit polished = fitMixEq(neutral, goal.features, rate, measureWith, 4);
+            neutral.score = distance(neutral.predicted, goal.features, weights);
+            const LinearFit polished = fitMixEq(neutral, goal.features, rate, measureWith, 4, weights);
             const LinearFit& current = fits.mixed;
             if (polished.score < current.score - .02 ||
                 (polished.score < current.score + .02 && size(polished.eq) < size(current.eq))) fits.mixed = polished;
           }
           RigPreset* p = build(fits.tone.eq);
           RigLocalToneMatch* match = [RigLocalToneMatch new];
-          match.preset = p; match.score = distance(verify(p).features, goal.features); match.offlineScore = fits.tone.score;
+          match.preset = p; match.score = distance(verify(p).features, goal.features, weights); match.offlineScore = fits.tone.score;
           [matches addObject:match];
           // Mix EQ (Console pins, jointly re-fitted with the tone stack): kept only
           // when the real engine render agrees it helps.
           const LinearFit& mix = fits.mixed;
           if (mix.score < fits.tone.score - .02) {
             RigPreset* q = build(mix.eq);
-            const double mixed = distance(verify(q).features, goal.features);
+            const double mixed = distance(verify(q).features, goal.features, weights);
             report([NSString stringWithFormat:@"  mix EQ (Console pins %+.1f/%+.1f/%+.1f/%+.1f/%+.1f/%+.1f dB): engine %.2f → %.2f dB%@",
                 mix.eq.pins[0].gainDb, mix.eq.pins[1].gainDb, mix.eq.pins[2].gainDb, mix.eq.pins[3].gainDb,
                 mix.eq.pins[4].gainDb, mix.eq.pins[5].gainDb, match.score, mixed, mixed < match.score - .01 ? @"" : @" — not kept"]);
@@ -725,7 +1031,9 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
           NSMutableArray* pins = [NSMutableArray array];
           if (match.presetWithoutMixEQ) for (const auto& pin : mix.eq.pins) [pins addObject:@(pin.gainDb)];
           const PostEq& eqKept = kept.eq;
-          [finalistJSON addObject:@{@"amp":amps[e.amp], @"cab":hasCab ? cabs[c.cab].path : @"", @"controls":controls,
+          [finalistJSON addObject:@{@"amp":amps[e.amp], @"amp_key":rigAIProfileKey(amps[e.amp].lastPathComponent),
+              @"cab":hasCab ? cabs[c.cab].path : @"", @"cab_key":hasCab ? rigAIProfileKey(cabs[c.cab].path.lastPathComponent) : @"",
+              @"controls":controls,
               @"pedal":e.pedal == SIZE_MAX ? @"" : pedals[e.pedal],
               @"eq":@{@"bass":@(eqKept.bass), @"mid":@(eqKept.mid), @"treble":@(eqKept.treble),
                       @"low_cut":@(eqKept.lowCut), @"high_cut":@(eqKept.highCut)},
@@ -738,12 +1046,73 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
           return a.score < b.score ? NSOrderedAscending : a.score > b.score ? NSOrderedDescending : NSOrderedSame;
         }];
         checkCancel();
+
+        // ── 4. Opt-in accurate Demucs re-score ──────────────────────────────
+        if (plan.accurateRescore && plan.referenceBackingFrames.length && matches.count > 0) {
+          NSString* py3 = findPython3();
+          if (py3.length) {
+            report(@"Running accurate Demucs re-score on finalists (symmetric separation artifacts)…");
+            const float* backingSamples = static_cast<const float*>(plan.referenceBackingFrames.bytes);
+            const size_t backingFrames = plan.referenceBackingFrames.length / (2 * sizeof(float));
+            for (RigLocalToneMatch* match in matches) {
+              checkCancel();
+              try {
+                NSError* rErr = nil;
+                NSData* finalAudio = renderer(match.preset, dry, rate, &rErr);
+                if (finalAudio.length && !rErr) {
+                  const auto* finalSamples = static_cast<const float*>(finalAudio.bytes);
+                  const size_t finalFrames = finalAudio.length / (2 * sizeof(float));
+                  const size_t mixFrames = std::min(finalFrames, backingFrames);
+                  std::vector<float> mixAudio(mixFrames * 2);
+                  for (size_t i = 0; i < mixFrames * 2; ++i) mixAudio[i] = finalSamples[i] + backingSamples[i];
+                  NSData* mixWav = rigWavDataFromFloatSamples(mixAudio.data(), mixFrames, 2, rate);
+                  NSString* tmpMixPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"axefx-mix-%@.wav", NSUUID.UUID.UUIDString]];
+                  if ([mixWav writeToFile:tmpMixPath atomically:YES]) {
+                    NSError* demucsErr = nil;
+                    NSData* reExtracted = demucsExtractGuitar(py3, tmpMixPath, cancelled, &demucsErr);
+                    [[NSFileManager defaultManager] removeItemAtPath:tmpMixPath error:nil];
+                    if (reExtracted.length) {
+                      const auto* reSamples = static_cast<const float*>(reExtracted.bytes);
+                      Measurement reM = measureSpans(reSamples, 2, renderSpans, rate);
+                      double reScore = distance(reM.features, goal.features, weights);
+                      report([NSString stringWithFormat:@"  Accurate Demucs re-score for %@: %.2f → %.2f dB",
+                          match.preset.name, match.score, reScore]);
+                      match.score = reScore;
+                    }
+                  }
+                }
+              } catch (const std::exception& ex) {
+                report([NSString stringWithFormat:@"  Demucs re-score error for %@: %s", match.preset.name, ex.what()]);
+              }
+            }
+            [matches sortUsingComparator:^NSComparisonResult(RigLocalToneMatch* a, RigLocalToneMatch* b) {
+              return a.score < b.score ? NSOrderedAscending : a.score > b.score ? NSOrderedDescending : NSOrderedSame;
+            }];
+          } else {
+            report(@"Python 3 not found; skipping Demucs re-score.");
+          }
+        }
+
         NSMutableArray* evaluationsJSON = [NSMutableArray array];
         for (const auto& e : evaluations) {
           NSMutableDictionary* controls = [NSMutableDictionary dictionary];
           for (const auto& [port, value] : e.controls) controls[symbol(port)] = @(value);
-          [evaluationsJSON addObject:@{@"amp":amps[e.amp], @"controls":controls, @"pedal":e.pedal == SIZE_MAX ? @"" : pedals[e.pedal],
-              @"cab":e.cab == SIZE_MAX ? @"" : cabs[e.cab].path, @"score":@(e.score < 1e299 ? e.score : -1)}];
+          NSMutableDictionary* deltaControls = [NSMutableDictionary dictionary];
+          for (const auto& [port, value] : e.controls) {
+            double baseVal = baseControls.count(port) ? baseControls.at(port) : 0;
+            deltaControls[symbol(port)] = @(value - baseVal);
+          }
+          [evaluationsJSON addObject:@{
+            @"amp": amps[e.amp],
+            @"amp_key": rigAIProfileKey(amps[e.amp].lastPathComponent),
+            @"controls": controls,
+            @"delta_controls": deltaControls,
+            @"pedal": e.pedal == SIZE_MAX ? @"" : pedals[e.pedal],
+            @"cab": e.cab == SIZE_MAX ? @"" : cabs[e.cab].path,
+            @"cab_key": e.cab == SIZE_MAX ? @"" : rigAIProfileKey(cabs[e.cab].path.lastPathComponent),
+            @"score": @(e.score < 1e299 ? e.score : -1)
+          }];
         }
         NSMutableArray* targetFeatures = [NSMutableArray array];
         for (double v : goal.features) [targetFeatures addObject:@(v)];
@@ -751,6 +1120,8 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         NSMutableDictionary* record = [@{@"version":@3, @"run_id":runID, @"method":@"local-screen-v1",
             @"feature_version":@(kFeatureVersion), @"di_excerpts":@(renderSpans.size()), @"target_excerpts":@(targetSpans.size()),
             @"created_at":NSDate.date.description, @"render_count":@(renders), @"search_renders":@(searchRenders),
+            @"cached_renders":@(cachedRenders), @"prior_runs_found":@(totalPriorRuns),
+            @"demucs_weighted":@(isDemucs), @"accurate_rescore":@(plan.accurateRescore),
             @"amps_screened":@(amps.count), @"amps_full":@(fullAmps.size()), @"quick_renders":@(quickRenders),
             @"quick_screening":quickScreening, @"mix_eq_kept":@(mixKept), @"pedals_tried":@(pedals.count),
             @"cabs_screened":@(cabs.size()), @"screening":screening,

@@ -145,12 +145,31 @@ Users choose a finalist, run **Render DI A/B** on the full take, and explicitly
 retain local provenance instead of the currently selected cloud provider.
 
 Run records (version 3: quick and full screening, every evaluation's controls/pedal/
-cab/score, finalists with fitted EQ, mix-EQ pins and offline/engine scores, target
-features; no raw audio) are saved
-as per-run JSON under `~/Library/Application Support/Axe FX/Local Tone Training/`.
-They are not yet reused and are not a newly trained NAM capture. Presets saved from a
-finalist keep only the summary (`model = local-screen-v1`). NAM-format cab captures
-are not screened (WAV IRs only); full-rig amps skip the cab and console stages.
+cab/score, delta_controls, finalists with fitted EQ, mix-EQ pins and offline/engine scores,
+target features; no raw audio) are saved as per-run JSON under
+`~/Library/Application Support/Axe FX/Local Tone Training/`.
+
+### Prior Training Reuse & Render Cache (Phase D)
+- **LocalToneMemory**: Prunes training records to a 500-file maximum (LRU by modification date).
+  Parses past training records by normalized amp profile key (`amp_key`), extracting empirical
+  gradient and curvature priors for gain-staging controls. When $\ge 2$ past training runs exist
+  for an amp, the trust-region optimizer regularizes Round 1 toward the prior gradient and shrinks
+  the design to 1 probe per dimension instead of 2, accelerating convergence.
+- **Local Derived Render Cache**: Stored under `~/Library/Caches/Axe FX/LocalMatch/` (bounded to
+  500 MB max with a 400 MB prune target via LRU eviction). Pre-cab amp renders are keyed by a
+  SHA-256 digest of input DI frames, amp capture path, drive controls (`amp_drive`, OD push,
+  power stage), sample rate, and oversampling mode. Repeated runs on the same DI take instantly
+  retrieve cached renders across screening and search phases.
+
+### Demucs-Aware Scoring & Symmetric Re-Scoring (Phase D)
+- **Band De-weighting**: When `referenceSource == @"demucs"` (e.g. guitar isolated via local Demucs),
+  frequencies below 100 Hz (bass/kick bleed) and above 8000 Hz (source separation smear and phase
+  cancelation) are de-weighted at $0.3\times$ in the feature distance calculation.
+- **Stem Summation**: Non-guitar Demucs stems (`drums.wav`, `bass.wav`, `vocals.wav`, `other.wav`, etc.)
+  are decoded and summed into `referenceBackingFrames` on `RigRiffRecorder` when importing a Demucs target.
+- **Accurate Demucs Re-score (Opt-in)**: Checkbox `"Accurate Demucs re-score (slow)"` in the AI Copilot
+  drawer mixes verified finalist renders with the backing stems and re-runs local Demucs guitar
+  extraction offline before scoring, ensuring finalists and target share identical separation artifacts.
 Cancellation is cooperative between renders; an individual render or opted-in
 online search must finish. Closing the drawer/rig cancels or discards the work.
 No heavy work is added to the audio callback and no LV2 ports are added.

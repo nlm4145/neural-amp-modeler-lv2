@@ -198,6 +198,14 @@ NSString* clock(double seconds) {
 }
 } // namespace
 
+NSData* rigDecodeReference(NSURL* url, double& rate, NSUInteger& channels, BOOL& truncated, NSError** error) {
+  return decodeReference(url, rate, channels, truncated, error);
+}
+
+NSData* rigWavDataFromFloatSamples(const float* samples, size_t frames, uint16_t channels, double rate) {
+  return wav(samples, frames, channels, rate);
+}
+
 void rigRiffRecorderPushPair(const float* di, const float* left, const float* right,
                             uint32_t frames, double rate, uint32_t latency) {
   if (!g_recording.load(std::memory_order_acquire) || !frames) return;
@@ -246,6 +254,8 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
 @property(nonatomic, readwrite, copy) NSString* audioAnalysisSummary;
 @property(nonatomic, readwrite, nullable) NSData* referenceWavData;
 @property(nonatomic, readwrite, nullable) NSData* referenceFrames;
+@property(nonatomic, readwrite, nullable) NSData* referenceBackingFrames;
+@property(nonatomic, strong, nullable) NSData* referenceBackingFullFrames;
 @property(nonatomic, readwrite) double referenceSampleRate;
 @property(nonatomic, readwrite) NSUInteger referenceChannels;
 @property(nonatomic, readwrite) BOOL referenceIsFullMix;
@@ -381,10 +391,19 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
   return [self loadReferenceFromURL:url fullMix:fullMix source:fullMix ? @"mix" : @"stem" error:error];
 }
 - (BOOL)loadReferenceFromURL:(NSURL*)url fullMix:(BOOL)fullMix source:(NSString*)source error:(NSError**)error {
+  return [self loadReferenceFromURL:url fullMix:fullMix source:source backingAudioURL:nil error:error];
+}
+- (BOOL)loadReferenceFromURL:(NSURL*)url fullMix:(BOOL)fullMix source:(NSString*)source backingAudioURL:(nullable NSURL*)backingURL error:(NSError**)error {
   double rate = 0; NSUInteger channels = 0; BOOL truncated = NO;
   NSData* audio = decodeReference(url, rate, channels, truncated, error);
   if (!audio) return NO; // Keep the old reference when import fails.
-  _referenceFullFrames = audio; _referenceSampleRate = rate; _referenceChannels = channels;
+  NSData* backingAudio = nil;
+  if (backingURL) {
+    double bRate = 0; NSUInteger bChannels = 0; BOOL bTruncated = NO;
+    backingAudio = decodeReference(backingURL, bRate, bChannels, bTruncated, nil);
+    if (backingAudio && (bRate != rate || bChannels != channels)) backingAudio = nil;
+  }
+  _referenceFullFrames = audio; _referenceBackingFullFrames = backingAudio; _referenceSampleRate = rate; _referenceChannels = channels;
   _referenceIsFullMix = fullMix; _referenceSource = [source copy] ?: @"stem"; _referenceTruncated = truncated;
   _referenceTotalDuration = audio.length / (channels * sizeof(float)) / rate;
   [self selectReferenceStart:0 length:20 automatic:YES];
@@ -401,6 +420,11 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
       std::min(size_t(std::max(0.0, std::isfinite(start) ? start : 0.0) * rate), total - count);
   _referenceSelectionAuto = automatic; _referenceSelectionStart = first / rate; _referenceSelectionLength = count / rate;
   _referenceFrames = [_referenceFullFrames subdataWithRange:NSMakeRange(first * channels * sizeof(float), count * channels * sizeof(float))];
+  if (_referenceBackingFullFrames.length >= (first + count) * channels * sizeof(float)) {
+    _referenceBackingFrames = [_referenceBackingFullFrames subdataWithRange:NSMakeRange(first * channels * sizeof(float), count * channels * sizeof(float))];
+  } else {
+    _referenceBackingFrames = nil;
+  }
   const float* section = x + first * channels;
   _referenceWavData = wav(section, count, uint16_t(channels), rate);
   NSString* kind = _referenceIsFullMix ? @"full mix" : [_referenceSource isEqualToString:@"demucs"] ? @"isolated guitar · Demucs stem" : @"isolated guitar";
@@ -411,7 +435,8 @@ void rigRiffRecorderPushSamples(const float* l, const float* r, uint32_t n, doub
       summary(@"Reference", analyze(section, count, channels, rate))];
 }
 - (void)clearReference {
-  _referenceWavData = nil; _referenceFrames = nil; _referenceFullFrames = nil; _referenceAnalysis = @"";
+  _referenceWavData = nil; _referenceFrames = nil; _referenceFullFrames = nil;
+  _referenceBackingFrames = nil; _referenceBackingFullFrames = nil; _referenceAnalysis = @"";
   _referenceSampleRate = 0; _referenceChannels = 0; _referenceIsFullMix = NO; _referenceSource = @"";
   _referenceTotalDuration = 0; _referenceTruncated = NO; _referenceSelectionStart = 0; _referenceSelectionLength = 0;
   _referenceSelectionAuto = NO;

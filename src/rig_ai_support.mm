@@ -1112,7 +1112,7 @@ NSString* rigAIAcousticDeltaGuidance(NSString* playerSummary, NSString* _Nullabl
       float delta = normalizedPlayerBand - ref.bands[i];
       [out appendFormat:@"• %s: Delta %+.1f dB (Player %.1f vs Ref %.1f dBFS) — ", bandNames[i], delta, normalizedPlayerBand, ref.bands[i]];
       if (i == 0) { // 90 Hz
-        if (delta > 2.5f)  [out appendString:@"Excess low-end flub. Reduce 'bass' or raise input high-pass (80-120 Hz).\n"];
+        if (delta > 2.5f)  [out appendString:@"Excess low-end flub/palm-mute rumble. Reduce 'bass' or raise input high-pass (80-120 Hz).\n"];
         else if (delta < -2.5f) [out appendString:@"Lean low end. Boost 'bass' or lower high-pass cutoff.\n"];
         else [out appendString:@"Low-end resonance closely matches reference.\n"];
       } else if (i == 1) { // 250 Hz

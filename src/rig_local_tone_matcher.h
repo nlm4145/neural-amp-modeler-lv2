@@ -17,6 +17,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, nullable) NSString* currentCab; // The live rig's cab IR (starting-point score), if any.
 @property(nonatomic, copy, nullable) NSArray<NSString*>* pedals; // Pedal captures tried once on the leading amp (at most 2).
 @property(nonatomic) BOOL preferOverdrive; // Gear research documents an OD/boost: always search OD drive.
+@property(nonatomic, copy, nullable) NSString* referenceSource; // @"demucs", @"stem", or @"mix"
+@property(nonatomic) BOOL accurateRescore; // Re-extract finalists through Demucs with backing stems to match separation artifacts.
+@property(nonatomic, copy, nullable) NSData* referenceBackingFrames; // Non-guitar Demucs stem audio for symmetric re-scoring.
 @end
 // Cabs: the current cab, catalog cabs, then every WAV under <libraryRoot>/Cab (max 400).
 RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* catalog, NSString* libraryRoot);
@@ -35,6 +38,7 @@ RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* cata
 }
 + (instancetype)sharedMatcher;
 + (NSString*)trainingDirectory;
++ (NSString*)renderCacheDirectory;
 @property(nonatomic, readonly) BOOL isRunning;
 // All inputs are frozen on the main thread; work runs locally off audio/UI threads.
 // Returns up to three REAL-rendered finalists, never offline-only predictions.

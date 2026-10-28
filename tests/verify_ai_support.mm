@@ -195,15 +195,15 @@ int main(int argc, char** argv) {
     [NSFileManager.defaultManager removeItemAtPath:varDir error:nil];
 
     // Acoustic telemetry delta guidance tests
-    NSString* playerTake = @"Player take: peak -3.0 dBFS; RMS -14.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/350/1500/5000/10500 Hz: -18.0/-15.0/-22.0/-24.0/-38.0 dBFS";
-    NSString* refTake = @"Reference: peak -2.0 dBFS; RMS -13.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/350/1500/5000/10500 Hz: -22.0/-15.0/-16.0/-24.0/-44.0 dBFS";
+    NSString* playerTake = @"Player take: peak -3.0 dBFS; RMS -13.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/250/500/1000/2000/4000/8000/12000 Hz: -18.0/-15.0/-20.0/-22.0/-20.0/-26.0/-20.0/-38.0 dBFS";
+    NSString* refTake = @"Reference: peak -2.0 dBFS; RMS -13.0; crest 11.0 dB; clipped samples 0; broad filter estimates at 90/250/500/1000/2000/4000/8000/12000 Hz: -22.0/-15.0/-20.0/-22.0/-20.0/-20.0/-26.0/-44.0 dBFS";
     NSString* deltaGuidance = rigAIAcousticDeltaGuidance(playerTake, refTake);
     CHECK(deltaGuidance.length > 0);
     CHECK([deltaGuidance containsString:@"+4.0 dB"]);
     CHECK([deltaGuidance containsString:@"-6.0 dB"]);
     CHECK([deltaGuidance containsString:@"+6.0 dB"]);
     CHECK([deltaGuidance containsString:@"palm-mute"]);
-    CHECK([deltaGuidance containsString:@"pick attack"]);
+    CHECK([deltaGuidance.lowercaseString containsString:@"pick attack"]);
     CHECK([deltaGuidance containsString:@"sizzle"]);
 
     // Combined audio description parsing
@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
     CHECK(combinedGuidance.length > 0 && [combinedGuidance containsString:@"+4.0 dB"]);
 
     // Single-take guidance
-    NSString* clippedTake = @"Player take: peak 0.0 dBFS; RMS -10.0; crest 10.0 dB; clipped samples 42; broad filter estimates at 90/350/1500/5000/10500 Hz: -12.0/-18.0/-26.0/-24.0/-35.0 dBFS";
+    NSString* clippedTake = @"Player take: peak 0.0 dBFS; RMS -10.0; crest 10.0 dB; clipped samples 42; broad filter estimates at 90/250/500/1000/2000/4000/8000/12000 Hz: -12.0/-18.0/-26.0/-24.0/-25.0/-28.0/-30.0/-35.0 dBFS";
     NSString* singleGuidance = rigAIAcousticDeltaGuidance(clippedTake, nil);
     CHECK(singleGuidance.length > 0);
     CHECK([singleGuidance containsString:@"42 clipped samples"]);

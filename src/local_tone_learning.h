@@ -217,11 +217,12 @@ inline Measurement average(const std::vector<Measurement>& parts) {
 using Weights = Features;
 // Band weights follow a gentle equal-loudness tilt; texture features count less
 // because they are noisier across different performances.
-inline Weights defaultWeights() {
+inline Weights defaultWeights(bool demucs = false) {
   Weights w{};
   for (size_t band = 0; band < kBands; ++band) {
     const double f = bandCenter(band);
     w[band] = f < 160 ? .6 : f > 6000 ? .6 : 1.0;
+    if (demucs && (f < 100 || f > 8000)) w[band] *= 0.3;
   }
   w[kCrestIndex] = w[kDynamicsIndex] = .2;
   for (size_t r = 0; r < kRegions; ++r) { w[kPeakinessIndex + r] = .5; w[kFlatnessIndex + r] = .1; }

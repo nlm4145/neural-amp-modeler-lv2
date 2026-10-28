@@ -89,5 +89,15 @@ int main() {
   // Degenerate perturbations at control limits remain finite via ridge regularization.
   examples.assign(13, Example{}); model.train(examples);
   for (double x : model.predict(test)) assert(std::isfinite(x));
+  // Demucs-aware weights attenuate bleed (< 100 Hz) and separation smear (> 8 kHz) by 0.3x.
+  const Weights standard = defaultWeights(false), demucsW = defaultWeights(true);
+  for (size_t b = 0; b < kBands; ++b) {
+    const double f = bandCenter(b);
+    if (f < 100 || f > 8000) {
+      assert(std::fabs(demucsW[b] - standard[b] * 0.3) < 1e-9);
+    } else {
+      assert(std::fabs(demucsW[b] - standard[b]) < 1e-9);
+    }
+  }
   std::puts("PASS local features v2: level/rate invariance, stereo phase, FFT, saturation texture, decay slope, guards, learned predictions");
 }

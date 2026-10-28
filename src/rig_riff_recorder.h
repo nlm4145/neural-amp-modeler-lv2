@@ -39,6 +39,9 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
                                                 double rate, NSError** error);
 
+NSData* _Nullable rigDecodeReference(NSURL* url, double& rate, NSUInteger& channels, BOOL& truncated, NSError** error);
+NSData* _Nullable rigWavDataFromFloatSamples(const float* samples, size_t frames, uint16_t channels, double rate);
+
 @interface RigRiffRecorder : NSObject
 
 + (instancetype)sharedRecorder;
@@ -64,6 +67,8 @@ typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
 // Selected 5–20 s section of the reference as original interleaved float samples
 // (not clamped WAV). referenceWavData and referenceAnalysis follow the selection.
 @property (nonatomic, readonly, nullable) NSData* referenceFrames;
+// Optional sum of non-guitar stems (for Demucs references), sliced to the same selection.
+@property (nonatomic, readonly, nullable) NSData* referenceBackingFrames;
 @property (nonatomic, readonly) double referenceSampleRate;
 @property (nonatomic, readonly) NSUInteger referenceChannels;
 @property (nonatomic, readonly) BOOL referenceIsFullMix;
@@ -111,6 +116,7 @@ typedef NSData* _Nullable (^RigRiffRenderHandler)(RigPreset* preset, NSData* di,
 // densest 20 s.
 - (BOOL)loadReferenceFromURL:(NSURL*)fileURL fullMix:(BOOL)fullMix error:(NSError**)error;
 - (BOOL)loadReferenceFromURL:(NSURL*)fileURL fullMix:(BOOL)fullMix source:(NSString*)source error:(NSError**)error;
+- (BOOL)loadReferenceFromURL:(NSURL*)fileURL fullMix:(BOOL)fullMix source:(NSString*)source backingAudioURL:(nullable NSURL*)backingURL error:(NSError**)error;
 // Length is clamped to 5–20 s (or the whole file if shorter). Automatic picks the
 // most energetic window of that length and ignores start.
 - (void)selectReferenceStart:(NSTimeInterval)start length:(NSTimeInterval)length automatic:(BOOL)automatic;
