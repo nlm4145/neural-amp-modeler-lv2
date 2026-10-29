@@ -196,6 +196,7 @@ class BuildMenuTests(unittest.TestCase):
 
     def test_forced_menu_accepts_options(self):
         for selection, expected in (
+            ("\n", {"models": "ON", "cabs": "OFF"}),
             ("1\n", {"models": "ON", "cabs": "OFF"}),
             ("2\n", {"models": "OFF", "cabs": "ON"}),
         ):
@@ -277,6 +278,7 @@ class BuildMenuTests(unittest.TestCase):
 
     def test_menu_choice_with_previous_cache_settings(self):
         self.write_cache()
+        self.assert_settings(self.run_build("--menu", input_text="\n"), models="ON", cabs="OFF", smart="ON")
         self.assert_settings(self.run_build("--menu", input_text="1\n"), models="ON", cabs="OFF", smart="ON")
         self.assert_settings(self.run_build("--menu", input_text="2\n"), models="OFF", cabs="ON", smart="ON")
 

@@ -519,6 +519,63 @@ static void verifySculptOverdrive(Runtime& runtime, Host& host, Class presetClas
   CHECK(host.writes[40].empty());
   CHECK(host.writes[kMidPushPort].empty());
 
+  // Every new factory preset applies its own controls without changing the other slot.
+  struct BoostFactoryCase { __unsafe_unretained NSString* title; float drive, tight, tone, level, voicing; };
+  const BoostFactoryCase boostCases[] = {
+    {@"TS808 STYLE", 30.0f, 720.0f, 45.0f, 2.0f, 0.0f},
+    {@"TS9 AMP PUSH", 10.0f, 720.0f, 55.0f, 6.0f, 0.0f},
+    {@"BOSS SD-1 STYLE", 35.0f, 720.0f, 55.0f, 2.0f, 1.0f},
+    {@"SD-1 TIGHT PUSH", 10.0f, 950.0f, 60.0f, 6.0f, 1.0f},
+    {@"LED OPEN DRIVE", 45.0f, 550.0f, 60.0f, 2.0f, 2.0f},
+    {@"GERMANIUM GRIT", 65.0f, 450.0f, 40.0f, 0.0f, 3.0f},
+    {@"WARM BLUES", 20.0f, 400.0f, 45.0f, 3.0f, 0.0f},
+    {@"SINGING LEAD", 55.0f, 850.0f, 55.0f, 3.0f, 0.0f}
+  };
+  NSString* selectedEQ = [eqPopup.titleOfSelectedItem copy];
+  for (const auto& preset : boostCases) {
+    [boostPopup selectItemWithTitle:preset.title];
+    REQUIRE([boostPopup.titleOfSelectedItem isEqualToString:preset.title]);
+    host.writes.clear();
+    action(boostPopup);
+    drain();
+    const std::pair<uint32_t, float> expected[] = {
+      {kOverdriveDrivePort, preset.drive}, {kOverdriveTightPort, preset.tight},
+      {kOverdriveTonePort, preset.tone}, {kOverdriveLevelPort, preset.level},
+      {kOverdriveVoicingPort, preset.voicing}
+    };
+    for (const auto& [port, value] : expected) {
+      REQUIRE(!host.writes[port].empty());
+      CHECK(near(host.writes[port].back(), value));
+    }
+    for (NSNumber* port in state->deckSlotSpecs[(NSUInteger)eqSlot][@"ports"])
+      CHECK(host.writes[port.unsignedIntValue].empty());
+    CHECK([eqPopup.titleOfSelectedItem isEqualToString:selectedEQ]);
+  }
+
+  struct EqFactoryCase { __unsafe_unretained NSString* title; float bright, inputEq, midPush; };
+  const EqFactoryCase eqCases[] = {
+    {@"WARM MID FOCUS", 0.0f, 20.0f, 25.0f}, {@"CLEAR & OPEN", 10.0f, 20.0f, 0.0f},
+    {@"MODERN TIGHT", 0.0f, 85.0f, 30.0f}, {@"LEAD PRESENCE", 5.0f, 45.0f, 55.0f}
+  };
+  NSString* selectedBoost = [boostPopup.titleOfSelectedItem copy];
+  for (const auto& preset : eqCases) {
+    [eqPopup selectItemWithTitle:preset.title];
+    REQUIRE([eqPopup.titleOfSelectedItem isEqualToString:preset.title]);
+    host.writes.clear();
+    action(eqPopup);
+    drain();
+    const std::pair<uint32_t, float> expected[] = {
+      {39, preset.bright}, {40, preset.inputEq}, {kMidPushPort, preset.midPush}
+    };
+    for (const auto& [port, value] : expected) {
+      REQUIRE(!host.writes[port].empty());
+      CHECK(near(host.writes[port].back(), value));
+    }
+    for (NSNumber* port in state->deckSlotSpecs[(NSUInteger)boostSlot][@"ports"])
+      CHECK(host.writes[port.unsignedIntValue].empty());
+    CHECK([boostPopup.titleOfSelectedItem isEqualToString:selectedBoost]);
+  }
+
   [state->userSlotPresets[@"sculpt"] removeObjectForKey:@"TS9 (No Clipping)"];
   [state->userSlotPresets[@"sculpt"] removeObjectForKey:@"Clean EQ"];
   [state->userSlotPresets[@"boost"] removeObjectForKey:@"MyBoost"];
@@ -1868,6 +1925,64 @@ static void verifyStageMeters(Runtime& runtime) {
   levels();
 }
 
+static void verifyCabSwap(Runtime& runtime) {
+  stage = "cab swap / model choices";
+  RigUIState* state = runtime.state;
+  NSButton* swap = nil;
+  for (NSView* view in state->stageCards[2].subviews)
+    if ([view isKindOfClass:NSButton.class] &&
+        ((NSButton*)view).action == NSSelectorFromString(@"swapCabSelections:"))
+      swap = (NSButton*)view;
+  REQUIRE(swap);
+
+  NSArray<NSString*>* choicesA = @[@"/tmp/cab-a-1.wav", @"/tmp/cab-a-2.wav"];
+  NSArray<NSString*>* choicesB = @[@"/tmp/cab-b-1.wav", @"/tmp/cab-b-2.wav"];
+  for (size_t slot : {2u, 3u}) {
+    NSArray<NSString*>* choices = slot == 2 ? choicesA : choicesB;
+    state->availableModelPaths[slot].clear();
+    for (NSString* path in choices) state->availableModelPaths[slot].push_back(path.UTF8String);
+  }
+  state->selectedPaths[2] = choicesA[1].UTF8String;
+  state->selectedPaths[3] = choicesB[0].UTF8String;
+
+  auto verifyChoices = [&](size_t slot, NSArray<NSString*>* expected, NSString* selected) {
+    NSPopUpButton* picker = state->modelPickers[slot];
+    REQUIRE(picker);
+    CHECK(state->availableModelPaths[slot].size() == expected.count);
+    for (NSString* path in expected) {
+      CHECK(std::find(state->availableModelPaths[slot].begin(),
+                      state->availableModelPaths[slot].end(), path.UTF8String) !=
+            state->availableModelPaths[slot].end());
+      CHECK([picker.menu indexOfItemWithRepresentedObject:path] != -1);
+    }
+    CHECK([picker.selectedItem.representedObject isEqualToString:selected]);
+  };
+  action(swap);
+  drain();
+  verifyChoices(2, choicesB, choicesB[0]);
+  verifyChoices(3, choicesA, choicesA[1]);
+  for (size_t slot : {2u, 3u}) {
+    std::ifstream saved(RigUIState::uiStageModelsFile(slot));
+    std::vector<std::string> paths;
+    std::string path;
+    while (std::getline(saved, path)) paths.push_back(path);
+    CHECK(paths == state->availableModelPaths[slot]);
+  }
+  action(swap);
+  drain();
+  verifyChoices(2, choicesA, choicesA[1]);
+  verifyChoices(3, choicesB, choicesB[0]);
+
+  state->availableModelPaths[3].clear();
+  state->selectedPaths[3].clear();
+  action(swap);
+  drain();
+  CHECK(state->selectedPaths[2].empty());
+  CHECK(state->availableModelPaths[2].empty());
+  CHECK(state->modelPickers[2].selectedItem.representedObject == nil);
+  verifyChoices(3, choicesA, choicesA[1]);
+}
+
 static void verify(const char* modulePath) {
   using Transformer = NAMRig::OutputTransformer;
   using namespace NAMRig;
@@ -2514,6 +2629,7 @@ static void verify(const char* modulePath) {
   verifyPostCompressor(runtime, host, presetClass);
   verifyTunerDeck(runtime, host);
   verifyPedalInputVisibility(runtime, host, presetClass);
+  verifyCabSwap(runtime);
   verifyStageMeters(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.

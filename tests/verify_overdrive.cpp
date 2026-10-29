@@ -281,6 +281,64 @@ int main() {
     check(streamFinite, "Live Voicing switching stays finite, bounded, and seamless across buffer boundaries");
   }
 
+  // Clean mode stays linear even at maximum Drive and with a DC component.
+  // Check the complete signal path, including filters and bias memory.
+  for (double rate : {48000.0, 384000.0}) {
+    const size_t n = static_cast<size_t>(rate / 2);
+    auto input = sine(1000.0, 0.15, rate, n);
+    for (float& v : input) v += 0.02f;
+    auto clean = input;
+    auto scaled = input;
+    for (float& v : scaled) v *= 4.0f;
+    Overdrive a, b;
+    a.process(clean.data(), n, rate, 100.0f, 80.0f, 0.0f, 720.0f, 4.0f);
+    b.process(scaled.data(), n, rate, 100.0f, 80.0f, 0.0f, 720.0f, 4.0f);
+    double error = 0.0;
+    for (size_t i = 0; i < n; ++i)
+      error = std::max(error, std::fabs(double(scaled[i]) - 4.0 * clean[i]));
+    check(error < 1.0e-5, "Clean / No Diodes stays linear at maximum Drive");
+    check(a.dynamicBias() == 0.0, "Clean / No Diodes generates no diode bias, including DC input");
+    const double fundamental = level(clean, 1000.0, rate);
+    check(level(clean, 2000.0, rate) / fundamental < 1.0e-4 &&
+          level(clean, 3000.0, rate) / fundamental < 1.0e-4,
+          "Clean / No Diodes adds no second or third harmonics");
+
+    auto boosted = input;
+    Overdrive c;
+    c.process(boosted.data(), n, rate, 100.0f, 80.0f, 6.0f, 720.0f, 4.0f);
+    check(std::fabs(20.0 * std::log10(level(boosted, 1000.0, rate) / fundamental) - 6.0) < 0.05,
+          "Clean / No Diodes retains Level boost");
+    auto shaped = input;
+    Overdrive d;
+    d.process(shaped.data(), n, rate, 100.0f, 0.0f, 0.0f, 1400.0f, 4.0f);
+    check(level(shaped, 1000.0, rate) < fundamental * 0.7,
+          "Clean / No Diodes retains Tight and Tone shaping");
+    auto noDrive = input;
+    Overdrive e;
+    e.process(noDrive.data(), n, rate, 0.0f, 80.0f, 0.0f, 720.0f, 4.0f);
+    check(fundamental > level(noDrive, 1000.0, rate) * 10.0,
+          "Clean / No Diodes retains linear Drive gain");
+    auto bypass = input;
+    Overdrive f;
+    f.process(bypass.data(), n, rate, 100.0f, 80.0f, 6.0f, 720.0f, 4.0f, false);
+    check(bypass == input, "Clean / No Diodes respects exact bypass");
+
+    Overdrive switching;
+    auto warmup = input;
+    switching.process(warmup.data(), n, rate, 100.0f, 80.0f, 0.0f, 720.0f, 1.0f);
+    check(switching.dynamicBias() > 0.001, "Asymmetric voicing primes diode bias before switching to Clean");
+    auto switched = input;
+    switching.process(switched.data(), n, rate, 100.0f, 80.0f, 0.0f, 720.0f, 4.0f);
+    bool finite = true;
+    double settledError = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+      finite = finite && std::isfinite(switched[i]);
+      if (i >= n / 2) settledError = std::max(settledError, std::fabs(double(switched[i] - clean[i])));
+    }
+    check(finite && settledError < 0.001 && std::fabs(switching.dynamicBias()) < 1.0e-6,
+          "Switching from asymmetric clipping to Clean settles without retained diode bias");
+  }
+
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);
   return failures ? 1 : 0;
 }

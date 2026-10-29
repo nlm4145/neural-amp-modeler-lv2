@@ -2430,7 +2430,7 @@ struct RigUIState {
     }
     if (port == NAMRig::kOverdriveVoicingPort) {
       const int v = std::isfinite(value)
-          ? std::clamp((int)(value + 0.5f), 0, 3) : 0;
+          ? std::clamp((int)(value + 0.5f), 0, (int)NAMRig::kOverdriveVoicingMax) : 0;
       auto updateVoicing = ^{
         if (!alive || !*alive) return;
         boostVoicing = v;

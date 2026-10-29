@@ -22,7 +22,8 @@ namespace NAMRig {
 // Tone is a 6 dB/oct treble roll-off swept 700 Hz..8.4 kHz, Level a dB trim.
 // Bypassed when the Pre-Amp Boost card is toggled off. At Drive 0%, it operates
 // as a distortionless clean boost through Tone and Level; higher Drive settings
-// add symmetric soft-clipping saturation.
+// add the selected diode saturation. Clean / No Diodes keeps the feedback branch
+// linear at every Drive setting, with Tight, Tone and Level still active.
 class Overdrive {
  public:
   enum class Voicing : int {
@@ -30,7 +31,8 @@ class Overdrive {
     Asymmetric = 1,  // Asymmetric silicon (Boss SD-1 style: 2 diodes pos, 1 diode neg, even harmonics)
     LedTurbo = 2,    // Red LEDs (Turbo / Guv'nor style: high headroom, open crunch)
     Germanium = 3,   // Germanium diodes (vintage soft saturation, low threshold, warm compression)
-    Count = 4
+    Clean = 4,       // Linear feedback branch, without diode clipping or self-bias
+    Count = 5
   };
 
   static constexpr float kToneDefault = 50.0f;
@@ -130,13 +132,14 @@ class Overdrive {
         lp_ += lpK * ((x - bass_) - lp_);
         // Clipper input is modulated by dynamic bias drift
         const double u = g * lp_ - bias_;
-        double clipped;
-        if (voicingFade_ >= 1.0f) {
-          clipped = clip(u, currentVoicing_);
-        } else {
-          const double c0 = clip(u, currentVoicing_);
-          const double c1 = clip(u, targetVoicing_);
-          clipped = (1.0 - voicingFade_) * c0 + voicingFade_ * c1;
+        const bool currentClean = currentVoicing_ == static_cast<int>(Voicing::Clean);
+        double clipped = clip(currentClean ? g * lp_ : u, currentVoicing_);
+        double biasSignal = currentClean ? 0.0 : clipped;
+        if (voicingFade_ < 1.0f) {
+          const bool targetClean = targetVoicing_ == static_cast<int>(Voicing::Clean);
+          const double c1 = clip(targetClean ? g * lp_ : u, targetVoicing_);
+          clipped = (1.0 - voicingFade_) * clipped + voicingFade_ * c1;
+          biasSignal = (1.0 - voicingFade_) * biasSignal + voicingFade_ * (targetClean ? 0.0 : c1);
           voicingFade_ += fadeStep;
           if (voicingFade_ >= 1.0f) {
             voicingFade_ = 1.0f;
@@ -144,7 +147,7 @@ class Overdrive {
           }
         }
         // Leak integrator models dynamic self-biasing charge (tau = 25 ms, 15% coupling factor)
-        bias_ += biasK * (0.15 * clipped - bias_);
+        bias_ += biasK * (0.15 * biasSignal - bias_);
         const double pedal = x + smoothDrive_ * clipped;
         tone_ += toneK * (pedal - tone_);
         s[i] = static_cast<float>(x + on * (tone_ * level - x));
@@ -197,13 +200,16 @@ class Overdrive {
   static double feedbackLowPassHz(float drive01) noexcept {
     return 1.0 / (2.0 * kPi * (51.0e3 + driveOhms(drive01)) * 51.0e-12);
   }
-  // Soft diode limiting on the feedback branch with 4 authentic physical voicings:
+  // Four diode curves plus a linear, diode-free feedback branch:
   // 0: Classic TS (symmetric silicon, Vth = 0.25V, conduction knee p = 2)
   // 1: Asymmetric SD-1 (silicon diode array: 2 pos 0.50V, 1 neg 0.25V, p = 2)
   // 2: LED Turbo (red LEDs, Vth = 0.60V, sharp forward conduction knee p = 4)
   // 3: Germanium (vintage Ge diodes, Vth = 0.15V, soft warm compression knee p = 4/3)
+  // 4: Clean / No Diodes (linear boost; Drive, Tight, Tone and Level still apply)
   static double clip(double u, int voicing = 0) noexcept {
     switch (voicing) {
+      case static_cast<int>(Voicing::Clean):
+        return u;
       case 1: { // Asymmetric SD-1 (silicon array, p = 2)
         if (u >= 0.0) {
           const double v = u / 0.50;

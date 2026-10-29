@@ -1082,11 +1082,12 @@
 				], [
 					a lv2:ControlPort, lv2:InputPort ; lv2:index 191 ;
 					lv2:symbol "od_voicing" ; lv2:name "Overdrive Voicing" ;
-					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 3.0 ;
+					lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 4.0 ;
 					lv2:portProperty lv2:integer, lv2:enumeration, lv2:connectionOptional ;
 					lv2:scalePoint [ rdfs:value 0.0 ; rdfs:label "Classic TS" ] ,
 						[ rdfs:value 1.0 ; rdfs:label "SD-1 Asymmetric" ] ,
 						[ rdfs:value 2.0 ; rdfs:label "LED Turbo" ] ,
-						[ rdfs:value 3.0 ; rdfs:label "Germanium" ] ;
-					rdfs:comment "Pre-amp overdrive clipping diode voicing: 0=Classic TS (symmetric silicon, smooth compression and odd harmonics), 1=SD-1 Asymmetric (2 diodes positive vs 1 diode negative, rich 2nd-order even harmonics and gritty tube bite), 2=LED Turbo (high-headroom red LEDs for open crunchy dynamics), 3=Germanium (vintage low-threshold diodes for early saturation, fuzzy bite, and warm compression)."
+						[ rdfs:value 3.0 ; rdfs:label "Germanium" ] ,
+						[ rdfs:value 4.0 ; rdfs:label "Clean / No Diodes" ] ;
+					rdfs:comment "Pre-amp overdrive clipping diode voicing: 0=Classic TS (symmetric silicon, smooth compression and odd harmonics), 1=SD-1 Asymmetric (2 diodes positive vs 1 diode negative, rich 2nd-order even harmonics and gritty tube bite), 2=LED Turbo (high-headroom red LEDs for open crunchy dynamics), 3=Germanium (vintage low-threshold diodes for early saturation, fuzzy bite, and warm compression), 4=Clean / No Diodes (linear boost without diode clipping or self-bias; Drive and Tight shape the boost, Tone and Level remain active)."
 				] .

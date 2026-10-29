@@ -209,7 +209,7 @@ public:
     float* post_compressor_release; // in: port 188, ms
     float* post_compressor_enabled; // in: port 189, independent bypass
     float* od_tight;                // in: port 190, Sculpt overdrive tight cut (Hz, 100..1500)
-    float* od_voicing;              // in: port 191, Sculpt overdrive diode voicing (0=TS, 1=SD-1, 2=LED, 3=Ge)
+    float* od_voicing;              // in: port 191, Sculpt overdrive diode voicing (0=TS, 1=SD-1, 2=LED, 3=Ge, 4=Clean)
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));

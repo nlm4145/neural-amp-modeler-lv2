@@ -181,10 +181,10 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
     [arc appendBezierPathWithArcWithCenter:c radius:arcRadius
                                 startAngle:225.0 endAngle:valueAngle clockwise:YES];
     arc.lineCapStyle = NSLineCapStyleRound;
-    arc.lineWidth = 7.0;
-    [[valueColor colorWithAlphaComponent:0.22] setStroke];
+    arc.lineWidth = 5.0;
+    [[valueColor colorWithAlphaComponent:0.16] setStroke];
     [arc stroke];
-    arc.lineWidth = 3.0;
+    arc.lineWidth = 2.5;
     [valueColor setStroke];
     [arc stroke];
   }
@@ -226,7 +226,7 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
 
 @implementation RigPanel
 - (instancetype)initWithFrame:(NSRect)frame {
-  if ((self = [super initWithFrame:frame])) _cornerRadius = 12.0;
+  if ((self = [super initWithFrame:frame])) _cornerRadius = 10.0;
   return self;
 }
 - (void)setCornerRadius:(CGFloat)radius { _cornerRadius = radius; self.needsDisplay = YES; }
@@ -339,26 +339,26 @@ RigKnobColorStyle rigKnobColorStyleForPort(uint32_t port) {
   NSColor* border;
   if (self.primary) {
     NSColor* base = self.customTextColor
-        ? [self.customTextColor blendedColorWithFraction:0.55 ofColor:NSColor.blackColor]
+        ? [self.customTextColor blendedColorWithFraction:0.74 ofColor:NSColor.blackColor]
         : (on ? rigAccent() : rigAccentDim());
     if (self.isHighlighted) base = [base blendedColorWithFraction:0.22 ofColor:NSColor.blackColor];
-    else if (_hovered) base = [base blendedColorWithFraction:0.14 ofColor:NSColor.whiteColor];
+    else if (_hovered) base = [base blendedColorWithFraction:0.10 ofColor:NSColor.whiteColor];
     NSGradient* g = [[NSGradient alloc]
-        initWithStartingColor:[base blendedColorWithFraction:0.18 ofColor:NSColor.blackColor]
+        initWithStartingColor:[base blendedColorWithFraction:0.10 ofColor:NSColor.blackColor]
                   endingColor:base];
     [g drawInBezierPath:p angle:90.0];
     border = self.customTextColor
-        ? [self.customTextColor blendedColorWithFraction:0.25 ofColor:NSColor.whiteColor]
+        ? [self.customTextColor colorWithAlphaComponent:0.65]
         : [base blendedColorWithFraction:0.22 ofColor:NSColor.whiteColor];
   } else {
-    NSColor* fill = on ? [rigAccent() colorWithAlphaComponent:0.24]
+    NSColor* fill = on ? [rigAccent() colorWithAlphaComponent:0.20]
                        : (self.isHighlighted ? rigRaised()
                                              : (_hovered ? [rigRaised() colorWithAlphaComponent:0.85]
-                                                         : rigPanelBG()));
+                                                         : rigBG()));
     [fill setFill];
     [p fill];
-    border = on ? [rigAccent() colorWithAlphaComponent:0.75]
-                : ((_hovered || self.isHighlighted) ? [rigAccent() colorWithAlphaComponent:0.45]
+    border = on ? [rigAccent() colorWithAlphaComponent:0.65]
+                : ((_hovered || self.isHighlighted) ? [rigAccent() colorWithAlphaComponent:0.40]
                                                     : rigPanelBorder());
   }
   p.lineWidth = 1.0;
@@ -796,9 +796,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
@@ -861,7 +861,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
      withAttributes:infoAttrs];
 
   NSDictionary* titleAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.55 green:0.58 blue:0.68 alpha:0.9]
   };
   [@"PING-PONG ECHO PATTERN" drawAtPoint:NSMakePoint(leftMargin, r.size.height - topMargin + 2)
@@ -949,15 +949,15 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
   const CGFloat leftMargin = 38.0;
   const CGFloat rightMargin = 16.0;
-  const CGFloat topMargin = 20.0;
+  const CGFloat topMargin = 36.0;
   const CGFloat bottomMargin = 18.0;
   const CGFloat plotW = r.size.width - leftMargin - rightMargin;
   const CGFloat plotH = r.size.height - topMargin - bottomMargin;
@@ -1009,14 +1009,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.80 green:0.65 blue:1.0 alpha:0.95]
   };
   NSSize infoSize = [info sizeWithAttributes:infoAttrs];
-  [info drawAtPoint:NSMakePoint(r.size.width - rightMargin - infoSize.width, r.size.height - topMargin + 2)
+  [info drawAtPoint:NSMakePoint(r.size.width - rightMargin - infoSize.width, r.size.height - 32)
      withAttributes:infoAttrs];
 
   NSDictionary* titleAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.55 green:0.58 blue:0.68 alpha:0.9]
   };
-  [@"EMT 140 PLATE DECAY ENVELOPE" drawAtPoint:NSMakePoint(leftMargin, r.size.height - topMargin + 2)
+  [@"EMT 140 PLATE DECAY ENVELOPE" drawAtPoint:NSMakePoint(leftMargin, r.size.height - 18)
                                withAttributes:titleAttrs];
 
   const float mixNorm = std::min(1.0f, std::max(0.0f, _mix / 100.0f));
@@ -1108,9 +1108,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
@@ -1125,10 +1125,10 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
   // Left Module: Stereo Goniometer
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.95]
   };
-  [@"STEREO VECTORSCOPE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
+  [@"STEREO SCOPE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
   NSPoint gc = NSMakePoint(splitX * 0.5, (r.size.height - 20) * 0.5 + 14);
   CGFloat gRad = std::min(splitX * 0.36, (r.size.height - 36.0) * 0.44);
@@ -1193,18 +1193,18 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [@"+1.00 MONO-SAFE PHASE" drawAtPoint:NSMakePoint(corrRect.origin.x + 6, corrRect.origin.y + 1) withAttributes:corrAttrs];
 
   // Right Module: 3D Tracking Room Wireframe
-  [@"3D ROOM ACOUSTICS" drawAtPoint:NSMakePoint(splitX + 16, r.size.height - 18) withAttributes:headerAttrs];
+  [@"ROOM ACOUSTICS" drawAtPoint:NSMakePoint(splitX + 16, r.size.height - 18) withAttributes:headerAttrs];
 
   NSString* roomStat = [NSString stringWithFormat:@"SPREAD: %.0f%%  •  ROOM: %.0f%%", _width, _room];
   NSDictionary* rAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.9]
   };
   NSSize rsz = [roomStat sizeWithAttributes:rAttrs];
-  [roomStat drawAtPoint:NSMakePoint(r.size.width - 16 - rsz.width, r.size.height - 18) withAttributes:rAttrs];
+  [roomStat drawAtPoint:NSMakePoint(r.size.width - 16 - rsz.width, r.size.height - 32) withAttributes:rAttrs];
 
   CGFloat rw = r.size.width - splitX - 32.0;
-  CGFloat rh = r.size.height - 34.0;
+  CGFloat rh = r.size.height - 48.0;
   CGFloat rx = splitX + 16.0;
   CGFloat ry = 10.0;
 
@@ -1304,9 +1304,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
@@ -1329,13 +1329,13 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const float makeupDb = 6.0f * activeNorm;
 
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
   [(_compact ? @"LINKED STEREO TRANSFER" : @"COMPRESSION TRANSFER") drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
   NSDictionary* envHeaderAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
   };
   if (!_compact) [@"ATTACK & RELEASE ENVELOPE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:envHeaderAttrs];
@@ -1352,24 +1352,24 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (_compact) telemetry = isBypassed ? @"BYPASSED" :
       [NSString stringWithFormat:@"THRESH %.0f dB  /  RATIO %.1f:1", thresholdDb, ratio];
   NSDictionary* infoAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: isBypassed
         ? [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
         : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
   };
   NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
   [telemetry drawAtPoint:NSMakePoint(_compact ? 14 : r.size.width - 14 - infoSize.width,
-                                    r.size.height - (_compact ? 32 : 18)) withAttributes:infoAttrs];
+                                    r.size.height - 32) withAttributes:infoAttrs];
 
   const CGFloat lPad = 32.0;
   const CGFloat rPad = splitX - 16.0;
   const CGFloat bPad = 22.0;
-  const CGFloat tPad = r.size.height - (_compact ? 44.0 : 28.0);
+  const CGFloat tPad = r.size.height - 44.0;
   const CGFloat plotW = rPad - lPad;
   const CGFloat plotH = tPad - bPad;
 
   NSDictionary* dbAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightRegular],
+    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
   };
 
@@ -1507,7 +1507,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [env stroke];
 
   NSDictionary* timeAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightRegular],
+    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.50 green:0.55 blue:0.65 alpha:0.8]
   };
   [@"0ms" drawAtPoint:NSMakePoint(elPad, bPad - 14) withAttributes:timeAttrs];
@@ -1528,21 +1528,21 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
   [@"POWER-STAGE RESPONSE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
   NSString* stat = [NSString stringWithFormat:@"SAG: %.0f%%  •  BIAS: %+.0f%%  •  NFB: %.0f%%", _sag, _bias, _feedback];
   NSDictionary* statAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
   };
   [stat drawAtPoint:NSMakePoint(14, r.size.height - 34) withAttributes:statAttrs];
@@ -1632,14 +1632,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
   [@"PRE-AMP TONAL SCULPT & EQ" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
@@ -1652,7 +1652,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
                                        _bright * 0.06, _midPush, _inputEq];
   }
   NSDictionary* statAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: _enabled
         ? [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
         : [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
@@ -1708,7 +1708,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     _tone = NAMRig::Overdrive::kToneDefault;
     _voicing = 0;
     _enabled = YES;
-    self.toolTip = @"TS-style symmetrical soft-clipping saturation, variable pre-clip tight high-pass filtering and post-clip tone shaping in front of the amplifier.";
+    self.toolTip = @"Clean linear boost or diode overdrive, with variable tight high-pass filtering and tone shaping in front of the amplifier.";
   }
   return self;
 }
@@ -1717,7 +1717,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setTight:(float)v { _tight = v; self.needsDisplay = YES; }
 - (void)setTone:(float)v { _tone = v; self.needsDisplay = YES; }
 - (void)setLevel:(float)v { _level = v; self.needsDisplay = YES; }
-- (void)setVoicing:(int)v { _voicing = std::clamp(v, 0, 3); self.needsDisplay = YES; }
+- (void)setVoicing:(int)v { _voicing = std::clamp(v, 0, (int)NAMRig::Overdrive::Voicing::Count - 1); self.needsDisplay = YES; }
 - (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
@@ -1725,9 +1725,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
@@ -1749,22 +1749,23 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     @"DRIVE SATURATION (CLASSIC TS)",
     @"DRIVE SATURATION (SD-1 ASYM)",
     @"DRIVE SATURATION (LED TURBO)",
-    @"DRIVE SATURATION (GERMANIUM)"
+    @"DRIVE SATURATION (GERMANIUM)",
+    @"CLEAN BOOST (NO DIODES)"
   };
-  const int vIdx = std::clamp(_voicing, 0, 3);
+  const int vIdx = std::clamp(_voicing, 0, (int)NAMRig::Overdrive::Voicing::Count - 1);
   NSDictionary* leftHeaderAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
   [kVoicingHeaders[vIdx] drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:leftHeaderAttrs];
 
   NSDictionary* rightHeaderAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
   };
   [@"TONE & TIGHT (HPF) RESPONSE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:rightHeaderAttrs];
 
-  static NSString* const kVoicingLabels[] = {@"TS", @"SD-1", @"LED", @"GE"};
+  static NSString* const kVoicingLabels[] = {@"TS", @"SD-1", @"LED", @"GE", @"CLEAN"};
   NSString* telemetry;
   if (!_enabled) {
     telemetry = @"BOOST BYPASSED (OFF)";
@@ -1774,19 +1775,19 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     telemetry = [NSString stringWithFormat:@"%@  •  DRV: %.0f%%  •  TIGHT: %.0f Hz  •  TONE: %.0f%%  •  LVL: %+.1f dB", kVoicingLabels[vIdx], _drive, _tight, _tone, _level];
   }
   NSDictionary* infoAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: isBypassed
         ? [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
         : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
   };
   NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
-  [telemetry drawAtPoint:NSMakePoint(r.size.width - 14 - infoSize.width, r.size.height - 18) withAttributes:infoAttrs];
+  [telemetry drawAtPoint:NSMakePoint(r.size.width - 14 - infoSize.width, r.size.height - 32) withAttributes:infoAttrs];
 
   // Left Plot: Transfer Curve (Input vs Output)
   const CGFloat lPad = 28.0;
   const CGFloat lRight = splitX - 16.0;
   const CGFloat bPad = 20.0;
-  const CGFloat tPad = r.size.height - 30.0;
+  const CGFloat tPad = r.size.height - 46.0;
   const CGFloat lPlotW = lRight - lPad;
   const CGFloat lPlotH = tPad - bPad;
   const CGFloat lMidY = bPad + lPlotH * 0.5;
@@ -1911,9 +1912,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r, 0.5, 0.5)
                                                    xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
@@ -1926,12 +1927,12 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   NSMutableParagraphStyle* textStyle = [NSMutableParagraphStyle new];
   textStyle.lineBreakMode = NSLineBreakByTruncatingTail;
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: curveColor,
     NSParagraphStyleAttributeName: textStyle
   };
   NSDictionary* statAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: rigDimText(),
     NSParagraphStyleAttributeName: textStyle
   };
@@ -1954,7 +1955,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (NSWidth(plot) < 8.0 || NSHeight(plot) < 8.0) return;
 
   NSDictionary* axisAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.0 weight:NSFontWeightRegular],
+    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
   };
   [@"OUTPUT" drawAtPoint:NSMakePoint(NSMinX(plot), NSMaxY(plot) + 1.0) withAttributes:axisAttrs];
@@ -2046,9 +2047,9 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
@@ -2056,7 +2057,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const auto& p = _parameters;
 
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
   };
   [@"CORE FLUX SATURATION & PASSBAND" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
@@ -2066,7 +2067,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
       : [NSString stringWithFormat:@"FLUX: %.0fHz  •  DRV: %.1fx  •  SAT: %.0f%%",
          p.fluxHz, p.drive, p.saturationMix * 100.0];
   NSDictionary* statAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.9]
   };
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
@@ -2231,14 +2232,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.95]
   };
   [@"SPEAKER LOAD RESPONSE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
@@ -2248,7 +2249,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
       ? @"CAPTURED LOAD  •  BYPASS"
       : [NSString stringWithFormat:@"DRV: %.0f%%  •  COMP: %.0f%%  •  THUMP: %.0f%%", _drive, _comp, _thump];
   NSDictionary* statAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.9]
   };
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
@@ -2325,21 +2326,21 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if (r.size.width < 10 || r.size.height < 10) return;
 
   NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [[NSColor colorWithSRGBRed:0.07 green:0.08 blue:0.10 alpha:1.0] setFill];
+  [rigBG() setFill];
   [bg fill];
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.75] setStroke];
+  [rigPanelBorder() setStroke];
   bg.lineWidth = 1.0;
   [bg stroke];
 
   NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.95]
   };
   [@"CAB A / B ALIGNMENT & DUAL CUT FILTERS" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
   NSString* stat = [NSString stringWithFormat:@"ALIGN: %+.2f ms  •  LOW: %.0f Hz  •  HI: %.0f Hz", _alignDelay, _lowCut, _highCut];
   NSDictionary* statAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.9]
   };
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
@@ -2550,7 +2551,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
       : (_levelDb >= -12.0f) ? [NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:1.0]
       : rigText();
   NSDictionary* dbAttr = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.0 weight:NSFontWeightMedium],
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: dbTextColor,
     NSParagraphStyleAttributeName: centerStyle
   };

@@ -164,14 +164,14 @@ show_settings() {
 if [[ "$MENU" == on || ( "$MENU" == auto && -t 0 && -t 1 ) ]]; then
   while true; do
     echo
-    echo "1  Parallel"
+    echo "1  Parallel (default)"
     echo "2  Serial (threaded cabs enabled)"
-    if ! read -r -p "Choice: " choice; then
+    if ! read -r -p "Choice [1]: " choice; then
       echo "Build cancelled."
       exit 0
     fi
     case "$choice" in
-      1) set_processing_mode parallel; break ;;
+      ''|1) set_processing_mode parallel; break ;;
       2) set_processing_mode serial; break ;;
       q|Q) echo "Build cancelled."; exit 0 ;;
       *) echo "Invalid choice. Use 1 or 2." ;;
