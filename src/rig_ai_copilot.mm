@@ -2671,7 +2671,7 @@ static NSDictionary* rigAICLIEnvironment() {
     completionHandler([NSError errorWithDomain:@"RigAICopilot" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"No active rig."}]); return;
   }
   RigPreset* before = [RigPreset captureFromState:state name:@"Before AI Tone Tuning"];
-  const auto serials = state->pathResponseSerial;
+  const std::array<uint64_t, 4> serials = {state->pathResponseSerial[0], state->pathResponseSerial[1], state->pathResponseSerial[2], state->pathResponseSerial[3]};
   NSError* error = nil;
   if (![self applyResult:result toState:state saveUndoState:YES error:&error]) { completionHandler(error); return; }
 

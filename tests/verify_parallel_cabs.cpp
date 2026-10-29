@@ -428,7 +428,7 @@ struct Host {
     plugin.ports.post_compressor_enabled = &controls[NAMRig::kPostCompressorEnabledPort];
     plugin.ports.od_tight = &controls[NAMRig::kOverdriveTightPort];
     plugin.ports.od_voicing = &controls[NAMRig::kOverdriveVoicingPort];
-    static_assert(Plugin::kPortCount == 192, "update connections if ports change");
+    static_assert(Plugin::kPortCount == 195, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),
@@ -1022,8 +1022,8 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
     const auto before = pair.serial.loads;
     pair.reconfigure(newRate);
     for (size_t stage = 0; stage < NAMRig::kStageCount; ++stage)
-      check(pair.serial.loads[stage] == before[stage] + 1,
-            "sample-rate reconfiguration reloads each installed path once");
+      check(pair.serial.loads[stage] == before[stage] + (stage < 4 ? 1 : 0),
+            "sample-rate reconfiguration reloads installed paths and leaves empty pedal slots alone");
     pair.installed(Stage::Cab, lstm);
     pair.installed(Stage::Cab2, wave);
     pair.steady(true, true, true, pipelineFactor(4, newRate), nativeDecimation(newRate), 0);

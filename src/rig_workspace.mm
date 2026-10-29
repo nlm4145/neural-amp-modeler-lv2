@@ -46,8 +46,64 @@ static void deactivateViewConstraints(NSView* view) {
   view.translatesAutoresizingMaskIntoConstraints = YES;
 }
 
+// Only the card header starts an internal drag; model controls remain clickable.
+static BOOL isPedalModelURL(NSURL* url) {
+  return [@[@"nam", @"nammodel", @"aidax", @"aidadspmodel"] containsObject:url.pathExtension.lowercaseString];
+}
+static NSString* const pedalDragType = @"com.axefx.pedal-slot";
+@interface RigPedalCard : RigPanel <NSDraggingSource>
+@property(nonatomic) NSInteger slot;
+@property(nonatomic, copy) void (^moveSlot)(NSInteger, NSInteger);
+@property(nonatomic, copy) void (^loadFile)(NSURL*);
+@end
+@implementation RigPedalCard
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame]))
+    [self registerForDraggedTypes:@[pedalDragType, NSPasteboardTypeFileURL]];
+  return self;
+}
+- (NSView*)hitTest:(NSPoint)point {
+  NSView* hit = [super hitTest:point];
+  NSPoint local = [self convertPoint:point fromView:self.superview];
+  if (hit && local.y >= self.bounds.size.height - 52 && ![hit isKindOfClass:NSButton.class]) return self;
+  return hit;
+}
+- (void)mouseDragged:(NSEvent*)event {
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (point.y < self.bounds.size.height - 52) return;
+  NSPasteboardItem* item = [NSPasteboardItem new];
+  [item setString:[NSString stringWithFormat:@"%ld", (long)self.slot] forType:pedalDragType];
+  NSDraggingItem* drag = [[NSDraggingItem alloc] initWithPasteboardWriter:item];
+  NSImage* image = [NSImage imageWithSystemSymbolName:@"rectangle.3.group" accessibilityDescription:@"Pedal"];
+  [drag setDraggingFrame:NSMakeRect(point.x, point.y, 80, 48) contents:image];
+  [self beginDraggingSessionWithItems:@[drag] event:event source:self];
+}
+- (NSDragOperation)draggingSession:(NSDraggingSession*)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  return context == NSDraggingContextWithinApplication ? NSDragOperationMove : NSDragOperationNone;
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  if ([sender.draggingSource isKindOfClass:RigPedalCard.class] &&
+      [(RigPedalCard*)sender.draggingSource superview] == self.superview)
+    return NSDragOperationMove;
+  NSURL* url = [NSURL URLFromPasteboard:sender.draggingPasteboard];
+  return isPedalModelURL(url) ? NSDragOperationCopy : NSDragOperationNone;
+}
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  if ([self draggingEntered:sender] == NSDragOperationMove) {
+    if (self.moveSlot) self.moveSlot([(RigPedalCard*)sender.draggingSource slot], self.slot);
+    return YES;
+  }
+  NSURL* url = [NSURL URLFromPasteboard:sender.draggingPasteboard];
+  if (isPedalModelURL(url) && self.loadFile) {
+    self.loadFile(url); return YES;
+  }
+  return NO;
+}
+@end
+
 @interface NAMRigWorkspace ()
 @property(nonatomic, assign) RigUIState* state;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber*, RigPedalCard*>* pedalCards;
 @property(nonatomic, strong) NSView* pageHost;
 @property(nonatomic, strong) NSView* contextHost;
 @property(nonatomic, strong) NSMutableDictionary<NSString*, NSView*>* pages;
@@ -200,6 +256,109 @@ static void deactivateViewConstraints(NSView* view) {
   return page;
 }
 
+- (void)pedalChanged {
+  if ([(id)self.state->uiController respondsToSelector:@selector(markPresetModified)])
+    [(id)self.state->uiController performSelector:@selector(markPresetModified)];
+}
+- (void)loadPedalURL:(NSURL*)url slot:(NSInteger)slot {
+  if (!isPedalModelURL(url) ||
+      ![[NSFileManager defaultManager] fileExistsAtPath:url.path]) return;
+  self.state->setStageModels(slot, @[url.path]);
+  self.state->sendPath(slot, url.fileSystemRepresentation);
+  self.state->updateThumbnailForStagePath(slot, url.path);
+  [self pedalChanged];
+}
+- (void)choosePedal:(NSButton*)sender {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.allowedFileTypes = @[@"nam", @"nammodel", @"aidax", @"aidadspmodel"];
+  panel.allowsMultipleSelection = NO;
+  if ([panel runModal] == NSModalResponseOK) [self loadPedalURL:panel.URL slot:sender.tag];
+}
+- (void)clearPedal:(NSButton*)sender {
+  self.state->sendPath(sender.tag, "");
+  self.state->updateThumbnailForStagePath(sender.tag, nil);
+  [self pedalChanged];
+}
+- (void)togglePedal:(NSButton*)sender {
+  const uint32_t port = sender.tag == 0 ? 7 : (uint32_t)(192 + sender.tag - 4);
+  const float value = sender.state == NSControlStateValueOn ? 1 : 0;
+  self.state->sendControl(port, value);
+  self.state->updateControl(port, value);
+  [self pedalChanged];
+}
+- (void)movePedal:(NSInteger)source to:(NSInteger)destination {
+  if (source == destination) return;
+  static const NSInteger orders[6][3] = {{0,4,5},{0,5,4},{4,0,5},{4,5,0},{5,0,4},{5,4,0}};
+  NSMutableArray<NSNumber*>* order = [NSMutableArray array];
+  for (NSInteger slot : orders[self.state->pedalOrder]) [order addObject:@(slot)];
+  NSUInteger target = [order indexOfObject:@(destination)];
+  [order removeObject:@(source)];
+  [order insertObject:@(source) atIndex:target];
+  for (int i = 0; i < 6; ++i) {
+    if (order[0].integerValue == orders[i][0] && order[1].integerValue == orders[i][1]) {
+      self.state->sendControl(NAMRig::kPedalOrderPort, i);
+      self.state->updateControl(NAMRig::kPedalOrderPort, i);
+      [self pedalChanged]; break;
+    }
+  }
+}
+- (void)refreshPedalBoard {
+  static const NSInteger orders[6][3] = {{0,4,5},{0,5,4},{4,0,5},{4,5,0},{5,0,4},{5,4,0}};
+  for (int position = 0; position < 3; ++position) {
+    NSInteger slot = orders[self.state->pedalOrder][position];
+    RigPedalCard* card = self.pedalCards[@(slot)];
+    NSRect frame = card.frame; frame.origin.x = position * 496; card.frame = frame;
+    if (slot >= 4) {
+      NSButton* power = self.state->powerButtons[slot];
+      power.state = self.state->extraPedalEnabled[slot - 4] >= 0.5f;
+      power.title = power.state ? @"ON" : @"OFF";
+    }
+  }
+}
+- (void)buildPedalBoard:(NSView*)page {
+  self.pedalCards = [NSMutableDictionary dictionary];
+  [self pageHeading:@"Pedalboard" subtitle:@"Signal flows left to right into the amp. Drag a card header to reorder. Drop a .nam file onto a card to load it."
+             parent:page x:0 w:1200];
+  __weak NAMRigWorkspace* weakSelf = self;
+  for (NSInteger slot : {0, 4, 5}) {
+    RigPedalCard* card = [[RigPedalCard alloc] initWithFrame:[self topRect:page x:0 y:88 w:480 h:540]];
+    card.slot = slot; card.cornerRadius = 12;
+    card.moveSlot = ^(NSInteger from, NSInteger to) { [weakSelf movePedal:from to:to]; };
+    card.loadFile = ^(NSURL* url) { [weakSelf loadPedalURL:url slot:slot]; };
+    [page addSubview:card]; self.pedalCards[@(slot)] = card;
+    if (slot == 0) self.state->stageCards[0] = card;
+    NSTextField* badge = workspaceLabel(card, @"", 10, NSFontWeightMedium, rigDimText());
+    badge.frame = [self topRect:card x:20 y:52 w:440 h:18];
+    self.state->stageArchBadges[slot] = badge;
+    if (slot == 0) self.state->stageHeaderArchBadges[0] = badge;
+    [self label:[NSString stringWithFormat:@"⠿  PEDAL %ld", (long)(slot == 0 ? 1 : slot - 2)] parent:card
+               x:20 y:18 w:290 size:18 weight:NSFontWeightSemibold color:rigText()];
+    RigButton* power = workspaceButton(card, @"OFF", self, @selector(togglePedal:));
+    power.tag = slot; power.buttonType = NSButtonTypeToggle;
+    power.state = slot == 0 ? self.state->powerButtons[0].state : NSControlStateValueOff;
+    power.title = power.state ? @"ON" : @"OFF";
+    self.state->powerButtons[slot] = power;
+    [self placeNew:power parent:card x:386 y:14 w:72 h:32];
+    NSImageView* image = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    image.imageScaling = NSImageScaleProportionallyUpOrDown;
+    self.state->stageImages[slot] = image;
+    [self placeNew:image parent:card x:20 y:70 w:440 h:320];
+    RigPopUpButton* picker = slot == 0 ? self.state->modelPickers[0] : [[RigPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    picker.tag = slot; picker.target = self.state->uiController; picker.action = @selector(stageModelChanged:);
+    self.state->modelPickers[slot] = picker;
+    [self place:picker parent:card x:20 y:402 w:440 h:28];
+    RigButton* load = workspaceButton(card, @"Load Model…", self, @selector(choosePedal:)); load.tag = slot;
+    [self placeNew:load parent:card x:20 y:454 w:210 h:36];
+    RigButton* clear = workspaceButton(card, @"Remove Model", self, @selector(clearPedal:)); clear.tag = slot;
+    [self placeNew:clear parent:card x:246 y:454 w:214 h:36];
+    self.state->displayPath(slot, self.state->selectedPaths[slot].c_str());
+    self.state->setStageThumb(slot, nil, 0, nil);
+  }
+  [self label:@"Pedal quality (all three slots)" parent:page x:0 y:656 w:260 size:13 weight:NSFontWeightMedium color:rigDimText()];
+  [self place:self.state->stageOsPopup[0] parent:page x:270 y:650 w:180 h:28];
+  [self refreshPedalBoard];
+}
+
 - (void)buildMainPages {
   // Compact level controls leave room for the live processing racks below.
   NSView* input = [self newPageWithKey:@"main:0"];
@@ -210,7 +369,7 @@ static void deactivateViewConstraints(NSView* view) {
     [self place:inputCells[i] parent:input x:600 + i * 200 y:4 w:160 h:142];
 
   NSView* pedal = [self newPageWithKey:@"main:1"];
-  [self addStageHero:0 page:pedal];
+  [self buildPedalBoard:pedal];
 
   NSView* amp = [self newPageWithKey:@"main:2"];
   [self addStageHero:1 page:amp];
@@ -292,9 +451,7 @@ static void deactivateViewConstraints(NSView* view) {
   }
   if (tuner.count == 3) {
     NSView* page = [self newPageWithKey:@"tuner"];
-    [self place:tuner[0] parent:page x:0 y:0 w:360 h:794];
-    [self place:tuner[1] parent:page x:376 y:0 w:640 h:794];
-    [self place:tuner[2] parent:page x:1032 y:0 w:440 h:794];
+    [self place:rigCreateTunerWorkspace(self.state) parent:page x:0 y:0 w:1472 h:794];
   }
 }
 

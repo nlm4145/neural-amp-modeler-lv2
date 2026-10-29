@@ -23,6 +23,7 @@ int main() {
   std::array<float, 3> overdrive{};
   std::array<float, 3> compressor{};
   std::array<float, 4> postCompressor{};
+  std::array<float, 3> pedalBoard{};
   float mid = 0, od_enabled = 0, od_tight = 0, od_voicing = 0;
   Plugin::Ports segmented{}, indexed{};
   unsigned char sentinel = 0;
@@ -43,7 +44,8 @@ int main() {
       {kOverdriveEnabledPort, {&od_enabled, 1}},
       {kPostCompressorFirstPort, postCompressor},
       {kOverdriveTightPort, {&od_tight, 1}},
-      {kOverdriveVoicingPort, {&od_voicing, 1}}});
+      {kOverdriveVoicingPort, {&od_voicing, 1}},
+      {kPedal2EnabledPort, pedalBoard}});
   const std::span<float> values(flat);
   bindStandaloneControls(indexed, {{4, values.subspan(4, 27)}, {32, values.subspan(32)}});
   for (uint32_t p = 0; p < Plugin::kPortCount; ++p) {

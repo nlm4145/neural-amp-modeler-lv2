@@ -260,6 +260,16 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.
 
+The pedalboard adds Pedal 2 and Pedal 3 at stage indices 4 and 5, with path
+parameters `…#rig-pedal2-model` and `…#rig-pedal3-model`. Ports 192/193
+independently enable them (default off); port 194 stores the six permutations
+of slots 1/2/3: 123, 132, 213, 231, 312, 321. All pedals share the existing
+pedal oversampling control (port 20). Reordering uses the model-switch fade,
+then resets converter histories at the silent commit. Extra inactive slots are
+omitted from the serial chain; the original single-pedal path retains its
+existing grouping, gain, filtering and latency. Rig presets append the two
+stages while retaining the original first four stage indices.
+
 New ports go AFTER the highest existing index. Saved Element sessions restore
 by index — renumbering breaks them.
 
@@ -530,6 +540,18 @@ Related DSP-chain guarantees:
   target must NOT include the DSP header, it drags NeuralAudio in).
   Sends are CHANGE-GATED (only on note change / ≥1¢ drift) so the notify
   stream never floods.
+- **Tuner tools** (`rig_tuner_workspace.mm`, `tuner_tools.h`): the tuner page
+  provides string targets and custom tuning presets, a 10-second pitch history,
+  stable-note intonation capture, and A4 calibration (400–480 Hz). Preferences
+  and user tunings persist in the `AxeFXTunerTools` defaults dictionary.
+  The detector supports 30–1400 Hz. Separate `patch:Set` float telemetry at
+  roughly 30 ms intervals carries raw MIDI pitch, confidence and signal level;
+  the existing settled note/cents ports retain their acquisition behavior.
+  Shared transient property URIs live in `tuner_protocol.h`.
+  Reference-tone frequency/gain commands use atom properties, without new
+  control ports. The oscillator follows guitar muting/effects, uses a 10 ms
+  amplitude ramp, and requires renewal within 750 ms. Leaving the tuner or
+  bypassing it stops playback; intonation capture is disabled during playback.
 - **UI→DSP**: `patch:Set` with `atom:Path` on properties
   `…#rig-{pedal,amp,cab}-model`, scheduled onto the worker thread.
 

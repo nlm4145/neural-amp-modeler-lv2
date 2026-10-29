@@ -236,10 +236,18 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   uris.atomFloat = map->map(map->handle, LV2_ATOM__Float);
   uris.tunerNote = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
   uris.tunerCents = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
+  uris.tunerLive = map->map(map->handle, NAMRig::Tuning::kLivePitchUri);
+  uris.tunerConfidence = map->map(map->handle, NAMRig::Tuning::kConfidenceUri);
+  uris.tunerLevel = map->map(map->handle, NAMRig::Tuning::kLevelUri);
+  uris.tunerTone = map->map(map->handle, NAMRig::Tuning::kToneUri);
+  uris.tunerToneGain = map->map(map->handle, NAMRig::Tuning::kToneGainUri);
   uris.inputDb = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
   uris.preAmpDb = map->map(map->handle, NAM_RIG_PRE_AMP_DB_URI);
   uris.postAmpDb = map->map(map->handle, NAM_RIG_POST_AMP_DB_URI);
   uris.outputDb = map->map(map->handle, NAM_RIG_OUTPUT_DB_URI);
+
+  uris.stagePath[4] = map->map(map->handle, NAM_RIG_URI "-pedal2-model");
+  uris.stagePath[5] = map->map(map->handle, NAM_RIG_URI "-pedal3-model");
 
   for (auto& loader : loaders) {
     loader.SetExternalSampleRate(static_cast<int>(rate));
@@ -544,6 +552,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
 }
 
 void Plugin::tunerSetRates(double rate) {
+  tunerToneSamplesLeft = 0; tunerToneGain = 0; tunerTonePhase = 0;
   tuner.decimFactor = std::max(1, (int)std::lround(rate / 12000.0));
   const double dr = rate / tuner.decimFactor;
   tuner.decimRate = (float)dr;
@@ -614,11 +623,23 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                         uris.patchProperty, &property,
                         uris.patchValue, &path,
                         0);
-    if (!property || property->type != uris.atomURID || !path ||
-        path->type != uris.atomPath || path->size == 0 || path->size >= MAX_FILE_NAME)
-      continue;
-
+    if (!property || property->type != uris.atomURID || !path) continue;
     const LV2_URID propertyId = reinterpret_cast<const LV2_Atom_URID*>(property)->body;
+    if (path->type == uris.atomFloat && path->size == sizeof(float)) {
+      const float value = reinterpret_cast<const LV2_Atom_Float*>(path)->body;
+      if (!std::isfinite(value)) continue;
+      if (propertyId == uris.tunerTone) {
+        if (value == 0) tunerToneSamplesLeft = 0;
+        else if (value >= 30 && value <= 2000) {
+          tunerToneHz = value;
+          tunerToneSamplesLeft = (uint32_t)(sampleRate * .75);
+        }
+      } else if (propertyId == uris.tunerToneGain && value >= 0 && value <= .2512f) {
+        tunerToneTargetGain = value;
+      }
+      continue;
+    }
+    if (path->type != uris.atomPath || path->size == 0 || path->size >= MAX_FILE_NAME) continue;
     for (size_t i = 0; i < kStageCount; ++i) {
       if (propertyId == uris.stagePath[i]) {
         const Stage stage = static_cast<Stage>(i);
@@ -677,12 +698,13 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   // change-gated patch:Set atoms for the UI.
   {
     const bool tunerOn = *ports.tuner_enable >= 0.5f;
+    if (!tunerOn) tunerToneSamplesLeft = 0;
     if (!tunerOn && tuner.wasEnabled) tuner.resetTracking();
     tuner.wasEnabled = tunerOn;
     if (tunerOn) {
       const int onsetWindow = std::max(1, (int)std::lround(tuner.decimRate * 0.010f));
       const int attackEnd = (int)std::lround(tuner.decimRate * 0.300f);
-      const int sustainStart = attackEnd + Tuner::kWindow + Tuner::kMaxTau;
+      const int sustainStart = attackEnd + Tuner::kWindow + Tuner::kSettleLag;
       const int sustainEnd = (int)std::lround(tuner.decimRate * 1.000f);
       const int tailHold = (int)std::lround(tuner.decimRate * 0.040f);
       for (uint32_t i = 0; i < sampleCount; ++i) {
@@ -696,13 +718,19 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
           tuner.onsetEnergy += x * x;
           if (++tuner.onsetSamples >= onsetWindow) {
             const float onsetRms = std::sqrt(tuner.onsetEnergy / tuner.onsetSamples);
+            // A low string's period exceeds the 10 ms envelope window. Use a
+            // peak envelope with a 60 ms release so phase troughs are not plucks.
+            const float priorEnvelope = tuner.onsetReference;
+            tuner.onsetReference = std::max(onsetRms, priorEnvelope *
+                std::exp(-(float)onsetWindow / (tuner.decimRate * .060f)));
             // Measure each pluck's early sustain, not its sharp attack or
             // fading tail. Keep the previous accepted result between plucks.
-            if ((onsetRms > 0.006f && onsetRms > 2.0f * tuner.previousRms) ||
+            if ((onsetRms > 0.006f && onsetRms > 2.0f * priorEnvelope) ||
                 (tuner.pluckSamples < 0 && onsetRms >= 0.003f)) {
               tuner.pluckSamples = 0;
               tuner.pluckPeakRms = onsetRms;
               tuner.measurementClosed = false;
+              tuner.livePitch = -1; tuner.confidence = 0;
               tuner.hasMeasurement = false;
               tuner.tailSamples = 0;
               tuner.histLen = tuner.histIdx = 0;
@@ -729,12 +757,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       const int span = Tuner::kWindow + Tuner::kMaxTau;
       const int hop = (int)(sampleRate * 0.030);
       tuner.samplesSinceAnalysis += (int)sampleCount;
-      // Suppress a pending rise even before its 10 ms envelope window ends.
-      const bool onsetPending = tuner.onsetSamples > 0 &&
-          tuner.onsetEnergy > tuner.onsetSamples *
-              std::max(0.006f * 0.006f, 4.0f * tuner.previousRms * tuner.previousRms);
-      if (onsetPending || (tuner.pluckSamples >= 0 && tuner.pluckSamples < sustainStart))
-        tuner.samplesSinceAnalysis = 0;
+      // Live telemetry follows the whole pluck. The accepted readout below
+      // still waits for the early sustain, independently of the live trace.
       if (tuner.samplesSinceAnalysis >= hop && tuner.filled >= span) {
         const float elapsed = (float)(tuner.samplesSinceAnalysis / sampleRate);
         tuner.samplesSinceAnalysis = 0;
@@ -747,6 +771,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         float energy = 0.0f;
         for (int i = 0; i < Tuner::kWindow; ++i) energy += win[i] * win[i];
         const float rms = std::sqrt(energy / Tuner::kWindow);
+        tuner.livePitch = -1; tuner.confidence = 0;
         if (rms < 0.003f) {
           // Silence: hold the last reading through short dropouts (pluck
           // transients, damped re-plucks) so the display doesn't blank and
@@ -822,8 +847,11 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
               tauF += delta;
             }
             const float freq = tuner.decimRate / tauF;
-            if (freq >= 55.0f && freq <= 1400.0f)
+            if (freq >= 30.0f && freq <= 1400.0f) {
               midi = 69.0f + 12.0f * std::log2(freq / 440.0f);
+              tuner.livePitch = midi;
+              tuner.confidence = tuner.nsdf[chosen];
+            }
           }
           if (midi < 0.0f) {
             // No confident pitch this frame: same short hold as silence.
@@ -901,6 +929,21 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       lv2_atom_forge_float(&forge, tuner.lastCents);
       lv2_atom_forge_pop(&forge, &frame);
     }
+    tuner.telemetrySamples += sampleCount;
+    if (tunerOn && tuner.telemetrySamples >= (uint32_t)(sampleRate * .030)) {
+      tuner.telemetrySamples = 0;
+      const LV2_URID properties[] = {uris.tunerLive, uris.tunerConfidence, uris.tunerLevel};
+      const float values[] = {tuner.livePitch, tuner.confidence,
+          tuner.previousRms > 1e-9f ? 20 * std::log10(tuner.previousRms) : -120};
+      for (size_t i = 0; i < 3; ++i) {
+        LV2_Atom_Forge_Frame frame;
+        lv2_atom_forge_frame_time(&forge, 0);
+        lv2_atom_forge_object(&forge, &frame, 0, uris.patchSet);
+        lv2_atom_forge_key(&forge, uris.patchProperty); lv2_atom_forge_urid(&forge, properties[i]);
+        lv2_atom_forge_key(&forge, uris.patchValue); lv2_atom_forge_float(&forge, values[i]);
+        lv2_atom_forge_pop(&forge, &frame);
+      }
+    }
     *ports.tuner_note = tuner.lastNote;
     *ports.tuner_cents = tuner.lastCents;
   }
@@ -968,7 +1011,13 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       *ports.pedal_enabled >= 0.5f,
       *ports.amp_enabled >= 0.5f,
       *ports.cab_enabled >= 0.5f,
-      portValue(ports.cab2_enabled, 0.0f) >= 0.5f};
+      portValue(ports.cab2_enabled, 0.0f) >= 0.5f,
+      portValue(ports.pedal2_enabled, 0.0f) >= 0.5f,
+      portValue(ports.pedal3_enabled, 0.0f) >= 0.5f};
+  const float orderValue = portValue(ports.pedal_order, 0.0f);
+  desiredPedalOrder = std::isfinite(orderValue) ?
+      static_cast<int>(std::clamp(orderValue, 0.0f, 5.0f) + 0.5f) : 0;
+  if (desiredPedalOrder != appliedPedalOrder) startTransitionFadeOut();
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
 
@@ -1151,8 +1200,9 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
                          | (irs[st] ? 4u : 0u)
                          | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3)
                          | ((uint64_t)nativeDecimation(st) << 8);
-    topology |= state << (st * 16);
+    topology = (topology * 1099511628211ULL) ^ state;
   }
+  topology = (topology * 1099511628211ULL) ^ static_cast<uint64_t>(appliedPedalOrder);
   if (topology != osTopologySignature) {
     osTopologySignature = topology;
     for (auto& stageUp : osUp)
@@ -1279,13 +1329,23 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   bool modelProcessed = false;
   uint32_t latencyFrames = 0;
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
+  // Keep the original serial sequence verbatim when extra slots are inactive.
+  static constexpr size_t orders[6][3] = {{0,4,5},{0,5,4},{4,0,5},{4,5,0},{5,0,4},{5,4,0}};
+  const bool extraPedalsActive = (enabled[4] && models[4]) || (enabled[5] && models[5]);
+  size_t serial[kSerialStageCount + 2];
+  size_t serialCount = 0;
+  for (size_t slot : orders[appliedPedalOrder])
+    if ((slot == 0 && !extraPedalsActive) || (enabled[slot] && models[slot])) serial[serialCount++] = slot;
+  serial[serialCount++] = 1;
+  serial[serialCount++] = 2;
   for (uint32_t off = 0; off < sampleCount; off += sliceMax) {
     const uint32_t sliceLen = std::min(sliceMax, sampleCount - off);
     float* io = ports.audio_out + off;
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
     ampMetersCapturedThisSlice = false;
-    for (size_t st = 0; st < kSerialStageCount;) {
+    for (size_t position = 0; position < serialCount;) {
+      const size_t st = serial[position];
       if (st == 2 && !ampMetersCapturedThisSlice) {
         // With no active amp, both boundaries carry the post-pedal signal.
         for (uint32_t i = 0; i < sliceLen; ++i) {
@@ -1298,7 +1358,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
 
       const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);
       if (!enabled[st] || !models[st] || deferredCab) {
-        ++st;
+        ++position;
         continue;
       }
 
@@ -1317,7 +1377,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         }
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
-        ++st;
+        ++position;
         continue;
       }
 
@@ -1326,24 +1386,24 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         applyModel(st, models[st], chain, n, sampleRate);
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
-        ++st;
+        ++position;
         continue;
       }
 
-      size_t group[kSerialStageCount] = {st, 0, 0};
+      size_t group[kSerialStageCount + 2] = {st};
       size_t groupCount = 1;
-      size_t next = st + 1;
-      while (next < kSerialStageCount && enabled[next] && models[next] &&
-             !(next == 2 && (irs[2] || parallelCabs)) &&
-             nativeDecimation(next) == 0 &&
-             truePipelineFactor(osApplied[next], sampleRate) == f) {
-        group[groupCount++] = next++;
+      size_t next = position + 1;
+      while (next < serialCount && enabled[serial[next]] && models[serial[next]] &&
+             !(serial[next] == 2 && (irs[2] || parallelCabs)) &&
+             nativeDecimation(serial[next]) == 0 &&
+             truePipelineFactor(osApplied[serial[next]], sampleRate) == f) {
+        group[groupCount++] = serial[next++];
       }
       n = processTrueGroup(st, group, groupCount, chain, n, f);
       modelProcessed = true;
       if (off == 0) latencyFrames += cascadeLatencyFrames(f);
       if (group[groupCount - 1] == 2) cabProcessed = true;
-      st = next;
+      position = next;
     }
     if (!ampMetersCapturedThisSlice) {
       for (uint32_t i = 0; i < sliceLen; ++i) {
@@ -1903,6 +1963,22 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   }
   (void)cabProcessedAny;
 
+  // Reference audio is deliberately after the guitar's output trim so silent
+  // tuning can mute the instrument while leaving the explicitly enabled tone audible.
+  if (tunerToneSamplesLeft || tunerToneGain > 1e-7f) {
+    const float coefficient = (float)(1 - std::exp(-1 / (sampleRate * .010)));
+    for (uint32_t i = 0; i < count; ++i) {
+      const float target = tunerToneSamplesLeft && *ports.tuner_enable >= .5f ? tunerToneTargetGain : 0;
+      if (tunerToneSamplesLeft) --tunerToneSamplesLeft;
+      tunerToneGain += coefficient * (target - tunerToneGain);
+      const float tone = tunerToneGain * (float)std::sin(tunerTonePhase);
+      tunerTonePhase += 6.283185307179586 * tunerToneHz / sampleRate;
+      if (tunerTonePhase >= 6.283185307179586) tunerTonePhase -= 6.283185307179586;
+      ports.audio_out[i] += tone; ports.audio_out_r[i] += tone;
+    }
+    if (tunerToneGain < 1e-7f) tunerToneGain = 0;
+  }
+
   // ---- Master output level meter (post-effects, final output) ----
   {
     float peak = 0.0f;
@@ -1936,6 +2012,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
 
   if (commitRequested) {
     commitPendingSwitches();
+    appliedPedalOrder = desiredPedalOrder;
     // The output is silent at the commit, so the blend shelf restarts from a
     // clean history regardless of what each branch carried into the fade.
     dualCabShelf.reset();
@@ -2041,7 +2118,8 @@ void Plugin::reloadModelsForOversample() {
   // re-created with the loader external rate matching the new domain.
   // Never clobber an in-flight load (workResponse re-domains it on completion)
   // or revive an old model path when a pending switch is already queued.
-  for (size_t i = 0; i < kSerialStageCount; ++i) {
+  for (size_t i = 0; i < kStageCount; ++i) {
+    if (i == stageIndex(Stage::Cab2)) continue;
     const Stage stage = static_cast<Stage>(i);
     const int mode = normalizeLoadMode(stage, desiredStageMode(i));
     const auto& pending = pendingSwitches[i];

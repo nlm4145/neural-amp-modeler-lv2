@@ -53,6 +53,13 @@ static bool check(bool condition, const char* expression, int line) {
 
 static NSModalResponse slotPresetDialog(id alertObject, SEL) {
   NSAlert* alert = (NSAlert*)alertObject;
+  if ([alert.messageText isEqualToString:@"Save Tuning As"] ||
+      [alert.messageText isEqualToString:@"Rename Tuning"]) {
+    ((NSTextField*)alert.accessoryView).stringValue =
+      [alert.messageText isEqualToString:@"Rename Tuning"] ? @"Runtime Renamed Tuning" : @"Runtime Saved Tuning";
+    return NSAlertFirstButtonReturn;
+  }
+  if ([alert.messageText isEqualToString:@"Delete Tuning"]) return NSAlertFirstButtonReturn;
   const bool transformer = [alert.messageText isEqualToString:@"Save Output Transformer Preset"];
   const bool powerTube = [alert.messageText isEqualToString:@"Save Power Tube Character Preset"];
   if (transformer || powerTube) {
@@ -128,6 +135,7 @@ static void replace(Class cls, SEL selector, IMP implementation, bool classMetho
 struct Host {
   std::unordered_map<std::string, LV2_URID> urids;
   std::unordered_map<uint32_t, std::vector<float>> writes;
+  std::vector<std::pair<LV2_URID, float>> patches;
 };
 static LV2_URID mapURI(LV2_URID_Map_Handle handle, const char* uri) {
   auto& ids = static_cast<Host*>(handle)->urids;
@@ -137,6 +145,17 @@ static void recordWrite(LV2UI_Controller controller, uint32_t port,
                         uint32_t size, uint32_t format, const void* buffer) {
   if (format == 0 && size == sizeof(float) && buffer)
     static_cast<Host*>(controller)->writes[port].push_back(*static_cast<const float*>(buffer));
+  else if (buffer && size >= sizeof(LV2_Atom_Object)) {
+    auto* host = static_cast<Host*>(controller);
+    const auto* object = static_cast<const LV2_Atom_Object*>(buffer);
+    const LV2_Atom *property = nullptr, *value = nullptr;
+    lv2_atom_object_get(object, mapURI(host, LV2_PATCH__property), &property,
+                        mapURI(host, LV2_PATCH__value), &value, 0);
+    if (property && value && property->type == mapURI(host, LV2_ATOM__URID) &&
+        value->type == mapURI(host, LV2_ATOM__Float))
+      host->patches.emplace_back(((const LV2_Atom_URID*)property)->body,
+                                 ((const LV2_Atom_Float*)value)->body);
+  }
 }
 
 static void trimWrites(const Host& host, const NAMRig::TransformerAdjustments& trims) {
@@ -231,6 +250,12 @@ static void telemetry(RigUIState* state, const NAMRig::TransformerAdjustments& t
     CHECK([state->transformerSpecLabels[i].stringValue isEqualToString:labels[i]]);
   }
 }
+
+@interface PedalTestDrag : NSObject
+@property(nonatomic, strong) NSView* draggingSource;
+@end
+@implementation PedalTestDrag
+@end
 
 static void snapshot(RigUIState* state, Class presetClass,
                      const NAMRig::TransformerAdjustments& trims, bool modified) {
@@ -863,6 +888,101 @@ static void verifyTunerDeck(Runtime& runtime, Host& host) {
   CHECK([state->workspace.selectedModule isEqualToString:@"main"]);
 }
 
+
+static void verifyTunerTools(Runtime& runtime, Host& host) {
+  stage = "Tuner tools / tuning, calibration, intonation and tone lifetime";
+  auto* state = runtime.state;
+  [state->workspace selectModule:@"tuner"];
+  auto* panel = (NAMRigTunerWorkspace*)state->tunerWorkspace;
+  REQUIRE(panel);
+  NSPopUpButton* preset = [panel valueForKey:@"preset"];
+  CHECK([preset.itemTitles containsObject:@"8-string Drop E"]);
+  CHECK([preset.itemTitles containsObject:@"Save Tuning As…"]);
+  [preset selectItemWithTitle:@"7-string Drop A"]; action(preset);
+  NSArray<RigButton*>* strings = [panel valueForKey:@"stringButtons"];
+  CHECK(strings.count == 7);
+  action(strings.firstObject);
+  CHECK(strings.firstObject.primary);
+  CHECK([[(NSTextField*)[panel valueForKey:@"target"] stringValue] containsString:@"A1"]);
+  NSTextField* notes = [panel valueForKey:@"notes"];
+  notes.stringValue = @"E1 B1 E2 A2 D3 G3 B3 E4"; action(notes);
+  CHECK([[panel valueForKey:@"stringButtons"] count] == 8);
+  notes.stringValue = @"invalid"; action(notes);
+  CHECK([[panel valueForKey:@"stringButtons"] count] == 8);
+  notes.stringValue = @"E2 A2 D3 G3 B3 E4"; action(notes);
+  NSTextField* reference = [panel valueForKey:@"reference"];
+  reference.stringValue = @"442 Hz"; action(reference);
+  CHECK(near(reference.doubleValue, 442));
+  reference.stringValue = @"999"; action(reference);
+  CHECK(near(reference.doubleValue, 442));
+  reference.stringValue = @"440"; action(reference);
+  Method modal = class_getInstanceMethod(NSAlert.class, @selector(runModal));
+  IMP originalModal = method_setImplementation(modal, (IMP)slotPresetDialog);
+  [preset selectItemWithTitle:@"Save Tuning As…"]; action(preset);
+  CHECK([preset.titleOfSelectedItem isEqualToString:@"Runtime Saved Tuning"]);
+  notes.stringValue = @"B1 E2 A2 D3 G3 B3 E4"; action(notes);
+  [preset selectItemWithTitle:@"Save Tuning"]; action(preset);
+  [preset selectItemWithTitle:@"6-string Standard"]; action(preset);
+  [preset selectItemWithTitle:@"Runtime Saved Tuning"]; action(preset);
+  CHECK([[panel valueForKey:@"stringButtons"] count] == 7);
+  [preset selectItemWithTitle:@"Rename Tuning…"]; action(preset);
+  CHECK([preset.titleOfSelectedItem isEqualToString:@"Runtime Renamed Tuning"]);
+  CHECK(![preset.itemTitles containsObject:@"Runtime Saved Tuning"]);
+  [preset selectItemWithTitle:@"Delete Tuning"]; action(preset);
+  CHECK(![preset.itemTitles containsObject:@"Runtime Renamed Tuning"]);
+  CHECK([[panel valueForKey:@"stringButtons"] count] == 6);
+  method_setImplementation(modal, originalModal);
+  double time = CACurrentMediaTime();
+  auto feed = [&](double pitch) {
+    for (int i=0;i<16;++i) {
+      time += .05;
+      [panel pushPitch:pitch confidence:.99 level:-18 atTime:time];
+    }
+  };
+  feed(40);
+  CHECK([[(NSTextField*)[panel valueForKey:@"quality"] stringValue] isEqualToString:@"Stable"]);
+  RigButton* base = [panel valueForKey:@"captureBase"];
+  RigButton* fret = [panel valueForKey:@"captureFret"];
+  CHECK(base.enabled); action(base);
+  feed(40); CHECK(!fret.enabled); // Reject the open-string octave.
+  feed(52.12); CHECK(fret.enabled); action(fret);
+  CHECK([[(NSTextField*)[panel valueForKey:@"intonation"] stringValue] containsString:@"+12.0"]);
+  CHECK([[(NSTextField*)[panel valueForKey:@"advice"] stringValue] containsString:@"Lengthen"]);
+  if (const char* png = std::getenv("AXE_FX_TUNER_UI_PNG")) {
+    [runtime.window orderFront:nil];
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    NSBitmapImageRep* rep = [panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
+    [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:rep];
+    CHECK([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithUTF8String:png] atomically:YES]);
+  }
+  NSPopUpButton* baseline = [panel valueForKey:@"baselineMode"];
+  [baseline selectItemAtIndex:1]; action(baseline);
+  feed(52); action(base); feed(51.92); action(fret);
+  CHECK([[(NSTextField*)[panel valueForKey:@"intonation"] stringValue] containsString:@"-8.0"]);
+  RigButton* tone = [panel valueForKey:@"toneButton"];
+  host.patches.clear(); action(tone);
+  CHECK(!host.patches.empty());
+  CHECK(host.patches.back().first == state->tunerToneURID);
+  CHECK(near(host.patches.back().second,440));
+  CHECK(!base.enabled);
+  [state->workspace selectStage:2];
+  CHECK(host.patches.back().first == state->tunerToneURID);
+  CHECK(near(host.patches.back().second,0));
+  [state->workspace selectModule:@"tuner"];
+  strings = [panel valueForKey:@"stringButtons"]; action(strings.firstObject);
+  NSPopUpButton* toneTarget = [panel valueForKey:@"toneTarget"];
+  [toneTarget selectItemAtIndex:1]; action(toneTarget);
+  action(tone);
+  CHECK(near(host.patches.back().second, 82.406889));
+  state->selectTab(1);
+  [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+  CHECK(near(host.patches.back().second,0));
+  state->selectTab(0);
+  [toneTarget selectItemAtIndex:0]; action(toneTarget);
+  [state->workspace selectStage:2];
+}
+
 static void verifyDeckTabSelection(Runtime& runtime, Host& host) {
   RigUIState* state = runtime.state;
   stage = "deck tab selection / immediate visibility and serialized background requests";
@@ -1196,7 +1316,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 192 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 195 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -1754,6 +1874,8 @@ static void verifyPedalInputVisibility(Runtime& runtime, Host& host, Class prese
   state->displayPath(0, "");
   drain();
   CHECK(!state->pedalInputKnobCell.hidden);
+
+
   CHECK(host.writes.empty());
   CHECK(near(state->currentPortValueForSlot(4), gain));
 
@@ -2086,7 +2208,7 @@ static void verifyStageMeters(Runtime& runtime) {
   for (size_t i = 0; i < 3; ++i) {
     [state->workspace selectStage:(NSInteger)i + 1];
     CHECK(!state->stageCards[i].isHiddenOrHasHiddenAncestor);
-    CHECK(near(state->stageCards[i].bounds.size.width, 960));
+    CHECK(near(state->stageCards[i].bounds.size.width, i == 0 ? 480 : 960));
   }
   for (size_t i = 0; i < 3; ++i) {
     NSTextField* badge = state->stageHeaderArchBadges[i];
@@ -2443,6 +2565,57 @@ static void verify(const char* modulePath) {
   RigUIState* state = runtime.state;
   REQUIRE((__bridge NSView*)widget == state->view);
   REQUIRE(state->presetManager);
+  stage = "pedalboard / layout, order echo and preset round trip";
+  const NSInteger savedBoardTab = state->activeTab;
+  state->selectTab(0);
+  drain();
+  [state->workspace selectStage:1];
+  NSDictionary* pedalCards = [(id)state->workspace valueForKey:@"pedalCards"];
+  REQUIRE(pedalCards.count == 3);
+  for (NSNumber* slot in @[@0, @4, @5]) {
+    NSView* card = pedalCards[slot];
+    CHECK(!card.isHiddenOrHasHiddenAncestor);
+    CHECK(near(card.bounds.size.width, 480));
+    REQUIRE(state->modelPickers[slot.unsignedIntegerValue]);
+    REQUIRE(state->powerButtons[slot.unsignedIntegerValue]);
+  }
+  void (^moveSlot)(NSInteger, NSInteger) = [pedalCards[@0] valueForKey:@"moveSlot"];
+  REQUIRE(moveSlot);
+  if (const char* png = std::getenv("AXE_FX_PEDAL_UI_PNG")) {
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    NSBitmapImageRep* image = [state->view bitmapImageRepForCachingDisplayInRect:state->view.bounds];
+    [state->view cacheDisplayInRect:state->view.bounds toBitmapImageRep:image];
+    CHECK([[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithUTF8String:png] atomically:YES]);
+  }
+  NSView* sourceCard = pedalCards[@0];
+  NSPoint headerPoint = NSMakePoint(NSMinX(sourceCard.frame) + 40, NSMaxY(sourceCard.frame) - 28);
+  CHECK([sourceCard hitTest:headerPoint] == sourceCard);
+  PedalTestDrag* drag = [PedalTestDrag new];
+  drag.draggingSource = sourceCard;
+  CHECK([(id)pedalCards[@5] draggingEntered:(id)drag] == NSDragOperationMove);
+  CHECK([(id)pedalCards[@5] performDragOperation:(id)drag]);
+  CHECK(state->pedalOrder == 3);
+  CHECK(near([pedalCards[@0] frame].origin.x, 992));
+  state->updateControl(NAMRig::kPedalOrderPort, 5);
+  state->updateControl(NAMRig::kPedal2EnabledPort, 1);
+  state->updateControl(NAMRig::kPedal3EnabledPort, 1);
+  CHECK(near([pedalCards[@5] frame].origin.x, 0));
+  CHECK(near([pedalCards[@4] frame].origin.x, 496));
+  RigPreset* boardPreset = [(id)NSClassFromString(@"RigPreset") captureFromState:state name:@"Three pedals"];
+  NSString* boardFile = [testRoot stringByAppendingPathComponent:@"pedalboard.json"];
+  CHECK([boardPreset saveToFile:boardFile error:nil]);
+  RigPreset* boardRead = [(id)NSClassFromString(@"RigPreset") loadFromFile:boardFile];
+  REQUIRE(boardRead);
+  CHECK([boardRead stageAtIndex:4]->enabled && [boardRead stageAtIndex:5]->enabled);
+  CHECK([boardRead controlForPort:NAMRig::kPedalOrderPort] == 5);
+  [[(id)NSClassFromString(@"RigPreset") defaultPreset] applyToState:state];
+  CHECK(state->extraPedalEnabled[0] == 0 && state->extraPedalEnabled[1] == 0);
+  CHECK(state->pedalOrder == 0);
+  state->selectTab(savedBoardTab);
+  drain();
+  host.writes.clear();
+
   CHECK(!state->pedalInputKnobCell.hidden);
   REQUIRE(state->keyEventMonitor && installedKeyHandler);
   CHECK([state->presetManager.presetsDirectory hasPrefix:testRoot]);
@@ -3032,6 +3205,7 @@ static void verify(const char* modulePath) {
   verifyCompressorPreAmp(runtime, host, presetClass);
   verifyPostCompressor(runtime, host, presetClass);
   verifyTunerDeck(runtime, host);
+  verifyTunerTools(runtime, host);
   verifyPedalInputVisibility(runtime, host, presetClass);
   verifyCabSwap(runtime);
   verifyStageMeters(runtime);

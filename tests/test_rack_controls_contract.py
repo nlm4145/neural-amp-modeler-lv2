@@ -36,7 +36,7 @@ assert "kOverdriveEnabledPort == kCompressorEnabledPort + 1" in header
 assert "kPostCompressorFirstPort == kOverdriveEnabledPort + 1" in header
 assert "kOverdriveTightPort == kPostCompressorEnabledPort + 1" in header
 assert "kOverdriveVoicingPort == kOverdriveTightPort + 1" in header
-assert "kPortCount == kOverdriveVoicingPort + 1" in header
+assert "kPortCount == kPedalOrderPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 for index, symbol in enumerate(symbols, 71):

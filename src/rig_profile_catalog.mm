@@ -323,7 +323,7 @@ static NSString* cleanModelName(NSString* filename) {
 }
 
 - (NSDictionary<NSString*, NSDictionary<NSString*, NSMutableArray<RigLibraryProfilePack*>*>*>*)catalogForStage:(size_t)stage {
-  size_t effectiveCategoryStage = (stage == 3) ? 2 : stage;
+  size_t effectiveCategoryStage = (stage >= 4) ? 0 : ((stage == 3) ? 2 : stage);
   NSString* dir = [self libraryDirectoryForStage:effectiveCategoryStage];
   NSFileManager* fm = [NSFileManager defaultManager];
   if (![fm fileExistsAtPath:dir]) return @{};
@@ -479,7 +479,7 @@ static NSString* cleanModelName(NSString* filename) {
 - (NSArray<NSString*>*)allModelPathsForModelPath:(NSString*)modelPath stage:(size_t)stage {
   if (!modelPath.length) return @[];
 
-  size_t effectiveCategoryStage = (stage == 3) ? 2 : stage;
+  size_t effectiveCategoryStage = (stage >= 4) ? 0 : ((stage == 3) ? 2 : stage);
   NSDictionary<NSString*, NSDictionary<NSString*, NSMutableArray<RigLibraryProfilePack*>*>*>* tree =
       [self catalogForStage:effectiveCategoryStage];
   if (tree.count == 0) return @[];

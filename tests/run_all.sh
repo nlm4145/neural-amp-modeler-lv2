@@ -38,6 +38,9 @@ run_cpp() {
   fi
 }
 
+echo "== tests/verify_tuner_tools.cpp =="
+run_cpp c++17 /tmp/verify_tuner_tools -Isrc tests/verify_tuner_tools.cpp
+
 echo "== tests/verify_standalone_worker.cpp =="
 run_cpp c++17 /tmp/verify_standalone_worker -pthread -Isrc -Ideps/lv2/include \
   src/standalone_worker.cpp tests/verify_standalone_worker.cpp
@@ -122,6 +125,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
   run_cpp c++20 /tmp/verify_low_buffer_rig -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
     -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_low_buffer_rig.cpp \
     -- "$RIG_SO" "${RIG_BASELINE_SO:-$RIG_SO}"
+fi
+
+echo "== tests/verify_tuner_tools_dsp.c (low strings / reference tone / expiry) =="
+if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner_tools_dsp.c -o /tmp/verify_tuner_tools_dsp; then
+  /tmp/verify_tuner_tools_dsp "$RIG_SO" || status=1
+else
+  echo "  (failed: tuner tools harness build failed)"
+  status=1
 fi
 
 echo "== tests/verify_tuner.c (tuner stabilization / 48 and 96 kHz) =="

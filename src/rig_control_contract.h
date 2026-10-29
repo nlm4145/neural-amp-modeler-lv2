@@ -197,6 +197,9 @@ inline constexpr RigControlContract kRigControlContracts[] = {
     {189, "post_compressor_enabled", 0.0f, 1.0f, 1.0f, "", true, 0u, ""},
     {190, "od_tight", 100.0f, 1500.0f, 720.0f, "Hz", false, 0u, ""},
     {191, "od_voicing", 0.0f, 4.0f, 0.0f, "", true, 31u, "0=Classic TS | 1=SD-1 Asymmetric | 2=LED Turbo | 3=Germanium | 4=Clean / No Diodes"},
+    {192, "pedal2_enabled", 0.0f, 1.0f, 0.0f, "", true, 0u, ""},
+    {193, "pedal3_enabled", 0.0f, 1.0f, 0.0f, "", true, 0u, ""},
+    {194, "pedal_order", 0.0f, 5.0f, 0.0f, "", true, 0u, ""},
 };
 inline const RigControlContract* rigControlContract(uint32_t port) {
   for (const auto& c : kRigControlContracts) if (c.port == port) return &c;

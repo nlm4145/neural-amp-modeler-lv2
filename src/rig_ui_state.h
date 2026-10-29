@@ -36,6 +36,8 @@
 #include "speaker_dynamics.h"
 #import "rig_theme.h"
 #import "rig_widgets.h"
+#import "rig_tuner_workspace.h"
+#include "tuner_protocol.h"
 #import "rig_presets.h"
 
 @class NAMRigUIController;
@@ -47,6 +49,7 @@
 @property(nonatomic, copy, readonly) NSString* selectedModule;
 - (void)selectStage:(NSInteger)stage;
 - (void)selectModule:(NSString*)key;
+- (void)refreshPedalBoard;
 @end
 
 @protocol ToneBrowserCycling <NSObject>
@@ -94,10 +97,10 @@ struct RigUIState {
   LV2_URID patchSet = 0;
   LV2_URID patchProperty = 0;
   LV2_URID patchValue = 0;
-  std::array<LV2_URID, 4> pathURIDs{};
+  std::array<LV2_URID, 6> pathURIDs{};
   // Engine acknowledgements, not optimistic UI selections. Used for AI load verification.
-  std::array<std::string, 4> confirmedPaths{};
-  std::array<uint64_t, 4> pathResponseSerial{};
+  std::array<std::string, 6> confirmedPaths{};
+  std::array<uint64_t, 6> pathResponseSerial{};
   // Only stages contributing to the live signal need matching paths for a
   // paired take. A bypassed stage may retain an old/unconfirmed selection.
   int unconfirmedRecordingStage() const {
@@ -110,6 +113,8 @@ struct RigUIState {
   LV2_URID atomFloat = 0;
   LV2_URID tunerNoteURID = 0;
   LV2_URID tunerCentsURID = 0;
+  LV2_URID tunerLiveURID = 0, tunerConfidenceURID = 0, tunerLevelURID = 0;
+  LV2_URID tunerToneURID = 0, tunerToneGainURID = 0;
   LV2_URID inputDbURID = 0;
   LV2_URID preAmpDbURID = 0;
   LV2_URID postAmpDbURID = 0;
@@ -263,7 +268,9 @@ struct RigUIState {
         }
         if (tunerPanel) tunerPanel.hidden = NO;
         if (muteOnTune) muteOutputForTuner();
+        [tunerWorkspace setTunerActive:YES];
       } else if (prevTab == 0) {
+        [tunerWorkspace setTunerActive:NO];
         // Leaving Tuner tab (index 0): disable tuner DSP and restore output if muted
         sendControl(16, 0.0f);
         if (tunerButton) {
@@ -320,6 +327,23 @@ struct RigUIState {
   __strong NSPopover* aiCopilotPopover = nil;
   __strong NSButton* aiCopilotBtn = nil;
 
+  __strong id<NAMRigTunerDisplay> tunerWorkspace = nil;
+
+  void sendTunerProperty(LV2_URID property, float value) {
+    if (!property || !write || !std::isfinite(value)) return;
+    alignas(LV2_Atom_Object) uint8_t buffer[128]{};
+    LV2_Atom_Forge local;
+    lv2_atom_forge_init(&local, map);
+    lv2_atom_forge_set_buffer(&local, buffer, sizeof(buffer));
+    LV2_Atom_Forge_Frame frame;
+    lv2_atom_forge_object(&local, &frame, 0, patchSet);
+    lv2_atom_forge_key(&local, patchProperty); lv2_atom_forge_urid(&local, property);
+    lv2_atom_forge_key(&local, patchValue); lv2_atom_forge_float(&local, value);
+    lv2_atom_forge_pop(&local, &frame);
+    const auto* atom = reinterpret_cast<const LV2_Atom*>(buffer);
+    write(controller, 0, lv2_atom_total_size(atom), eventTransfer, buffer);
+  }
+
   // Tuner UI: master toggle + readout elements in Pro Studio Deck tab 0.
   __strong NSButton* tunerButton = nil;
   __strong NSView* tunerPanel = nil;
@@ -339,6 +363,10 @@ struct RigUIState {
       if (activeDeckTab != 0) return;
       if (!tunerPanel || tunerPanel.hidden) return;
       if (tunerButton && tunerButton.state != NSControlStateValueOn) return;
+      if (tunerWorkspace) {
+        [tunerWorkspace updateLegacyNote:lastTunerNote cents:lastTunerCents];
+        return;
+      }
       if (lastTunerNote < 0) {
         tunerNoteLabel.stringValue = @"—";
         tunerNoteLabel.textColor = rigText();
@@ -496,14 +524,14 @@ struct RigUIState {
   bool syncingWorkspaceNavigation = false;
   __strong NAMRigUIController* uiController = nil;
   __strong ToneBrowserController* browserController = nil;
-  std::array<__strong NSTextField*, 4> pathLabels{};
-  std::array<__strong NSButton*, 4> powerButtons{};
-  std::array<__strong NSImageView*, 3> stageImages{};
-  std::array<uint64_t, 3> stageThumbGeneration{};
+  std::array<__strong NSTextField*, 6> pathLabels{};
+  std::array<__strong NSButton*, 6> powerButtons{};
+  std::array<__strong NSImageView*, 6> stageImages{};
+  std::array<uint64_t, 6> stageThumbGeneration{};
   std::array<__strong RigPanel*, 3> stageCards{};
   NSInteger selectedStageIndex = -1;
   std::array<__strong NSTextField*, 3> stageHeaderArchBadges{};
-  std::array<__strong NSTextField*, 4> stageArchBadges{};
+  std::array<__strong NSTextField*, 6> stageArchBadges{};
   // auto-cab is always on — no toggle or status label needed
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
   std::array<__strong NSTextField*, kRigKnobCount> valueLabels{};
@@ -511,7 +539,7 @@ struct RigUIState {
   // Editable knob value boxes: while the user is typing in one, host-driven
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
-  std::array<__strong RigPopUpButton*, 4> modelPickers{};  // per-stage model selector in each tile
+  std::array<__strong RigPopUpButton*, 6> modelPickers{};  // per-stage model selector in each tile
   LV2UI_Resize* hostResize = nullptr;
   CGFloat zoom = 1.0;
   NSComboBox* zoomControl = nil;
@@ -1331,6 +1359,9 @@ struct RigUIState {
   }
 
   float currentPortValueForSlot(uint32_t port) const {
+    if (port == NAMRig::kPedalOrderPort) return pedalOrder;
+    if (port == NAMRig::kPedal2EnabledPort || port == NAMRig::kPedal3EnabledPort)
+      return extraPedalEnabled[port - NAMRig::kPedal2EnabledPort];
     if (NAMRig::isPinEqPort(port)) return pinEqControls[port - NAMRig::kPinEqFirstPort];
     if (port == NAMRig::kPowerTubeTypePort) return (float)powerTubeProfile;
     if (port == NAMRig::kPowerTubeCharacterPort) return powerTubeCharacter;
@@ -1499,13 +1530,13 @@ struct RigUIState {
   // model paths (every selection is sent via sendPath). We write them to disk on
   // change and re-send them on every instantiate, so selections survive a
   // plugin-window recreation regardless of the host's LV2-State handling.
-  std::array<std::string, 4> selectedPaths{};
-  std::array<std::string, 4> selectedImageURLs{};   // thumbnail metadata (persisted)
-  std::array<long, 4> selectedToneIds{};            // key into NAM Rig's artwork cache
+  std::array<std::string, 6> selectedPaths{};
+  std::array<std::string, 6> selectedImageURLs{};   // thumbnail metadata (persisted)
+  std::array<long, 6> selectedToneIds{};            // key into NAM Rig's artwork cache
   // Every model offered by the selected tone/pack.  Hosts such as Element may
   // tear down and recreate an LV2 UI when its window loses focus; keeping only
   // selectedPaths would then rebuild each popup with just its current item.
-  std::array<std::vector<std::string>, 4> availableModelPaths{};
+  std::array<std::vector<std::string>, 6> availableModelPaths{};
   static std::string uiLegacyPersistFile() {
     const char* home = std::getenv("HOME");
     std::string dir = home ? std::string(home) : std::string(".");
@@ -1936,6 +1967,7 @@ struct RigUIState {
 
   void updateStageArchBadge(size_t stage, NSString* path) {
     RigModelArchInfo info = inspectModelArch(path);
+    if (stage >= 4 && stage < stageArchBadges.size()) applyArchBadgeStyle(stageArchBadges[stage], info, nil);
     if (stage < stageHeaderArchBadges.size() && stageHeaderArchBadges[stage]) {
       applyArchBadgeStyle(stageHeaderArchBadges[stage], info, nil);
     }
@@ -1966,7 +1998,7 @@ struct RigUIState {
   }
 
   static NSString* modelPickerTooltip(size_t stage, NSString* path) {
-    NSString* role = stage == 0 ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
+    NSString* role = (stage == 0 || stage >= 4) ? @"pedal" : (stage == 1 ? @"amp" : @"cabinet");
     NSString* behavior = stage == 2
         ? @"Select the active cabinet NAM model or WAV impulse response."
         : stage == 3
@@ -2068,7 +2100,7 @@ struct RigUIState {
 
   // Placeholder SF Symbol shown when no tone artwork is available for a stage.
   static NSString* placeholderSymbolForStage(size_t stage) {
-    return stage == 0 ? @"guitars" : (stage == 2 ? @"speaker.wave.3.fill" : @"bolt.fill");
+    return (stage == 0 || stage >= 4) ? @"guitars" : (stage == 2 ? @"speaker.wave.3.fill" : @"bolt.fill");
   }
 
   // Populate a tile's model selector with the models available for that stage.
@@ -2179,7 +2211,7 @@ struct RigUIState {
     if (artworkPath.length && [[NSFileManager defaultManager] fileExistsAtPath:artworkPath])
       image = [[NSImage alloc] initWithContentsOfFile:artworkPath];
     if (!image && toneId > 0) {
-      NSString* prefix = s == 0 ? @"pedal" : (s == 2 ? @"cab" : @"amp");
+      NSString* prefix = (s == 0 || s >= 4) ? @"pedal" : (s == 2 ? @"cab" : @"amp");
       NSString* cache = [@"~/Library/Caches/NAM Rig/NAM Rig/Tone3000 State Artwork"
                          stringByExpandingTildeInPath];
       NSString* candidate = [[cache stringByAppendingPathComponent:
@@ -2242,7 +2274,7 @@ struct RigUIState {
           NSArray* images = [toneDict[@"images"] isKindOfClass:[NSArray class]] ? toneDict[@"images"] : nil;
           NSString* imgURL = (images.count > 0 && [images[0] isKindOfClass:[NSString class]]) ? images[0] : nil;
 
-          NSString* prefix = stage == 0 ? @"pedal" : (stage == 2 || stage == 3 ? @"cab" : @"amp");
+          NSString* prefix = (stage == 0 || stage >= 4) ? @"pedal" : (stage == 2 || stage == 3 ? @"cab" : @"amp");
           NSString* cacheDir = [@"~/Library/Caches/NAM Rig/NAM Rig/Tone3000 State Artwork" stringByExpandingTildeInPath];
           NSString* cachedArtwork = [cacheDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%ld.png", prefix, (long)toneId]];
           NSString* artworkPath = [fm fileExistsAtPath:cachedArtwork] ? cachedArtwork : nil;
@@ -2362,7 +2394,18 @@ struct RigUIState {
     }
   }
 
+  int pedalOrder = 0;
+  std::array<float, 2> extraPedalEnabled{};
   void updateControl(uint32_t port, float value) {
+    if (port >= NAMRig::kPedal2EnabledPort && port <= NAMRig::kPedalOrderPort) {
+      if (port == NAMRig::kPedalOrderPort)
+        pedalOrder = std::isfinite(value) ? (int)(std::clamp(value, 0.0f, 5.0f) + 0.5f) : 0;
+      else extraPedalEnabled[port - NAMRig::kPedal2EnabledPort] = std::isfinite(value) && value >= 0.5f ? 1 : 0;
+      auto alive = isAlive;
+      auto refresh = ^{ if (alive && *alive) [workspace refreshPedalBoard]; };
+      if ([NSThread isMainThread]) refresh(); else dispatch_async(dispatch_get_main_queue(), refresh);
+      return;
+    }
     auto alive = this->isAlive;
     if (port == NAMRig::kPostCompressorEnabledPort) {
       postCompressorEnabled = std::isfinite(value) ? (value >= 0.5f ? 1.0f : 0.0f) : 1.0f;
@@ -2534,6 +2577,7 @@ struct RigUIState {
         if (!alive || !*alive) return;
         if (!powerButtons[slot]) return;
         powerButtons[slot].state = value >= 0.5f;
+        if (slot == 0) powerButtons[slot].title = value >= 0.5f ? @"ON" : @"OFF";
         powerButtons[slot].needsDisplay = YES;
       };
       if ([NSThread isMainThread]) updatePower();

@@ -42,11 +42,13 @@
 
 constexpr const char* kRigURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig";
 constexpr const char* kRigUIURI = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-ui";
-constexpr std::array<const char*, 4> kPathURIs{
+constexpr std::array<const char*, 6> kPathURIs{
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-amp-model",
     "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab-model",
-    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab2-model"};
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-cab2-model",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal2-model",
+    "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-pedal3-model"};
 
 static NSArray<NSString*>* oversampleDescriptions() {
   static NSArray<NSString*>* descriptions = @[
@@ -1028,6 +1030,7 @@ static double copilotParseClock(NSString* text) {
 - (void)tunerToggled:(NSButton*)sender {
   if (!_state) return;
   const BOOL on = sender.state == NSControlStateValueOn;
+  [_state->tunerWorkspace setTunerActive:on];
   _state->sendControl(16, on ? 1.0f : 0.0f);
   sender.contentTintColor = on ? rigText() : rigDimText();
   if ([sender respondsToSelector:@selector(setPrimary:)]) {
@@ -1983,7 +1986,7 @@ static double copilotParseClock(NSString* text) {
   NSString* path = [sender.representedObject isKindOfClass:[NSString class]] ? sender.representedObject : nil;
   if (!path.length) return;
   const size_t stage = (size_t)sender.tag;
-  if (stage >= 4) return;
+  if (stage >= _state->selectedPaths.size()) return;
 
   [self selectStageCard:(NSInteger)stage];
 
@@ -6894,7 +6897,7 @@ static void addLowerStudioDeck(RigUIState* state,
     [[info2.topAnchor constraintEqualToAnchor:info1.bottomAnchor constant:5] setActive:YES];
     [[info2.leadingAnchor constraintEqualToAnchor:infoCard.leadingAnchor constant:10] setActive:YES];
 
-    NSTextField* info3 = addLabel(infoCard, @"DETECTION RANGE : 55 Hz – 1400 Hz", NSZeroRect,
+    NSTextField* info3 = addLabel(infoCard, @"DETECTION RANGE : 30 Hz – 1400 Hz", NSZeroRect,
                                   [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
                                   rigDimText(), NSTextAlignmentLeft);
     info3.translatesAutoresizingMaskIntoConstraints = NO;
@@ -6948,6 +6951,11 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->atomFloat = map->map(map->handle, LV2_ATOM__Float);
     state->tunerNoteURID = map->map(map->handle, NAM_RIG_TUNER_NOTE_URI);
     state->tunerCentsURID = map->map(map->handle, NAM_RIG_TUNER_CENTS_URI);
+    state->tunerLiveURID = map->map(map->handle, NAMRig::Tuning::kLivePitchUri);
+    state->tunerConfidenceURID = map->map(map->handle, NAMRig::Tuning::kConfidenceUri);
+    state->tunerLevelURID = map->map(map->handle, NAMRig::Tuning::kLevelUri);
+    state->tunerToneURID = map->map(map->handle, NAMRig::Tuning::kToneUri);
+    state->tunerToneGainURID = map->map(map->handle, NAMRig::Tuning::kToneGainUri);
     state->inputDbURID = map->map(map->handle, NAM_RIG_INPUT_DB_URI);
     state->preAmpDbURID = map->map(map->handle, NAM_RIG_PRE_AMP_DB_URI);
     state->postAmpDbURID = map->map(map->handle, NAM_RIG_POST_AMP_DB_URI);
@@ -7793,6 +7801,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 void cleanup(LV2UI_Handle handle) {
   auto* state = static_cast<RigUIState*>(handle);
   if (state) {
+    [state->tunerWorkspace shutdown];
     state->stopKeyEventMonitor();
     state->stopABTimer();   // invalidate the A/B timer before teardown (do not call stopAB() which queues UI rebuilds)
     if (state->uiController) {
@@ -7859,6 +7868,16 @@ void portEvent(LV2UI_Handle handle,
   // Tuner updates: patch:Set floats — note (MIDI number, -1 = none) and cents.
   if (value->type != state->atomFloat || value->size != sizeof(float)) return;
   const float v = *reinterpret_cast<const float*>(value + 1);
+  if (!std::isfinite(v)) return;
+  const LV2_URID tunerMetrics[] = {state->tunerLiveURID, state->tunerConfidenceURID, state->tunerLevelURID};
+  for (NSUInteger metric = 0; metric < 3; ++metric) if (propertyId == tunerMetrics[metric]) {
+    auto alive = state->isAlive;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!alive || !*alive) return;
+      [state->tunerWorkspace acceptTunerMetric:metric value:v];
+    });
+    return;
+  }
   if (propertyId == state->tunerNoteURID)
     state->lastTunerNote = v;
   else if (propertyId == state->tunerCentsURID)

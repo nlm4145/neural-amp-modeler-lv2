@@ -39,8 +39,8 @@ assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 192;" in (ROOT / "src/power_tube_controls.h").read_text()
-assert sorted(ports) == list(range(192)), "ports stay contiguous; overdrive voicing appends at 191"
+assert "kRigControlPortCount = 195;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(195)), "ports stay contiguous; overdrive voicing appends at 191"
 
 
 def port_default(index: int) -> float:
@@ -66,7 +66,7 @@ assert "lv2:toggled" in polarity_port and "lv2:integer" in polarity_port
 assert 'rdfs:label "Normal"' in polarity_port and 'rdfs:label "Inverted"' in polarity_port
 
 # Stage 3 exists, is parallel, and carries its own path parameter.
-assert "Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 }" in header
+assert "Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Pedal2 = 4, Pedal3 = 5, Count = 6 }" in header
 assert "kSerialStageCount = 3" in header, "only pedal/amp/cab form the serial chain"
 assert "-cab2-model" in ttl and "NAM_RIG_CAB2_URI" in header
 assert "<@NAM_RIG_LV2_ID@-cab2-model>\n\ta lv2:Parameter" in ttl
@@ -76,7 +76,7 @@ assert re.search(r"patch:writable(?:[^;]*?)-cab2-model>", ttl, re.S), (
 assert "if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;" in header, (
     "Cab B must stay at the session rate, out of any True domain"
 )
-assert "for (size_t i = 0; i < kSerialStageCount; ++i)" in dsp, (
+assert "if (i == stageIndex(Stage::Cab2)) continue;" in dsp, (
     "the oversample reload must not try to re-create Cab B for a True domain"
 )
 
@@ -164,7 +164,7 @@ assert "WIDTH / DELAY / REVERB" in ui, "the cab tile needs the effects popover b
 assert "effectsPopover" in ui and "effectsPopover" in state
 assert "B ON" in ui and "onB.tag = 47;" in ui, "Cab B needs its own enable toggle"
 assert "modelPickers[3]" in ui, "Cab B needs its own model picker"
-assert "std::array<LV2_URID, 4> pathURIDs{}" in state
+assert "std::array<LV2_URID, 6> pathURIDs{}" in state
 assert re.search(
     r"port >= 4 &&\s*port < NAMRig::kRigControlPortCount",
     ui,

@@ -47,7 +47,10 @@ inline constexpr uint32_t kOverdriveVoicingPort = 191;
 inline constexpr float kOverdriveVoicingDefault = 0.0f;
 inline constexpr float kOverdriveVoicingMin = 0.0f;
 inline constexpr float kOverdriveVoicingMax = 4.0f;
-inline constexpr uint32_t kRigControlPortCount = 192;
+inline constexpr uint32_t kPedal2EnabledPort = 192;
+inline constexpr uint32_t kPedal3EnabledPort = 193;
+inline constexpr uint32_t kPedalOrderPort = 194;
+inline constexpr uint32_t kRigControlPortCount = 195;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

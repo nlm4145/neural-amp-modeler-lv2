@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
     // path, and rollback is preserved. Use an expired deadline, not a 10s sleep.
     RigPreset* timeoutBefore = [presetClass defaultPreset];
     state.confirmedPaths[1] = "/previous/amp.nam";
-    const auto timeoutSerials = state.pathResponseSerial;
+    const std::array<uint64_t, 4> timeoutSerials = {state.pathResponseSerial[0], state.pathResponseSerial[1], state.pathResponseSerial[2], state.pathResponseSerial[3]};
     __block BOOL timedOut = NO;
     [(id<AIPrivate>)copilot waitForPaths:result state:&state alive:state.isAlive serials:timeoutSerials
         before:timeoutBefore deadline:[NSDate distantPast] completion:^(NSError* failure) {

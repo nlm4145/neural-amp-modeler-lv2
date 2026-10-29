@@ -5,7 +5,7 @@ Mirrors the single-window detector in src/nam_rig_plugin.cpp (process() tuner
 block): cascaded RBJ lowpass (Q=0.707, fc=0.45*decimated Nyquist) ->
 decimation to ~12 kHz -> NSDF over lag range [kMinTau, kMaxTau] -> first
 peak >= 90% of best after the first positive zero-crossing -> parabolic
-vertex -> 55-1400 Hz band, with an absolute NSDF confidence threshold.
+vertex -> 30-1400 Hz band, with an absolute NSDF confidence threshold.
 Streaming display behavior is tested against the real plugin in verify_tuner.c.
 
 The 96 kHz session rate is the case that killed v1 (a fixed 1000-sample lag
@@ -19,7 +19,7 @@ import numpy as np
 
 # Tuner constants — must match Tuner struct in src/nam_rig_plugin.h
 K_WINDOW = 1024   # analysis window (decimated samples)
-K_MAX_TAU = 300   # max lag at ~12 kHz -> floor ~40 Hz
+K_MAX_TAU = 480   # covers 30 Hz across supported sample rates
 K_MIN_TAU = 8     # min lag -> ceiling ~1500 Hz
 
 
@@ -112,7 +112,7 @@ def tuner_detect(x, host_rate, verbose=False):
         delta = max(-1.0, min(1.0, delta))
         tau_f += delta
     freq = dr / tau_f
-    if not (55.0 <= freq <= 1400.0):
+    if not (30.0 <= freq <= 1400.0):
         return None, None
     midi = 69.0 + 12 * math.log2(freq / 440.0)
     nearest = round(midi)
@@ -179,10 +179,19 @@ def test_silence_reports_none():
 
 
 def test_out_of_band_reports_none():
-    # 30 Hz is below the 55 Hz floor -> must report None, not a garbage octave.
-    x = synth_guitar(30.0, rate=96000)
+    # 20 Hz is below the 30 Hz floor.
+    x = synth_guitar(20.0, rate=96000)
     midi, _ = tuner_detect(x, 96000)
-    assert midi is None, f"30 Hz must be out of band, got {midi}"
+    assert midi is None, f"20 Hz must be out of band, got {midi}"
+
+
+def test_extended_range_strings():
+    for rate in (44100, 48000, 96000):
+        for frequency in (30.868, 36.708, 41.203, 46.249):
+            midi, _ = tuner_detect(synth_guitar(frequency, rate=rate), rate)
+            expected = 69 + 12 * math.log2(frequency / 440)
+            assert midi is not None, f"no pitch at {frequency} Hz / {rate}"
+            assert abs(midi - expected) * 100 < 5, (frequency, rate, midi, expected)
 
 
 def test_octave_stability():

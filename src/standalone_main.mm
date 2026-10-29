@@ -592,7 +592,8 @@ class StandaloneHost {
         {NAMRig::kOverdriveEnabledPort, {&overdriveEnabled_, 1}},
         {NAMRig::kPostCompressorFirstPort, postCompressorControls_},
         {NAMRig::kOverdriveTightPort, {&overdriveTight_, 1}},
-        {NAMRig::kOverdriveVoicingPort, {&overdriveVoicing_, 1}}});
+        {NAMRig::kOverdriveVoicingPort, {&overdriveVoicing_, 1}},
+        {NAMRig::kPedal2EnabledPort, pedalBoardControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -947,6 +948,10 @@ class StandaloneHost {
     }
     if (format == 0 && port == NAMRig::kOverdriveVoicingPort && size == sizeof(float)) {
       host->overdriveVoicing_ = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kPedal2EnabledPort && port <= NAMRig::kPedalOrderPort && size == sizeof(float)) {
+      host->pedalBoardControls_[port - NAMRig::kPedal2EnabledPort] = *static_cast<const float*>(buffer);
       return;
     }
     if (format == 0 && NAMRig::isPinEqPort(port) && size == sizeof(float)) {
@@ -1794,6 +1799,7 @@ class StandaloneHost {
   float midPushControl_ = 0.0f;
   std::array<float, 3> overdriveControls_ = {0.0f, NAMRig::Overdrive::kToneDefault, 0.0f};
   float overdriveTight_ = NAMRig::kOverdriveTightDefault;
+  std::array<float, 3> pedalBoardControls_{};
   float overdriveVoicing_ = NAMRig::kOverdriveVoicingDefault;
   float overdriveEnabled_ = 1.0f;
   std::array<float, 3> compressorControls_ = {NAMRig::kCompressorAttackDefault, NAMRig::kCompressorReleaseDefault, 1.0f};

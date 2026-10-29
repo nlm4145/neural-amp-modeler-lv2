@@ -30,7 +30,7 @@ assert "@property(nonatomic, copy) void (^onClickWithEvent)(NSEvent* event, RigP
 assert "if (_onClickWithEvent)" in widgets_mm, "RigPanel mouseDown: must invoke _onClickWithEvent"
 
 # 3. RigUIState contract
-assert "std::array<__strong RigPopUpButton*, 4> modelPickers" in state, "RigUIState modelPickers must be RigPopUpButton"
+assert "std::array<__strong RigPopUpButton*, 6> modelPickers" in state, "RigUIState modelPickers must be RigPopUpButton"
 assert "selectedStageIndex" in state, "RigUIState missing selectedStageIndex"
 assert "modelPickers[s].showsSelection = NO" in state, "selectTab must clear modelPickers showsSelection"
 

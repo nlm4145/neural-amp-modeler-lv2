@@ -355,6 +355,7 @@ if (APPLE)
 		rig_riff_recorder.h rig_riff_recorder.mm
 		rig_local_tone_matcher.h rig_local_tone_matcher.mm local_tone_learning.h
 		rig_workspace.h rig_workspace.mm
+		rig_tuner_workspace.h rig_tuner_workspace.mm tuner_tools.h tuner_protocol.h
 		rig_graph_controls.h rig_graph_controls.mm
 		rig_ui_state.h)
 	add_library(rig_ui_core OBJECT ${RIG_UI_SOURCES})

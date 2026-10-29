@@ -26,6 +26,7 @@
 #include "output_transformer.h"
 #include "overdrive.h"
 #include "pin_eq.h"
+#include "tuner_protocol.h"
 #include "space_fx.h"
 #include "speaker_dynamics.h"
 #include "rack_controls.h"
@@ -52,7 +53,7 @@ class CabinetWorker;
 class PolyphaseWorker;
 static constexpr unsigned int MAX_FILE_NAME = 1024;
 
-enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Count = 4 };
+enum class Stage : uint32_t { Pedal = 0, Amp = 1, Cab = 2, Cab2 = 3, Pedal2 = 4, Pedal3 = 5, Count = 6 };
 static constexpr size_t kStageCount = static_cast<size_t>(Stage::Count);
 // Pedal, Amp and Cab form the serial chain; Cab2 runs parallel to Cab.
 static constexpr size_t kSerialStageCount = 3;
@@ -210,6 +211,9 @@ public:
     float* post_compressor_enabled; // in: port 189, independent bypass
     float* od_tight;                // in: port 190, Sculpt overdrive tight cut (Hz, 100..1500)
     float* od_voicing;              // in: port 191, Sculpt overdrive diode voicing (0=TS, 1=SD-1, 2=LED, 3=Ge, 4=Clean)
+    float* pedal2_enabled;
+    float* pedal3_enabled;
+    float* pedal_order;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -259,7 +263,7 @@ public:
   static_assert(kPostCompressorFirstPort == kOverdriveEnabledPort + 1);
   static_assert(kOverdriveTightPort == kPostCompressorEnabledPort + 1);
   static_assert(kOverdriveVoicingPort == kOverdriveTightPort + 1);
-  static_assert(kPortCount == kOverdriveVoicingPort + 1);
+  static_assert(kPortCount == kPedalOrderPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -326,6 +330,7 @@ private:
     LV2_URID atomFloat;
     LV2_URID tunerNote;
     LV2_URID tunerCents;
+    LV2_URID tunerLive, tunerConfidence, tunerLevel, tunerTone, tunerToneGain;
     LV2_URID inputDb;
     LV2_URID preAmpDb;
     LV2_URID postAmpDb;
@@ -400,7 +405,8 @@ private:
     static constexpr int kBuf = 3072;        // decimated-domain ring length
     static constexpr int kWindow = 1024;     // NSDF correlation window (matches tests/test_tuner_mpm.py)
     static constexpr int kMinTau = 8;        // ~1500 Hz top
-    static constexpr int kMaxTau = 300;      // 12k/300 = 40 Hz floor
+    static constexpr int kMaxTau = 480;      // Covers the 30 Hz lower bound at every supported sample rate
+    static constexpr int kSettleLag = 300;   // Preserve the accepted-readout acquisition cadence.
     static constexpr int kMissLimit = 8;     // failed analyses before the display clears (~240 ms)
     std::array<float, kBuf> ring{};
     int ringPos = 0;
@@ -409,13 +415,15 @@ private:
     int samplesSinceAnalysis = 0;   // raw-sample hop counter (rate-independent cadence)
     int decimPhase = 0;             // raw-sample counter for decimation
     float lastNote = -1.0f, lastCents = 0.0f;
+    float livePitch = -1.0f, confidence = 0.0f;
+    uint32_t telemetrySamples = 0;
     float sentNote = -99.0f;        // last values pushed over notify (change gate)
     float sentCentsQ = -99.0f;
     float noteHist[3] = {-1.f, -1.f, -1.f};   // median-3 display filter (rolling)
     int histIdx = 0;                // next write slot — MUST roll, not clamp
     int histLen = 0;
     int missCount = 0;              // consecutive analyses with no pitch
-    float onsetEnergy = 0.0f, previousRms = 0.0f;
+    float onsetEnergy = 0.0f, previousRms = 0.0f, onsetReference = 0.0f;
     int onsetSamples = 0;           // non-overlapping 10 ms envelope windows
     int pluckSamples = -1;          // decimated samples since the latest onset
     int tailSamples = 0;            // debounce short envelope dips
@@ -433,8 +441,9 @@ private:
       ringPos = filled = decimPhase = samplesSinceAnalysis = 0;
       lastNote = -1.0f;
       lastCents = 0.0f;
+      livePitch = -1.0f; confidence = 0; telemetrySamples = 0;
       histIdx = histLen = missCount = 0;
-      onsetEnergy = previousRms = 0.0f;
+      onsetEnergy = previousRms = onsetReference = 0.0f;
       onsetSamples = 0;
       pluckSamples = -1;
       tailSamples = 0;
@@ -445,6 +454,10 @@ private:
       lp2.reset();
     }
   } tuner;
+  // Short, renewed UI lease: the tone fades out if the UI closes or stops sending.
+  double tunerTonePhase = 0.0;
+  float tunerToneHz = 440.0f, tunerToneTargetGain = 0.0316228f, tunerToneGain = 0.0f;
+  uint32_t tunerToneSamplesLeft = 0;
 
   // Input level meter: raw input peak (dBFS) with fast-attack / ~20 dB/s
   // release ballistics; published to the UI change-gated (>=0.5 dB drift).
@@ -474,7 +487,7 @@ private:
 
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
-  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2};
+  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2, kOsTrue8, kOsTrue8};
   // Latest port modes requested by the host. osApplied changes only when the
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
@@ -520,6 +533,8 @@ private:
   // fade-in path as a model swap, so flipping a stage on/off never puts a
   // waveform discontinuity on the output. appliedEnabled is what process()
   // actually runs; port changes only land at the fade's zero crossing.
+  int appliedPedalOrder = 0;
+  int desiredPedalOrder = 0;
   std::array<bool, kStageCount> appliedEnabled{true, true, true, false};
   bool enabledLatched = false;
   std::array<bool, kRackCount> requestedRacks{}, appliedRacks{};
@@ -548,7 +563,7 @@ private:
     // stage 0 = pedal, 1 = amp (2 = cab: follows amp in process()).
     // Cab2 runs parallel to the cab at the base rate (Legacy dilation).
     if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;
-    const float* port = stage == 0 ? ports.pedal_oversample
+    const float* port = (stage == 0 || stage >= 4) ? ports.pedal_oversample
                                     : ports.amp_oversample;
     if (!port) return kOsTrue8;     // unconnected host port: the TTL default
     return decodeOversample(*port);

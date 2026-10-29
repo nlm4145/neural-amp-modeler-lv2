@@ -55,7 +55,7 @@ appended_symbols += ["od_drive", "od_tone", "od_level"]
 appended_symbols += ["compressor_attack", "compressor_release", "compressor_enabled"]
 appended_symbols += ["od_enabled"]
 appended_symbols += ["post_compressor", "post_compressor_attack", "post_compressor_release", "post_compressor_enabled"]
-appended_symbols += ["od_tight", "od_voicing"]
+appended_symbols += ["od_tight", "od_voicing", "pedal2_enabled", "pedal3_enabled", "pedal_order"]
 port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
 )]
@@ -65,7 +65,7 @@ assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + ap
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
 assert "kPortCount = kRigControlPortCount;" in header
-assert "kRigControlPortCount = 192;" in tube_controls
+assert "kRigControlPortCount = 195;" in tube_controls
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
@@ -75,7 +75,7 @@ assert "kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount" in header
 assert "kPostCompressorFirstPort == kOverdriveEnabledPort + 1" in header
 assert "kOverdriveTightPort == kPostCompressorEnabledPort + 1" in header
 assert "kOverdriveVoicingPort == kOverdriveTightPort + 1" in header
-assert "kPortCount == kOverdriveVoicingPort + 1" in header
+assert "kPortCount == kPedalOrderPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 # The metadata table is the shared host/preset order, not absolute profile values.

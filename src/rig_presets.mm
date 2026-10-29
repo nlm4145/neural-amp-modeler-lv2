@@ -101,7 +101,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   // 2. If no _tone3000.json or downloads empty, scan directory for sibling models
   if (discovered.count == 0) {
     NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:folder error:nil];
-    NSSet* allowedExts = (stage >= 2)
+    NSSet* allowedExts = (stage == 2 || stage == 3)
         ? [NSSet setWithObjects:@"wav", @"nam", @"nammodel", @"aidax", @"aidadspmodel", nil]
         : [NSSet setWithObjects:@"nam", @"nammodel", @"aidax", @"aidadspmodel", nil];
 
@@ -133,7 +133,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 }
 
 @implementation RigPreset {
-  std::array<RigStagePreset, 4> _stages;
+  std::array<RigStagePreset, 6> _stages;
   std::unordered_map<uint32_t, float> _controls;
 }
 
@@ -167,8 +167,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p.name = @"Default Rig";
   p.speakerProfile = 0.0f;
 
-  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
-  for (size_t s = 0; s < 4; ++s) {
+  const char* roles[] = {"pedal", "amp", "cab", "cab2", "pedal2", "pedal3"};
+  for (size_t s = 0; s < 6; ++s) {
     p->_stages[s].role = roles[s];
     p->_stages[s].enabled = (s < 3);
     p->_stages[s].path.clear();
@@ -233,8 +233,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     preset.slotPresets = [NSMutableDictionary dictionary];
   }
 
-  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
-  for (size_t s = 0; s < 4; ++s) {
+  const char* roles[] = {"pedal", "amp", "cab", "cab2", "pedal2", "pedal3"};
+  for (size_t s = 0; s < 6; ++s) {
     preset->_stages[s].role = roles[s];
     preset->_stages[s].enabled = (s < 3);
     preset->_stages[s].path.clear();
@@ -248,7 +248,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 
   NSArray* stagesArray = root[@"stages"];
   if ([stagesArray isKindOfClass:[NSArray class]]) {
-    for (size_t s = 0; s < std::min((size_t)stagesArray.count, (size_t)4); ++s) {
+    for (size_t s = 0; s < std::min((size_t)stagesArray.count, (size_t)6); ++s) {
       NSDictionary* st = stagesArray[s];
       if (![st isKindOfClass:[NSDictionary class]]) continue;
       preset->_stages[s].enabled = st[@"enabled"] ? [st[@"enabled"] boolValue] : (s < 3);
@@ -358,8 +358,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     root[@"ai_metadata"] = [self.aiMetadata copy];
   }
 
-  NSMutableArray* stagesList = [NSMutableArray arrayWithCapacity:4];
-  for (size_t s = 0; s < 4; ++s) {
+  NSMutableArray* stagesList = [NSMutableArray arrayWithCapacity:6];
+  for (size_t s = 0; s < 6; ++s) {
     NSMutableDictionary* st = [NSMutableDictionary dictionary];
     st[@"role"] = [NSString stringWithUTF8String:_stages[s].role.c_str()];
     st[@"enabled"] = @(_stages[s].enabled);
@@ -408,8 +408,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   RigPreset* p = [[RigPreset alloc] init];
   p.name = name ?: @"Untitled";
 
-  const char* roles[] = {"pedal", "amp", "cab", "cab2"};
-  for (size_t s = 0; s < 4; ++s) {
+  const char* roles[] = {"pedal", "amp", "cab", "cab2", "pedal2", "pedal3"};
+  for (size_t s = 0; s < 6; ++s) {
     p->_stages[s].role = roles[s];
     p->_stages[s].path = state->selectedPaths[s];
     p->_stages[s].imageURL = state->selectedImageURLs[s];
@@ -484,6 +484,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   // Toggles and modes into controls map:
+  p->_controls[NAMRig::kPedal2EnabledPort] = state->extraPedalEnabled[0];
+  p->_controls[NAMRig::kPedal3EnabledPort] = state->extraPedalEnabled[1];
+  p->_controls[NAMRig::kPedalOrderPort] = state->pedalOrder;
   p->_controls[7] = p->_stages[0].enabled ? 1.0f : 0.0f;
   p->_controls[8] = p->_stages[1].enabled ? 1.0f : 0.0f;
   p->_controls[9] = p->_stages[2].enabled ? 1.0f : 0.0f;
@@ -519,7 +522,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   // 1. Models: discover sibling models and send stage path changes before
   // touching oversample/cab-enable controls so the audio thread never reloads
   // the previous preset's models while disk/menu work is still running.
-  for (size_t s = 0; s < 4; ++s) {
+  for (size_t s = 0; s < 6; ++s) {
     const std::string& path = _stages[s].path;
     std::vector<std::string> stageModels = _stages[s].models;
     if (!path.empty()) {
@@ -542,11 +545,16 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       state->setStageModels(s, @[]);
     }
   }
-  for (size_t s = 0; s < 4; ++s) {
+  for (size_t s = 0; s < 6; ++s) {
     const std::string& path = _stages[s].path;
     state->sendPath(s, path.empty() ? "" : path.c_str());
   }
 
+  for (uint32_t port : {NAMRig::kPedal2EnabledPort, NAMRig::kPedal3EnabledPort, NAMRig::kPedalOrderPort}) {
+    const float value = port == NAMRig::kPedalOrderPort ? [self controlForPort:port] : (_stages[port == NAMRig::kPedal2EnabledPort ? 4 : 5].enabled ? 1.0f : 0.0f);
+    state->sendControl(port, value);
+    state->updateControl(port, value);
+  }
   // 2. Stage powers (ports 7, 8, 9, 47)
   state->sendControl(7, _stages[0].enabled ? 1.0f : 0.0f);
   state->updateControl(7, _stages[0].enabled ? 1.0f : 0.0f);
@@ -636,7 +644,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   }
 
   // 5. Stage thumbnails
-  for (size_t s = 0; s < 4; ++s) {
+  for (size_t s = 0; s < 6; ++s) {
     const std::string& path = _stages[s].path;
     const std::string& img = _stages[s].imageURL;
     const long toneId = _stages[s].toneId;
