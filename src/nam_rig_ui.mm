@@ -7085,7 +7085,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     presetPop.menu.identifier = @"preset_popup_menu";
     [[presetPop.leadingAnchor constraintEqualToAnchor:prevPresetBtn.trailingAnchor constant:4] setActive:YES];
     [[presetPop.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[presetPop.widthAnchor constraintEqualToConstant:155] setActive:YES];
+    [[presetPop.widthAnchor constraintEqualToConstant:235] setActive:YES];
     [[presetPop.heightAnchor constraintEqualToConstant:24] setActive:YES];
 
     RigButton* nextPresetBtn = rigButton(rigGroup, @"▶", state->uiController,
@@ -7122,7 +7122,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     abPopB.menu.identifier = @"ab_popup_menu";
     [[abPopB.leadingAnchor constraintEqualToAnchor:abBLabel.trailingAnchor constant:2] setActive:YES];
     [[abPopB.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[abPopB.widthAnchor constraintEqualToConstant:148] setActive:YES];
+    [[abPopB.widthAnchor constraintEqualToConstant:230] setActive:YES];
     [[abPopB.heightAnchor constraintEqualToConstant:24] setActive:YES];
 
     NSSlider* abIntSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
@@ -7138,7 +7138,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     state->abIntervalSlider = abIntSlider;
     [[abIntSlider.leadingAnchor constraintEqualToAnchor:abPopB.trailingAnchor constant:8] setActive:YES];
     [[abIntSlider.centerYAnchor constraintEqualToAnchor:rigGroup.centerYAnchor] setActive:YES];
-    [[abIntSlider.widthAnchor constraintEqualToConstant:90] setActive:YES];
+    [[abIntSlider.widthAnchor constraintEqualToConstant:70] setActive:YES];
 
     NSTextField* abIntLabel = addLabel(rigGroup, @"4s", NSZeroRect,
                                        [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],

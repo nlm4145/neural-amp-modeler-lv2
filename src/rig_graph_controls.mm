@@ -8,9 +8,10 @@
 namespace {
 // Handles edit existing ports only. No additional processing or audio-thread work.
 NAMGraphControlPin* controlPin(RigUIState* state, NSString* name, int xPort, int yPort,
-                              NSPoint (^position)(NSRect), float xScale = 1, float yScale = 1) {
+                              NSPoint (^position)(NSRect), float xScale = 1, float yScale = 1, BOOL labelBelow = NO) {
   NAMGraphControlPin* pin = [NAMGraphControlPin new];
   pin.label = name;
+  pin.labelBelow = labelBelow;
   pin.position = position;
   auto alive = state->isAlive;
   __block float startX = 0, startY = 0;
@@ -104,55 +105,21 @@ void rigInstallGraphControls(RigUIState* state) {
     const int amountPort = which ? NAMRig::kPostCompressorAmountPort : 28;
     const int attackPort = which ? NAMRig::kPostCompressorAttackPort : NAMRig::kCompressorAttackPort;
     const int releasePort = which ? NAMRig::kPostCompressorReleasePort : NAMRig::kCompressorReleasePort;
-    NSMutableArray* pins = [NSMutableArray arrayWithObject:controlPin(state, @"AMOUNT ↔", amountPort, -1,
-        ^NSPoint(NSRect r) {
-          double amount = comp.enabled ? comp.amount * .01 : 0;
-          double threshold = -12 - 24 * amount;
-          double out = threshold + 6 * amount - NAMRig::compressorReductionDb(threshold, threshold, 1 + 5 * amount, 6);
-          double width = NSWidth(r) * (comp.compact ? 1 : .48) - 48;
-          return NSMakePoint(32 + (threshold + 60) / 60 * width, 22 + (out + 60) / 60 * (NSHeight(r) - 66));
-        }, -2)];
-    if (!comp.compact) {
-      [pins addObject:controlPin(state, @"ATTACK ↔", attackPort, -1, ^NSPoint(NSRect r) {
-        double split = NSWidth(r) * .48, width = NSWidth(r) - 20 - split - 24;
-        double t = 20 + comp.attack * .35;
-        return NSMakePoint(split + 24 + t / 250 * width,
-            22 + (1 - comp.amount * .0075 * (1 - std::exp(-1.0))) * (NSHeight(r) - 66));
-      }, 2)];
-      [pins addObject:controlPin(state, @"RELEASE ↔", releasePort, -1, ^NSPoint(NSRect r) {
-        double split = NSWidth(r) * .48, width = NSWidth(r) - 20 - split - 24;
-        double t = 90 + comp.releaseTime * .35;
-        double reduction = comp.amount * .0075 * (1 - std::exp(-70 / std::max(.5, comp.attack * .35)));
-        return NSMakePoint(split + 24 + std::min(245.0, t) / 250 * width,
-            22 + (1 - reduction * std::exp(-1.0)) * (NSHeight(r) - 66));
-      }, 2)];
-    }
-    attach(comp, pins);
+    attach(comp, @[
+      controlPin(state, @"AMOUNT ↔", amountPort, -1, ^NSPoint(NSRect r) { return [comp controlPointForIndex:0]; }, -2),
+      controlPin(state, @"ATTACK ↔", attackPort, -1, ^NSPoint(NSRect r) { return [comp controlPointForIndex:1]; }, 2, 1, YES),
+      controlPin(state, @"RELEASE ↔", releasePort, -1, ^NSPoint(NSRect r) { return [comp controlPointForIndex:2]; }, 2, 1, YES)
+    ]);
   }
-
   __weak NAMDelayTapVisualizer* delay = state->delayVisualizer;
   attach(delay, @[
-    controlPin(state, @"TIME ↔ / MIX ↕", 50, 53, ^NSPoint(NSRect r) {
-      double h = NSHeight(r) - 38, middle = 18 + h * .5;
-      return NSMakePoint(32 + delay.timeMs / 2000 * (NSWidth(r) - 48), middle + (h * .5 - 6) * delay.mix / 100);
-    }),
-    controlPin(state, @"FEEDBACK ↕", -1, 51, ^NSPoint(NSRect r) {
-      double h = NSHeight(r) - 38, middle = 18 + h * .5;
-      return NSMakePoint(32 + std::min(1950.0, delay.timeMs * 2.0) / 2000 * (NSWidth(r) - 48),
-          middle - (h * .5 - 6) * delay.mix * delay.feedback / 10000);
-    }, 1, -2)
+    controlPin(state, @"TIME ↔ / MIX ↕", 50, 53, ^NSPoint(NSRect r) { return [delay controlPointForIndex:0]; }),
+    controlPin(state, @"FEEDBACK ↕", -1, 51, ^NSPoint(NSRect r) { return [delay controlPointForIndex:1]; }, 1, 2)
   ]);
-
   __weak NAMReverbDecayVisualizer* reverb = state->reverbVisualizer;
   attach(reverb, @[
-    controlPin(state, @"PRE-DELAY ↔ / MIX ↕", 58, 54, ^NSPoint(NSRect r) {
-      return NSMakePoint(38 + reverb.preDelay / 4000 * (NSWidth(r) - 54), NSHeight(r) - 36);
-    }, 2),
-    controlPin(state, @"DECAY ↔", 55, -1, ^NSPoint(NSRect r) {
-      double rt = .35 + 4.15 * reverb.decay / 100 * (.35 + .65 * reverb.size / 100);
-      return NSMakePoint(38 + (reverb.preDelay / 1000 + rt * .5) / 4 * (NSWidth(r) - 54),
-          18 + (NSHeight(r) - 54) * .5);
-    }, 2)
+    controlPin(state, @"PRE-DELAY ↔ / MIX ↕", 58, 54, ^NSPoint(NSRect r) { return [reverb controlPointForIndex:0]; }, 2, 1, YES),
+    controlPin(state, @"DECAY ↔", 55, -1, ^NSPoint(NSRect r) { return [reverb controlPointForIndex:1]; }, 2)
   ]);
 
   __weak NAMSpatialAcousticVisualizer* spatial = state->spatialVisualizer;
@@ -170,22 +137,9 @@ void rigInstallGraphControls(RigUIState* state) {
 
   __weak NAMBoostVisualizer* boost = state->boostVisualizer;
   attach(boost, @[
-    controlPin(state, @"DRIVE ↕", -1, NAMRig::kOverdriveDrivePort, ^NSPoint(NSRect r) {
-      double a = boost.enabled ? boost.drive * .01 : 0, g = NAMRig::Overdrive::branchGain(a);
-      double y = (.5 + a * NAMRig::Overdrive::clip(g * .5 * .15, boost.voicing)) /
-          (1 + a * NAMRig::Overdrive::clip(g * .15, boost.voicing));
-      return NSMakePoint(28 + .75 * (NSWidth(r) * .5 - 44), 22 + (NSHeight(r) - 68) * (.5 + .45 * y));
-    }, 1, 2),
-    controlPin(state, @"TIGHT ↔", NAMRig::kOverdriveTightPort, -1, ^NSPoint(NSRect r) {
-      double f = std::log(std::max(200.0f, boost.tight) / 200) / std::log(60.0);
-      return NSMakePoint(NSWidth(r) * .5 + 28 + f * (NSWidth(r) * .5 - 48),
-          22 + (NSHeight(r) - 68) * (.5 - 3.0 / 18 * .45));
-    }, 2),
-    controlPin(state, @"TONE ↕", -1, NAMRig::kOverdriveTonePort, ^NSPoint(NSRect r) {
-      double db = NAMRig::Overdrive::postClipResponseDb(2000, 48000, boost.tone, boost.level);
-      return NSMakePoint(NSWidth(r) * .5 + 28 + std::log(10.0) / std::log(60.0) * (NSWidth(r) * .5 - 48),
-          22 + (NSHeight(r) - 68) * (.5 + std::clamp(db / 18, -1.0, 1.0) * .45));
-    }, 1, 2)
+    controlPin(state, @"DRIVE ↕", -1, NAMRig::kOverdriveDrivePort, ^NSPoint(NSRect r) { return [boost controlPointForIndex:0]; }, 1, 2, YES),
+    controlPin(state, @"TIGHT ↔", NAMRig::kOverdriveTightPort, -1, ^NSPoint(NSRect r) { return [boost controlPointForIndex:1]; }, 2),
+    controlPin(state, @"TONE ↕", -1, NAMRig::kOverdriveTonePort, ^NSPoint(NSRect r) { return [boost controlPointForIndex:2]; }, 1, 2)
   ]);
 
   __weak NAMPowerTubeVisualizer* tube = state->powerTubeVisualizer;

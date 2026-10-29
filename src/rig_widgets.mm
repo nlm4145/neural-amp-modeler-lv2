@@ -831,6 +831,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
 @implementation NAMInteractiveGraph
 - (double)responseDbAtFrequency:(double)hz { return 0; }
+- (NSPoint)controlPointForIndex:(NSUInteger)index { return NSMakePoint(NSMidX(self.bounds), NSMidY(self.bounds)); }
 - (void)viewWillDraw {
   [super viewWillDraw];
   for (NSView* view in self.subviews)
@@ -902,6 +903,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [self.window invalidateCursorRectsForView:self];
 }
 - (void)drawRect:(NSRect)dirty {
+  NSMutableArray<NSValue*>* labels = [NSMutableArray array];
   for (NSUInteger i = 0; i < self.pins.count; ++i) {
     NAMGraphControlPin* pin = self.pins[i];
     BOOL enabled = !pin.isEnabled || pin.isEnabled();
@@ -918,13 +920,151 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     NSSize size = [pin.label sizeWithAttributes:attributes];
     CGFloat x = p.x + 9;
     if (x + size.width > NSWidth(self.bounds) - 4) x = p.x - size.width - 9;
-    NSRect label = NSMakeRect(MAX(4.0, x), p.y + 7, size.width + 4, size.height);
+    NSRect label = NSMakeRect(MAX(4.0, x), pin.labelBelow ? p.y - size.height - 8 : p.y + 7,
+        MIN(size.width + 4, NSWidth(self.bounds) - 8), size.height);
+    const CGFloat labelFloor = MIN(44.0, MAX(4.0, NSHeight(self.bounds) - 80));
+    label.origin.y = std::clamp(label.origin.y, labelFloor, MAX(labelFloor, NSHeight(self.bounds) - 50 - size.height));
+    for (int attempt = 0; attempt < 8; ++attempt) {
+      BOOL collision = NO;
+      for (NSValue* placed in labels) collision |= NSIntersectsRect(NSInsetRect(label, -3, -2), placed.rectValue);
+      for (NSUInteger j = 0; j < self.pins.count; ++j) {
+        NSPoint marker = [self pointForPin:j];
+        collision |= NSIntersectsRect(label, NSMakeRect(marker.x - 7, marker.y - 7, 14, 14));
+      }
+      if (!collision) break;
+      label.origin.y -= size.height + 5;
+      if (label.origin.y < labelFloor) label.origin.y = MIN(p.y + 22, NSHeight(self.bounds) - 50 - size.height);
+    }
+    [labels addObject:[NSValue valueWithRect:label]];
+    if (std::abs(NSMidY(label) - p.y) > 24) {
+      NSBezierPath* connector = [NSBezierPath bezierPath];
+      [connector moveToPoint:p]; [connector lineToPoint:NSMakePoint(NSMidX(label), NSMidY(label))];
+      connector.lineWidth = .5; [[color colorWithAlphaComponent:.4] setStroke]; [connector stroke];
+    }
     [[rigBG() colorWithAlphaComponent:0.9] setFill];
     [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(label, -2, -1) xRadius:2 yRadius:2] fill];
     [pin.label drawInRect:label withAttributes:attributes];
   }
 }
 @end
+
+namespace {
+NSColor* effectPurple() { return [NSColor colorWithSRGBRed:.80 green:.55 blue:1 alpha:1]; }
+void effectText(NSString* text, NSRect rect, CGFloat size, NSColor* color,
+                NSTextAlignment alignment = NSTextAlignmentLeft, NSFontWeight weight = NSFontWeightRegular) {
+  NSMutableParagraphStyle* style = [NSMutableParagraphStyle new];
+  style.alignment = alignment;
+  style.lineBreakMode = NSLineBreakByTruncatingTail;
+  [text drawInRect:rect withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:size weight:weight],
+      NSForegroundColorAttributeName: color, NSParagraphStyleAttributeName: style}];
+}
+void effectLine(NSPoint from, NSPoint to, NSColor* color, BOOL dashed = NO) {
+  NSBezierPath* line = [NSBezierPath bezierPath];
+  [line moveToPoint:from]; [line lineToPoint:to];
+  line.lineWidth = .75;
+  if (dashed) { CGFloat dash[] = {3, 3}; [line setLineDash:dash count:2 phase:0]; }
+  [color setStroke]; [line stroke];
+}
+void effectHeader(NSRect r, NSString* title, NSString* description, NSColor* color) {
+  NSBezierPath* background = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r, .5, .5) xRadius:6 yRadius:6];
+  [rigBG() setFill]; [background fill];
+  [rigPanelBorder() setStroke]; [background stroke];
+  effectText(title, NSMakeRect(14, NSHeight(r) - 26, NSWidth(r) - 28, 17), 11, color, NSTextAlignmentLeft, NSFontWeightSemibold);
+  effectText(description, NSMakeRect(14, NSHeight(r) - 45, NSWidth(r) - 28, 15), 9, rigDimText());
+}
+CGFloat effectX(NSRect r, double x, double maximum) { return NSMinX(r) + std::clamp(x / maximum, 0.0, 1.0) * NSWidth(r); }
+CGFloat effectY(NSRect r, double db, double minimum, double maximum) {
+  return NSMinY(r) + std::clamp((db - minimum) / (maximum - minimum), 0.0, 1.0) * NSHeight(r);
+}
+void effectDbGrid(NSRect plot, double minimum, double maximum, std::initializer_list<double> ticks) {
+  for (double db : ticks) {
+    CGFloat y = effectY(plot, db, minimum, maximum);
+    effectLine(NSMakePoint(NSMinX(plot), y), NSMakePoint(NSMaxX(plot), y), rigPanelBorder(), YES);
+    effectText([NSString stringWithFormat:@"%.0f", db], NSMakeRect(NSMinX(plot) - 38, y - 5, 31, 12), 8, rigDimText(), NSTextAlignmentRight);
+  }
+}
+void effectCurve(NSBezierPath* curve, NSRect plot, CGFloat baseline, NSColor* color) {
+  NSBezierPath* fill = [curve copy];
+  [fill lineToPoint:NSMakePoint(NSMaxX(plot), baseline)];
+  [fill lineToPoint:NSMakePoint(NSMinX(plot), baseline)];
+  [fill closePath];
+  NSGradient* gradient = [[NSGradient alloc] initWithStartingColor:[color colorWithAlphaComponent:.20]
+      endingColor:[color colorWithAlphaComponent:.02]];
+  [gradient drawInBezierPath:fill angle:270];
+  curve.lineWidth = 2; curve.lineJoinStyle = NSLineJoinStyleRound;
+  [color setStroke]; [curve stroke];
+}
+void effectTitle(NSRect plot, NSString* title) {
+  effectText(title, NSMakeRect(NSMinX(plot), NSMaxY(plot) + 13, NSWidth(plot), 14), 9, rigText(), NSTextAlignmentLeft, NSFontWeightMedium);
+}
+NSString* effectTime(double milliseconds) {
+  return milliseconds >= 1000 ? [NSString stringWithFormat:@"%.1f s", milliseconds / 1000] :
+      [NSString stringWithFormat:@"%.0f ms", milliseconds];
+}
+NSRect effectTimePlot(NSRect r) { return NSMakeRect(48, 46, MAX(12.0, NSWidth(r) - 70), MAX(12.0, NSHeight(r) - 124)); }
+struct CompressorPlots { NSRect transfer, timing; };
+CompressorPlots compressorPlots(NSRect r) {
+  if (NSWidth(r) < 640) {
+    CGFloat h = MAX(20.0, (NSHeight(r) - 198) * .5);
+    return {NSMakeRect(46, 46 + h + 70, NSWidth(r) - 68, h), NSMakeRect(46, 46, NSWidth(r) - 68, h)};
+  }
+  CGFloat w = (NSWidth(r) - 124) * .5;
+  return {NSMakeRect(46, 46, w, NSHeight(r) - 128), NSMakeRect(102 + w, 46, w, NSHeight(r) - 128)};
+}
+double compAmount(NAMCompressorVisualizer* v) { return std::clamp(v.amount * .01, 0.0, 1.0); }
+double compEnd(NAMCompressorVisualizer* v) { return 250; }
+double compWindow(NAMCompressorVisualizer* v) { return 1500; }
+double compReduction(NAMCompressorVisualizer* v, double time) {
+  double a = compAmount(v), target = NAMRig::compressorReductionDb(-6, -12 - 24 * a, 1 + 5 * a);
+  double attack = std::max(1.0f, v.attack), end = compEnd(v);
+  if (time < 50) return 0;
+  if (time < end) return target * (1 - std::exp(-(time - 50) / attack));
+  return target * (1 - std::exp(-(end - 50) / attack)) * std::exp(-(time - end) / std::max(10.0f, v.releaseTime));
+}
+NSPoint delayPoint(NAMDelayTapVisualizer* v, NSRect r, int repeat, BOOL right) {
+  NSRect plot = effectTimePlot(r);
+  CGFloat baseline = NSMinY(plot) + (right ? 0 : NSHeight(plot) * .55);
+  double level = v.mix * .01 * std::pow(v.feedback * .0095, repeat - 1);
+  return NSMakePoint(effectX(plot, v.timeMs * repeat, 5000), baseline + level * NSHeight(plot) * .40);
+}
+double reverbTail(NAMReverbDecayVisualizer* v) {
+  // Nominal low-frequency decay of space_fx.h's two recirculating tank paths.
+  // Each traversal applies the feedback gain twice; damping shortens the highs.
+  double feedback = .30 + .68 * std::clamp(v.decay * .01, 0.0, 1.0);
+  double size = .6 + .8 * std::clamp(v.size * .01, 0.0, 1.0);
+  double seconds = ((672 + 4453 + 1800 + 3720) + (908 + 4217 + 2656 + 3163)) * .5 / 29761.0 * size;
+  return seconds * std::log(.001) / std::log(feedback * feedback);
+}
+double reverbWindow(NAMReverbDecayVisualizer* v) {
+  double seconds = 4;
+  while (seconds < reverbTail(v) * 1.15 + v.preDelay * .001) seconds *= 2;
+  return seconds;
+}
+double reverbLevel(NAMReverbDecayVisualizer* v) { return v.mix > 0 ? 20 * std::log10(v.mix * .01) : -60; }
+struct BoostPlots { NSRect wave, tone; };
+BoostPlots boostPlots(NSRect r) {
+  if (NSWidth(r) < 640) {
+    CGFloat h = MAX(20.0, (NSHeight(r) - 198) * .5);
+    return {NSMakeRect(46, 46 + h + 70, NSWidth(r) - 68, h), NSMakeRect(46, 46, NSWidth(r) - 68, h)};
+  }
+  CGFloat w = (NSWidth(r) - 124) * .5;
+  return {NSMakeRect(46, 46, w, NSHeight(r) - 128), NSMakeRect(102 + w, 46, w, NSHeight(r) - 128)};
+}
+double boostShape(NAMBoostVisualizer* v, double input) {
+  double amount = std::clamp(v.drive * .01, 0.0, 1.0), gain = NAMRig::Overdrive::branchGain(amount);
+  const double amplitude = .15; // A normalized preview of a fixed input sine.
+  double maximum = amplitude + amount * NAMRig::Overdrive::clip(gain * amplitude, v.voicing);
+  return (input * amplitude + amount * NAMRig::Overdrive::clip(gain * input * amplitude, v.voicing)) / maximum;
+}
+double boostToneDb(NAMBoostVisualizer* v, double hz) {
+  return NAMRig::Overdrive::preClipHighPassResponseDb(hz, kPinPlotRate, v.tight) +
+      NAMRig::Overdrive::postClipResponseDb(hz, kPinPlotRate, v.tone, v.level);
+}
+NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
+  NSRect plot = boostPlots(v.bounds).tone;
+  return NSMakePoint(pinPlotX(plot, hz), effectY(plot, boostToneDb(v, hz), -24, 12));
+}
+}
 
 @implementation NAMDelayTapVisualizer
 - (BOOL)isFlipped { return NO; }
@@ -933,149 +1073,40 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setDamping:(float)v { _damping = v; self.needsDisplay = YES; }
 - (void)setMix:(float)v { _mix = v; self.needsDisplay = YES; }
 
+- (NSPoint)controlPointForIndex:(NSUInteger)index {
+  return delayPoint(self, self.bounds, index == 0 ? 1 : 2, index != 0);
+}
 - (void)drawRect:(NSRect)dirty {
   NSRect r = self.bounds;
-  if (r.size.width < 10 || r.size.height < 10) return;
-
-  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [rigBG() setFill];
-  [bg fill];
-  [rigPanelBorder() setStroke];
-  bg.lineWidth = 1.0;
-  [bg stroke];
-
-  const CGFloat leftMargin = 32.0;
-  const CGFloat rightMargin = 16.0;
-  const CGFloat topMargin = 20.0;
-  const CGFloat bottomMargin = 18.0;
-  const CGFloat plotW = r.size.width - leftMargin - rightMargin;
-  const CGFloat plotH = r.size.height - topMargin - bottomMargin;
-  const CGFloat midY = bottomMargin + plotH * 0.5;
-
-  const float maxTimeMs = 2000.0f;
-  const float gridSteps[4] = {500.0f, 1000.0f, 1500.0f, 2000.0f};
-  const char* gridLabels[4] = {"500ms", "1.0s", "1.5s", "2.0s"};
-
-  NSDictionary* gridAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightRegular],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
-  };
-
-  [@"0" drawAtPoint:NSMakePoint(leftMargin - 4, 3) withAttributes:gridAttrs];
-
-  for (int g = 0; g < 4; ++g) {
-    CGFloat gx = leftMargin + (gridSteps[g] / maxTimeMs) * plotW;
-    NSBezierPath* line = [NSBezierPath bezierPath];
-    [line moveToPoint:NSMakePoint(gx, bottomMargin)];
-    [line lineToPoint:NSMakePoint(gx, bottomMargin + plotH)];
-    CGFloat pattern[2] = {2.0, 3.0};
-    [line setLineDash:pattern count:2 phase:0.0];
-    line.lineWidth = 0.75;
-    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.5] setStroke];
-    [line stroke];
-
-    NSString* gl = [NSString stringWithUTF8String:gridLabels[g]];
-    [gl drawAtPoint:NSMakePoint(gx - 12, 3) withAttributes:gridAttrs];
+  if (NSWidth(r) < 80 || NSHeight(r) < 120) return;
+  NSColor* violet = effectPurple();
+  effectHeader(r, @"Stereo echoes", _mix > 0 ? @"Time spaces the repeats. Feedback adds more." : @"Mix is 0%: no audible echoes.", violet);
+  NSRect plot = effectTimePlot(r);
+  CGFloat laneHeight = NSHeight(plot) * .40;
+  for (int second = 0; second <= 5; ++second) {
+    CGFloat x = effectX(plot, second * 1000, 5000);
+    effectLine(NSMakePoint(x, NSMinY(plot)), NSMakePoint(x, NSMaxY(plot)), rigPanelBorder(), YES);
+    effectText([NSString stringWithFormat:@"%d s", second], NSMakeRect(x - 12, NSMinY(plot) - 20, 32, 13), 8, rigDimText());
   }
-
-  NSBezierPath* base = [NSBezierPath bezierPath];
-  [base moveToPoint:NSMakePoint(leftMargin, midY)];
-  [base lineToPoint:NSMakePoint(leftMargin + plotW, midY)];
-  base.lineWidth = 1.0;
-  [[NSColor colorWithSRGBRed:0.25 green:0.28 blue:0.35 alpha:0.8] setStroke];
-  [base stroke];
-
-  NSDictionary* chAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.60 green:0.65 blue:0.75 alpha:0.9]
-  };
-  [@"L" drawAtPoint:NSMakePoint(12, midY + 10) withAttributes:chAttrs];
-  [@"R" drawAtPoint:NSMakePoint(12, midY - 20) withAttributes:chAttrs];
-
-  NSString* info = [NSString stringWithFormat:@"%.0f ms  •  FDBK %.0f%%  •  DAMP %.0f%%",
-                    _timeMs, _feedback, _damping];
-  NSDictionary* infoAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.80 green:0.65 blue:1.0 alpha:0.95]
-  };
-  NSSize infoSize = [info sizeWithAttributes:infoAttrs];
-  [info drawAtPoint:NSMakePoint(r.size.width - rightMargin - infoSize.width, r.size.height - topMargin + 2)
-     withAttributes:infoAttrs];
-
-  NSDictionary* titleAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.55 green:0.58 blue:0.68 alpha:0.9]
-  };
-  [@"PING-PONG ECHO PATTERN" drawAtPoint:NSMakePoint(leftMargin, r.size.height - topMargin + 2)
-                         withAttributes:titleAttrs];
-
-  const float mixNorm = std::min(1.0f, std::max(0.0f, _mix / 100.0f));
-  if (mixNorm < 0.01f) {
-    NSDictionary* offAttrs = @{
-      NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightMedium],
-      NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
-    };
-    NSString* offTxt = @"[DELAY BYPASSED / MIX OFF]";
-    NSSize sz = [offTxt sizeWithAttributes:offAttrs];
-    [offTxt drawAtPoint:NSMakePoint(leftMargin + (plotW - sz.width) * 0.5, midY - sz.height * 0.5)
-         withAttributes:offAttrs];
-    return;
+  for (int channel = 0; channel < 2; ++channel) {
+    CGFloat base = NSMinY(plot) + (channel ? 0 : NSHeight(plot) * .55);
+    effectText(channel ? @"RIGHT" : @"LEFT", NSMakeRect(8, base + laneHeight * .5 - 6, 35, 13), 8, rigDimText(), NSTextAlignmentRight, NSFontWeightSemibold);
+    effectLine(NSMakePoint(NSMinX(plot), base), NSMakePoint(NSMaxX(plot), base), rigDimText());
+    effectLine(NSMakePoint(NSMinX(plot), base), NSMakePoint(NSMinX(plot), base + laneHeight), rigDimText());
+    effectText(@"Dry", NSMakeRect(NSMinX(plot) + 3, base + laneHeight - 12, 35, 12), 8, rigDimText());
+    for (int repeat = 1; repeat <= 24; ++repeat) {
+      if (_timeMs * repeat > 5000) break;
+      NSPoint point = delayPoint(self, r, repeat, channel != 0);
+      if (point.y - base < .8) continue;
+      double darkness = std::clamp(_damping * .01 * (repeat - 1) * .18, 0.0, .8);
+      NSColor* color = [violet blendedColorWithFraction:darkness ofColor:rigDimText()];
+      NSBezierPath* bar = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(point.x - 2, base, 4, point.y - base) xRadius:2 yRadius:2];
+      [color setFill]; [bar fill];
+    }
   }
-
-  NSBezierPath* dryLine = [NSBezierPath bezierPath];
-  [dryLine moveToPoint:NSMakePoint(leftMargin, midY - 14)];
-  [dryLine lineToPoint:NSMakePoint(leftMargin, midY + 14)];
-  dryLine.lineWidth = 2.0;
-  dryLine.lineCapStyle = NSLineCapStyleRound;
-  [[NSColor colorWithSRGBRed:0.35 green:0.85 blue:0.95 alpha:0.9] setStroke];
-  [dryLine stroke];
-
-  const float stepMs = std::max(15.0f, _timeMs);
-  const float fdbk = std::min(0.96f, std::max(0.0f, _feedback / 100.0f));
-  const float damp = std::min(1.0f, std::max(0.0f, _damping / 100.0f));
-  const CGFloat maxStemH = (plotH * 0.5 - 6.0);
-
-  int tapIndex = 1;
-  float tMs = stepMs;
-  while (tMs <= maxTimeMs && tapIndex <= 10) {
-    CGFloat x = leftMargin + (tMs / maxTimeMs) * plotW;
-    float amp = std::pow(fdbk, (float)(tapIndex - 1)) * mixNorm;
-    CGFloat stemH = maxStemH * amp;
-    if (stemH < 1.5) break;
-
-    BOOL isLeft = (tapIndex % 2 == 1);
-    CGFloat yEnd = isLeft ? (midY + stemH) : (midY - stemH);
-
-    float dampLoss = 1.0f - (float)tapIndex * 0.08f * damp;
-    dampLoss = std::max(0.2f, dampLoss);
-    NSColor* tapColor = [NSColor colorWithSRGBRed:0.75 + 0.15 * damp * (tapIndex * 0.1)
-                                            green:0.55 * dampLoss
-                                             blue:0.98 * dampLoss
-                                            alpha:0.4 + 0.55 * dampLoss];
-
-    NSBezierPath* stem = [NSBezierPath bezierPath];
-    [stem moveToPoint:NSMakePoint(x, midY)];
-    [stem lineToPoint:NSMakePoint(x, yEnd)];
-    stem.lineWidth = 2.5;
-    stem.lineCapStyle = NSLineCapStyleRound;
-    [tapColor setStroke];
-    [stem stroke];
-
-    NSRect dotR = NSMakeRect(x - 3.5, yEnd - 3.5, 7.0, 7.0);
-    NSBezierPath* dot = [NSBezierPath bezierPathWithOvalInRect:dotR];
-    [tapColor setFill];
-    [dot fill];
-
-    NSRect haloR = NSMakeRect(x - 5.5, yEnd - 5.5, 11.0, 11.0);
-    NSBezierPath* halo = [NSBezierPath bezierPathWithOvalInRect:haloR];
-    [[tapColor colorWithAlphaComponent:0.25] setStroke];
-    halo.lineWidth = 1.5;
-    [halo stroke];
-
-    tMs += stepMs;
-    tapIndex++;
-  }
+  effectText(_mix > 0 ? @"Darker repeats = less treble." : @"Raise Mix to add audible repeats.", NSMakeRect(14, 1, NSWidth(r) - 28, 10), 7.5, rigDimText());
 }
+
 @end
 
 @implementation NAMReverbDecayVisualizer
@@ -1086,158 +1117,50 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setDamping:(float)v { _damping = v; self.needsDisplay = YES; }
 - (void)setPreDelay:(float)v { _preDelay = v; self.needsDisplay = YES; }
 
+- (NSPoint)controlPointForIndex:(NSUInteger)index {
+  NSRect plot = effectTimePlot(self.bounds);
+  double tail = reverbTail(self), time = _preDelay * .001 + (index ? tail * .5 : 0);
+  return NSMakePoint(effectX(plot, time, reverbWindow(self)), effectY(plot, reverbLevel(self) - (index ? 30 : 0), -60, 0));
+}
 - (void)drawRect:(NSRect)dirty {
   NSRect r = self.bounds;
-  if (r.size.width < 10 || r.size.height < 10) return;
-
-  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [rigBG() setFill];
-  [bg fill];
-  [rigPanelBorder() setStroke];
-  bg.lineWidth = 1.0;
-  [bg stroke];
-
-  const CGFloat leftMargin = 38.0;
-  const CGFloat rightMargin = 16.0;
-  const CGFloat topMargin = 36.0;
-  const CGFloat bottomMargin = 18.0;
-  const CGFloat plotW = r.size.width - leftMargin - rightMargin;
-  const CGFloat plotH = r.size.height - topMargin - bottomMargin;
-
-  NSDictionary* dbAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightRegular],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
-  };
-
-  const char* dbLabels[4] = {"0 dB", "-20", "-40", "-60"};
-  for (int d = 0; d < 4; ++d) {
-    CGFloat y = bottomMargin + plotH * (1.0 - (CGFloat)d / 3.0);
-    NSBezierPath* line = [NSBezierPath bezierPath];
-    [line moveToPoint:NSMakePoint(leftMargin, y)];
-    [line lineToPoint:NSMakePoint(leftMargin + plotW, y)];
-    CGFloat pattern[2] = {2.0, 3.0};
-    [line setLineDash:pattern count:2 phase:0.0];
-    line.lineWidth = 0.75;
-    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.45] setStroke];
-    [line stroke];
-
-    NSString* dbl = [NSString stringWithUTF8String:dbLabels[d]];
-    [dbl drawAtPoint:NSMakePoint(4, y - 5) withAttributes:dbAttrs];
+  if (NSWidth(r) < 80 || NSHeight(r) < 120) return;
+  NSColor* violet = effectPurple();
+  NSString* description = _mix > 0 ? [NSString stringWithFormat:@"%.0f ms before the tail starts. Decay and size set its length.", _preDelay] : @"Mix is 0%: the reverb tail is muted.";
+  effectHeader(r, @"Reverb tail", description, violet);
+  NSRect plot = effectTimePlot(r);
+  effectDbGrid(plot, -60, 0, {0, -20, -40, -60});
+  effectTitle(plot, @"Tail level (dB) · approximate envelope");
+  for (int tick = 0; tick <= 4; ++tick) {
+    double second = reverbWindow(self) * tick / 4;
+    CGFloat x = effectX(plot, second, reverbWindow(self));
+    effectText([NSString stringWithFormat:@"%.0f s", second], NSMakeRect(x - 10, NSMinY(plot) - 20, 24, 12), 8, rigDimText());
   }
-
-  const float maxSec = 4.0f;
-  for (int s = 1; s <= 4; ++s) {
-    CGFloat sx = leftMargin + ((float)s / maxSec) * plotW;
-    NSBezierPath* sline = [NSBezierPath bezierPath];
-    [sline moveToPoint:NSMakePoint(sx, bottomMargin)];
-    [sline lineToPoint:NSMakePoint(sx, bottomMargin + plotH)];
-    CGFloat pattern[2] = {2.0, 3.0};
-    [sline setLineDash:pattern count:2 phase:0.0];
-    sline.lineWidth = 0.75;
-    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.45] setStroke];
-    [sline stroke];
-
-    NSString* st = [NSString stringWithFormat:@"%ds", s];
-    [st drawAtPoint:NSMakePoint(sx - 7, 3) withAttributes:dbAttrs];
-  }
-
-  const float rt60 = 0.35f + 4.15f * (_decay / 100.0f) * (0.35f + 0.65f * (_size / 100.0f));
-  const float preSec = _preDelay / 1000.0f;
-
-  NSString* info = [NSString stringWithFormat:@"RT60: %.2fs  •  PRE: %.0fms  •  DAMP: %.0f%%",
-                    rt60, _preDelay, _damping];
-  NSDictionary* infoAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.80 green:0.65 blue:1.0 alpha:0.95]
-  };
-  NSSize infoSize = [info sizeWithAttributes:infoAttrs];
-  [info drawAtPoint:NSMakePoint(r.size.width - rightMargin - infoSize.width, r.size.height - 32)
-     withAttributes:infoAttrs];
-
-  NSDictionary* titleAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.55 green:0.58 blue:0.68 alpha:0.9]
-  };
-  [@"EMT 140 PLATE DECAY ENVELOPE" drawAtPoint:NSMakePoint(leftMargin, r.size.height - 18)
-                               withAttributes:titleAttrs];
-
-  const float mixNorm = std::min(1.0f, std::max(0.0f, _mix / 100.0f));
-  if (mixNorm < 0.01f) {
-    NSDictionary* offAttrs = @{
-      NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightMedium],
-      NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
-    };
-    NSString* offTxt = @"[REVERB BYPASSED / MIX OFF]";
-    NSSize sz = [offTxt sizeWithAttributes:offAttrs];
-    [offTxt drawAtPoint:NSMakePoint(leftMargin + (plotW - sz.width) * 0.5, bottomMargin + plotH * 0.5 - sz.height * 0.5)
-         withAttributes:offAttrs];
-    return;
-  }
-
-  CGFloat xPre = leftMargin + (preSec / maxSec) * plotW;
-  xPre = std::min(leftMargin + plotW * 0.4, xPre);
-
-  if (_preDelay > 2.0f) {
-    NSBezierPath* preLine = [NSBezierPath bezierPath];
-    [preLine moveToPoint:NSMakePoint(xPre, bottomMargin)];
-    [preLine lineToPoint:NSMakePoint(xPre, bottomMargin + plotH)];
-    preLine.lineWidth = 1.0;
-    CGFloat pattern[2] = {2.0, 2.0};
-    [preLine setLineDash:pattern count:2 phase:0.0];
-    [[NSColor colorWithSRGBRed:0.6 green:0.4 blue:0.8 alpha:0.6] setStroke];
-    [preLine stroke];
-  }
-
+  double pre = _preDelay * .001, tail = reverbTail(self), level = reverbLevel(self);
+  CGFloat preX = effectX(plot, pre, reverbWindow(self));
+  effectLine(NSMakePoint(preX, NSMinY(plot)), NSMakePoint(preX, NSMaxY(plot)), rigDimText(), YES);
   NSBezierPath* curve = [NSBezierPath bezierPath];
-  [curve moveToPoint:NSMakePoint(xPre, bottomMargin + plotH)];
-
-  const int numPoints = 80;
-  for (int i = 1; i <= numPoints; ++i) {
-    float fraction = (float)i / (float)numPoints;
-    float t = fraction * (maxSec - preSec);
-    CGFloat x = xPre + (t / maxSec) * plotW;
-    if (x > leftMargin + plotW) x = leftMargin + plotW;
-    float db = -60.0f * (t / std::max(0.1f, rt60));
-    db = std::max(-60.0f, db);
-    CGFloat y = bottomMargin + (1.0f - (-db / 60.0f)) * plotH;
-    [curve lineToPoint:NSMakePoint(x, y)];
+  for (int i = 0; i <= 240; ++i) {
+    double time = reverbWindow(self) * i / 240;
+    double db = time < pre ? -60 : level - 60 * (time - pre) / tail;
+    NSPoint point = NSMakePoint(effectX(plot, time, reverbWindow(self)), effectY(plot, db, -60, 0));
+    if (!i) [curve moveToPoint:point]; else [curve lineToPoint:point];
   }
-
-  NSBezierPath* fillPath = [curve copy];
-  [fillPath lineToPoint:NSMakePoint(leftMargin + plotW, bottomMargin)];
-  [fillPath lineToPoint:NSMakePoint(xPre, bottomMargin)];
-  [fillPath closePath];
-
-  NSGradient* g = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:0.65 green:0.35 blue:0.95 alpha:0.35 * mixNorm]
-                endingColor:[NSColor colorWithSRGBRed:0.15 green:0.08 blue:0.25 alpha:0.02]];
-  [g drawInBezierPath:fillPath angle:270.0];
-
-  curve.lineWidth = 2.5;
-  [[NSColor colorWithSRGBRed:0.80 green:0.55 blue:1.0 alpha:0.95 * mixNorm] setStroke];
-  [curve stroke];
-
-  if (_damping > 10.0f) {
-    float rt60HF = rt60 * (1.0f - 0.60f * (_damping / 100.0f));
-    NSBezierPath* hfCurve = [NSBezierPath bezierPath];
-    [hfCurve moveToPoint:NSMakePoint(xPre, bottomMargin + plotH)];
-    for (int i = 1; i <= numPoints; ++i) {
-      float fraction = (float)i / (float)numPoints;
-      float t = fraction * (maxSec - preSec);
-      CGFloat x = xPre + (t / maxSec) * plotW;
-      if (x > leftMargin + plotW) x = leftMargin + plotW;
-      float db = -60.0f * (t / std::max(0.08f, rt60HF));
-      db = std::max(-60.0f, db);
-      CGFloat y = bottomMargin + (1.0f - (-db / 60.0f)) * plotH;
-      [hfCurve lineToPoint:NSMakePoint(x, y)];
+  effectCurve(curve, plot, NSMinY(plot), violet);
+  if (_damping > 0 && _mix > 0) {
+    NSBezierPath* highs = [NSBezierPath bezierPath];
+    for (int i = 0; i <= 240; ++i) {
+      double time = reverbWindow(self) * i / 240;
+      double db = time < pre ? -60 : level - 60 * (time - pre) / (tail * (1 - _damping * .0065));
+      NSPoint point = NSMakePoint(effectX(plot, time, reverbWindow(self)), effectY(plot, db, -60, 0));
+      if (!i) [highs moveToPoint:point]; else [highs lineToPoint:point];
     }
-    CGFloat pattern[2] = {4.0, 3.0};
-    [hfCurve setLineDash:pattern count:2 phase:0.0];
-    hfCurve.lineWidth = 1.5;
-    [[NSColor colorWithSRGBRed:0.40 green:0.85 blue:0.90 alpha:0.75 * mixNorm] setStroke];
-    [hfCurve stroke];
+    CGFloat dash[] = {4, 4}; [highs setLineDash:dash count:2 phase:0];
+    highs.lineWidth = 1; [rigDimText() setStroke]; [highs stroke];
   }
+  effectText(_mix > 0 ? @"Dashed tail = faster loss of high frequencies." : @"Raise Mix to hear the reverb tail.", NSMakeRect(14, 1, NSWidth(r) - 28, 10), 7.5, rigDimText());
 }
+
 @end
 
 @implementation NAMSpatialAcousticVisualizer
@@ -1440,222 +1363,64 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setReleaseTime:(float)v { _releaseTime = v; self.needsDisplay = YES; }
 - (void)setCompact:(BOOL)v { _compact = v; self.needsDisplay = YES; }
 
-- (void)drawRect:(NSRect)dirty {
-  (void)dirty;
-  NSRect r = self.bounds;
-  if (r.size.width < 10 || r.size.height < 10) return;
-
-  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [rigBG() setFill];
-  [bg fill];
-  [rigPanelBorder() setStroke];
-  bg.lineWidth = 1.0;
-  [bg stroke];
-
-  CGFloat splitX = _compact ? r.size.width : r.size.width * 0.48;
-
-  NSBezierPath* sep = [NSBezierPath bezierPath];
-  [sep moveToPoint:NSMakePoint(splitX, 8)];
-  [sep lineToPoint:NSMakePoint(splitX, r.size.height - 8)];
-  sep.lineWidth = 1.0;
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.8] setStroke];
-  if (!_compact) [sep stroke];
-
-  const float compNorm = std::min(1.0f, std::max(0.0f, _amount * 0.01f));
-  const BOOL isBypassed = !_enabled || compNorm < 0.005f;
-  const float activeNorm = _enabled ? compNorm : 0.0f;
-  const float attackMs = std::max(0.5f, _attack > 0.0f ? _attack : 8.0f);
-  const float releaseMs = std::max(5.0f, _releaseTime > 0.0f ? _releaseTime : 120.0f);
-  const float thresholdDb = -12.0f - 24.0f * activeNorm;
-  const float ratio = 1.0f + 5.0f * activeNorm;
-  const float makeupDb = 6.0f * activeNorm;
-
-  NSDictionary* headerAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
-  };
-  [(_compact ? @"LINKED STEREO TRANSFER" : @"COMPRESSION TRANSFER") drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
-
-  NSDictionary* envHeaderAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
-  };
-  if (!_compact) [@"ATTACK & RELEASE ENVELOPE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:envHeaderAttrs];
-
-  NSString* telemetry;
-  if (!_enabled) {
-    telemetry = @"COMPRESSOR BYPASSED (OFF)";
-  } else if (compNorm < 0.005f) {
-    telemetry = @"COMPRESSOR BYPASSED (0%)";
-  } else {
-    telemetry = [NSString stringWithFormat:@"THRESH: %.0fdB  •  RATIO: %.1f:1  •  ATTACK: %.1fms  •  REL: %.0fms",
-                  thresholdDb, ratio, attackMs, releaseMs];
+- (NSPoint)controlPointForIndex:(NSUInteger)index {
+  CompressorPlots plots = compressorPlots(self.bounds);
+  double amount = compAmount(self);
+  if (index == 0) {
+    double threshold = -12 - 24 * amount;
+    double output = threshold + 6 * amount - NAMRig::compressorReductionDb(threshold, threshold, 1 + 5 * amount);
+    return NSMakePoint(effectX(plots.transfer, threshold + 60, 60), effectY(plots.transfer, output, -60, 6));
   }
-  if (_compact) telemetry = isBypassed ? @"BYPASSED" :
-      [NSString stringWithFormat:@"THRESH %.0f dB  /  RATIO %.1f:1", thresholdDb, ratio];
-  NSDictionary* infoAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: isBypassed
-        ? [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
-        : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
-  };
-  NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
-  [telemetry drawAtPoint:NSMakePoint(_compact ? 14 : r.size.width - 14 - infoSize.width,
-                                    r.size.height - 32) withAttributes:infoAttrs];
-
-  const CGFloat lPad = 32.0;
-  const CGFloat rPad = splitX - 16.0;
-  const CGFloat bPad = 22.0;
-  const CGFloat tPad = r.size.height - 44.0;
-  const CGFloat plotW = rPad - lPad;
-  const CGFloat plotH = tPad - bPad;
-
-  NSDictionary* dbAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.45 green:0.48 blue:0.55 alpha:0.8]
-  };
-
-  const char* dbLabels[] = {"0", "-20", "-40", "-60"};
-  for (int d = 0; d < 4; ++d) {
-    CGFloat frac = (CGFloat)d / 3.0;
-    CGFloat y = bPad + plotH * (1.0 - frac);
-
-    NSBezierPath* hline = [NSBezierPath bezierPath];
-    [hline moveToPoint:NSMakePoint(lPad, y)];
-    [hline lineToPoint:NSMakePoint(rPad, y)];
-    CGFloat pattern[2] = {2.0, 3.0};
-    [hline setLineDash:pattern count:2 phase:0.0];
-    hline.lineWidth = 0.5;
-    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.45] setStroke];
-    [hline stroke];
-
-    NSString* lbl = [NSString stringWithUTF8String:dbLabels[d]];
-    [lbl drawAtPoint:NSMakePoint(lPad - 20, y - 5) withAttributes:dbAttrs];
-  }
-
-  NSBezierPath* diag = [NSBezierPath bezierPath];
-  [diag moveToPoint:NSMakePoint(lPad, bPad)];
-  [diag lineToPoint:NSMakePoint(rPad, tPad)];
-  CGFloat diagPattern[2] = {3.0, 3.0};
-  [diag setLineDash:diagPattern count:2 phase:0.0];
-  diag.lineWidth = 0.8;
-  [[NSColor colorWithSRGBRed:0.30 green:0.33 blue:0.40 alpha:0.6] setStroke];
-  [diag stroke];
-
-  const int kSteps = 60;
-  NSBezierPath* curve = [NSBezierPath bezierPath];
-  for (int s = 0; s <= kSteps; ++s) {
-    float inDb = -60.0f + 60.0f * ((float)s / (float)kSteps);
-    float redDb = (activeNorm > 0.005f) ? NAMRig::compressorReductionDb(inDb, thresholdDb, ratio, 6.0f) : 0.0f;
-    float outDb = inDb + ((activeNorm > 0.005f) ? makeupDb : 0.0f) - redDb;
-    outDb = std::clamp(outDb, -60.0f, 6.0f);
-
-    CGFloat x = lPad + ((inDb + 60.0f) / 60.0f) * plotW;
-    CGFloat y = bPad + ((outDb + 60.0f) / 60.0f) * plotH;
-    if (s == 0) [curve moveToPoint:NSMakePoint(x, y)];
-    else [curve lineToPoint:NSMakePoint(x, y)];
-  }
-
-  NSBezierPath* fill = [curve copy];
-  [fill lineToPoint:NSMakePoint(rPad, bPad)];
-  [fill lineToPoint:NSMakePoint(lPad, bPad)];
-  [fill closePath];
-
-  NSGradient* g = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:0.35 * (0.2f + 0.8f * activeNorm)]
-                endingColor:[NSColor colorWithSRGBRed:0.20 green:0.12 blue:0.05 alpha:0.02]];
-  [g drawInBezierPath:fill angle:270.0];
-
-  curve.lineWidth = 2.0;
-  [[NSColor colorWithSRGBRed:1.00 green:0.80 blue:0.30 alpha:isBypassed ? 0.55 : 0.95] setStroke];
-  [curve stroke];
-
-  if (activeNorm > 0.005f) {
-    CGFloat tx = lPad + ((thresholdDb + 60.0f) / 60.0f) * plotW;
-    float outThreshDb = thresholdDb + makeupDb - NAMRig::compressorReductionDb(thresholdDb, thresholdDb, ratio, 6.0f);
-    CGFloat ty = bPad + ((outThreshDb + 60.0f) / 60.0f) * plotH;
-    NSBezierPath* dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(tx - 3.5, ty - 3.5, 7.0, 7.0)];
-    [[NSColor colorWithSRGBRed:1.0 green:0.9 blue:0.4 alpha:1.0] setFill];
-    [dot fill];
-    [[NSColor colorWithSRGBRed:0.1 green:0.1 blue:0.1 alpha:0.8] setStroke];
-    dot.lineWidth = 1.0;
-    [dot stroke];
-  }
-
-  if (_compact) return;
-  const CGFloat elPad = splitX + 24.0;
-  const CGFloat erPad = r.size.width - 20.0;
-  const CGFloat eplotW = erPad - elPad;
-  const CGFloat eplotH = plotH;
-
-  for (int d = 0; d < 3; ++d) {
-    CGFloat y = bPad + eplotH * (1.0 - (CGFloat)d / 2.0);
-    NSBezierPath* hline = [NSBezierPath bezierPath];
-    [hline moveToPoint:NSMakePoint(elPad, y)];
-    [hline lineToPoint:NSMakePoint(erPad, y)];
-    CGFloat pattern[2] = {2.0, 3.0};
-    [hline setLineDash:pattern count:2 phase:0.0];
-    hline.lineWidth = 0.5;
-    [[NSColor colorWithSRGBRed:0.20 green:0.22 blue:0.28 alpha:0.45] setStroke];
-    [hline stroke];
-  }
-
-  [@"0 dB" drawAtPoint:NSMakePoint(elPad - 18, bPad + eplotH - 5) withAttributes:dbAttrs];
-  [@"GR" drawAtPoint:NSMakePoint(elPad - 18, bPad + 2) withAttributes:dbAttrs];
-
-  const float maxT = 250.0f;
-  const float burstStart = 20.0f;
-  const float burstEnd = 90.0f;
-  const float maxReductionNorm = compNorm;
-
-  NSBezierPath* env = [NSBezierPath bezierPath];
-  const int kEnvSteps = 80;
-  for (int s = 0; s <= kEnvSteps; ++s) {
-    float t = maxT * ((float)s / (float)kEnvSteps);
-    float gain = 1.0f;
-    if (t < burstStart) {
-      gain = 1.0f;
-    } else if (t < burstEnd) {
-      float elapsed = t - burstStart;
-      float attProgress = 1.0f - std::exp(-elapsed / std::max(0.5f, attackMs * 0.35f));
-      float gr = maxReductionNorm * 0.75f * attProgress;
-      gain = 1.0f - gr;
-    } else {
-      float elapsedAtt = burstEnd - burstStart;
-      float attProgress = 1.0f - std::exp(-elapsedAtt / std::max(0.5f, attackMs * 0.35f));
-      float maxGr = maxReductionNorm * 0.75f * attProgress;
-      float elapsedRel = t - burstEnd;
-      float relProgress = std::exp(-elapsedRel / std::max(5.0f, releaseMs * 0.35f));
-      gain = 1.0f - maxGr * relProgress;
-    }
-    CGFloat x = elPad + (t / maxT) * eplotW;
-    CGFloat y = bPad + gain * eplotH;
-    if (s == 0) [env moveToPoint:NSMakePoint(x, y)];
-    else [env lineToPoint:NSMakePoint(x, y)];
-  }
-
-  NSBezierPath* envFill = [env copy];
-  [envFill lineToPoint:NSMakePoint(erPad, bPad)];
-  [envFill lineToPoint:NSMakePoint(elPad, bPad)];
-  [envFill closePath];
-
-  NSGradient* eg = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.35 * (0.2f + 0.8f * compNorm)]
-                endingColor:[NSColor colorWithSRGBRed:0.05 green:0.18 blue:0.22 alpha:0.02]];
-  [eg drawInBezierPath:envFill angle:270.0];
-
-  env.lineWidth = 2.0;
-  [[NSColor colorWithSRGBRed:0.35 green:0.90 blue:1.00 alpha:0.95] setStroke];
-  [env stroke];
-
-  NSDictionary* timeAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:7.5 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.50 green:0.55 blue:0.65 alpha:0.8]
-  };
-  [@"0ms" drawAtPoint:NSMakePoint(elPad, bPad - 14) withAttributes:timeAttrs];
-  [@"100ms" drawAtPoint:NSMakePoint(elPad + (100.0f / maxT) * eplotW - 12, bPad - 14) withAttributes:timeAttrs];
-  [@"250ms" drawAtPoint:NSMakePoint(erPad - 20, bPad - 14) withAttributes:timeAttrs];
+  double time = index == 1 ? 50 + std::max(1.0f, _attack) : compEnd(self) + std::max(10.0f, _releaseTime);
+  return NSMakePoint(effectX(plots.timing, time, compWindow(self)), effectY(plots.timing, -compReduction(self, time), -30, 0));
 }
+- (void)drawRect:(NSRect)dirty {
+  NSRect r = self.bounds;
+  if (NSWidth(r) < 100 || NSHeight(r) < 200) return;
+  double amount = compAmount(self), threshold = -12 - 24 * amount, ratio = 1 + 5 * amount;
+  NSString* description = !_enabled ? @"Bypassed · preview of the stored settings." : amount <= .0001 ? @"Amount is 0%: no gain reduction." :
+      [NSString stringWithFormat:@"Threshold %.0f dB · Ratio %.1f:1 · Make-up +%.1f dB", threshold, ratio, 6 * amount];
+  NSColor* warm = [rigOrange() colorWithAlphaComponent:_enabled ? .95 : .45];
+  effectHeader(r, _compact ? @"Linked stereo compression" : @"Preamp compression", description, warm);
+  CompressorPlots plots = compressorPlots(r);
+  effectTitle(plots.transfer, @"Input level → output level (dB)");
+  effectTitle(plots.timing, @"Attack & release · gain reduction (dB)");
+  effectDbGrid(plots.transfer, -60, 6, {-60, -40, -20, 0});
+  effectDbGrid(plots.timing, -30, 0, {-30, -20, -10, 0});
+  for (int db : {-60, -30, 0}) {
+    CGFloat x = effectX(plots.transfer, db + 60, 60);
+    effectText([NSString stringWithFormat:@"%d", db], NSMakeRect(x - 12, NSMinY(plots.transfer) - 18, 24, 12), 8, rigDimText(), NSTextAlignmentCenter);
+  }
+  effectText(@"Input (dB)", NSMakeRect(NSMidX(plots.transfer) - 45, NSMinY(plots.transfer) - 33, 90, 12), 8, rigDimText(), NSTextAlignmentCenter);
+  effectLine(NSMakePoint(NSMinX(plots.transfer), effectY(plots.transfer, -60, -60, 6)),
+      NSMakePoint(NSMaxX(plots.transfer), effectY(plots.transfer, 0, -60, 6)), rigDimText(), YES);
+  NSBezierPath* transfer = [NSBezierPath bezierPath];
+  for (int i = 0; i <= 120; ++i) {
+    double input = -60 + .5 * i;
+    double output = input + 6 * amount - NAMRig::compressorReductionDb(input, threshold, ratio);
+    NSPoint point = NSMakePoint(effectX(plots.transfer, input + 60, 60), effectY(plots.transfer, output, -60, 6));
+    if (!i) [transfer moveToPoint:point]; else [transfer lineToPoint:point];
+  }
+  transfer.lineWidth = 2; [warm setStroke]; [transfer stroke];
+  double window = compWindow(self);
+  for (double fraction : {0.0, .5, 1.0}) {
+    CGFloat x = effectX(plots.timing, window * fraction, window);
+    effectText(effectTime(window * fraction), NSMakeRect(x - 24, NSMinY(plots.timing) - 20, 50, 12), 8, rigDimText(), NSTextAlignmentCenter);
+  }
+  CGFloat startX = effectX(plots.timing, 50, window), endX = effectX(plots.timing, compEnd(self), window);
+  [[warm colorWithAlphaComponent:.06] setFill];
+  [[NSBezierPath bezierPathWithRect:NSMakeRect(startX, NSMinY(plots.timing), endX - startX, NSHeight(plots.timing))] fill];
+  effectLine(NSMakePoint(endX, NSMinY(plots.timing)), NSMakePoint(endX, NSMaxY(plots.timing)), rigDimText(), YES);
+  NSBezierPath* envelope = [NSBezierPath bezierPath];
+  for (int i = 0; i <= 240; ++i) {
+    double time = window * i / 240;
+    NSPoint point = NSMakePoint(effectX(plots.timing, time, window), effectY(plots.timing, -compReduction(self, time), -30, 0));
+    if (!i) [envelope moveToPoint:point]; else [envelope lineToPoint:point];
+  }
+  effectCurve(envelope, plots.timing, NSMaxY(plots.timing), rigGreen());
+  effectText(@"Timing preview · Shaded = 200 ms note · Dashed = unchanged level", NSMakeRect(14, 1, NSWidth(r) - 28, 10), 7.5, rigDimText());
+}
+
 @end
 
 @implementation NAMPowerStageVisualizer
@@ -1851,169 +1616,57 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)setVoicing:(int)v { _voicing = std::clamp(v, 0, (int)NAMRig::Overdrive::Voicing::Count - 1); self.needsDisplay = YES; }
 - (void)setEnabled:(BOOL)v { _enabled = v; self.needsDisplay = YES; }
 
-- (void)drawRect:(NSRect)dirty {
-  const NSRect r = self.bounds;
-  if (r.size.width < 10 || r.size.height < 10) return;
-
-  NSBezierPath* bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:6.0 yRadius:6.0];
-  [rigBG() setFill];
-  [bg fill];
-  [rigPanelBorder() setStroke];
-  bg.lineWidth = 1.0;
-  [bg stroke];
-
-  const CGFloat splitX = NSMidX(r);
-  NSBezierPath* sep = [NSBezierPath bezierPath];
-  [sep moveToPoint:NSMakePoint(splitX, 8)];
-  [sep lineToPoint:NSMakePoint(splitX, r.size.height - 8)];
-  sep.lineWidth = 1.0;
-  [[NSColor colorWithSRGBRed:0.18 green:0.20 blue:0.25 alpha:0.8] setStroke];
-  [sep stroke];
-
-  const BOOL isBypassed = !_enabled;
-  const float activeDrive = _enabled ? _drive : 0.0f;
-  const float activeTight = _tight;
-  const float activeTone = _tone;
-  const float activeLevel = _level;
-
-  static NSString* const kVoicingHeaders[] = {
-    @"DRIVE SATURATION (CLASSIC TS)",
-    @"DRIVE SATURATION (SD-1 ASYM)",
-    @"DRIVE SATURATION (LED TURBO)",
-    @"DRIVE SATURATION (GERMANIUM)",
-    @"CLEAN BOOST (NO DIODES)"
-  };
-  const int vIdx = std::clamp(_voicing, 0, (int)NAMRig::Overdrive::Voicing::Count - 1);
-  NSDictionary* leftHeaderAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:0.95]
-  };
-  [kVoicingHeaders[vIdx] drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:leftHeaderAttrs];
-
-  NSDictionary* rightHeaderAttrs = @{
-    NSFontAttributeName: [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
-    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95]
-  };
-  [@"TONE & TIGHT (HPF) RESPONSE" drawAtPoint:NSMakePoint(splitX + 14, r.size.height - 18) withAttributes:rightHeaderAttrs];
-
-  static NSString* const kVoicingLabels[] = {@"TS", @"SD-1", @"LED", @"GE", @"CLEAN"};
-  NSString* telemetry;
-  if (!_enabled) {
-    telemetry = @"BOOST BYPASSED (OFF)";
-  } else if (_drive < 0.5f) {
-    telemetry = [NSString stringWithFormat:@"%@  •  CLEAN BOOST  •  TIGHT: %.0f Hz  •  LEVEL: %+.1f dB", kVoicingLabels[vIdx], _tight, _level];
-  } else {
-    telemetry = [NSString stringWithFormat:@"%@  •  DRV: %.0f%%  •  TIGHT: %.0f Hz  •  TONE: %.0f%%  •  LVL: %+.1f dB", kVoicingLabels[vIdx], _drive, _tight, _tone, _level];
-  }
-  NSDictionary* infoAttrs = @{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
-    NSForegroundColorAttributeName: isBypassed
-        ? [NSColor colorWithSRGBRed:0.50 green:0.53 blue:0.60 alpha:0.8]
-        : [NSColor colorWithSRGBRed:0.95 green:0.82 blue:0.55 alpha:0.95]
-  };
-  NSSize infoSize = [telemetry sizeWithAttributes:infoAttrs];
-  [telemetry drawAtPoint:NSMakePoint(r.size.width - 14 - infoSize.width, r.size.height - 32) withAttributes:infoAttrs];
-
-  // Left Plot: Transfer Curve (Input vs Output)
-  const CGFloat lPad = 28.0;
-  const CGFloat lRight = splitX - 16.0;
-  const CGFloat bPad = 20.0;
-  const CGFloat tPad = r.size.height - 46.0;
-  const CGFloat lPlotW = lRight - lPad;
-  const CGFloat lPlotH = tPad - bPad;
-  const CGFloat lMidY = bPad + lPlotH * 0.5;
-  const CGFloat lMidX = lPad + lPlotW * 0.5;
-
-  // Center axes
-  NSBezierPath* axes = [NSBezierPath bezierPath];
-  [axes moveToPoint:NSMakePoint(lPad, lMidY)];
-  [axes lineToPoint:NSMakePoint(lRight, lMidY)];
-  [axes moveToPoint:NSMakePoint(lMidX, bPad)];
-  [axes lineToPoint:NSMakePoint(lMidX, tPad)];
-  CGFloat pat[2] = {2.0, 3.0};
-  [axes setLineDash:pat count:2 phase:0.0];
-  axes.lineWidth = 0.5;
-  [[NSColor colorWithSRGBRed:0.25 green:0.28 blue:0.35 alpha:0.5] setStroke];
-  [axes stroke];
-
-  // Saturation curve
-  const float driveNorm = std::clamp(activeDrive * 0.01f, 0.0f, 1.0f);
-  const double g = NAMRig::Overdrive::branchGain(driveNorm);
-  NSBezierPath* satCurve = [NSBezierPath bezierPath];
-  const int kSatSteps = 50;
-  for (int s = 0; s <= kSatSteps; ++s) {
-    const double x = -1.0 + 2.0 * ((double)s / (double)kSatSteps);
-    const double clipped = x + driveNorm * NAMRig::Overdrive::clip(g * x * 0.15, _voicing);
-    const double maxOut = 1.0 + driveNorm * NAMRig::Overdrive::clip(g * 0.15, _voicing);
-    const double yNorm = (maxOut > 0.0) ? std::clamp(clipped / maxOut, -1.0, 1.0) : x;
-    const NSPoint pt = NSMakePoint(lPad + ((x + 1.0) * 0.5) * lPlotW, lMidY + yNorm * (lPlotH * 0.45));
-    if (s == 0) [satCurve moveToPoint:pt];
-    else [satCurve lineToPoint:pt];
-  }
-  satCurve.lineWidth = 2.0;
-  if (isBypassed) {
-    [[NSColor colorWithSRGBRed:0.45 green:0.35 blue:0.20 alpha:0.4] setStroke];
-  } else {
-    [[NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:0.95] setStroke];
-  }
-  [satCurve stroke];
-
-  // Right Plot: Post-Clip Tone Frequency Response (200 Hz .. 12 kHz, -18 dB .. +18 dB)
-  // and Pre-Clip Tight High-Pass Cut Response (amber dashed curve)
-  const CGFloat rLeft = splitX + 28.0;
-  const CGFloat rRight = r.size.width - 20.0;
-  const CGFloat rPlotW = rRight - rLeft;
-  const CGFloat rMidY = bPad + lPlotH * 0.5;
-
-  NSBezierPath* rBase = [NSBezierPath bezierPath];
-  [rBase moveToPoint:NSMakePoint(rLeft, rMidY)];
-  [rBase lineToPoint:NSMakePoint(rRight, rMidY)];
-  [rBase setLineDash:pat count:2 phase:0.0];
-  rBase.lineWidth = 0.5;
-  [[NSColor colorWithSRGBRed:0.25 green:0.28 blue:0.35 alpha:0.5] setStroke];
-  [rBase stroke];
-
-  // Pre-clip tight cut curve (high-pass filter: amber dashed curve)
-  NSBezierPath* cutCurve = [NSBezierPath bezierPath];
-  const int kToneSteps = 60;
-  for (int s = 0; s <= kToneSteps; ++s) {
-    const double frac = (double)s / (double)kToneSteps;
-    const double hz = 200.0 * std::pow(60.0, frac);
-    const double cutDb = isBypassed ? 0.0 : NAMRig::Overdrive::preClipHighPassResponseDb(hz, kPinPlotRate, activeTight);
-    const CGFloat y = rMidY + std::clamp((CGFloat)(cutDb / 18.0), -1.0, 1.0) * (lPlotH * 0.45);
-    const NSPoint pt = NSMakePoint(rLeft + frac * rPlotW, y);
-    if (s == 0) [cutCurve moveToPoint:pt];
-    else [cutCurve lineToPoint:pt];
-  }
-  cutCurve.lineWidth = 1.5;
-  CGFloat cutDash[2] = {3.0, 2.0};
-  [cutCurve setLineDash:cutDash count:2 phase:0.0];
-  if (isBypassed) {
-    [[NSColor colorWithSRGBRed:0.45 green:0.35 blue:0.20 alpha:0.35] setStroke];
-  } else {
-    [[NSColor colorWithSRGBRed:1.00 green:0.75 blue:0.25 alpha:0.85] setStroke];
-  }
-  [cutCurve stroke];
-
-  // Post-clip tone filter curve (cyan solid curve)
-  NSBezierPath* toneCurve = [NSBezierPath bezierPath];
-  for (int s = 0; s <= kToneSteps; ++s) {
-    const double frac = (double)s / (double)kToneSteps;
-    const double hz = 200.0 * std::pow(60.0, frac); // 200 Hz to 12 kHz
-    const double respDb = isBypassed ? 0.0 : NAMRig::Overdrive::postClipResponseDb(hz, kPinPlotRate, activeTone, activeLevel);
-    const CGFloat y = rMidY + std::clamp((CGFloat)(respDb / 18.0), -1.0, 1.0) * (lPlotH * 0.45);
-    const NSPoint pt = NSMakePoint(rLeft + frac * rPlotW, y);
-    if (s == 0) [toneCurve moveToPoint:pt];
-    else [toneCurve lineToPoint:pt];
-  }
-  toneCurve.lineWidth = 2.0;
-  if (isBypassed) {
-    [[NSColor colorWithSRGBRed:0.20 green:0.45 blue:0.50 alpha:0.4] setStroke];
-  } else {
-    [[NSColor colorWithSRGBRed:0.25 green:0.85 blue:0.98 alpha:0.95] setStroke];
-  }
-  [toneCurve stroke];
+- (NSPoint)controlPointForIndex:(NSUInteger)index {
+  if (index == 1) return boostFrequencyPoint(self, _tight);
+  if (index == 2) return boostFrequencyPoint(self, 4000);
+  NSRect plot = boostPlots(self.bounds).wave;
+  return NSMakePoint(NSMinX(plot) + NSWidth(plot) / 12, NSMidY(plot) + boostShape(self, .5) * NSHeight(plot) * .45);
 }
+- (void)drawRect:(NSRect)dirty {
+  NSRect r = self.bounds;
+  if (NSWidth(r) < 100 || NSHeight(r) < 200) return;
+  NSColor* warm = [rigOrange() colorWithAlphaComponent:_enabled ? .95 : .45];
+  NSString* description = !_enabled ? @"Bypassed · preview of the stored settings." : _voicing == (int)NAMRig::Overdrive::Voicing::Clean ? @"Clean voice: added gain without diode clipping." : @"Drive reshapes the wave. Tight trims bass; Tone sets brightness.";
+  effectHeader(r, @"Boost & overdrive", description, warm);
+  BoostPlots plots = boostPlots(r);
+  effectTitle(plots.wave, @"Clipping preview · normalized level");
+  effectTitle(plots.tone, @"Low cut & brightness (dB)");
+  effectLine(NSMakePoint(NSMinX(plots.wave), NSMidY(plots.wave)), NSMakePoint(NSMaxX(plots.wave), NSMidY(plots.wave)), rigPanelBorder(), YES);
+  for (int sign : {-1, 1}) {
+    CGFloat y = NSMidY(plots.wave) + sign * NSHeight(plots.wave) * .45;
+    effectText(sign > 0 ? @"+1" : @"−1", NSMakeRect(NSMinX(plots.wave) - 28, y - 6, 22, 12), 8, rigDimText());
+  }
+  NSBezierPath* input = [NSBezierPath bezierPath];
+  NSBezierPath* output = [NSBezierPath bezierPath];
+  for (int i = 0; i <= 240; ++i) {
+    double phase = 2 * 3.141592653589793 * i / 240;
+    double sample = std::sin(phase);
+    CGFloat x = NSMinX(plots.wave) + NSWidth(plots.wave) * i / 240;
+    NSPoint dry = NSMakePoint(x, NSMidY(plots.wave) + sample * NSHeight(plots.wave) * .45);
+    NSPoint wet = NSMakePoint(x, NSMidY(plots.wave) + boostShape(self, sample) * NSHeight(plots.wave) * .45);
+    if (!i) { [input moveToPoint:dry]; [output moveToPoint:wet]; }
+    else { [input lineToPoint:dry]; [output lineToPoint:wet]; }
+  }
+  CGFloat dash[] = {4, 3}; [input setLineDash:dash count:2 phase:0];
+  input.lineWidth = 1; [rigDimText() setStroke]; [input stroke];
+  output.lineWidth = 2; [warm setStroke]; [output stroke];
+  effectDbGrid(plots.tone, -24, 12, {-24, -12, 0, 12});
+  for (double hz : {20.0, 100.0, 1000.0, 10000.0}) {
+    CGFloat x = pinPlotX(plots.tone, hz);
+    effectText(hz >= 1000 ? [NSString stringWithFormat:@"%.0fk", hz / 1000] : [NSString stringWithFormat:@"%.0f", hz],
+        NSMakeRect(x - 12, NSMinY(plots.tone) - 18, 28, 12), 8, rigDimText(), NSTextAlignmentCenter);
+  }
+  effectText(@"Frequency (Hz)", NSMakeRect(NSMidX(plots.tone) - 55, NSMinY(plots.tone) - 33, 110, 12), 8, rigDimText(), NSTextAlignmentCenter);
+  NSBezierPath* curve = [NSBezierPath bezierPath];
+  for (int i = 0; i <= 180; ++i) {
+    double hz = 20 * std::pow(1000.0, i / 180.0);
+    NSPoint point = boostFrequencyPoint(self, hz);
+    if (!i) [curve moveToPoint:point]; else [curve lineToPoint:point];
+  }
+  effectCurve(curve, plots.tone, NSMinY(plots.tone), rigAccent());
+  effectText(@"Dashed = clean input · Solid = shaped output", NSMakeRect(14, 1, NSWidth(r) - 28, 10), 7.5, rigDimText());
+}
+
 @end
 
 @implementation NAMPowerTubeVisualizer

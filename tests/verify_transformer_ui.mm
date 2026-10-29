@@ -75,6 +75,16 @@ static bool near(double a, double b) {
 
 static void drain() {
   [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+  // A first layout can consume a whole run-loop slice. Wait for delivery blocks
+  // and their immediate UI updates instead of assuming 30 ms drained the queue.
+  for (int pass = 0; pass < 2; ++pass) {
+    __block BOOL finished = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ finished = YES; });
+    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (!finished && deadline.timeIntervalSinceNow > 0)
+      [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    if (!finished) throw std::runtime_error("main queue did not drain");
+  }
 }
 
 static NSString* presetsDirectory(id, SEL) {
@@ -1778,6 +1788,72 @@ static void verifyPedalInputVisibility(Runtime& runtime, Host& host, Class prese
   host.writes.clear();
 }
 
+static void verifyEffectGraphGeometry(Runtime& runtime) {
+  RigUIState* state = runtime.state;
+  stage = "effect graphics / parameter meaning / readable compact and wide plots";
+  NAMCompressorVisualizer* comp = state->compressorVisualizer;
+  NAMCompressorVisualizer* stereo = state->postCompressorVisualizer;
+  NAMDelayTapVisualizer* delay = state->delayVisualizer;
+  NAMReverbDecayVisualizer* reverb = state->reverbVisualizer;
+  NAMBoostVisualizer* boost = state->boostVisualizer;
+  comp.amount = 40; comp.attack = 8; comp.releaseTime = 120;
+  stereo.amount = 40; stereo.attack = 8; stereo.releaseTime = 120;
+  delay.timeMs = 400; delay.feedback = 40; delay.mix = 40;
+  reverb.preDelay = 20; reverb.decay = 20; reverb.size = 50; reverb.mix = 40;
+  boost.drive = 40; boost.tight = 400; boost.tone = 50; boost.voicing = 0;
+  NSArray<NAMInteractiveGraph*>* graphs = @[comp, stereo, delay, reverb, boost];
+  const NSUInteger pinCounts[] = {3, 3, 2, 2, 3};
+  for (NSUInteger i = 0; i < graphs.count; ++i) {
+    NSRect frame = graphs[i].frame;
+    for (CGFloat width : {320.0, 1000.0}) {
+      [graphs[i] setFrameSize:NSMakeSize(width, 420)];
+      for (NSUInteger pin = 0; pin < pinCounts[i]; ++pin) {
+        NSPoint p = [graphs[i] controlPointForIndex:pin];
+        CHECK(std::isfinite(p.x) && std::isfinite(p.y));
+        CHECK(NSContainsRect(graphs[i].bounds, NSMakeRect(p.x - 5, p.y - 5, 10, 10)));
+      }
+    }
+    graphs[i].frame = frame;
+  }
+  NSPoint original = [comp controlPointForIndex:1];
+  comp.attack = 60;
+  CHECK([comp controlPointForIndex:1].x > original.x);
+  original = [comp controlPointForIndex:2];
+  comp.releaseTime = 600;
+  CHECK([comp controlPointForIndex:2].x > original.x);
+  original = [stereo controlPointForIndex:2];
+  stereo.releaseTime = 600;
+  CHECK([stereo controlPointForIndex:2].x > original.x);
+  original = [delay controlPointForIndex:0];
+  delay.timeMs = 800;
+  CHECK([delay controlPointForIndex:0].x > original.x);
+  original = [delay controlPointForIndex:1];
+  delay.feedback = 70;
+  CHECK([delay controlPointForIndex:1].y > original.y);
+  original = [delay controlPointForIndex:0];
+  delay.mix = 80;
+  CHECK([delay controlPointForIndex:0].y > original.y);
+  original = [reverb controlPointForIndex:0];
+  reverb.preDelay = 200;
+  CHECK([reverb controlPointForIndex:0].x > original.x);
+  original = [reverb controlPointForIndex:0];
+  reverb.mix = 80;
+  CHECK([reverb controlPointForIndex:0].y > original.y);
+  original = [boost controlPointForIndex:1];
+  boost.tight = 1000;
+  CHECK([boost controlPointForIndex:1].x > original.x);
+  original = [boost controlPointForIndex:2];
+  boost.tone = 80;
+  CHECK([boost controlPointForIndex:2].y > original.y);
+  boost.voicing = (int)NAMRig::Overdrive::Voicing::Clean;
+  boost.drive = 0;
+  original = [boost controlPointForIndex:0];
+  boost.drive = 100;
+  CHECK(near([boost controlPointForIndex:0].y, original.y)); // Clean gain must not falsely show clipping.
+  [[NSClassFromString(@"RigPreset") defaultPreset] applyToState:state];
+  drain();
+}
+
 static void verifyCombinedPinResponse(Runtime& runtime, Host& host) {
   using namespace NAMRig;
   RigUIState* state = runtime.state;
@@ -1919,7 +1995,7 @@ static void verifyGraphEditing(Runtime& runtime, Host& host, Class presetClass) 
       state->transformerVisualizer];
   NSArray<NSString*>* modules = @[@"power", @"compressor", @"postcomp", @"delay", @"reverb", @"spatial", @"boost", @"power", @"transformer"];
   const std::vector<std::vector<uint32_t>> expectedPorts = {
-    {37, 36}, {28, 182, 183}, {186}, {50, 51}, {58, 55}, {32, 33}, {179, 190, 180}, {81}, {62, 60, 61, 65, 68}
+    {37, 36}, {28, 182, 183}, {186, 187, 188}, {50, 51}, {58, 55}, {32, 33}, {179, 190, 180}, {81}, {62, 60, 61, 65, 68}
   };
   for (NSUInteger i = 0; i < graphs.count; ++i) {
     [state->workspace selectModule:modules[i]];
@@ -2961,6 +3037,7 @@ static void verify(const char* modulePath) {
   verifyStageMeters(runtime);
   verifyGraphEditing(runtime, host, presetClass);
   verifyCombinedPinResponse(runtime, host);
+  verifyEffectGraphGeometry(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
 }

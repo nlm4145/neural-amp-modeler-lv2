@@ -78,6 +78,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 // through to frequency EQ pins; dragging a handle edits the named DSP control.
 @interface NAMGraphControlPin : NSObject
 @property(nonatomic, copy) NSString* label;
+@property(nonatomic) BOOL labelBelow;
 @property(nonatomic, copy) NSPoint (^position)(NSRect bounds);
 @property(nonatomic, copy) BOOL (^isEnabled)(void);
 @property(nonatomic, copy) void (^onBegin)(void);
@@ -91,6 +92,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @end
 
 @interface NAMInteractiveGraph : NSView
+- (NSPoint)controlPointForIndex:(NSUInteger)index;
 - (double)responseDbAtFrequency:(double)hz;
 @end
 
