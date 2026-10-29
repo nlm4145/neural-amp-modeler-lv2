@@ -589,7 +589,7 @@ struct RigUIState {
     captureModifiedABState();
     BOOL missingModItem = abPresetB && ([abPresetB indexOfItemWithRepresentedObject:abModifiedToken()] < 0);
     if (!wasModified || missingModItem) {
-      if (!wasModified) abUserChoseB = false;
+      if (!wasModified && !abUserChoseB) abUserChoseB = false;
       updatePresetDisplayTitle();
     } else if (!abUserChoseB && abPresetB) {
       NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
@@ -626,10 +626,9 @@ struct RigUIState {
     if ([name isEqualToString:abModifiedToken()]) {
       if (abModifiedPreset) [abModifiedPreset applyToState:this];
     } else {
-      NSString* path = [[presetManager presetsDirectory]
-          stringByAppendingPathComponent:
-              [[name lastPathComponent] stringByAppendingPathExtension:@"json"]];
-      RigPreset* preset = [RigPreset loadFromFile:path];
+      NSString* path = [presetManager pathForPresetNamed:name];
+      RigPreset* preset = (path.length && [[NSFileManager defaultManager] fileExistsAtPath:path])
+          ? [RigPreset loadFromFile:path] : nil;
       if (preset) [preset applyToState:this];
     }
     abApplyingCycle = false;
@@ -639,8 +638,16 @@ struct RigUIState {
   void abTick() {
     if (!abCycling) return;
     abShowingA = !abShowingA;
-    NSString* next = abShowingA ? abNameA : abNameB;
-    abApplyCycle(next);
+    if (abShowingA) {
+      if (presetManager && presetManager.isModified && abModifiedPreset &&
+          ![abNameB isEqualToString:abModifiedToken()]) {
+        abApplyCycle(abModifiedToken());
+      } else {
+        abApplyCycle(abNameA);
+      }
+    } else {
+      abApplyCycle(abNameB);
+    }
     updateABStatus();
   }
 
@@ -757,14 +764,44 @@ struct RigUIState {
     populate = nil;
   }
 
+  void resyncABPresetBSelection() {
+    if (!abPresetB) return;
+    NSString* cur = abNameB;
+    if (!cur.length) cur = @"Default Rig";
+
+    std::function<void(NSMenu*)> updateCheckmarks = [&](NSMenu* menu) {
+      for (NSMenuItem* item in menu.itemArray) {
+        if (item.hasSubmenu) {
+          updateCheckmarks(item.submenu);
+        } else if ([item.representedObject isKindOfClass:[NSString class]]) {
+          item.state = [item.representedObject isEqualToString:cur] ? NSControlStateValueOn : NSControlStateValueOff;
+        }
+      }
+    };
+    updateCheckmarks(abPresetB.menu);
+
+    NSInteger match = -1;
+    NSArray<NSMenuItem*>* items = abPresetB.itemArray;
+    for (NSInteger i = 0; i < (NSInteger)items.count; ++i) {
+      id rep = items[(NSUInteger)i].representedObject;
+      if ([rep isKindOfClass:[NSString class]] && [rep isEqualToString:cur]) {
+        match = i;
+        break;
+      }
+    }
+    if (match >= 0) {
+      [abPresetB selectItemAtIndex:match];
+    } else {
+      [abPresetB selectItem:nil];
+      [abPresetB setTitle:cur.lastPathComponent];
+    }
+  }
+
   void refreshABMenus() {
     if (!abPresetB || !presetManager) return;
     NSArray<NSString*>* names = presetManager.presetNames ?: @[];
     NSString* cur = presetManager.currentPresetName ?: @"Default Rig";
-    NSString* keep = nil;
-    if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
-      keep = abPresetB.selectedItem.representedObject;
-    if (!keep.length) keep = abNameB;
+    NSString* keep = abNameB;
     [abPresetB removeAllItems];
     if (presetManager.isModified) {
       NSString* modTitle = [cur stringByAppendingString:@" *"];
@@ -783,40 +820,19 @@ struct RigUIState {
 
     buildPresetTree(abPresetB.menu, names, (id)uiController, @selector(abPresetChanged:), keep);
 
-    NSInteger match = -1;
     if (presetManager.isModified && !abUserChoseB) {
-      match = [abPresetB indexOfItemWithRepresentedObject:abModifiedToken()];
-    } else if (keep.length) {
-      match = [abPresetB indexOfItemWithRepresentedObject:keep];
-    }
-    if (match < 0 && names.count) {
-      if (![keep isEqualToString:abModifiedToken()] && keep.length) {
-        [abPresetB selectItem:nil];
-        [abPresetB setTitle:keep.lastPathComponent];
-        abNameB = keep;
-      } else {
-        // Default B to something other than the active preset when possible.
-        NSString* fallback = nil;
-        for (NSString* name in names) {
-          if (![name isEqualToString:cur]) { fallback = name; break; }
-        }
-        if (!fallback.length) fallback = names.firstObject;
-        match = [abPresetB indexOfItemWithRepresentedObject:fallback];
-        if (match >= 0) {
-          [abPresetB selectItemAtIndex:match];
-          if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
-            abNameB = abPresetB.selectedItem.representedObject;
-        } else if (fallback.length) {
-          [abPresetB selectItem:nil];
-          [abPresetB setTitle:fallback.lastPathComponent];
-          abNameB = fallback;
-        }
+      keep = abModifiedToken();
+    } else if (!keep.length || ([keep isEqualToString:cur] && names.count > 1)) {
+      // Default B to something other than the active preset when possible.
+      NSString* fallback = nil;
+      for (NSString* name in names) {
+        if (![name isEqualToString:cur]) { fallback = name; break; }
       }
-    } else if (match >= 0) {
-      [abPresetB selectItemAtIndex:match];
-      if ([abPresetB.selectedItem.representedObject isKindOfClass:[NSString class]])
-        abNameB = abPresetB.selectedItem.representedObject;
+      if (!fallback.length) fallback = names.firstObject;
+      keep = fallback;
     }
+    abNameB = keep;
+    resyncABPresetBSelection();
     updateABStatus();
   }
 
@@ -844,7 +860,25 @@ struct RigUIState {
       if (cur.length) abNameA = cur;
     }
     if (!abNameA.length || !abNameB.length) return;
-    if ([abNameA isEqualToString:abNameB]) return;  // nothing to compare
+    BOOL sameName = [abNameA isEqualToString:abNameB] ||
+        [abNameA.lastPathComponent localizedCaseInsensitiveCompare:abNameB.lastPathComponent] == NSOrderedSame;
+    if (sameName && ![abNameB isEqualToString:abModifiedToken()]) {
+      NSArray<NSString*>* names = presetManager ? (presetManager.presetNames ?: @[]) : @[];
+      NSString* fallback = nil;
+      for (NSString* n in names) {
+        if (![n isEqualToString:abNameA] &&
+            [n.lastPathComponent localizedCaseInsensitiveCompare:abNameA.lastPathComponent] != NSOrderedSame) {
+          fallback = n;
+          break;
+        }
+      }
+      if (fallback.length) {
+        abNameB = fallback;
+        resyncABPresetBSelection();
+      } else {
+        return;  // nothing to compare
+      }
+    }
     stopABTimer();
     abCycling = true;
     abShowingA = false;  // first tick lands on A immediately
@@ -1012,11 +1046,9 @@ struct RigUIState {
       abCycleBtn.title = @"START";
       abCycleBtn.state = NSControlStateValueOff;
     }
-    // If B is the modified state of the current preset, restore that modified
-    // state on STOP so the user's unsaved tweaks remain active; otherwise
-    // restore A while preserving any modified snapshot.
-    if (presetManager && presetManager.isModified && abModifiedPreset &&
-        [abNameB isEqualToString:abModifiedToken()]) {
+    // If modified, restore the modified snapshot so the user's unsaved tweaks
+    // remain active; otherwise restore A while preserving any modified snapshot.
+    if (presetManager && presetManager.isModified && abModifiedPreset) {
       abApplyCycle(abModifiedToken());
       presetManager.isModified = YES;
     } else if (abNameA.length) {

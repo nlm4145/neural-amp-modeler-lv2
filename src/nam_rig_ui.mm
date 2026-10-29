@@ -132,6 +132,13 @@ static double copilotParseClock(NSString* text) {
 @property(nonatomic, strong) NSTextField* copilotTargetRangeLabel;
 @property(nonatomic, strong) NSTextField* copilotLocalMatchStatus;
 @property(nonatomic, strong) NSTextField* copilotWorkflowStatus;
+@property(nonatomic, strong) NSView* copilotMatchingCard;
+@property(nonatomic, strong) NSArray<NSView*>* copilotAuditionViews;
+@property(nonatomic, strong) NSArray<NSView*>* copilotAfterAuditionViews;
+@property(nonatomic, strong) NSArray<NSView*>* copilotSaveViews;
+@property(nonatomic, strong) NSArray<NSView*>* copilotResultViews;
+@property(nonatomic, strong) NSArray<NSView*>* copilotDiagnosticViews;
+@property(nonatomic, strong) NSMutableArray<NSView*>* copilotGuideCards;
 @property(nonatomic, strong) NSButton* copilotMatchOnlineButton;
 @property(nonatomic, strong) NSButton* copilotMatchResearchButton;
 @property(nonatomic, strong) NSButton* copilotAccurateRescoreButton;
@@ -2307,8 +2314,7 @@ static double copilotParseClock(NSString* text) {
 // ---- Hands-free A/B preset compare ----
 // A is the live active preset (main window); the B dropdown memorizes the
 // other side. START alternates between them on a timer so the player can
-// audition while playing. STOP (same button, or changing B) halts the cycle
-// on the current sound.
+// audition while playing. STOP (same button) halts the cycle on the current sound.
 - (void)abPresetChanged:(id)sender {
   if (!_state) return;
   NSMenuItem* item = nil;
@@ -2322,16 +2328,13 @@ static double copilotParseClock(NSString* text) {
   if (![name isKindOfClass:[NSString class]]) return;
   _state->abNameB = name;
   _state->abUserChoseB = ![name isEqualToString:RigUIState::abModifiedToken()];
-  // Changing B mid-cycle stops on the newly picked preset: predictable and
-  // hands-free (no surprise switch a second later).
+  _state->resyncABPresetBSelection();
+
+  // If cycling, immediately audition the newly chosen preset and restart the timer cadence.
   if (_state->abCycling) {
-    _state->stopAB();
-    if ([name isEqualToString:RigUIState::abModifiedToken()]) {
-      _state->abApplyCycle(name);
-    } else {
-      _state->applyPresetByName(name);
-    }
     _state->abShowingA = NO;
+    _state->abApplyCycle(name);
+    _state->restartABTimer();
     _state->updateABStatus();
   } else {
     _state->updateABStatus();
@@ -2644,6 +2647,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [aiPane addSubview:card2];
 
   RigPanel* card3 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  self.copilotMatchingCard = card3;
   card3.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:card3];
 
@@ -2694,6 +2698,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
     b.lineBreakMode = NSLineBreakByWordWrapping;
     b.maximumNumberOfLines = 3;
     [box addSubview:b];
+    return box;
   };
 
   // ----------------------------------------------------
@@ -2736,6 +2741,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotGuitarInfo.font = [NSFont systemFontOfSize:11];
   [card1 addSubview:self.copilotGuitarInfo];
 
+  const NSUInteger saveStart = card1.subviews.count;
   addLabel(card1, @"Save as Preset Name:", NSMakeRect(16, cardH - 250, 200, 18),
            [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText());
 
@@ -2745,6 +2751,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotPresetNameField.toolTip = @"Apply & Save creates a new preset with this name. A ' Copy N' suffix is added if the name already exists.";
   self.copilotPresetNameField.stringValue = self.copilotProposal ? [self plannedCopilotPresetName] : @"";
   [card1 addSubview:self.copilotPresetNameField];
+  self.copilotSaveViews = [card1.subviews subarrayWithRange:NSMakeRange(saveStart, card1.subviews.count - saveStart)];
 
   // Action Buttons
   self.copilotDialBtn = rigButton(card1, @"✨ Preview Tone", self, @selector(executeCopilotDial:), NSMakeRect(16, cardH - 316, 126, 30));
@@ -2853,6 +2860,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   addSep(card2, cardH - 180, contentW);
 
   // Section 2: Audition & DI Render
+  const NSUInteger auditionStart = card2.subviews.count;
   addLabel(card2, @"Audition DI through proposals without live rig changes:", NSMakeRect(16, cardH - 202, contentW, 18),
            [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
 
@@ -2871,8 +2879,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotRenderBtn.toolTip = @"Render the same DI through baseline and proposal locally. No AI call, no live rig changes.";
 
   addSep(card2, cardH - 246, contentW);
+  self.copilotAuditionViews = [card2.subviews subarrayWithRange:NSMakeRange(auditionStart, card2.subviews.count - auditionStart)];
 
   // Section 3: Target Reference Sound
+  const NSUInteger afterAuditionStart = card2.subviews.count;
   addLabel(card2, @"Target sound to match (Demucs separates guitar locally):", NSMakeRect(16, cardH - 268, contentW, 18),
            [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
 
@@ -2970,28 +2980,30 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   const CGFloat boxGap = 8.0;
   CGFloat boxY = cardH - 424 - boxH;
 
-  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+  self.copilotGuideCards = [NSMutableArray array];
+  [self.copilotGuideCards addObject:addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
              @"1. PREPARE YOUR TWO INPUTS",
              @"Load target sound and record your guitar with Record Riff, in either order. For Play Along, load and preview the target section first, then record through headphones.",
-             rigOrange());
+             rigOrange())];
 
   boxY -= (boxH + boxGap);
-  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+  [self.copilotGuideCards addObject:addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
              @"2. RUN LEARN & MATCH",
              @"Once the target guitar and unclipped raw DI are ready, click Learn & Match in the right panel. It compares installed amps and cabs locally. Research and online search are optional.",
-             rigOrange());
+             rigOrange())];
 
   boxY -= (boxH + boxGap);
-  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+  [self.copilotGuideCards addObject:addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
              @"3. LISTEN & COMPARE",
              @"Choose a ranked candidate, then click Render DI A/B. Use the track menu and Play to compare Baseline and Candidate; Preview plays the target. Changing candidates requires a new render.",
-             rigOrange());
+             rigOrange())];
 
   boxY -= (boxH + boxGap);
-  addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
+  [self.copilotGuideCards addObject:addInfoBox(card2, NSMakeRect(16, boxY, contentW, boxH),
              @"4. APPLY & SAVE WHEN READY",
              @"When you like the sound, name the preset and click Apply & Save in the left panel. This updates your live rig and saves the preset. Listening first is recommended, not required.",
-             rigOrange());
+             rigOrange())];
+  self.copilotAfterAuditionViews = [card2.subviews subarrayWithRange:NSMakeRange(afterAuditionStart, card2.subviews.count - afterAuditionStart)];
 
   // ----------------------------------------------------
   // CARD 3: LOCAL SOUND MATCHER & SEARCH
@@ -3062,6 +3074,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   addSep(card3, cardH - 288, contentW);
 
   // Section 3: Finalists
+  const NSUInteger resultsStart = card3.subviews.count;
   addLabel(card3, @"Ranked Candidate Profiles:", NSMakeRect(16, cardH - 308, contentW, 18),
            [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], rigText());
 
@@ -3072,6 +3085,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotMatchCandidates.target = self;
   self.copilotMatchCandidates.action = @selector(selectCopilotLocalMatch:);
   [card3 addSubview:self.copilotMatchCandidates];
+  self.copilotResultViews = [card3.subviews subarrayWithRange:NSMakeRange(resultsStart, card3.subviews.count - resultsStart)];
 
   self.copilotLocalMatchStatus = [NSTextField labelWithString:@""];
   self.copilotLocalMatchStatus.frame = NSMakeRect(16, cardH - 396, contentW, 54);
@@ -3080,6 +3094,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotLocalMatchStatus.maximumNumberOfLines = 3;
   [card3 addSubview:self.copilotLocalMatchStatus];
 
+  const NSUInteger diagnosticsStart = card3.subviews.count;
   addSep(card3, cardH - 408, contentW);
 
   // Section 4: Acoustic Distance & Diagnostics Readout
@@ -3115,6 +3130,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
              @"CONSOLE MIX PIN CORRECTION",
              @"Provides gentle, mathematically optimal pin EQ adjustments to bridge the gap between pure amplifier tone and commercial album mastering curves.",
              rigGreen());
+  self.copilotDiagnosticViews = [card3.subviews subarrayWithRange:NSMakeRange(diagnosticsStart, card3.subviews.count - diagnosticsStart)];
 
   // Trigger initial UI refreshes
   [self refreshCopilotModelsUI];
@@ -3801,6 +3817,35 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   else if (r.referenceIsFullMix) [missing addObject:@"use a guitar-only target, not a full song mix"];
   if (r.recordingMetadata[@"warning"]) [missing addObject:@"re-record without changing the rig"];
   self.copilotLocalMatchBtn.enabled = !missing.count && !busy && !self.copilotDemucsRunning;
+  const BOOL inputsReady = !missing.count && !self.copilotDemucsRunning && !r.isRecording && !countingDown;
+  const BOOL resultsReady = inputsReady && self.copilotLocalMatches.count > 0;
+  // Text-only proposals remain an independent route. A local proposal loses
+  // its prerequisites when its target/take changes and finalists are cleared.
+  const BOOL localProposal = [self.copilotProposal.proposedPreset.aiMetadata[@"provider"] isEqual:@"local"];
+  const BOOL proposalReady = self.copilotProposal && (!localProposal || resultsReady);
+  const BOOL auditionReady = proposalReady && r.renderHandler && r.recordedDIFrames.length &&
+      !r.isDIClipped && !r.recordingMetadata[@"warning"];
+  self.copilotMatchingCard.hidden = !inputsReady && !self.copilotLocalMatching;
+  for (NSView* view in self.copilotResultViews) view.hidden = !resultsReady;
+  for (NSView* view in self.copilotDiagnosticViews) view.hidden = !resultsReady;
+  self.copilotMatchMixEQButton.hidden = !resultsReady;
+  const BOOL hideAudition = !auditionReady;
+  if (self.copilotAuditionViews.firstObject.hidden != hideAudition) {
+    // Close the audition row's space until there is a proposal to render.
+    for (NSView* view in self.copilotAfterAuditionViews) {
+      NSRect frame = view.frame;
+      frame.origin.y += hideAudition ? 66 : -66;
+      view.frame = frame;
+    }
+  }
+  for (NSView* view in self.copilotAuditionViews) view.hidden = hideAudition;
+  for (NSView* view in self.copilotSaveViews) view.hidden = !proposalReady;
+  self.copilotApplyBtn.hidden = !proposalReady;
+  self.copilotUndoBtn.hidden = ![RigAICopilot sharedCopilot].canUndo;
+  self.copilotPlayAlongBtn.hidden = !r.referenceFrames.length && !self.copilotRecordIsPlayAlong;
+  NSArray<NSNumber*>* guideReady = @[@YES, @(inputsReady || self.copilotLocalMatching), @(auditionReady), @(proposalReady)];
+  for (NSUInteger i = 0; i < self.copilotGuideCards.count; ++i)
+    self.copilotGuideCards[i].hidden = !guideReady[i].boolValue;
   NSString* nextStep;
   if (self.copilotDemucsRunning)
     nextStep = @"Step 1: Separating the target guitar… wait for extraction to finish.";
@@ -3869,7 +3914,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotMatchOnlineButton.enabled = !busy;
   self.copilotAccurateRescoreButton.enabled = !busy && [r.referenceSource isEqualToString:@"demucs"];
   self.copilotEmbeddingRerankButton.enabled = !busy;
-  self.copilotApplyBtn.enabled = self.copilotProposal != nil && !busy;
+  self.copilotApplyBtn.enabled = proposalReady && !busy;
   self.copilotUndoBtn.enabled = [RigAICopilot sharedCopilot].canUndo && !busy;
   self.copilotCancelBtn.enabled = self.copilotLocalMatching || self.copilotDemucsRunning || [RigAICopilot sharedCopilot].isProcessing;
   self.copilotRecordBtn.toolTip = r.renderHandler ? @"Record YOUR guitar: raw DI before processing plus the rig output. Needed for Learn & Match." : @"Record Riff requires the standalone Axe FX app (captures raw DI + processed output).";
