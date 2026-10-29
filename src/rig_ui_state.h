@@ -39,7 +39,15 @@
 #import "rig_presets.h"
 
 @class NAMRigUIController;
+@class NAMRigWorkspace;
 @class ToneBrowserController;
+
+@protocol NAMRigWorkspaceNavigation <NSObject>
+@property(nonatomic, readonly) NSInteger selectedStage;
+@property(nonatomic, copy, readonly) NSString* selectedModule;
+- (void)selectStage:(NSInteger)stage;
+- (void)selectModule:(NSString*)key;
+@end
 
 @protocol ToneBrowserCycling <NSObject>
 - (void)selectPreviousTone;
@@ -278,6 +286,18 @@ struct RigUIState {
         }
         if (tunerNeedle) tunerNeedle.hidden = YES;
       }
+      if (!syncingWorkspaceNavigation && workspace) {
+        syncingWorkspaceNavigation = true;
+        switch (index) {
+          case 0: [workspace selectStage:4]; [workspace selectModule:@"tuner"]; break;
+          case 1: [workspace selectStage:0]; [workspace selectModule:@"compressor"]; break;
+          case 2: [workspace selectStage:2]; [workspace selectModule:@"power"]; break;
+          case 3: [workspace selectStage:3]; [workspace selectModule:@"cablab"]; break;
+          case 4: [workspace selectStage:4]; [workspace selectModule:@"postcomp"]; break;
+          default: break;
+        }
+        syncingWorkspaceNavigation = false;
+      }
     };
     // Keep the selected tab, visible pane and tuner routing in one transaction.
     // Main-thread clicks must not wait for a later run-loop drain; background
@@ -471,6 +491,8 @@ struct RigUIState {
 
   __strong NSView* view = nil;
   __weak NSView* parent = nil;
+  __strong id<NAMRigWorkspaceNavigation> workspace = nil;
+  bool syncingWorkspaceNavigation = false;
   __strong NAMRigUIController* uiController = nil;
   __strong ToneBrowserController* browserController = nil;
   std::array<__strong NSTextField*, 4> pathLabels{};

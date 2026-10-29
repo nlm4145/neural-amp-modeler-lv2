@@ -1,4 +1,5 @@
 #import "rig_local_tone_matcher.h"
+#import <objc/runtime.h>
 #include "rig_control_metadata.h"
 #include "local_tone_post_eq.h"
 #include "wav_ir.h"
@@ -55,6 +56,11 @@ int main(int argc, char** argv) {
   @autoreleasepool {
     assert(argc >= 2);
     NSString* cache = @(argv[1]);
+    // Keep cold-cache counts deterministic without deleting the user's renders.
+    Method cacheMethod = class_getClassMethod(RigLocalToneMatcher.class, @selector(renderCacheDirectory));
+    method_setImplementation(cacheMethod, imp_implementationWithBlock(^NSString*(id self) {
+      return [cache stringByAppendingPathComponent:@"renders"];
+    }));
     [NSFileManager.defaultManager createDirectoryAtPath:cache withIntermediateDirectories:YES attributes:nil error:nil];
     [NSFileManager.defaultManager removeItemAtPath:[RigLocalToneMatcher renderCacheDirectory] error:nil];
     const double rate = 48000;

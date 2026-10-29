@@ -213,19 +213,20 @@ static NSString* formatParameterCount(NSInteger params) {
   NSButton *_favButton;
 }
 - (void)loadView {
-  RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 320, 108)];
+  RigCardView *v = [[RigCardView alloc] initWithFrame:NSMakeRect(0, 0, 320, 214)];
   v.cardItem = self;
   v.toolTip = @"Click to load or download this tone. Right-click to view it on Tone3000.";
 
-  _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(8, 8, 92, 92)];
+  _artView = [[NSImageView alloc] initWithFrame:NSMakeRect(12, 86, 296, 104)];
   _artView.imageScaling = NSImageScaleProportionallyUpOrDown;
   _artView.wantsLayer = YES;
   _artView.layer.cornerRadius = 8;
   _artView.layer.masksToBounds = YES;
   _artView.layer.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.25].CGColor;
+  _artView.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_artView];
 
-  _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 68, 172, 22)];
+  _titleField = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 58, 248, 22)];
   _titleField.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
   _titleField.textColor = rigText();
   _titleField.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -233,7 +234,7 @@ static NSString* formatParameterCount(NSInteger params) {
   _titleField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_titleField];
 
-  _detailField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 44, 195, 18)];
+  _detailField = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 36, 288, 18)];
   _detailField.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
   _detailField.textColor = rigDimText();
   _detailField.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -241,7 +242,7 @@ static NSString* formatParameterCount(NSInteger params) {
   _detailField.autoresizingMask = NSViewWidthSizable;
   [v addSubview:_detailField];
 
-  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(110, 16, 204, 18)];
+  _tagField = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 12, 288, 18)];
   _tagField.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
   _tagField.textColor = rigDimText();
   _tagField.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -251,7 +252,7 @@ static NSString* formatParameterCount(NSInteger params) {
 
   // Favorite star (top-right). Clicking reports to the browser controller;
   // the star is intentionally NOT a title/mode control, just a toggle.
-  _favButton = [[NSButton alloc] initWithFrame:NSMakeRect(286, 68, 22, 22)];
+  _favButton = [[NSButton alloc] initWithFrame:NSMakeRect(282, 58, 22, 22)];
   _favButton.bordered = NO;
   _favButton.imagePosition = NSImageOnly;
   _favButton.target = self;

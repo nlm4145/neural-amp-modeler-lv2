@@ -1,7 +1,7 @@
 // Runtime test of the built UI, not a source-contract or a recompiled UI copy.
 // From the repository root (macOS, with a WindowServer session):
 // clang++ -std=c++20 -fobjc-arc -Isrc -Ideps/lv2/include \
-//   tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm -framework Cocoa \
+//   tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm src/rig_profile_catalog.mm -framework Cocoa \
 //   -framework QuartzCore -framework CoreImage \
 //   -o "$TMPDIR/verify_transformer_ui"
 // "$TMPDIR/verify_transformer_ui" \
@@ -595,7 +595,7 @@ static void verifyCompressorPreAmp(Runtime& runtime, Host& host, Class presetCla
   drain();
   [runtime.window.contentView layoutSubtreeIfNeeded];
   REQUIRE(state->deckTabPanes.count >= 5);
-  NSView* pane1 = state->deckTabPanes[1];
+  NSView* pane1 = (NSView*)state->workspace;
   REQUIRE(pane1 && !pane1.isHiddenOrHasHiddenAncestor);
 
   // Check tab titles and custom colors
@@ -751,7 +751,7 @@ static void verifyTunerDeck(Runtime& runtime, Host& host) {
   [runtime.window.contentView layoutSubtreeIfNeeded];
 
   REQUIRE(state->deckTabPanes.count >= 5);
-  NSView* pane0 = state->deckTabPanes[0];
+  NSView* pane0 = (NSView*)state->workspace;
   REQUIRE(pane0 && !pane0.isHiddenOrHasHiddenAncestor);
   REQUIRE(state->tunerPanel && !state->tunerPanel.isHidden);
   REQUIRE(state->tunerButton);
@@ -808,6 +808,34 @@ static void verifyTunerDeck(Runtime& runtime, Host& host) {
   drain();
   CHECK([state->tunerNoteLabel.stringValue isEqualToString:@"E4"]);
   CHECK([state->tunerCentsLabel.stringValue containsString:@"SHARP"]);
+
+  // Workspace navigation must activate the tuner and leave it without resetting
+  // the requested stage or module through the legacy tab synchronization.
+  [state->workspace selectStage:4];
+  [state->workspace selectModule:@"tuner"];
+  CHECK(state->activeDeckTab == 0);
+  CHECK([state->workspace.selectedModule isEqualToString:@"tuner"]);
+  state->selectDeckTab(0);
+  CHECK(state->activeDeckTab == 0);
+  CHECK([state->workspace.selectedModule isEqualToString:@"tuner"]);
+  [state->workspace selectModule:@"delay"];
+  CHECK(state->activeDeckTab != 0);
+  CHECK(state->workspace.selectedStage == 4);
+  CHECK([state->workspace.selectedModule isEqualToString:@"delay"]);
+  NSArray<RigButton*>* moduleButtons = [(id)state->workspace valueForKey:@"moduleButtons"];
+  NSUInteger visibleSelected = 0;
+  for (RigButton* button in moduleButtons) {
+    if (!button.isHiddenOrHasHiddenAncestor && button.primary) {
+      ++visibleSelected;
+      CHECK([button.accessibilityIdentifier isEqualToString:@"delay"]);
+    }
+  }
+  CHECK(visibleSelected == 1);
+  [state->workspace selectModule:@"tuner"];
+  [state->workspace selectStage:2];
+  CHECK(state->activeDeckTab != 0);
+  CHECK(state->workspace.selectedStage == 2);
+  CHECK([state->workspace.selectedModule isEqualToString:@"main"]);
 }
 
 static void verifyDeckTabSelection(Runtime& runtime, Host& host) {
@@ -866,8 +894,11 @@ static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) 
   std::array<float, kRackCount> expected = kRackControlDefaults;
   values(expected, false);
   constexpr std::array<NSInteger, kRackCount> tabs = {4, 4, 4, 2, 1, 2, 3, 3, 2};
+  NSArray<NSString*>* moduleKeys = @[@"delay", @"reverb", @"spatial", @"power", @"sculpt",
+                                     @"transformer", @"speaker", @"cablab", @"power"];
   for (size_t i = 0; i < kRackCount; ++i) {
     state->selectDeckTab(tabs[i]);
+    [state->workspace selectModule:moduleKeys[i]];
     CHECK(!state->deckTabPanes[(NSUInteger)tabs[i]].hidden);
     drain();
     [runtime.window.contentView layoutSubtreeIfNeeded];
@@ -1153,7 +1184,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   values(PowerTube::kCaptured, 50, 1, 1, false);
 
   stage = "Power Stage three racks / geometry / aligned control zones";
-  NSView* pane = state->deckTabPanes[2];
+  NSView* pane = (NSView*)state->workspace;
   auto rackFor = [&](NSView* child) -> NSView* {
     for (NSView* view = child.superview; view && view != pane; view = view.superview)
       if ([view isKindOfClass:NSClassFromString(@"RigPanel")]) return view;
@@ -1179,7 +1210,11 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSArray<NSView*>* topControls = @[state->deckKnobs[21],
                                  state->powerTubePopup, state->transformerSpecLabels[0]];
   NSMutableArray<NSView*>* racks = [NSMutableArray array];
+  NSArray<NSString*>* moduleKeys = @[@"power", @"power", @"transformer"];
   for (size_t i = 0; i < 3; ++i) {
+    [state->workspace selectModule:moduleKeys[i]];
+    drain();
+    [runtime.window.contentView layoutSubtreeIfNeeded];
     RigButton* bypass = state->rackButtons[rackIndices[i]];
     NSView* rack = rackFor(bypass);
     REQUIRE(rack && [rack isDescendantOf:pane]);
@@ -1212,10 +1247,6 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
     CHECK(card.bounds.size.width > 0 && card.bounds.size.height > 0);
     CHECK(!NSIntersectsRect(top.frame, card.frame));
   }
-  for (NSUInteger i = 0; i < racks.count; ++i)
-    for (NSUInteger j = i + 1; j < racks.count; ++j)
-      CHECK(!NSIntersectsRect([racks[i] convertRect:racks[i].bounds toView:pane],
-                             [racks[j] convertRect:racks[j].bounds toView:pane]));
   for (size_t index : {21u, 16u, 17u, 18u, 37u}) {
     NSSlider* control = state->deckKnobs[index];
     NSTextField* value = state->deckValueLabels[index];
@@ -1403,6 +1434,8 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   CHECK([NSSet setWithArray:spec[@"ports"]].count == 3);
   CHECK([[NSSet setWithArray:spec[@"ports"]] isEqualToSet:[NSSet setWithArray:@[@79, @80, @81]]]);
   CHECK([spec[@"enabledPort"] unsignedIntValue] == tubePort);
+  [state->workspace selectModule:@"power"];
+  drain();
   CHECK(!popup.isHiddenOrHasHiddenAncestor && popup.isEnabled);
   echo(powerPort, 0); echo(tubePort, 0);
   echo(kPowerTubeTypePort, PowerTube::kEL34); echo(kPowerTubeCharacterPort, 72.5f);
@@ -1597,7 +1630,7 @@ static void verifyPostCompressor(Runtime& runtime, Host& host, Class presetClass
   state->selectDeckTab(4);
   drain();
   [runtime.window.contentView layoutSubtreeIfNeeded];
-  NSView* pane = state->deckTabPanes[4];
+  NSView* pane = (NSView*)state->workspace;
   REQUIRE(state->postCompressorButton && state->postCompressorVisualizer);
   CHECK([state->postCompressorButton isDescendantOf:pane]);
   CHECK([state->postCompressorVisualizer isDescendantOf:pane]);
@@ -1735,9 +1768,11 @@ static void verifyStageMeters(Runtime& runtime) {
   CHECK(near(state->rigContent.bounds.size.width, 1520));
   CHECK(near(runtime.window.contentView.bounds.size.width, 1520));
   REQUIRE(state->stageCards[0] && state->stageCards[1] && state->stageCards[2]);
-  const CGFloat pedalWidth = state->stageCards[0].bounds.size.width;
-  CHECK(std::fabs(state->stageCards[1].bounds.size.width - pedalWidth * 6.0 / 4.65) < 1.0);
-  CHECK(std::fabs(state->stageCards[2].bounds.size.width - pedalWidth * 6.0 / 4.65) < 1.0);
+  for (size_t i = 0; i < 3; ++i) {
+    [state->workspace selectStage:(NSInteger)i + 1];
+    CHECK(!state->stageCards[i].isHiddenOrHasHiddenAncestor);
+    CHECK(near(state->stageCards[i].bounds.size.width, 960));
+  }
   for (size_t i = 0; i < 3; ++i) {
     NSTextField* badge = state->stageHeaderArchBadges[i];
     REQUIRE(badge && badge.superview);
@@ -1805,6 +1840,7 @@ static void verifyStageMeters(Runtime& runtime) {
     REQUIRE(timer && timer.isValid);
     CHECK(near(timer.timeInterval, 1.0 / 30.0));
     CHECK([state->stageMeters[i].title isEqualToString:titles[i]]);
+    [state->workspace selectStage:(NSInteger)(i == 0 ? 0 : i == 1 ? 1 : i == 2 ? 3 : 4)];
     CHECK(!state->stageMeters[i].isHiddenOrHasHiddenAncestor);
     CHECK(state->stageMeters[i].bounds.size.width > 0 && state->stageMeters[i].bounds.size.height > 0);
     for (size_t j = 0; j < i; ++j) CHECK(properties[i] != properties[j]);
@@ -2045,6 +2081,7 @@ static void verify(const char* modulePath) {
   CHECK([state->presetManager.presetsDirectory hasPrefix:testRoot]);
   CHECK([RigUIState::slotPresetsFilePath() hasPrefix:testRoot]);
   [(id<TransformerTestController>)state->uiController showAmpAdvanced:nil];
+  [state->workspace selectModule:@"transformer"];
   drain();
   [runtime.window orderFront:nil];
   [runtime.window.contentView layoutSubtreeIfNeeded];

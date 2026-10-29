@@ -87,11 +87,15 @@ static double copilotParseClock(NSString* text) {
 #include "rig_knobs.h"
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
+#import "rig_workspace.h"
 #import "rig_tone_browser.h"
 #import "rig_tone_api.h"
 
 @interface NAMRigUIController : NSObject <NSComboBoxDelegate, NSTextFieldDelegate, NSMenuDelegate, NSPopoverDelegate>
 @property(nonatomic, assign) RigUIState* state;
+@property(nonatomic, strong) NSView* aiEngineStrip;
+@property(nonatomic, strong) NSLayoutConstraint* aiCardsTopConstraint;
+@property(nonatomic, strong) RigButton* aiEngineToggleButton;
 @property(nonatomic, strong) NSPopUpButton* copilotProvPopup;
 @property(nonatomic, strong) NSComboBox* copilotModelComboBox;
 @property(nonatomic, strong) RigButton* copilotModelsRefreshBtn;
@@ -2532,7 +2536,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   }
   [self updateCopilotRiffUI];
   if (!isProc && _state->aiTabBtn) {
-    _state->aiTabBtn.title = @"✨ AI TONE MATCHER";
+    _state->aiTabBtn.title = @"AI STUDIO";
   }
   if (isProc) [self.copilotSpinner startAnimation:nil];
   else [self.copilotSpinner stopAnimation:nil];
@@ -2542,6 +2546,15 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   if (self.copilotPromptInput.window) {
     [self.copilotPromptInput.window makeFirstResponder:self.copilotPromptInput];
   }
+}
+
+- (void)toggleAIEngine:(id)sender {
+  (void)sender;
+  const BOOL show = self.aiEngineStrip.hidden;
+  self.aiEngineStrip.hidden = !show;
+  self.aiCardsTopConstraint.constant = show ? -58 : 10;
+  self.aiEngineToggleButton.title = show ? @"Hide AI Settings" : @"AI Settings";
+  self.aiEngineToggleButton.primary = show;
 }
 
 - (void)setupAIToneMatcherPage:(NSView*)aiPane {
@@ -2558,35 +2571,33 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   const CGFloat pad = 24.0;
 
   // Header Title Bar
-  NSTextField* aiTitle = addLabel(aiPane, @"✨ AI TONE MATCHER", NSZeroRect,
-                                  [NSFont fontWithName:@"SF Mono Bold" size:16.0] ?: [NSFont boldSystemFontOfSize:16],
-                                  rigAccent());
-  aiTitle.toolTip = @"AI Tone Matcher (⌘K): Describe any artist, song, or match sound from reference audio.";
+  NSTextField* aiTitle = addLabel(aiPane, @"AI Tone Studio", NSZeroRect,
+                                  [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold], rigText());
+  aiTitle.toolTip = @"AI Tone Studio (⌘K): Describe a sound or match a reference, then review every change before applying it.";
   aiTitle.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:aiTitle];
   [[aiTitle.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
   [[aiTitle.topAnchor constraintEqualToAnchor:aiPane.topAnchor constant:10] setActive:YES];
   [[aiTitle.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
-  NSTextField* aiSub = addLabel(aiPane, @"INTELLIGENT TONE TUNING & LOCAL REFERENCE AUDIO MATCHING", NSZeroRect,
-                                [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
-                                rigDimText());
-  rigApplyTracking(aiSub, 0.8);
+  NSTextField* aiSub = addLabel(aiPane, @"Describe a sound or match a reference. Review every change before applying.", NSZeroRect,
+                                [NSFont systemFontOfSize:11 weight:NSFontWeightRegular], rigDimText());
   aiSub.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:aiSub];
   [[aiSub.leadingAnchor constraintEqualToAnchor:aiTitle.trailingAnchor constant:14] setActive:YES];
   [[aiSub.centerYAnchor constraintEqualToAnchor:aiTitle.centerYAnchor] setActive:YES];
 
-  NSTextField* aiBadge = addLabel(aiPane, @"⌘K SWITCH • LOCAL DSP & DEMUCS ISOLATION • CLOUD & OFFLINE MODELS", NSZeroRect,
-                                  [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
-                                  rigDimText(), NSTextAlignmentRight);
-  aiBadge.translatesAutoresizingMaskIntoConstraints = NO;
-  [aiPane addSubview:aiBadge];
-  [[aiBadge.trailingAnchor constraintEqualToAnchor:aiPane.trailingAnchor constant:-pad] setActive:YES];
-  [[aiBadge.centerYAnchor constraintEqualToAnchor:aiTitle.centerYAnchor] setActive:YES];
+  self.aiEngineToggleButton = rigButton(aiPane, @"AI Settings", self, @selector(toggleAIEngine:), NSZeroRect);
+  self.aiEngineToggleButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [[self.aiEngineToggleButton.trailingAnchor constraintEqualToAnchor:aiPane.trailingAnchor constant:-pad] setActive:YES];
+  [[self.aiEngineToggleButton.centerYAnchor constraintEqualToAnchor:aiTitle.centerYAnchor] setActive:YES];
+  [[self.aiEngineToggleButton.widthAnchor constraintEqualToConstant:112] setActive:YES];
+  [[self.aiEngineToggleButton.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
   // Top Strip: AI Inference Engine & Configuration
   RigPanel* engineStrip = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  self.aiEngineStrip = engineStrip;
+  engineStrip.hidden = YES;
   engineStrip.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:engineStrip];
   [[engineStrip.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
@@ -2698,7 +2709,8 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [aiPane addSubview:card3];
 
   [[card1.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
-  [[card1.topAnchor constraintEqualToAnchor:engineStrip.bottomAnchor constant:10] setActive:YES];
+  self.aiCardsTopConstraint = [card1.topAnchor constraintEqualToAnchor:engineStrip.bottomAnchor constant:-58];
+  self.aiCardsTopConstraint.active = YES;
   [[card1.bottomAnchor constraintEqualToAnchor:aiPane.bottomAnchor constant:-12] setActive:YES];
   [[card1.widthAnchor constraintEqualToConstant:480] setActive:YES];
 
@@ -2750,13 +2762,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   // ----------------------------------------------------
   // CARD 1: AI PROMPT & TONE CRAFTER
   // ----------------------------------------------------
-  NSTextField* c1Title = addLabel(card1, @"✨ AI TONE CRAFTER", NSMakeRect(16, cardH - 30, contentW, 20),
-                                  [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigAccent());
-  rigApplyTracking(c1Title, 1.1);
+  NSTextField* c1Title = addLabel(card1, @"DESCRIBE YOUR SOUND", NSMakeRect(16, cardH - 30, contentW, 20),
+                                  [NSFont systemFontOfSize:12 weight:NSFontWeightBold], rigText());
+  rigApplyTracking(c1Title, 0.7);
 
-  NSTextField* c1Sub = addLabel(card1, @"NATURAL LANGUAGE TONE SYNTHESIS & REASONING", NSMakeRect(16, cardH - 46, contentW, 16),
-                                [NSFont systemFontOfSize:10 weight:NSFontWeightRegular], rigDimText());
-  rigApplyTracking(c1Sub, 0.7);
+  addLabel(card1, @"Artist, song, playing style, or the tone in your head", NSMakeRect(16, cardH - 46, contentW, 16),
+           [NSFont systemFontOfSize:10 weight:NSFontWeightRegular], rigDimText());
   addSep(card1, cardH - 54, contentW);
 
   addLabel(card1, @"Describe Artist, Song, or Tone Goal:", NSMakeRect(16, cardH - 74, contentW, 18),
@@ -4872,11 +4883,11 @@ static void addToneBrowser(RigUIState* state, NSView* tonePane) {
   controller.sort.toolTip = popupTooltip(@"Orders Tone3000 search results.",
                                          controller.sort);
 
-  // Tone cards — multi-column collection view with large readable cards.
+  // Compact vertical cards keep three rows visible while browsing large libraries.
   const CGFloat tableWidth = bw - 48;
   NSCollectionViewGridLayout *grid = [[NSCollectionViewGridLayout alloc] init];
-  grid.minimumItemSize = NSMakeSize(270, 108);
-  grid.maximumItemSize = NSMakeSize(380, 108);
+  grid.minimumItemSize = NSMakeSize(270, 214);
+  grid.maximumItemSize = NSMakeSize(380, 214);
   grid.minimumInteritemSpacing = 14;
   grid.minimumLineSpacing = 14;
   grid.margins = NSEdgeInsetsMake(10, 10, 10, 10);
@@ -6948,13 +6959,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     [[state->toneTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
     state->toneTabBtn.toolTip = @"Browse, search, and download NAM captures and cabinet IRs from Tone3000.";
 
-    state->aiTabBtn = rigButton(headerBar, @"✨ AI TONE MATCHER", state->uiController, @selector(switchTab:), NSZeroRect);
+    state->aiTabBtn = rigButton(headerBar, @"AI STUDIO", state->uiController, @selector(switchTab:), NSZeroRect);
     state->aiTabBtn.tag = 2;
     state->aiTabBtn.translatesAutoresizingMaskIntoConstraints = NO;
     state->aiCopilotBtn = state->aiTabBtn;
     [[state->aiTabBtn.leadingAnchor constraintEqualToAnchor:state->toneTabBtn.trailingAnchor constant:6] setActive:YES];
     [[state->aiTabBtn.centerYAnchor constraintEqualToAnchor:headerBar.centerYAnchor] setActive:YES];
-    [[state->aiTabBtn.widthAnchor constraintEqualToConstant:150] setActive:YES];
+    [[state->aiTabBtn.widthAnchor constraintEqualToConstant:110] setActive:YES];
     [[state->aiTabBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
     state->aiTabBtn.toolTip = @"AI Tone Matcher (⌘K): Describe any artist, song, or match sound from reference audio.";
 
@@ -7666,6 +7677,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       if (!state->valueLabels[k] && state->deckValueLabels[k]) state->valueLabels[k] = state->deckValueLabels[k];
     }
 
+    state->workspace = rigCreateWorkspace(state, rigPane, boxRow, expansionSlot,
+        @[knobGroups[0], knobGroups[1], knobGroups[2]]);
     addToneBrowser(state, tonePane);
     addAIToneMatcherPage(state, aiPane);
     state->selectTab(0);

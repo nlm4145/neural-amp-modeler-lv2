@@ -12,6 +12,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface RigProfileCatalog : NSObject
 
 + (instancetype)sharedCatalog;
+// Index a specific library root (containing Pedal, Amp, and Cab folders).
+- (instancetype)initWithLibraryDirectory:(NSString*)directory;
 
 // Invalidate cached library index (e.g. after downloading a new tone or editing files).
 - (void)invalidateCache;

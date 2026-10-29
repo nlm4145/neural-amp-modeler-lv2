@@ -27,17 +27,17 @@ assert "NSMakeRect(0, 0, 1520, 980)" in standalone, "Standalone window must be 1
 # Verify UI elements and wiring
 assert '@"RIG"' in ui, "UI missing RIG tab button title"
 assert '@"TONE3000"' in ui, "UI missing TONE3000 tab button title"
-assert '@"✨ AI TONE MATCHER"' in ui, "UI missing AI TONE MATCHER tab button title"
+assert '@"AI STUDIO"' in ui, "UI missing AI STUDIO tab button title"
 assert "switchTab:" in ui, "NAMRigUIController missing switchTab: action"
 assert "addToneBrowser(state, tonePane)" in ui, "ToneBrowser must be mounted to tonePane"
 assert "addAIToneMatcherPage(state, aiPane)" in ui, "AIToneMatcherPage must be mounted to aiPane"
-assert "[rigPane addSubview:boxRow]" in ui, "Stage boxes must be mounted to rigPane"
-assert "expansionSlot" in ui, "Empty expansion space must be present on rigPane"
+assert "[rigPane addSubview:boxRow]" in ui, "Legacy stage controls must still be constructed for workspace reuse"
+assert "rigCreateWorkspace" in ui, "Contextual workspace must be mounted on rigPane"
 assert "state->selectTab(0)" in ui, "Initial tab selection must default to Rig (0)"
 
-# Verify enlarged Tone3000 cards
-assert "minimumItemSize = NSMakeSize(270, 108)" in ui, "Card grid must use enlarged minimum card size"
-assert "NSMakeRect(8, 8, 92, 92)" in browser, "ToneCardItem must use enlarged 92x92 artwork"
+# Verify compact Tone3000 cards
+assert "minimumItemSize = NSMakeSize(270, 214)" in ui, "Card grid must use compact vertical cards"
+assert "NSMakeRect(12, 86, 296, 104)" in browser, "ToneCardItem must use compact top artwork"
 assert "_tagField" in browser, "ToneCardItem must include tag field"
 
 # Verify header relocation to host toolbar space and upward boxRow shift
@@ -59,4 +59,4 @@ assert 'Makes and Models' in browser, "formatToneCardTooltip must format Makes a
 assert 'Description' in browser, "formatToneCardTooltip must format Description"
 assert 'Tags' in browser, "formatToneCardTooltip must format Tags"
 
-print("  PASS  tabbed UI contract verified (1280x980, headerBar relocation, upward cards, adjacent Tone3000 filters, rich hover tooltip)")
+print("  PASS  tabbed UI contract verified (contextual workspace, AI Studio, compact Tone3000 grid)")

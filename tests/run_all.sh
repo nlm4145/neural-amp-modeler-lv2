@@ -185,7 +185,7 @@ fi
 if [ -n "${RIG_UI_SO:-}" ]; then
   echo "== tests/verify_transformer_ui.mm (editable controls and presets) =="
   if [ -f "$RIG_UI_SO" ] && clang++ -std=c++20 $CXX_EXTRA -D_DARWIN_C_SOURCE -fobjc-arc \
-      -Isrc -Ideps/lv2/include tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm \
+      -Isrc -Ideps/lv2/include tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm src/rig_profile_catalog.mm \
       -framework Cocoa -framework QuartzCore -framework CoreImage \
       -o /tmp/verify_transformer_ui; then
     /tmp/verify_transformer_ui "$RIG_UI_SO" || status=1

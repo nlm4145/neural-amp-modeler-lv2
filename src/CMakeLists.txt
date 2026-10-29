@@ -356,6 +356,7 @@ if (APPLE)
 		rig_local_server.h rig_local_server.mm
 		rig_riff_recorder.h rig_riff_recorder.mm
 		rig_local_tone_matcher.h rig_local_tone_matcher.mm local_tone_learning.h
+		rig_workspace.h rig_workspace.mm
 		rig_ui_state.h)
 	add_library(rig_ui_core OBJECT ${RIG_UI_SOURCES})
 	set_target_properties(rig_ui_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

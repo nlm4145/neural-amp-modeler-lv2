@@ -28,6 +28,7 @@
 @end
 
 @interface RigProfileCatalog () {
+  NSString* _libraryDirectory;
   NSMutableDictionary<NSNumber*, NSDate*>* _lastScannedDates;
   NSMutableDictionary<NSNumber*, NSDictionary<NSString*, NSDictionary<NSString*, NSMutableArray<RigLibraryProfilePack*>*>*>*>* _cachedCatalogs;
 }
@@ -45,7 +46,12 @@
 }
 
 - (instancetype)init {
+  return [self initWithLibraryDirectory:[@"~/Music/Tone3000 Library" stringByExpandingTildeInPath]];
+}
+
+- (instancetype)initWithLibraryDirectory:(NSString*)directory {
   if (self = [super init]) {
+    _libraryDirectory = [directory copy];
     _lastScannedDates = [NSMutableDictionary dictionary];
     _cachedCatalogs = [NSMutableDictionary dictionary];
   }
@@ -59,8 +65,8 @@
   }
 }
 
-static NSString* libraryDirectoryForStage(size_t stage) {
-  NSString* base = [@"~/Music/Tone3000 Library" stringByExpandingTildeInPath];
+- (NSString*)libraryDirectoryForStage:(size_t)stage {
+  NSString* base = _libraryDirectory;
   if (stage == 0) return [base stringByAppendingPathComponent:@"Pedal"];
   if (stage == 1) return [base stringByAppendingPathComponent:@"Amp"];
   return [base stringByAppendingPathComponent:@"Cab"];
@@ -318,7 +324,7 @@ static NSString* cleanModelName(NSString* filename) {
 
 - (NSDictionary<NSString*, NSDictionary<NSString*, NSMutableArray<RigLibraryProfilePack*>*>*>*)catalogForStage:(size_t)stage {
   size_t effectiveCategoryStage = (stage == 3) ? 2 : stage;
-  NSString* dir = libraryDirectoryForStage(effectiveCategoryStage);
+  NSString* dir = [self libraryDirectoryForStage:effectiveCategoryStage];
   NSFileManager* fm = [NSFileManager defaultManager];
   if (![fm fileExistsAtPath:dir]) return @{};
 
