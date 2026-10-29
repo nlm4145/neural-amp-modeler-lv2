@@ -64,6 +64,9 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @interface NAMPinEQEditor : NSView
 - (instancetype)initWithPane:(NAMRig::PinEqPane)pane accent:(NSColor*)accent;
 @property(nonatomic, readonly) NAMRig::PinEqPane pane;
+// Processor response before the editable EQ bands, on the same frequency axis.
+@property(nonatomic, copy) double (^baseResponseDb)(double hz);
+- (double)responseDbAtFrequency:(double)hz;
 // Fired for every value the editor changes (drag, scroll, menus).
 @property(nonatomic, copy) void (^onChange)(uint32_t port, float value);
 // Fired once a gesture finishes, for preset "modified" tracking.
@@ -71,15 +74,35 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 - (void)setPortValue:(float)value forPort:(uint32_t)port;
 @end
 
+// Native parameter handles layered over response plots. Empty space passes
+// through to frequency EQ pins; dragging a handle edits the named DSP control.
+@interface NAMGraphControlPin : NSObject
+@property(nonatomic, copy) NSString* label;
+@property(nonatomic, copy) NSPoint (^position)(NSRect bounds);
+@property(nonatomic, copy) BOOL (^isEnabled)(void);
+@property(nonatomic, copy) void (^onBegin)(void);
+@property(nonatomic, copy) void (^onDrag)(NSPoint delta);
+@property(nonatomic, copy) void (^onCommit)(void);
+@end
+
+@interface NAMGraphControlEditor : NSView
+@property(nonatomic, copy) NSArray<NAMGraphControlPin*>* pins;
+- (NSPoint)pointForPin:(NSUInteger)index;
+@end
+
+@interface NAMInteractiveGraph : NSView
+- (double)responseDbAtFrequency:(double)hz;
+@end
+
 // Studio Deck Hardware Visualizers
-@interface NAMDelayTapVisualizer : NSView
+@interface NAMDelayTapVisualizer : NAMInteractiveGraph
 @property(nonatomic) float timeMs;
 @property(nonatomic) float feedback;
 @property(nonatomic) float damping;
 @property(nonatomic) float mix;
 @end
 
-@interface NAMReverbDecayVisualizer : NSView
+@interface NAMReverbDecayVisualizer : NAMInteractiveGraph
 @property(nonatomic) float mix;
 @property(nonatomic) float decay;
 @property(nonatomic) float size;
@@ -87,12 +110,12 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float preDelay;
 @end
 
-@interface NAMSpatialAcousticVisualizer : NSView
+@interface NAMSpatialAcousticVisualizer : NAMInteractiveGraph
 @property(nonatomic) float width;
 @property(nonatomic) float room;
 @end
 
-@interface NAMCompressorVisualizer : NSView
+@interface NAMCompressorVisualizer : NAMInteractiveGraph
 @property(nonatomic) BOOL compact;
 @property(nonatomic) float amount;
 @property(nonatomic) float attack;
@@ -100,14 +123,14 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) BOOL enabled;
 @end
 
-@interface NAMPowerStageVisualizer : NSView
+@interface NAMPowerStageVisualizer : NAMInteractiveGraph
 @property(nonatomic) float sag;
 @property(nonatomic) float bias;
 @property(nonatomic) float feedback;
 @property(nonatomic) float master;
 @end
 
-@interface NAMSculptVisualizer : NSView
+@interface NAMSculptVisualizer : NAMInteractiveGraph
 @property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 @property(nonatomic) float bright;
 @property(nonatomic) float inputEq;
@@ -118,7 +141,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) BOOL enabled;
 @end
 
-@interface NAMBoostVisualizer : NSView
+@interface NAMBoostVisualizer : NAMInteractiveGraph
 @property(nonatomic) float drive;
 @property(nonatomic) float tight;
 @property(nonatomic) float tone;
@@ -127,19 +150,19 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) BOOL enabled;
 @end
 
-@interface NAMPowerTubeVisualizer : NSView
+@interface NAMPowerTubeVisualizer : NAMInteractiveGraph
 @property(nonatomic) int profile;
 @property(nonatomic) float character;
 @property(nonatomic) BOOL enabled;
 @end
 
-@interface NAMTransformerVisualizer : NSView
+@interface NAMTransformerVisualizer : NAMInteractiveGraph
 @property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 @property(nonatomic) int profile;
 @property(nonatomic) NAMRig::OutputTransformer::Parameters parameters;
 @end
 
-@interface NAMSpeakerDynamicsVisualizer : NSView
+@interface NAMSpeakerDynamicsVisualizer : NAMInteractiveGraph
 @property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 // Resolved SpeakerDynamics profile (Auto already mapped) and power-amp
 // damping 0..1 (negative feedback while the Power rack is on).
@@ -151,7 +174,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float resonance;
 @end
 
-@interface NAMCabConsoleVisualizer : NSView
+@interface NAMCabConsoleVisualizer : NAMInteractiveGraph
 @property(nonatomic, readonly) NAMPinEQEditor* pinEditor;
 @property(nonatomic) float cabALevel;
 @property(nonatomic) float cabBLevel;
@@ -171,6 +194,7 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic, copy) NSString* title;
 @property(nonatomic, copy) NSString* subtitle;
 @property(nonatomic, strong) NSColor* accentColor;
+@property(nonatomic) BOOL horizontal;
 @property(nonatomic, readonly) float levelDb;
 @property(nonatomic, readonly) float peakDb;
 @property(nonatomic, readonly) BOOL clipping;

@@ -54,6 +54,7 @@ static void deactivateViewConstraints(NSView* view) {
 @property(nonatomic, strong) NSMutableArray<RigButton*>* moduleButtons;
 @property(nonatomic, strong) NSMutableArray<RigButton*>* chainButtons;
 @property(nonatomic, strong) NSArray<NSView*>* knobGroups;
+@property(nonatomic, strong) NSMutableDictionary<NSString*, RigPanel*>* moduleRacks;
 @property(nonatomic, readwrite) NSInteger selectedStage;
 @property(nonatomic, copy, readwrite) NSString* selectedModule;
 @end
@@ -111,23 +112,14 @@ static void deactivateViewConstraints(NSView* view) {
   return panel;
 }
 
-- (RigPanel*)meterPanelWithTitle:(NSString*)title meter:(RigStageMeterView*)meter
-                          parent:(NSView*)parent x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h {
-  RigPanel* panel = [self panelAt:parent x:x y:y w:w h:h];
-  [self label:title parent:panel x:24 y:22 w:w - 48 size:19 weight:NSFontWeightSemibold color:rigText()];
-  [self place:meter parent:panel x:24 y:82 w:64 h:h - 116];
-  return panel;
-}
-
-- (RigPanel*)infoPanelWithTitle:(NSString*)title subtitle:(NSString*)subtitle
-                         parent:(NSView*)parent x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h {
-  RigPanel* panel = [self panelAt:parent x:x y:y w:w h:h];
-  [self label:title parent:panel x:22 y:22 w:w - 44 size:17 weight:NSFontWeightSemibold color:rigText()];
-  NSTextField* body = workspaceLabel(panel, subtitle, 11, NSFontWeightRegular, rigDimText());
-  body.lineBreakMode = NSLineBreakByWordWrapping;
-  body.maximumNumberOfLines = 0;
-  body.frame = [self topRect:panel x:22 y:58 w:w - 44 h:h - 82];
-  return panel;
+// Help belongs beside the controls, rather than in a separate full-height card.
+- (void)pageHeading:(NSString*)title subtitle:(NSString*)subtitle parent:(NSView*)parent
+                  x:(CGFloat)x w:(CGFloat)w {
+  [self label:title parent:parent x:x y:4 w:w size:19 weight:NSFontWeightSemibold color:rigText()];
+  NSTextField* help = workspaceLabel(parent, subtitle ?: @"", 11, NSFontWeightRegular, rigDimText());
+  help.lineBreakMode = NSLineBreakByWordWrapping;
+  help.maximumNumberOfLines = 2;
+  help.frame = [self topRect:parent x:x y:34 w:w h:34];
 }
 
 - (NSView*)newPageWithKey:(NSString*)key {
@@ -140,11 +132,12 @@ static void deactivateViewConstraints(NSView* view) {
 
 - (void)addStageHero:(NSInteger)stage page:(NSView*)page {
   RigPanel* card = self.state->stageCards[(size_t)stage];
-  [self place:card parent:page x:0 y:0 w:960 h:704];
-  const CGFloat imageHeight = stage == 2 ? 390 : 450;
+  const CGFloat cardWidth = 960;
+  [self place:card parent:page x:stage == 0 ? 256 : 0 y:0 w:cardWidth h:640];
+  const CGFloat imageHeight = stage == 2 ? 350 : 400;
   NSImageView* thumb = self.state->stageImages[(size_t)stage];
   deactivateViewConstraints(thumb);
-  thumb.frame = [self topRect:card x:16 y:54 w:928 h:imageHeight];
+  thumb.frame = [self topRect:card x:16 y:54 w:cardWidth - 32 h:imageHeight];
   RigPopUpButton* picker = self.state->modelPickers[(size_t)stage];
   deactivateViewConstraints(picker);
   const CGFloat pickerX = stage == 2 ? 35 : 16;
@@ -167,11 +160,11 @@ static void deactivateViewConstraints(NSView* view) {
     keys = @[@"main", @"power", @"transformer"];
     titles = @[@"Amplifier", @"Power Stage", @"Output Transformer"];
   } else if (stage == 3) {
-    keys = @[@"main", @"speaker", @"cablab", @"align"];
-    titles = @[@"Cabinet", @"Speaker Dynamics", @"Cabinet Blend", @"Alignment & Cuts"];
+    keys = @[@"main", @"speaker", @"cablab"];
+    titles = @[@"Cabinet", @"Speaker Dynamics", @"Cabinet Blend"];
   } else {
-    keys = @[@"main", @"postcomp", @"delay", @"reverb", @"spatial", @"tuner"];
-    titles = @[@"Master Output", @"Compressor", @"Delay", @"Reverb", @"Spatial", @"Tuner"];
+    keys = @[@"main", @"postcomp", @"delay", @"reverb", @"spatial"];
+    titles = @[@"Master Output", @"Compressor", @"Delay", @"Reverb", @"Spatial"];
   }
   NSMutableArray<RigButton*>* buttons = [NSMutableArray array];
   for (NSUInteger i = 0; i < keys.count; ++i) {
@@ -188,45 +181,69 @@ static void deactivateViewConstraints(NSView* view) {
 - (NSView*)modulePageForStage:(NSInteger)stage key:(NSString*)key title:(NSString*)title
                          rack:(RigPanel*)rack rightRack:(RigPanel*)rightRack info:(NSString*)info {
   NSView* page = [self newPageWithKey:key];
-  RigPanel* nav = [self panelAt:page x:0 y:0 w:220 h:704];
+  if (stage == 2 || stage == 3) {
+    [self pageHeading:title subtitle:info parent:page x:0 w:1472];
+    self.moduleRacks[key] = rack;
+    [self place:rack parent:page x:0 y:78 w:rightRack ? 1000 : 1472 h:598];
+    if (rightRack) [self place:rightRack parent:page x:1016 y:78 w:456 h:598];
+    return page;
+  }
+  RigPanel* nav = [self panelAt:page x:0 y:0 w:220 h:794];
   NSString* navTitle = stage <= 1 ? @"Input & Preamp" : (stage == 2 ? @"Amp Processing" :
       (stage == 3 ? @"Cab Processing" : @"Output & Post-FX"));
   [self label:navTitle parent:nav x:18 y:22 w:184 size:18 weight:NSFontWeightSemibold color:rigText()];
   [self addContextNavigationForPage:nav stage:stage];
-  [self place:rack parent:page x:236 y:0 w:rightRack || info ? 824 : 1236 h:704];
-  if (rightRack) [self place:rightRack parent:page x:1076 y:0 w:396 h:704];
-  else if (info) [self infoPanelWithTitle:title subtitle:info parent:page x:1076 y:0 w:396 h:704];
+  [self pageHeading:title subtitle:info parent:page x:236 w:1236];
+  self.moduleRacks[key] = rack;
+  [self place:rack parent:page x:236 y:78 w:rightRack ? 824 : 1236 h:716];
+  if (rightRack) [self place:rightRack parent:page x:1076 y:78 w:396 h:716];
   return page;
 }
 
 - (void)buildMainPages {
-  // Input: level/gate controls and the input meter.
+  // Compact level controls leave room for the live processing racks below.
   NSView* input = [self newPageWithKey:@"main:0"];
-  [self meterPanelWithTitle:@"Input" meter:self.state->stageMeters[0] parent:input x:0 y:0 w:280 h:704];
-  [self knobPanelWithTitle:@"Input & Gate" group:self.knobGroups[0] parent:input x:296 y:0 w:1176 h:704 columns:3];
+  [self pageHeading:@"Input & Gate" subtitle:@"Set input gain and gate response before the preamp processors."
+             parent:input x:0 w:540];
+  NSArray<NSView*>* inputCells = [self knobCells:self.knobGroups[0]];
+  for (NSUInteger i = 0; i < inputCells.count; ++i)
+    [self place:inputCells[i] parent:input x:600 + i * 200 y:4 w:160 h:142];
 
-  // Pedal: the original model card, oversampling, and power control remain intact.
   NSView* pedal = [self newPageWithKey:@"main:1"];
   [self addStageHero:0 page:pedal];
-  [self infoPanelWithTitle:@"Pedal & Preamp"
-                  subtitle:@"The pedal capture stays front and center. Compressor, preamp EQ, and boost are available below only when you need them."
-                    parent:pedal x:976 y:0 w:496 h:330];
-  [self meterPanelWithTitle:@"Pre-Amp Input" meter:self.state->stageMeters[1] parent:pedal x:976 y:346 w:496 h:358];
 
   NSView* amp = [self newPageWithKey:@"main:2"];
   [self addStageHero:1 page:amp];
-  [self knobPanelWithTitle:@"Tone" group:self.knobGroups[1] parent:amp x:976 y:0 w:496 h:704 columns:3];
+  [self knobPanelWithTitle:@"Tone" group:self.knobGroups[1] parent:amp x:976 y:0 w:496 h:640 columns:3];
 
   NSView* cab = [self newPageWithKey:@"main:3"];
   [self addStageHero:2 page:cab];
-  [self infoPanelWithTitle:@"Cabinet Processing"
-                  subtitle:@"Cab A/B selection and Loudness normalization remain in the cabinet card. Open Speaker Dynamics or Cabinet Blend below for the related processors."
-                    parent:cab x:976 y:0 w:496 h:330];
-  [self meterPanelWithTitle:@"Cabinet Input" meter:self.state->stageMeters[2] parent:cab x:976 y:346 w:496 h:358];
+  [self pageHeading:@"Speaker Dynamics" subtitle:@"Shape the speaker response. Cabinet Blend opens levels, alignment, and cuts."
+             parent:cab x:976 w:496];
 
   NSView* output = [self newPageWithKey:@"main:4"];
-  [self meterPanelWithTitle:@"Master Output" meter:self.state->stageMeters[3] parent:output x:0 y:0 w:360 h:704];
-  [self knobPanelWithTitle:@"Output Level" group:self.knobGroups[2] parent:output x:376 y:0 w:1096 h:704 columns:1];
+  [self pageHeading:@"Master Output" subtitle:@"Set the final level and shape the stereo post-FX chain below."
+             parent:output x:0 w:540];
+  NSArray<NSView*>* outputCells = [self knobCells:self.knobGroups[2]];
+  for (NSUInteger i = 0; i < outputCells.count; ++i)
+    [self place:outputCells[i] parent:output x:600 + i * 160 y:4 w:160 h:142];
+}
+
+// Reuse the same controls on overview and detail pages, preserving all bindings
+// and preset menus. Only their parent and frame change when navigating.
+- (void)mountOverviewRacksForStage:(NSInteger)stage {
+  NSArray<NSString*>* keys = stage == 0 ? @[@"compressor", @"sculpt", @"boost"] :
+      (stage == 4 ? @[@"postcomp", @"delay", @"reverb", @"spatial"] :
+      (stage == 3 ? @[@"speaker"] : @[]));
+  if (!keys.count) return;
+  NSView* page = self.pages[[NSString stringWithFormat:@"main:%ld", (long)stage]];
+  const BOOL besideHero = stage == 3;
+  const CGFloat width = besideHero ? 496 : (1472 - 16 * (keys.count - 1)) / MAX((NSUInteger)1, keys.count);
+  for (NSUInteger i = 0; i < keys.count; ++i) {
+    RigPanel* rack = self.moduleRacks[keys[i]];
+    [self place:rack parent:page x:besideHero ? 976 : i * (width + 16)
+              y:besideHero ? 78 : 164 w:width h:besideHero ? 562 : 630];
+  }
 }
 
 - (NSArray<RigPanel*>*)racksForPane:(NSInteger)pane {
@@ -246,7 +263,7 @@ static void deactivateViewConstraints(NSView* view) {
   NSArray<RigPanel*>* tuner = [self racksForPane:0];
   if (pre.count == 3) {
     [self modulePageForStage:0 key:@"compressor" title:@"Preamp Compressor" rack:pre[0] rightRack:nil
-                        info:@"Dynamic control before the pedal and amplifier captures. The response graph and all preset actions remain live."];
+                        info:@"Dynamic control before the pedal and amplifier captures. Use the response graph to check transient shaping."];
     [self modulePageForStage:0 key:@"sculpt" title:@"Preamp EQ" rack:pre[1] rightRack:nil
                         info:@"Bright, input EQ, mid push, and the complete parametric Pin EQ editor."];
     [self modulePageForStage:0 key:@"boost" title:@"Preamp Boost" rack:pre[2] rightRack:nil
@@ -275,27 +292,37 @@ static void deactivateViewConstraints(NSView* view) {
   }
   if (tuner.count == 3) {
     NSView* page = [self newPageWithKey:@"tuner"];
-    RigPanel* nav = [self panelAt:page x:0 y:0 w:220 h:704];
-    [self label:@"Output & Post-FX" parent:nav x:18 y:22 w:184 size:18 weight:NSFontWeightSemibold color:rigText()];
-    [self addContextNavigationForPage:nav stage:4];
-    [self place:tuner[0] parent:page x:236 y:0 w:360 h:704];
-    [self place:tuner[1] parent:page x:612 y:0 w:540 h:704];
-    [self place:tuner[2] parent:page x:1168 y:0 w:304 h:704];
+    [self place:tuner[0] parent:page x:0 y:0 w:360 h:794];
+    [self place:tuner[1] parent:page x:376 y:0 w:640 h:794];
+    [self place:tuner[2] parent:page x:1032 y:0 w:440 h:794];
+  }
+}
+
+- (void)buildMeters {
+  for (NSUInteger i = 0; i < self.state->stageMeters.size(); ++i) {
+    RigStageMeterView* meter = self.state->stageMeters[i];
+    meter.horizontal = YES;
+    [self place:meter parent:self x:24 + i * 372 y:96 w:356 h:42];
   }
 }
 
 - (void)buildChain {
   NSArray<NSString*>* titles = @[@"Input", @"Pedal", @"Amp", @"Cab", @"Output"];
-  NSArray<NSString*>* subtitles = @[@"Preamp", @"Capture + Boost", @"Power + Iron", @"Speaker + Blend", @"Master + Post-FX"];
-  const CGFloat widths[] = {250, 282, 282, 282, 280};
-  CGFloat x = 24;
+  RigButton* tuner = workspaceButton(self, @"Tuner", self, @selector(moduleClicked:));
+  tuner.accessibilityIdentifier = @"tuner";
+  tuner.buttonType = NSButtonTypeToggle;
+  tuner.customTextColor = rigOrange();
+  [self placeNew:tuner parent:self x:24 y:48 w:152 h:38];
+  [self.moduleButtons addObject:tuner];
+  const CGFloat widths[] = {248, 248, 248, 248, 248};
+  CGFloat x = 192;
   for (NSInteger i = 0; i < 5; ++i) {
-    RigButton* button = workspaceButton(self, [NSString stringWithFormat:@"%@  ·  %@", titles[i], subtitles[i]],
+    RigButton* button = workspaceButton(self, titles[i],
                                         self, @selector(chainClicked:));
     button.tag = i;
     button.buttonType = NSButtonTypeToggle;
     button.customTextColor = rigOrange();
-    [self placeNew:button parent:self x:x y:18 w:widths[i] h:68];
+    [self placeNew:button parent:self x:x y:48 w:widths[i] h:38];
     [self.chainButtons addObject:button];
     x += widths[i] + 16;
   }
@@ -303,26 +330,22 @@ static void deactivateViewConstraints(NSView* view) {
 
 - (void)buildContext {
   [self.contextHost.subviews.copy makeObjectsPerformSelector:@selector(removeFromSuperview)];
+  // Overview controls and detail-page navigation already provide these actions.
+  self.contextHost.hidden = self.selectedStage <= 1 || self.selectedStage == 4 ||
+      [self.selectedModule isEqualToString:@"tuner"];
+  if (self.contextHost.hidden) return;
   RigPanel* strip = [self panelAt:self.contextHost x:0 y:0 w:1472 h:118];
   NSArray<NSString*>* titles;
   NSArray<NSString*>* keys;
   NSString* heading;
-  if (self.selectedStage <= 1) {
-    heading = @"INPUT & PREAMP";
-    titles = @[@"Compressor", @"Preamp EQ", @"Boost"];
-    keys = @[@"compressor", @"sculpt", @"boost"];
-  } else if (self.selectedStage == 2) {
+  if (self.selectedStage == 2) {
     heading = @"AMP PROCESSING";
-    titles = @[@"Power Stage", @"Output Transformer"];
-    keys = @[@"power", @"transformer"];
-  } else if (self.selectedStage == 3) {
-    heading = @"CAB PROCESSING";
-    titles = @[@"Speaker Dynamics", @"Cabinet Blend", @"Alignment & Cuts"];
-    keys = @[@"speaker", @"cablab", @"align"];
+    titles = @[@"Amplifier", @"Power Stage", @"Output Transformer"];
+    keys = @[@"main", @"power", @"transformer"];
   } else {
-    heading = @"OUTPUT & POST-FX";
-    titles = @[@"Compressor", @"Delay", @"Reverb", @"Spatial", @"Tuner"];
-    keys = @[@"postcomp", @"delay", @"reverb", @"spatial", @"tuner"];
+    heading = @"CAB PROCESSING";
+    titles = @[@"Cabinet", @"Speaker Dynamics", @"Cabinet Blend"];
+    keys = @[@"main", @"speaker", @"cablab"];
   }
   [self label:heading parent:strip x:22 y:22 w:250 size:11 weight:NSFontWeightBold color:rigDimText()];
   [self label:@"Relevant processing, right where you need it." parent:strip x:22 y:52 w:270 size:11 weight:NSFontWeightRegular color:rigDimText()];
@@ -332,6 +355,9 @@ static void deactivateViewConstraints(NSView* view) {
   for (NSUInteger i = 0; i < titles.count; ++i) {
     RigButton* button = workspaceButton(strip, titles[i], self, @selector(moduleClicked:));
     button.accessibilityIdentifier = keys[i];
+    button.buttonType = NSButtonTypeToggle;
+    button.primary = [keys[i] isEqualToString:self.selectedModule];
+    button.state = button.primary ? NSControlStateValueOn : NSControlStateValueOff;
     [self placeNew:button parent:strip x:startX + i * (width + gap) y:26 w:width h:66];
   }
 }
@@ -353,16 +379,13 @@ static void deactivateViewConstraints(NSView* view) {
   }
   self.selectedStage = stage;
   self.selectedModule = @"main";
-  for (NSInteger i = 0; i < (NSInteger)self.chainButtons.count; ++i) {
-    self.chainButtons[(NSUInteger)i].state = i == stage ? NSControlStateValueOn : NSControlStateValueOff;
-    self.chainButtons[(NSUInteger)i].primary = i == stage;
-  }
-  [self buildContext];
   [self showSelectedPage];
 }
 
 - (void)selectModule:(NSString*)key {
   if (!key.length) return;
+  // Keep old navigation requests working without a second visible entry.
+  if ([key isEqualToString:@"align"]) key = @"cablab";
   if ([key isEqualToString:@"main"]) {
     [self selectStage:self.selectedStage];
     return;
@@ -383,9 +406,29 @@ static void deactivateViewConstraints(NSView* view) {
 }
 
 - (void)showSelectedPage {
+  const BOOL tuning = [self.selectedModule isEqualToString:@"tuner"];
+  for (RigButton* button in self.chainButtons) {
+    BOOL selected = !tuning && button.tag == self.selectedStage;
+    button.state = selected ? NSControlStateValueOn : NSControlStateValueOff;
+    button.primary = selected;
+  }
+  [self buildContext];
+  if ([self.selectedModule isEqualToString:@"main"]) {
+    [self mountOverviewRacksForStage:self.selectedStage];
+  } else {
+    NSString* key = self.selectedModule;
+    RigPanel* rack = self.moduleRacks[key];
+    if (rack) {
+      BOOL bottomNavigation = self.selectedStage == 2 || self.selectedStage == 3;
+      [self place:rack parent:self.pages[key] x:bottomNavigation ? 0 : 236 y:78
+                 w:bottomNavigation ? ([key isEqualToString:@"power"] ? 1000 : 1472)
+                                    : ([key isEqualToString:@"power"] ? 824 : 1236)
+                 h:bottomNavigation ? 598 : 716];
+    }
+  }
   NSString* pageKey = [self.selectedModule isEqualToString:@"main"]
       ? [NSString stringWithFormat:@"main:%ld", (long)self.selectedStage]
-      : ([self.selectedModule isEqualToString:@"align"] ? @"cablab" : self.selectedModule);
+      : self.selectedModule;
   for (NSString* key in self.pages) self.pages[key].hidden = ![key isEqualToString:pageKey];
   for (RigButton* button in self.moduleButtons) {
     NSString* key = button.accessibilityIdentifier;
@@ -400,14 +443,16 @@ static void deactivateViewConstraints(NSView* view) {
     _state = state;
     _knobGroups = groups;
     _pages = [NSMutableDictionary dictionary];
+    _moduleRacks = [NSMutableDictionary dictionary];
     _moduleButtons = [NSMutableArray array];
     _chainButtons = [NSMutableArray array];
     self.wantsLayer = YES;
-    self.pageHost = [[NSView alloc] initWithFrame:[self topRect:self x:24 y:106 w:1472 h:704]];
+    self.pageHost = [[NSView alloc] initWithFrame:[self topRect:self x:24 y:154 w:1472 h:794]];
     [self addSubview:self.pageHost];
     self.contextHost = [[NSView alloc] initWithFrame:[self topRect:self x:24 y:830 w:1472 h:118]];
     [self addSubview:self.contextHost];
     [self buildChain];
+    [self buildMeters];
     [self buildMainPages];
     [self buildModulePages];
     [self selectStage:2];
@@ -425,7 +470,8 @@ NAMRigWorkspace* rigCreateWorkspace(RigUIState* state,
   NAMRigWorkspace* workspace = [[NAMRigWorkspace alloc] initWithState:state
                                                                 frame:NSMakeRect(0, 0, 1520, 980)
                                                            knobGroups:knobGroups];
-  workspace.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  // Match the fixed design canvas; the root view scales the entire UI for zoom.
+  workspace.autoresizingMask = NSViewNotSizable;
   [rigPane addSubview:workspace];
   legacyStageRow.hidden = YES;
   legacyDeck.hidden = YES;

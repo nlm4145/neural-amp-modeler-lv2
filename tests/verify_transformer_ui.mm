@@ -8,6 +8,7 @@
 //   build-test/src/neural_amp_modeler_rig_ui.so
 #include "overdrive.h"
 #include "rig_ui_state.h"
+#include "rig_control_contract.h"
 #include <dlfcn.h>
 #include <unistd.h>
 #include <objc/message.h>
@@ -811,8 +812,22 @@ static void verifyTunerDeck(Runtime& runtime, Host& host) {
 
   // Workspace navigation must activate the tuner and leave it without resetting
   // the requested stage or module through the legacy tab synchronization.
+  RigButton* tunerNavigation = nil;
+  NSUInteger tunerDestinations = 0;
+  for (RigButton* button in [(id)state->workspace valueForKey:@"moduleButtons"]) {
+    if (![button.accessibilityIdentifier isEqualToString:@"tuner"]) continue;
+    tunerNavigation = button;
+    ++tunerDestinations;
+  }
+  REQUIRE(tunerNavigation);
+  CHECK(tunerDestinations == 1);
+  NSArray<RigButton*>* chainButtons = [(id)state->workspace valueForKey:@"chainButtons"];
+  CHECK(tunerNavigation.superview == (NSView*)state->workspace);
+  CHECK(NSMaxX(tunerNavigation.frame) < NSMinX(chainButtons.firstObject.frame));
   [state->workspace selectStage:4];
-  [state->workspace selectModule:@"tuner"];
+  [tunerNavigation performClick:nil];
+  CHECK(tunerNavigation.primary);
+  for (RigButton* button in chainButtons) CHECK(!button.primary);
   CHECK(state->activeDeckTab == 0);
   CHECK([state->workspace.selectedModule isEqualToString:@"tuner"]);
   state->selectDeckTab(0);
@@ -860,7 +875,10 @@ static void verifyDeckTabSelection(Runtime& runtime, Host& host) {
     for (NSInteger tab : {4, 1, 2}) state->selectDeckTab(tab);
   });
   selection.join();
-  drain();
+  // Wait for the queued transitions themselves, rather than a fixed run-loop slice.
+  __block BOOL selectionFinished = NO;
+  dispatch_async(dispatch_get_main_queue(), ^{ selectionFinished = YES; });
+  while (!selectionFinished) drain();
   selected(2);
   CHECK(host.writes.empty());
 }
@@ -1725,7 +1743,7 @@ static void verifyPedalInputVisibility(Runtime& runtime, Host& host, Class prese
   state->displayPath(0, "");
   state->displayPath(0, "");
   drain();
-  CHECK(state->pedalInputKnobCell.hidden);
+  CHECK(!state->pedalInputKnobCell.hidden);
   CHECK(host.writes.empty());
   CHECK(near(state->currentPortValueForSlot(4), gain));
 
@@ -1760,12 +1778,233 @@ static void verifyPedalInputVisibility(Runtime& runtime, Host& host, Class prese
   host.writes.clear();
 }
 
+static void verifyCombinedPinResponse(Runtime& runtime, Host& host) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  stage = "pin EQ / one combined response / overlapping bands / drag follows curve";
+  [state->workspace selectStage:3];
+  [state->workspace selectModule:@"cablab"];
+  state->updateControl(26, 80);
+  state->updateControl(27, 10000);
+  const auto setBand = [&](size_t band, int shape, float hz, float gain) {
+    state->updateControl(pinEqPort(PinEqPane::CabConsole, band, kPinShape), shape);
+    state->updateControl(pinEqPort(PinEqPane::CabConsole, band, kPinFreq), hz);
+    state->updateControl(pinEqPort(PinEqPane::CabConsole, band, kPinGain), gain);
+    state->updateControl(pinEqPort(PinEqPane::CabConsole, band, kPinQ), .8f);
+  };
+  for (size_t b = 0; b < kPinEqBandCount; ++b) setBand(b, kPinOff, 1000, 0);
+  setBand(0, kPinBell, 80, 0);
+  setBand(1, kPinBell, 160, 6);
+  drain();
+  [runtime.window.contentView layoutSubtreeIfNeeded];
+  NAMPinEQEditor* editor = state->cabConsoleVisualizer.pinEditor;
+  REQUIRE(editor.baseResponseDb);
+  const NSRect plot = NSInsetRect(editor.bounds, kPinEditorInset, kPinEditorInset);
+  const auto point = [&](size_t band) {
+    return ((NSPoint (*)(id, SEL, NSInteger))objc_msgSend)(editor, sel_registerName("pointForBand:"), (NSInteger)band);
+  };
+  const auto pointFor = [&](double hz, double db) {
+    return NSMakePoint(NSMinX(plot) + std::log(hz / 20) / std::log(1000.0) * NSWidth(plot),
+        NSMidY(plot) + std::clamp(db, -18.0, 18.0) / 18 * NSHeight(plot) * .5);
+  };
+  const auto bands = readPinBands(PinEqPane::CabConsole, [&](uint32_t port) { return state->currentPortValueForSlot(port); });
+  for (size_t b = 0; b < 2; ++b) {
+    double hz = bands[b].freq;
+    double expected = editor.baseResponseDb(hz) + pinBandsMagnitudeDb(bands, hz, 192000.0);
+    CHECK(std::abs([editor responseDbAtFrequency:hz] - expected) < .0001);
+    CHECK(std::abs(point(b).y - pointFor(hz, expected).y) < .001);
+  }
+  CHECK(std::abs(point(0).y - pointFor(80, 0).y) > 1); // The pin follows the filters, not raw band gain.
+  const auto mouse = [&](NSEventType type, NSPoint p) {
+    return [NSEvent mouseEventWithType:type location:[editor convertPoint:p toView:nil]
+        modifierFlags:0 timestamp:0 windowNumber:runtime.window.windowNumber context:nil
+        eventNumber:0 clickCount:1 pressure:1];
+  };
+  for (int shape : {kPinBell, kPinLowShelf, kPinHighShelf}) {
+    setBand(0, shape, 80, 0);
+    NSPoint start = point(0);
+    NSPoint desired = pointFor(100, 5);
+    // A grab slightly off-center must preserve its offset rather than jump.
+    NSPoint down = NSMakePoint(start.x + 2, start.y - 2);
+    NSPoint destination = NSMakePoint(desired.x + 2, desired.y - 2);
+    host.writes.clear();
+    [editor mouseDown:mouse(NSEventTypeLeftMouseDown, down)];
+    [editor mouseDragged:mouse(NSEventTypeLeftMouseDragged, destination)];
+    [editor mouseUp:mouse(NSEventTypeLeftMouseUp, destination)];
+    CHECK(std::abs([editor responseDbAtFrequency:100] - 5) < .002);
+    CHECK(std::hypot(point(0).x - desired.x, point(0).y - desired.y) < .1);
+    CHECK(host.writes.count(pinEqPort(PinEqPane::CabConsole, 0, kPinGain)) == 1);
+    CHECK(host.writes.count(26) == 0 && host.writes.count(27) == 0);
+  }
+  stage = "pin EQ / adding a pin on the curve preserves the response";
+  double before = [editor responseDbAtFrequency:400];
+  NSPoint onCurve = pointFor(400, before);
+  host.writes.clear();
+  ((void (*)(id, SEL, NSPoint))objc_msgSend)(editor, sel_registerName("addPinAt:"), onCurve);
+  CHECK(std::abs([editor responseDbAtFrequency:400] - before) < .001);
+  CHECK(std::abs(state->currentPortValueForSlot(pinEqPort(PinEqPane::CabConsole, 2, kPinGain))) < .001);
+  for (NAMPinEQEditor* graph : state->pinEditors) CHECK(graph.baseResponseDb != nil);
+  [[NSClassFromString(@"RigPreset") defaultPreset] applyToState:state];
+  drain();
+}
+
+static void verifyGraphEditing(Runtime& runtime, Host& host, Class presetClass) {
+  RigUIState* state = runtime.state;
+  stage = "transformer summaries / direct typing / units / atomic validation";
+  const auto echo = [&](uint32_t port, float value) {
+    runtime.descriptor->port_event(state, port, sizeof(value), 0, &value);
+  };
+  echo(30, NAMRig::OutputTransformer::kUKVintage);
+  for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
+    echo(60 + i, NAMRig::kTransformerControlDefaults[i]);
+  drain();
+  const size_t indices[4][2] = {{0, 1}, {2, 3}, {6, 5}, {9, 8}};
+  const float values[4][2] = {{80, 12000}, {3, 44}, {2.8f, 2850}, {1.6f, 6500}};
+  NSArray<NSString*>* inputs = @[@"8e1 Hz - 1.2e1 kHz", @"3x / 44% Mix", @"+2.8 dB @ 2.85 kHz", @"+1.6 dB @ 6.50 kHz"];
+  for (size_t group = 0; group < 4; ++group) {
+    NSTextField* field = state->transformerSpecLabels[group];
+    REQUIRE(field && field.editable && field.selectable && field.enabled);
+    CHECK(field.target == (id)state->uiController && field.delegate == (id)state->uiController);
+    host.writes.clear();
+    field.stringValue = inputs[group];
+    action(field);
+    auto actual = NAMRig::OutputTransformer::controlValues(state->transformerVisualizer.parameters);
+    for (size_t k = 0; k < 2; ++k) {
+      CHECK(near(actual[indices[group][k]], values[group][k]));
+      CHECK(host.writes[60 + indices[group][k]].size() == 1);
+    }
+    CHECK(state->presetManager.isModified);
+    RigPreset* captured = [presetClass captureFromState:state name:@"Typed Transformer"];
+    for (size_t k = 0; k < 2; ++k)
+      CHECK(near([captured controlForPort:60 + indices[group][k]], state->transformerAdjustments[indices[group][k]]));
+    host.writes.clear();
+    action(field); // Enter followed by focus loss must not commit rounded text twice.
+    [(id<TransformerTestController>)state->uiController controlTextDidEndEditing:
+        [NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:field]];
+    CHECK(host.writes.empty());
+  }
+  NSArray<NSString*>* invalid = @[@"80 Hz - nope", @"3x / 1e999%", @"+2 dB @ 4 kHz junk", @"nan dB @ 5 kHz"];
+  for (size_t group = 0; group < 4; ++group) {
+    auto before = state->transformerAdjustments;
+    NSTextField* field = state->transformerSpecLabels[group];
+    NSString* original = field.stringValue;
+    field.stringValue = invalid[group];
+    host.writes.clear();
+    action(field);
+    CHECK(host.writes.empty());
+    CHECK(state->transformerAdjustments == before);
+    CHECK([field.stringValue isEqualToString:original]);
+  }
+  NSTextField* editing = state->transformerSpecLabels[0];
+  [(id<TransformerTestController>)state->uiController controlTextDidBeginEditing:
+      [NSNotification notificationWithName:NSControlTextDidBeginEditingNotification object:editing]];
+  editing.stringValue = @"90 Hz - 11 kHz";
+  echo(60, 1);
+  drain();
+  CHECK([editing.stringValue isEqualToString:@"90 Hz - 11 kHz"]);
+  [(id<TransformerTestController>)state->uiController controlTextDidEndEditing:
+      [NSNotification notificationWithName:NSControlTextDidEndEditingNotification object:editing]];
+  CHECK(near(state->transformerVisualizer.parameters.lowCutHz, 90));
+  CHECK(near(state->transformerVisualizer.parameters.highCutHz, 11000));
+
+  stage = "response pins / real mouse drags / knob binding / host writes / preset capture";
+  echo(36, 25); echo(37, 0); echo(28, 40); echo(NAMRig::kPostCompressorAmountPort, 40);
+  echo(NAMRig::kCompressorEnabledPort, 1);
+  echo(53, 35); echo(54, 30); echo(33, 35); echo(NAMRig::kOverdriveDrivePort, 30);
+  echo(NAMRig::kOverdriveEnabledPort, 1);
+  drain();
+  NSArray<NSView*>* graphs = @[state->powerVisualizer, state->compressorVisualizer,
+      state->postCompressorVisualizer, state->delayVisualizer, state->reverbVisualizer,
+      state->spatialVisualizer, state->boostVisualizer, state->powerTubeVisualizer,
+      state->transformerVisualizer];
+  NSArray<NSString*>* modules = @[@"power", @"compressor", @"postcomp", @"delay", @"reverb", @"spatial", @"boost", @"power", @"transformer"];
+  const std::vector<std::vector<uint32_t>> expectedPorts = {
+    {37, 36}, {28, 182, 183}, {186}, {50, 51}, {58, 55}, {32, 33}, {179, 190, 180}, {81}, {62, 60, 61, 65, 68}
+  };
+  for (NSUInteger i = 0; i < graphs.count; ++i) {
+    [state->workspace selectModule:modules[i]];
+    drain();
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    NAMGraphControlEditor* editor = nil;
+    for (NSView* view in graphs[i].subviews)
+      if ([view isKindOfClass:NSClassFromString(@"NAMGraphControlEditor")]) editor = (NAMGraphControlEditor*)view;
+    REQUIRE(editor && editor.pins.count > 0);
+    CHECK(NSEqualRects(editor.frame, graphs[i].bounds));
+    REQUIRE(editor.pins.count == expectedPorts[i].size());
+    for (NSUInteger pinIndex = 0; pinIndex < editor.pins.count; ++pinIndex) {
+    NSPoint start = [editor pointForPin:pinIndex];
+    CHECK(NSContainsRect(editor.bounds, NSMakeRect(start.x - 5, start.y - 5, 10, 10)));
+    CHECK([editor hitTest:[editor convertPoint:start toView:editor.superview]] == editor);
+    CHECK([editor hitTest:[editor convertPoint:NSMakePoint(2, 2) toView:editor.superview]] == nil);
+    uint32_t port = expectedPorts[i][pinIndex];
+    testedPort = port;
+    float before = state->currentPortValueForSlot(port);
+    const auto event = [&](NSEventType type, NSPoint point, NSEventModifierFlags modifiers = 0) {
+      return [NSEvent mouseEventWithType:type location:[editor convertPoint:point toView:nil]
+          modifierFlags:modifiers timestamp:0 windowNumber:runtime.window.windowNumber context:nil
+          eventNumber:0 clickCount:1 pressure:1];
+    };
+    host.writes.clear();
+    [editor mouseDown:event(NSEventTypeLeftMouseDown, start)];
+    [editor mouseUp:event(NSEventTypeLeftMouseUp, start)];
+    CHECK(host.writes.empty());
+    [editor mouseDown:event(NSEventTypeLeftMouseDown, start)];
+    NSPoint finish = NSMakePoint(start.x + 24, start.y - 20);
+    [editor mouseDragged:event(NSEventTypeLeftMouseDragged, finish)];
+    [editor mouseUp:event(NSEventTypeLeftMouseUp, finish)];
+    REQUIRE(host.writes.count(port) == 1 && !host.writes[port].empty());
+    float after = state->currentPortValueForSlot(port);
+    CHECK(!near(after, before));
+    CHECK(near(host.writes[port].back(), after));
+    const auto* contract = NAMRig::rigControlContract(port);
+    REQUIRE(contract);
+    CHECK(NAMRig::validRigControlValue(*contract, after));
+    RigPreset* captured = [presetClass captureFromState:state name:@"Dragged Response"];
+    CHECK(near([captured controlForPort:port], after));
+    if (i == 0 && pinIndex == 0) {
+      float fullChange = std::abs(after - before);
+      echo(port, before);
+      drain();
+      start = [editor pointForPin:pinIndex];
+      finish = NSMakePoint(start.x + 24, start.y - 20);
+      [editor mouseDown:event(NSEventTypeLeftMouseDown, start)];
+      [editor mouseDragged:event(NSEventTypeLeftMouseDragged, finish, NSEventModifierFlagShift)];
+      [editor mouseUp:event(NSEventTypeLeftMouseUp, finish)];
+      after = state->currentPortValueForSlot(port);
+      CHECK(std::abs(std::abs(after - before) / fullChange - .1) < .002);
+    }
+    if (port < 60 || port == 81) {
+      for (size_t k = 0; k < kRigKnobCount; ++k)
+        if (kRigKnobPorts[k] == port && state->knobs[k]) CHECK(near(state->knobs[k].floatValue, after));
+    }
+  }
+  }
+  stage = "transformer pins / captured bypass rejects edits";
+  echo(30, 0);
+  drain();
+  NAMGraphControlEditor* editor = nil;
+  for (NSView* view in state->transformerVisualizer.subviews)
+    if ([view isKindOfClass:NSClassFromString(@"NAMGraphControlEditor")]) editor = (NAMGraphControlEditor*)view;
+  REQUIRE(editor);
+  CHECK(!editor.pins[0].isEnabled());
+  NSView* graph = state->transformerVisualizer;
+  NSPoint emptyFrequencyPoint = [state->transformerVisualizer.pinEditor convertPoint:NSMakePoint(40, 40) toView:graph.superview];
+  CHECK([graph hitTest:emptyFrequencyPoint] == state->transformerVisualizer.pinEditor);
+  host.writes.clear();
+  editor.pins[0].onBegin();
+  editor.pins[0].onDrag(NSMakePoint(.2, .2));
+  editor.pins[0].onCommit();
+  CHECK(host.writes.empty());
+}
+
 static void verifyStageMeters(Runtime& runtime) {
   RigUIState* state = runtime.state;
   testedPort = -1;
   stage = "stage meters / 1520pt layout / architecture badges / amp value cells";
   [runtime.window.contentView layoutSubtreeIfNeeded];
   CHECK(near(state->rigContent.bounds.size.width, 1520));
+  CHECK(near(((NSView*)state->workspace).bounds.size.width, 1520));
+  CHECK(near(((NSView*)state->workspace).bounds.size.height, 980));
   CHECK(near(runtime.window.contentView.bounds.size.width, 1520));
   REQUIRE(state->stageCards[0] && state->stageCards[1] && state->stageCards[2]);
   for (size_t i = 0; i < 3; ++i) {
@@ -1798,6 +2037,57 @@ static void verifyStageMeters(Runtime& runtime) {
     CHECK(NSContainsRect(NSInsetRect(cell.bounds, -0.5, -0.5),
                          [knob convertRect:knob.bounds toView:cell]));
   }
+
+  stage = "workspace / compact overviews / shared meters / detail navigation";
+  id workspace = state->workspace;
+  NSDictionary* pages = [workspace valueForKey:@"pages"];
+  NSDictionary* racks = [workspace valueForKey:@"moduleRacks"];
+  NSArray<NSArray<NSString*>*>* overviewKeys = @[
+    @[@"compressor", @"sculpt", @"boost"], @[], @[], @[@"speaker"],
+    @[@"postcomp", @"delay", @"reverb", @"spatial"]
+  ];
+  for (NSInteger index = 0; index < 5; ++index) {
+    [state->workspace selectStage:index];
+    drain();
+    NSView* page = pages[[NSString stringWithFormat:@"main:%ld", (long)index]];
+    NSView* context = [workspace valueForKey:@"contextHost"];
+    CHECK(context.hidden == (index <= 1 || index == 4));
+    if (context.hidden) CHECK(context.subviews.count == 0);
+    if (index == 1) {
+      for (NSString* key in @[@"compressor", @"sculpt", @"boost"])
+        CHECK(((NSView*)racks[key]).superview == pages[@"main:0"]);
+    }
+
+
+    for (NSString* key in overviewKeys[index]) {
+      NSView* rack = racks[key];
+      CHECK(rack.superview == page);
+      CHECK(!rack.isHiddenOrHasHiddenAncestor);
+      if (index == 0 || index == 4) CHECK(near(rack.bounds.size.height, 630));
+      CHECK(NSContainsRect(page.bounds, rack.frame));
+      [state->workspace selectModule:key];
+      CHECK(rack.superview == pages[key]);
+      CHECK(context.hidden == (index <= 1 || index == 4));
+      if (context.hidden) CHECK(context.subviews.count == 0);
+      CHECK(!rack.isHiddenOrHasHiddenAncestor);
+      [state->workspace selectStage:index];
+      CHECK(rack.superview == page);
+    }
+    for (RigStageMeterView* meter : state->stageMeters) {
+      CHECK(meter.horizontal);
+      CHECK(!meter.isHiddenOrHasHiddenAncestor);
+      CHECK(meter.bounds.size.height <= 42);
+      CHECK(meter.bounds.size.width >= 300);
+    }
+  }
+
+  stage = "workspace / cabinet navigation has one blend destination";
+  [state->workspace selectStage:3];
+  [state->workspace selectModule:@"align"];
+  CHECK([state->workspace.selectedModule isEqualToString:@"cablab"]);
+  CHECK(!((NSView*)racks[@"cablab"]).isHiddenOrHasHiddenAncestor);
+  for (RigButton* button in [workspace valueForKey:@"moduleButtons"])
+    CHECK(![button.accessibilityIdentifier isEqualToString:@"align"]);
 
   stage = "stage meters / independent exported patch:Set routing";
   const std::array<LV2_URID, 4> properties = {state->inputDbURID, state->preAmpDbURID,
@@ -2077,6 +2367,7 @@ static void verify(const char* modulePath) {
   RigUIState* state = runtime.state;
   REQUIRE((__bridge NSView*)widget == state->view);
   REQUIRE(state->presetManager);
+  CHECK(!state->pedalInputKnobCell.hidden);
   REQUIRE(state->keyEventMonitor && installedKeyHandler);
   CHECK([state->presetManager.presetsDirectory hasPrefix:testRoot]);
   CHECK([RigUIState::slotPresetsFilePath() hasPrefix:testRoot]);
@@ -2668,6 +2959,8 @@ static void verify(const char* modulePath) {
   verifyPedalInputVisibility(runtime, host, presetClass);
   verifyCabSwap(runtime);
   verifyStageMeters(runtime);
+  verifyGraphEditing(runtime, host, presetClass);
+  verifyCombinedPinResponse(runtime, host);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.
 }

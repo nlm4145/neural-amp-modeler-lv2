@@ -218,6 +218,7 @@ struct RigUIState {
   bool sculptShowsOverdrive = false;
   __strong NAMTransformerVisualizer* transformerVisualizer = nil;
   std::array<__strong NSTextField*, 4> transformerSpecLabels{};
+  std::array<bool, 4> transformerSpecEditing{};
   int transformerProfile = NAMRig::OutputTransformer::kCaptured;
   NAMRig::TransformerAdjustments transformerAdjustments = NAMRig::kTransformerControlDefaults;
   __strong NSPopover* transformerPopover = nil;
@@ -707,19 +708,6 @@ struct RigUIState {
     abStatusLabel.stringValue = abCycling
         ? [NSString stringWithFormat:@"%@: %@", showing, name]
         : @"A/B idle";
-  }
-
-  static NSMenu* findOrCreatePresetSubmenu(NSMenu* parentMenu, NSString* folderName) {
-    for (NSMenuItem* it in parentMenu.itemArray) {
-      if ([it.title isEqualToString:folderName] && it.hasSubmenu) {
-        return it.submenu;
-      }
-    }
-    NSMenuItem* folderItem = [[NSMenuItem alloc] initWithTitle:folderName action:NULL keyEquivalent:@""];
-    NSMenu* sub = [[NSMenu alloc] initWithTitle:folderName];
-    folderItem.submenu = sub;
-    [parentMenu addItem:folderItem];
-    return sub;
   }
 
   static void buildPresetTree(NSMenu* targetMenu,
@@ -1997,7 +1985,8 @@ struct RigUIState {
     auto block = ^{
       if (!alive || !*alive) return;
       if (pedalInputKnobCell) {
-        pedalInputKnobCell.hidden = !visible;
+        // The workspace exposes input gain on its own Input page, even without a pedal.
+        pedalInputKnobCell.hidden = !visible && !workspace;
         if (pedalInputKnobCell.superview) {
           [pedalInputKnobCell.superview layoutSubtreeIfNeeded];
         }
@@ -2292,6 +2281,12 @@ struct RigUIState {
   }
 
   void cancelTransformerEditing() {
+    for (size_t i = 0; i < transformerSpecLabels.size(); ++i) {
+      if (!transformerSpecEditing[i]) continue;
+      transformerSpecEditing[i] = false;
+      [transformerSpecLabels[i] abortEditing];
+      [transformerSpecLabels[i].window makeFirstResponder:nil];
+    }
     const auto values = NAMRig::OutputTransformer::controlValues(
         NAMRig::OutputTransformer::parametersForProfile(transformerProfile, transformerAdjustments));
     for (size_t i = 0; i < values.size(); ++i) {
@@ -2324,6 +2319,16 @@ struct RigUIState {
             std::min(maxes[index], ratio ? base[index] * c.maximum : base[index] + c.maximum)};
   }
 
+  NSArray<NSString*>* transformerSpecTexts() const {
+    const auto p = NAMRig::OutputTransformer::parametersForProfile(transformerProfile, transformerAdjustments);
+    return transformerProfile == 0
+        ? @[@"Linear (Captured)", @"0% (Transparent)", @"Flat (0.0 dB)", @"None (0.0 dB)"]
+        : @[[NSString stringWithFormat:@"%.0f Hz - %.1f kHz", p.lowCutHz, p.highCutHz / 1000.0],
+            [NSString stringWithFormat:@"%.2fx / %.0f%% Mix", p.drive, p.saturationMix * 100.0],
+            [NSString stringWithFormat:@"%+.1f dB @ %.2f kHz", p.voiceDb, p.voiceHz / 1000.0],
+            [NSString stringWithFormat:@"%+.1f dB @ %.2f kHz", p.leakageDb, p.leakageHz / 1000.0]];
+  }
+
   void updateTransformerTelemetry(int idx) {
     idx = NAMRig::OutputTransformer::clampProfile(idx);
     const auto p = NAMRig::OutputTransformer::parametersForProfile(idx, transformerAdjustments);
@@ -2331,15 +2336,11 @@ struct RigUIState {
       transformerVisualizer.profile = idx;
       transformerVisualizer.parameters = p;
     }
-    NSArray<NSString*>* vals = idx == 0
-        ? @[@"Linear (Captured)", @"0% (Transparent)", @"Flat (0.0 dB)", @"None (0.0 dB)"]
-        : @[[NSString stringWithFormat:@"%.0f Hz - %.1f kHz", p.lowCutHz, p.highCutHz / 1000.0],
-            [NSString stringWithFormat:@"%.2fx / %.0f%% Mix", p.drive, p.saturationMix * 100.0],
-            [NSString stringWithFormat:@"%+.1f dB @ %.2f kHz", p.voiceDb, p.voiceHz / 1000.0],
-            [NSString stringWithFormat:@"%+.1f dB @ %.2f kHz", p.leakageDb, p.leakageHz / 1000.0]];
+    NSArray<NSString*>* vals = transformerSpecTexts();
     for (size_t i = 0; i < 4; ++i) {
       if (transformerSpecLabels[i]) {
-        transformerSpecLabels[i].stringValue = vals[i];
+        transformerSpecLabels[i].enabled = idx != 0;
+        if (!transformerSpecEditing[i]) transformerSpecLabels[i].stringValue = vals[i];
       }
     }
     const auto values = NAMRig::OutputTransformer::controlValues(p);

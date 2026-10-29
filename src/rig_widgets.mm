@@ -471,6 +471,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   NSInteger _hover;
   NSInteger _drag;
   BOOL _dragMoved;
+  NSPoint _dragOffset;
   BOOL _mouseInside;
   NSTrackingArea* _tracking;
 }
@@ -531,10 +532,34 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 
 // ---- geometry ----
 - (NSRect)plotRect { return NSInsetRect(self.bounds, kPinEditorInset, kPinEditorInset); }
+- (double)responseDbAtFrequency:(double)hz {
+  const double base = self.baseResponseDb ? self.baseResponseDb(hz) : 0;
+  return base + NAMRig::pinBandsMagnitudeDb([self bands], hz, kPinPlotRate);
+}
 - (NSPoint)pointForBand:(NSInteger)band {
   const NSRect plot = [self plotRect];
-  return NSMakePoint(pinPlotX(plot, [self band:band param:NAMRig::kPinFreq]),
-                     pinPlotY(plot, [self band:band param:NAMRig::kPinGain]));
+  const double hz = [self band:band param:NAMRig::kPinFreq];
+  return NSMakePoint(pinPlotX(plot, hz), pinPlotY(plot, [self responseDbAtFrequency:hz]));
+}
+// Solve the selected band's gain against the complete response. Other bands
+// and the processor's cut filters remain part of the curve under the cursor.
+- (float)gainForBand:(NSInteger)band frequency:(double)hz response:(double)desired {
+  auto bands = [self bands];
+  const auto own = bands[(size_t)band];
+  bands[(size_t)band].shape = NAMRig::kPinOff;
+  const double base = (self.baseResponseDb ? self.baseResponseDb(hz) : 0) +
+      NAMRig::pinBandsMagnitudeDb(bands, hz, kPinPlotRate);
+  const int shape = own.shape == NAMRig::kPinOff ? NAMRig::kPinBell : own.shape;
+  const double q = own.shape == NAMRig::kPinOff ? NAMRig::kPinQDefault : own.q;
+  double low = -NAMRig::kPinGainMax, high = NAMRig::kPinGainMax;
+  for (int i = 0; i < 30; ++i) {
+    double gain = (low + high) * .5;
+    double response = base + NAMRig::pinMagnitudeDb(
+        NAMRig::pinCoefficients(shape, hz, gain, q, kPinPlotRate), hz, kPinPlotRate);
+    if (response < desired) low = gain;
+    else high = gain;
+  }
+  return (float)((low + high) * .5);
 }
 - (double)freqAtX:(CGFloat)x {
   const NSRect plot = [self plotRect];
@@ -562,32 +587,39 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)drawRect:(NSRect)dirty {
   const NSRect plot = [self plotRect];
   if (plot.size.width < 10 || plot.size.height < 10) return;
-  const NAMRig::PinBands bands = [self bands];
   BOOL any = NO;
   for (NSInteger b = 0; b < (NSInteger)NAMRig::kPinEqBandCount; ++b) any |= [self hasPin:b];
 
-  if (any) {
+  if (any || self.baseResponseDb) {
     NSBezierPath* curve = [NSBezierPath bezierPath];
     const int n = std::max(48, (int)(plot.size.width / 2.0));
     for (int i = 0; i <= n; ++i) {
       const double t = (double)i / n;
       const double hz = 20.0 * std::pow(1000.0, t);
       const NSPoint p = NSMakePoint(NSMinX(plot) + t * plot.size.width,
-                                    pinPlotY(plot, NAMRig::pinBandsMagnitudeDb(bands, hz, kPinPlotRate)));
+                                    pinPlotY(plot, [self responseDbAtFrequency:hz]));
       if (i == 0) [curve moveToPoint:p];
       else [curve lineToPoint:p];
     }
     NSBezierPath* fill = [curve copy];
-    [fill lineToPoint:NSMakePoint(NSMaxX(plot), NSMidY(plot))];
-    [fill lineToPoint:NSMakePoint(NSMinX(plot), NSMidY(plot))];
+    const CGFloat floor = self.baseResponseDb ? NSMinY(plot) : NSMidY(plot);
+    [fill lineToPoint:NSMakePoint(NSMaxX(plot), floor)];
+    [fill lineToPoint:NSMakePoint(NSMinX(plot), floor)];
     [fill closePath];
-    [[NSColor colorWithSRGBRed:0.92 green:0.95 blue:1.0 alpha:0.10] setFill];
-    [fill fill];
-    curve.lineWidth = 1.6;
+    if (self.baseResponseDb) {
+      NSGradient* gradient = [[NSGradient alloc] initWithStartingColor:[_accent colorWithAlphaComponent:.30]
+          endingColor:[_accent colorWithAlphaComponent:.02]];
+      [gradient drawInBezierPath:fill angle:270];
+    } else {
+      [[_accent colorWithAlphaComponent:.10] setFill];
+      [fill fill];
+    }
+    curve.lineWidth = 2.0;
     curve.lineJoinStyle = NSLineJoinStyleRound;
-    [[NSColor colorWithSRGBRed:0.92 green:0.95 blue:1.0 alpha:0.90] setStroke];
+    [[_accent colorWithAlphaComponent:.95] setStroke];
     [curve stroke];
-  } else if (_mouseInside) {
+  }
+  if (!any && _mouseInside) {
     NSDictionary* hintAttrs = @{
       NSFontAttributeName: [NSFont systemFontOfSize:8.0 weight:NSFontWeightMedium],
       NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.75 green:0.80 blue:0.90 alpha:0.55]
@@ -668,8 +700,10 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)addPinAt:(NSPoint)p {
   for (NSInteger b = 0; b < (NSInteger)NAMRig::kPinEqBandCount; ++b) {
     if ([self hasPin:b]) continue;
-    [self send:b param:NAMRig::kPinFreq value:(float)[self freqAtX:p.x]];
-    [self send:b param:NAMRig::kPinGain value:(float)[self gainAtY:p.y]];
+    const double hz = [self freqAtX:p.x];
+    const float gain = [self gainForBand:b frequency:hz response:[self gainAtY:p.y]];
+    [self send:b param:NAMRig::kPinFreq value:(float)hz];
+    [self send:b param:NAMRig::kPinGain value:gain];
     [self send:b param:NAMRig::kPinQ value:NAMRig::kPinQDefault];
     [self send:b param:NAMRig::kPinShape value:(float)NAMRig::kPinBell];
     _hover = b;
@@ -695,14 +729,22 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     return;
   }
   _drag = hit;
+  if (hit >= 0) {
+    NSPoint center = [self pointForBand:hit];
+    _dragOffset = NSMakePoint(center.x - p.x, center.y - p.y);
+  }
   _dragMoved = NO;
   self.needsDisplay = YES;
 }
 - (void)mouseDragged:(NSEvent*)event {
   if (_drag < 0) return;
-  const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-  [self send:_drag param:NAMRig::kPinFreq value:(float)[self freqAtX:p.x]];
-  [self send:_drag param:NAMRig::kPinGain value:(float)[self gainAtY:p.y]];
+  NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+  p.x += _dragOffset.x;
+  p.y += _dragOffset.y;
+  const double hz = [self freqAtX:p.x];
+  const float gain = [self gainForBand:_drag frequency:hz response:[self gainAtY:p.y]];
+  [self send:_drag param:NAMRig::kPinFreq value:(float)hz];
+  [self send:_drag param:NAMRig::kPinGain value:gain];
   _dragMoved = YES;
 }
 - (void)mouseUp:(NSEvent*)event {
@@ -781,6 +823,106 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (void)pinClearChosen:(NSMenuItem*)item {
   for (NSInteger b = 0; b < (NSInteger)NAMRig::kPinEqBandCount; ++b)
     if ([self hasPin:b]) [self removePin:b];
+}
+@end
+
+@implementation NAMGraphControlPin
+@end
+
+@implementation NAMInteractiveGraph
+- (double)responseDbAtFrequency:(double)hz { return 0; }
+- (void)viewWillDraw {
+  [super viewWillDraw];
+  for (NSView* view in self.subviews)
+    if ([view isKindOfClass:NAMGraphControlEditor.class] || [view isKindOfClass:NAMPinEQEditor.class])
+      view.needsDisplay = YES;
+}
+@end
+
+@implementation NAMGraphControlEditor {
+  NAMGraphControlPin* _activePin;
+  NSPoint _lastPoint;
+  NSPoint _delta;
+}
+- (BOOL)isFlipped { return NO; }
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
+- (NSPoint)pointForPin:(NSUInteger)index {
+  NSPoint point = self.pins[index].position(self.bounds);
+  point.x = std::clamp(point.x, 8.0, MAX(8.0, NSWidth(self.bounds) - 8));
+  point.y = std::clamp(point.y, 8.0, MAX(8.0, NSHeight(self.bounds) - 56));
+  return point;
+}
+- (NSInteger)pinAtPoint:(NSPoint)point {
+  NSInteger found = -1;
+  CGFloat distance = 12;
+  for (NSUInteger i = 0; i < self.pins.count; ++i) {
+    NAMGraphControlPin* pin = self.pins[i];
+    if (pin.isEnabled && !pin.isEnabled()) continue;
+    NSPoint p = [self pointForPin:i];
+    CGFloat d = std::hypot(p.x - point.x, p.y - point.y);
+    if (d < distance) { distance = d; found = (NSInteger)i; }
+  }
+  return found;
+}
+- (NSView*)hitTest:(NSPoint)point {
+  if (self.hidden) return nil;
+  NSPoint local = [self convertPoint:point fromView:self.superview];
+  return NSPointInRect(local, self.bounds) && [self pinAtPoint:local] >= 0 ? self : nil;
+}
+- (void)resetCursorRects {
+  for (NSUInteger i = 0; i < self.pins.count; ++i) {
+    NAMGraphControlPin* pin = self.pins[i];
+    if (pin.isEnabled && !pin.isEnabled()) continue;
+    NSPoint p = [self pointForPin:i];
+    [self addCursorRect:NSMakeRect(p.x - 12, p.y - 12, 24, 24) cursor:NSCursor.openHandCursor];
+  }
+}
+- (void)mouseDown:(NSEvent*)event {
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  NSInteger index = [self pinAtPoint:point];
+  if (index < 0) return;
+  _activePin = self.pins[(NSUInteger)index];
+  _lastPoint = point;
+  _delta = NSZeroPoint;
+  if (_activePin.onBegin) _activePin.onBegin();
+}
+- (void)mouseDragged:(NSEvent*)event {
+  if (!_activePin) return;
+  NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+  CGFloat fine = (event.modifierFlags & NSEventModifierFlagShift) ? 0.1 : 1;
+  _delta.x += fine * (p.x - _lastPoint.x) / MAX(1.0, NSWidth(self.bounds));
+  _delta.y += fine * (p.y - _lastPoint.y) / MAX(1.0, NSHeight(self.bounds));
+  _lastPoint = p;
+  if (_activePin.onDrag) _activePin.onDrag(_delta);
+  self.needsDisplay = YES;
+}
+- (void)mouseUp:(NSEvent*)event {
+  if (_activePin.onCommit) _activePin.onCommit();
+  _activePin = nil;
+  [self.window invalidateCursorRectsForView:self];
+}
+- (void)drawRect:(NSRect)dirty {
+  for (NSUInteger i = 0; i < self.pins.count; ++i) {
+    NAMGraphControlPin* pin = self.pins[i];
+    BOOL enabled = !pin.isEnabled || pin.isEnabled();
+    NSPoint p = [self pointForPin:i];
+    NSColor* color = enabled ? rigOrange() : rigDimText();
+    NSBezierPath* dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(p.x - 5, p.y - 5, 10, 10)];
+    [rigBG() setFill];
+    [dot fill];
+    [color setStroke];
+    dot.lineWidth = 2;
+    [dot stroke];
+    NSDictionary* attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:8 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: color};
+    NSSize size = [pin.label sizeWithAttributes:attributes];
+    CGFloat x = p.x + 9;
+    if (x + size.width > NSWidth(self.bounds) - 4) x = p.x - size.width - 9;
+    NSRect label = NSMakeRect(MAX(4.0, x), p.y + 7, size.width + 4, size.height);
+    [[rigBG() colorWithAlphaComponent:0.9] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(label, -2, -1) xRadius:2 yRadius:2] fill];
+    [pin.label drawInRect:label withAttributes:attributes];
+  }
 }
 @end
 
@@ -1604,6 +1746,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     _enabled = YES;
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Sculpt
         accent:[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:1.0]];
+    __weak NAMInteractiveGraph* weakSelf = self;
+    _pinEditor.baseResponseDb = ^double(double hz) { return [weakSelf responseDbAtFrequency:hz]; };
     [self addSubview:_pinEditor];
     _odTone = NAMRig::Overdrive::kToneDefault;
     self.toolTip = @"Pre-amp EQ before the capture: Tight, Bright, Mid Push and 6-band parametric pin EQ.";
@@ -1674,31 +1818,18 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
   [baseLine stroke];
 
-  NSBezierPath* curve = [NSBezierPath bezierPath];
-  const int nPts = 120;
-  const float tight = std::clamp(_inputEq / 100.0f, 0.0f, 1.0f);
-  const float bright = std::clamp(_bright / 100.0f, 0.0f, 1.0f);
-  const float mid = std::clamp(_midPush / 100.0f, 0.0f, 1.0f);
-  const NAMRig::PinCoeffs hp = NAMRig::pinPassCoefficients(true, 20.0 + 160.0 * tight, kPinPlotRate);
-  const NAMRig::PinCoeffs shelf = NAMRig::pinCoefficients(NAMRig::kPinHighShelf, 2200.0, 6.0 * bright,
-                                                          0.7071067811865476, kPinPlotRate);
-  const NAMRig::PinCoeffs bell = NAMRig::pinCoefficients(NAMRig::kPinBell, 750.0, 9.0 * mid, 0.8, kPinPlotRate);
-
-  for (int i = 0; i <= nPts; ++i) {
-    const double frac = (double)i / (double)nPts;
-    const double hz = 20.0 * std::pow(1000.0, frac);
-    double totalDb = 0.0;
-    if (tight > 0.0f) totalDb += NAMRig::pinMagnitudeDb(hp, hz, kPinPlotRate);
-    if (bright > 0.0f) totalDb += NAMRig::pinMagnitudeDb(shelf, hz, kPinPlotRate);
-    if (mid > 0.0f) totalDb += NAMRig::pinMagnitudeDb(bell, hz, kPinPlotRate);
-    const NSPoint p = NSMakePoint(leftM + frac * pw, pinPlotY(plot, totalDb));
-    if (i == 0) [curve moveToPoint:p];
-    else [curve lineToPoint:p];
-  }
-  curve.lineWidth = 2.5;
-  [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:_enabled ? 0.95 : 0.35] setStroke];
-  [curve stroke];
 }
+- (double)responseDbAtFrequency:(double)hz {
+  const float tight = std::clamp(_inputEq * .01f, 0.0f, 1.0f);
+  const float bright = std::clamp(_bright * .01f, 0.0f, 1.0f);
+  const float mid = std::clamp(_midPush * .01f, 0.0f, 1.0f);
+  double db = 0;
+  if (tight > 0) db += NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(true, 20 + 160 * tight, kPinPlotRate), hz, kPinPlotRate);
+  if (bright > 0) db += NAMRig::pinMagnitudeDb(NAMRig::pinCoefficients(NAMRig::kPinHighShelf, 2200, 6 * bright, .7071067811865476, kPinPlotRate), hz, kPinPlotRate);
+  if (mid > 0) db += NAMRig::pinMagnitudeDb(NAMRig::pinCoefficients(NAMRig::kPinBell, 750, 9 * mid, .8, kPinPlotRate), hz, kPinPlotRate);
+  return db;
+}
+
 @end
 
 @implementation NAMBoostVisualizer
@@ -2016,6 +2147,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     self.toolTip = @"Illustrative core flux transfer and linear filters at 48 kHz (including makeup). Not the full level-dependent audio response; flux frequency controls the core's memory.";
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Transformer
         accent:[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:1.0]];
+    __weak NAMInteractiveGraph* weakSelf = self;
+    _pinEditor.baseResponseDb = ^double(double hz) { return [weakSelf responseDbAtFrequency:hz]; };
     [self addSubview:_pinEditor];
   }
   return self;
@@ -2124,7 +2257,6 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   const NSRect eqPlot = [self passbandRect];
   const CGFloat eqLeft = NSMinX(eqPlot);
   const CGFloat eqRight = NSMaxX(eqPlot);
-  const CGFloat eqW = eqRight - eqLeft;
   const CGFloat eqMidY = NSMidY(eqPlot);
 
   NSBezierPath* eqBase = [NSBezierPath bezierPath];
@@ -2136,69 +2268,19 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
   [eqBase stroke];
 
-  NSBezierPath* eqCurve = [NSBezierPath bezierPath];
-  const int eqPts = 128;
-  const double rate = 48000.0;
-  const double band = rate * 0.42;
-  const double pi = 3.14159265358979323846;
-  enum class Filter { HighPass, LowPass, Peak };
-  const auto rbj = [&](Filter type, double cutoff, double gainDb, double q) {
-    const double w = 2.0 * pi * cutoff / rate;
-    const double c = std::cos(w), alpha = std::sin(w) / (2.0 * q);
-    const double A = std::pow(10.0, gainDb / 40.0);
-    if (type == Filter::HighPass)
-      return std::array<double, 6>{(1.0 + c) * 0.5, -(1.0 + c), (1.0 + c) * 0.5,
-                                 1.0 + alpha, -2.0 * c, 1.0 - alpha};
-    if (type == Filter::LowPass)
-      return std::array<double, 6>{(1.0 - c) * 0.5, 1.0 - c, (1.0 - c) * 0.5,
-                                 1.0 + alpha, -2.0 * c, 1.0 - alpha};
-    return std::array<double, 6>{1.0 + alpha * A, -2.0 * c, 1.0 - alpha * A,
-                               1.0 + alpha / A, -2.0 * c, 1.0 - alpha / A};
-  };
-  const auto highPass = rbj(Filter::HighPass, p.lowCutHz, 0.0, 0.7071067811865476);
-  const auto voice = rbj(Filter::Peak, std::min(p.voiceHz, band), p.voiceDb, p.voiceQ);
-  const auto leakage = rbj(Filter::Peak, std::min(p.leakageHz, band * 0.9), p.leakageDb, p.leakageQ);
-  const auto highCut = rbj(Filter::LowPass, std::min(p.highCutHz, band), 0.0, 0.7071067811865476);
-  const auto magnitudeDb = [&](const std::array<double, 6>& f, double hz) {
-    const double w = 2.0 * pi * hz / rate;
-    const double c = std::cos(w), s = std::sin(w);
-    const double c2 = std::cos(2.0 * w), s2 = std::sin(2.0 * w);
-    const double numerator = std::hypot(f[0] + f[1] * c + f[2] * c2, f[1] * s + f[2] * s2);
-    const double denominator = std::hypot(f[3] + f[4] * c + f[5] * c2, f[4] * s + f[5] * s2);
-    return 20.0 * std::log10(std::max(1.0e-12, numerator / denominator));
-  };
-  // Map log frequency 20 Hz .. 20 kHz across [0..1]
-  const float logMin = std::log10(20.0f);
-  const float logMax = std::log10(20000.0f);
-  for (int i = 0; i <= eqPts; ++i) {
-    float frac = (float)i / (float)eqPts;
-    float hz = std::pow(10.0f, logMin + frac * (logMax - logMin));
-    double db = 0.0;
-    if (idx != 0) {
-      db = magnitudeDb(highPass, hz) + magnitudeDb(voice, hz)
-         + magnitudeDb(leakage, hz) + magnitudeDb(highCut, hz)
-         + 20.0 * std::log10(p.makeup);
-    }
-    CGFloat px = eqLeft + frac * eqW;
-    CGFloat py = pinPlotY(eqPlot, db);
-    if (i == 0) [eqCurve moveToPoint:NSMakePoint(px, py)];
-    else [eqCurve lineToPoint:NSMakePoint(px, py)];
-  }
-
-  NSBezierPath* eqFill = [eqCurve copy];
-  [eqFill lineToPoint:NSMakePoint(eqRight, botM)];
-  [eqFill lineToPoint:NSMakePoint(eqLeft, botM)];
-  [eqFill closePath];
-
-  NSGradient* fg = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:(idx == 0 ? 0.12 : 0.30)]
-                endingColor:[NSColor colorWithSRGBRed:0.25 green:0.15 blue:0.04 alpha:0.02]];
-  [fg drawInBezierPath:eqFill angle:270.0];
-
-  eqCurve.lineWidth = 2.0;
-  [[NSColor colorWithSRGBRed:1.0 green:0.75 blue:0.25 alpha:(idx == 0 ? 0.45 : 0.95)] setStroke];
-  [eqCurve stroke];
 }
+- (double)responseDbAtFrequency:(double)hz {
+  if (_profile == NAMRig::OutputTransformer::kCaptured) return 0;
+  const auto& p = _parameters;
+  const double rate = 48000.0;
+  const double band = rate * .42;
+  return NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(true, p.lowCutHz, rate), hz, rate)
+      + NAMRig::pinMagnitudeDb(NAMRig::pinCoefficients(NAMRig::kPinBell, std::min(p.voiceHz, band), p.voiceDb, p.voiceQ, rate), hz, rate)
+      + NAMRig::pinMagnitudeDb(NAMRig::pinCoefficients(NAMRig::kPinBell, std::min(p.leakageHz, band * .9), p.leakageDb, p.leakageQ, rate), hz, rate)
+      + NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(false, std::min(p.highCutHz, band), rate), hz, rate)
+      + 20 * std::log10(p.makeup);
+}
+
 @end
 
 @implementation NAMSpeakerDynamicsVisualizer
@@ -2207,6 +2289,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
     self.toolTip = @"Quiet-signal response of the speaker load (resonance, voice-coil rise, thump) including the power amp's damping. Cone compression and drive react to level and are not drawn.";
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Speaker
         accent:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0]];
+    __weak NAMInteractiveGraph* weakSelf = self;
+    _pinEditor.baseResponseDb = ^double(double hz) { return [weakSelf responseDbAtFrequency:hz]; };
     [self addSubview:_pinEditor];
   }
   return self;
@@ -2258,7 +2342,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   // The DSP's own load filters (speaker_dynamics.h) on the pin editor's axes:
   // log frequency 20 Hz..20 kHz, +/-18 dB.
   const NSRect plot = [self plotRect];
-  const CGFloat leftM = NSMinX(plot), pw = plot.size.width, botM = NSMinY(plot);
+  const CGFloat leftM = NSMinX(plot), pw = plot.size.width;
 
   NSBezierPath* zero = [NSBezierPath bezierPath];
   [zero moveToPoint:NSMakePoint(leftM, NSMidY(plot))];
@@ -2269,32 +2353,11 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
   [zero stroke];
 
-  NSBezierPath* zCurve = [NSBezierPath bezierPath];
-  const int nPts = 120;
-  for (int i = 0; i <= nPts; ++i) {
-    const double frac = (double)i / (double)nPts;
-    const double hz = 20.0 * std::pow(1000.0, frac);
-    const double db = NAMRig::SpeakerDynamics::responseDb(_profile, hz, kPinPlotRate,
-                                                          _thump, _resonance, _damping);
-    const NSPoint p = NSMakePoint(leftM + frac * pw, pinPlotY(plot, db));
-    if (i == 0) [zCurve moveToPoint:p];
-    else [zCurve lineToPoint:p];
-  }
-
-  NSBezierPath* zFill = [zCurve copy];
-  [zFill lineToPoint:NSMakePoint(leftM + pw, botM)];
-  [zFill lineToPoint:NSMakePoint(leftM, botM)];
-  [zFill closePath];
-
-  NSGradient* zg = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:(captured ? 0.12 : 0.35)]
-                endingColor:[NSColor colorWithSRGBRed:0.05 green:0.25 blue:0.20 alpha:0.02]];
-  [zg drawInBezierPath:zFill angle:270.0];
-
-  zCurve.lineWidth = 2.0;
-  [[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:(captured ? 0.45 : 0.95)] setStroke];
-  [zCurve stroke];
 }
+- (double)responseDbAtFrequency:(double)hz {
+  return NAMRig::SpeakerDynamics::responseDb(_profile, hz, kPinPlotRate, _thump, _resonance, _damping);
+}
+
 @end
 
 @implementation NAMCabConsoleVisualizer
@@ -2302,6 +2365,8 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   if ((self = [super initWithFrame:frame])) {
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::CabConsole
         accent:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0]];
+    __weak NAMInteractiveGraph* weakSelf = self;
+    _pinEditor.baseResponseDb = ^double(double hz) { return [weakSelf responseDbAtFrequency:hz]; };
     [self addSubview:_pinEditor];
   }
   return self;
@@ -2349,12 +2414,7 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   // The DSP's cut filters (2nd-order Butterworth) on the pin editor's axes:
   // log frequency 20 Hz..20 kHz, +/-18 dB.
   const NSRect plot = [self plotRect];
-  const CGFloat leftM = NSMinX(plot), pw = plot.size.width, botM = NSMinY(plot);
-  const bool lowOn = _lowCut >= 20.0f;
-  const bool highOn = _highCut < 19990.0f;
-  const NAMRig::PinCoeffs lowCut = NAMRig::pinPassCoefficients(true, _lowCut, kPinPlotRate);
-  const NAMRig::PinCoeffs highCut = NAMRig::pinPassCoefficients(false, std::max(1000.0f, _highCut), kPinPlotRate);
-
+  const CGFloat leftM = NSMinX(plot), pw = plot.size.width;
   NSBezierPath* zero = [NSBezierPath bezierPath];
   [zero moveToPoint:NSMakePoint(leftM, NSMidY(plot))];
   [zero lineToPoint:NSMakePoint(leftM + pw, NSMidY(plot))];
@@ -2364,33 +2424,14 @@ static CGFloat pinPlotY(NSRect plot, double db) {
   [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
   [zero stroke];
 
-  NSBezierPath* fCurve = [NSBezierPath bezierPath];
-  const int nPts = 120;
-  for (int i = 0; i <= nPts; ++i) {
-    const double frac = (double)i / (double)nPts;
-    const double hz = 20.0 * std::pow(1000.0, frac);
-    double db = 0.0;
-    if (lowOn) db += NAMRig::pinMagnitudeDb(lowCut, hz, kPinPlotRate);
-    if (highOn) db += NAMRig::pinMagnitudeDb(highCut, hz, kPinPlotRate);
-    const NSPoint p = NSMakePoint(leftM + frac * pw, pinPlotY(plot, db));
-    if (i == 0) [fCurve moveToPoint:p];
-    else [fCurve lineToPoint:p];
-  }
-
-  NSBezierPath* fFill = [fCurve copy];
-  [fFill lineToPoint:NSMakePoint(leftM + pw, botM)];
-  [fFill lineToPoint:NSMakePoint(leftM, botM)];
-  [fFill closePath];
-
-  NSGradient* fg = [[NSGradient alloc]
-      initWithStartingColor:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.35]
-                endingColor:[NSColor colorWithSRGBRed:0.05 green:0.25 blue:0.20 alpha:0.02]];
-  [fg drawInBezierPath:fFill angle:270.0];
-
-  fCurve.lineWidth = 2.0;
-  [[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.95] setStroke];
-  [fCurve stroke];
 }
+- (double)responseDbAtFrequency:(double)hz {
+  double db = 0;
+  if (_lowCut >= 20) db += NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(true, _lowCut, kPinPlotRate), hz, kPinPlotRate);
+  if (_highCut < 19990) db += NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(false, std::max(1000.0f, _highCut), kPinPlotRate), hz, kPinPlotRate);
+  return db;
+}
+
 @end
 
 @implementation RigAlertTextField
@@ -2500,11 +2541,58 @@ static CGFloat pinPlotY(NSRect plot, double db) {
 - (float)peakDb { return _peakDb; }
 - (BOOL)clipping { return _levelDb >= -0.5f || CACurrentMediaTime() < _clipUntil; }
 
+- (void)drawHorizontalMeter {
+  const CGFloat w = self.bounds.size.width;
+  NSString* name = [NSString stringWithFormat:@"%@ · %@", _title, _subtitle];
+  [name drawInRect:NSMakeRect(0, 0, w - 90, 14) withAttributes:@{
+    NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
+    NSForegroundColorAttributeName: _accentColor
+  }];
+  NSMutableParagraphStyle* right = [[NSMutableParagraphStyle alloc] init];
+  right.alignment = NSTextAlignmentRight;
+  NSColor* hot = [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1];
+  NSColor* color = self.clipping ? hot : (_levelDb >= -6 ? rigOrange() : _accentColor);
+  NSString* value = _levelDb <= -119 ? @"— dB" : [NSString stringWithFormat:@"%+.1f dB", _levelDb];
+  [value drawInRect:NSMakeRect(w - 90, 0, 78, 14) withAttributes:@{
+    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightMedium],
+    NSForegroundColorAttributeName: color,
+    NSParagraphStyleAttributeName: right
+  }];
+  NSBezierPath* led = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(w - 6, 4, 5, 5)];
+  [(self.clipping ? hot : [hot colorWithAlphaComponent:0.2]) setFill];
+  [led fill];
+  const CGFloat trackW = w - 2;
+  NSRect track = NSMakeRect(1, 18, trackW, 7);
+  [rigRaised() setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:track xRadius:3 yRadius:3] fill];
+  CGFloat fraction = (std::clamp(_levelDb, -60.0f, 0.0f) + 60) / 60;
+  if (fraction > 0) {
+    [color setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(1, 18, trackW * fraction, 7)
+                                   xRadius:3 yRadius:3] fill];
+  }
+  if (_peakDb > -60) {
+    CGFloat peakX = 1 + (trackW - 1.5) * (std::clamp(_peakDb, -60.0f, 0.0f) + 60) / 60;
+    [rigText() setFill];
+    NSRectFill(NSMakeRect(peakX, 17, 1.5, 9));
+  }
+  for (int db : {-60, -24, -12, -6, 0}) {
+    CGFloat x = 1 + trackW * (db + 60) / 60;
+    [rigPanelBorder() setFill];
+    NSRectFill(NSMakeRect(MIN(x, w - 1), 27, 1, 2));
+    [[NSString stringWithFormat:@"%d", db] drawInRect:NSMakeRect(std::clamp(x - 8, 0.0, w - 20), 30, 20, 10)
+        withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:7],
+                         NSForegroundColorAttributeName: rigDimText()}];
+  }
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
   const NSRect bounds = self.bounds;
   const CGFloat w = bounds.size.width;
   const CGFloat h = bounds.size.height;
   if (w <= 0 || h <= 0) return;
+
+  if (self.horizontal) { [self drawHorizontalMeter]; return; }
 
   // Background panel
   NSRect panelRect = NSInsetRect(bounds, 0.5, 0.5);

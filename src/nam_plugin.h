@@ -74,8 +74,6 @@ namespace NAM {
 		NeuralAudio::NeuralModelLoader loader;
 		NeuralAudio::NeuralModel* currentModel = nullptr;
 		std::string currentModelPath;
-		float prevDCInput = 0;
-		float prevDCOutput = 0;
 
 		Plugin();
 		~Plugin();

@@ -174,8 +174,11 @@ assert "parametersForProfile(idx, transformerAdjustments)" in telemetry
 assert "transformerVisualizer.parameters = p;" in telemetry
 assert "transformerSpecLabels[i].stringValue = vals[i];" in telemetry
 assert "const auto values = NAMRig::OutputTransformer::controlValues(p);" in telemetry
+spec_text = body(state, "NSArray<NSString*>* transformerSpecTexts(", "  ")
+assert "transformerSpecTexts()" in telemetry
+assert "parametersForProfile(transformerProfile, transformerAdjustments)" in spec_text
 for expression in ("p.lowCutHz", "p.highCutHz", "p.drive", "p.saturationMix", "p.voiceDb", "p.voiceHz", "p.leakageDb", "p.leakageHz"):
-    assert expression in telemetry, "spec text must be computed from current DSP parameters"
+    assert expression in spec_text, "spec text must be computed from current DSP parameters"
 assert "slider.minValue = log ? std::log(range[0]) : range[0];" in telemetry
 assert "slider.maxValue = log ? std::log(range[1]) : range[1];" in telemetry
 assert "slider.doubleValue = log ? std::log(values[i]) : values[i];" in telemetry

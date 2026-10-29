@@ -88,6 +88,7 @@ static double copilotParseClock(NSString* text) {
 #include "oversample_modes.h"
 #include "rig_ui_state.h"
 #import "rig_workspace.h"
+#import "rig_graph_controls.h"
 #import "rig_tone_browser.h"
 #import "rig_tone_api.h"
 
@@ -181,6 +182,7 @@ static double copilotParseClock(NSString* text) {
 - (void)transformerChanged:(NSPopUpButton*)sender;
 - (void)showTransformerControls:(NSButton*)sender;
 - (void)transformerControlChanged:(NSControl*)sender;
+- (void)transformerSpecCommitted:(NSTextField*)sender;
 - (void)resetTransformerControls:(id)sender;
 - (void)showAmpAdvanced:(NSButton*)sender;
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
@@ -933,6 +935,8 @@ static double copilotParseClock(NSString* text) {
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
+  for (size_t i = 0; i < 4; ++i)
+    if (_state->transformerSpecLabels[i] == f) _state->transformerSpecEditing[i] = true;
   for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i)
     if (_state->transformerFields[i] == f) _state->transformerFieldEditing[i] = true;
   for (size_t k = 0; k < kRigKnobCount; ++k) {
@@ -950,6 +954,11 @@ static double copilotParseClock(NSString* text) {
   if (!_state) return;
   NSTextField* f = obj.object;
   if (![f isKindOfClass:[NSTextField class]]) return;
+  for (size_t i = 0; i < 4; ++i) {
+    if (_state->transformerSpecLabels[i] != f) continue;
+    [self transformerSpecCommitted:f];
+    return;
+  }
   for (size_t i = 0; i < NAMRig::kTransformerControlCount; ++i) {
     if (_state->transformerFields[i] != f) continue;
     _state->transformerFieldEditing[i] = false;
@@ -1100,6 +1109,66 @@ static double copilotParseClock(NSString* text) {
     _state->updateControl(port, NAMRig::kTransformerControlDefaults[i]);
   }
   [self markPresetModified];
+}
+
+- (void)transformerSpecCommitted:(NSTextField*)sender {
+  if (!_state || sender.tag < 0 || sender.tag >= 4) return;
+  const size_t group = (size_t)sender.tag;
+  if (_state->transformerSpecLabels[group] != sender) return;
+  if (_state->transformerProfile == 0) {
+    _state->transformerSpecEditing[group] = false;
+    _state->updateTransformerTelemetry(_state->transformerProfile);
+    return;
+  }
+  NSString* text = [sender.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if ([text isEqualToString:_state->transformerSpecTexts()[group]]) {
+    _state->transformerSpecEditing[group] = false;
+    return;
+  }
+  NSString* n = @"([+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:e[+-]?[0-9]+)?)";
+  NSString* pattern = group == 0
+      ? [NSString stringWithFormat:@"^%@\\s*(khz|hz)?\\s*[-–/]\\s*%@\\s*(khz|hz)?$", n, n]
+      : group == 1
+      ? [NSString stringWithFormat:@"^%@\\s*x?\\s*/\\s*%@\\s*%%?(?:\\s*mix)?$", n, n]
+      : [NSString stringWithFormat:@"^%@\\s*(?:db)?\\s*@\\s*%@\\s*(khz|hz)?$", n, n];
+  NSRegularExpression* expression = [NSRegularExpression regularExpressionWithPattern:pattern
+      options:NSRegularExpressionCaseInsensitive error:nil];
+  NSTextCheckingResult* match = [expression firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
+  const auto reject = [&] {
+    _state->transformerSpecEditing[group] = false;
+    _state->updateTransformerTelemetry(_state->transformerProfile);
+  };
+  if (!match) { reject(); return; }
+  const auto number = [&](NSUInteger index) { return [[text substringWithRange:[match rangeAtIndex:index]] doubleValue]; };
+  const auto kilo = [&](NSUInteger index) {
+    NSRange range = [match rangeAtIndex:index];
+    return range.location != NSNotFound && [[text substringWithRange:range] caseInsensitiveCompare:@"khz"] == NSOrderedSame;
+  };
+  double values[2] = {number(1), number(group == 0 ? 3 : 2)};
+  if (group == 0) {
+    if (kilo(2)) values[0] *= 1000;
+    if (kilo(4)) values[1] *= 1000;
+  } else if (group >= 2 && kilo(3)) values[1] *= 1000;
+  if (!std::isfinite(values[0]) || !std::isfinite(values[1])) { reject(); return; }
+  const size_t indices[4][2] = {{0, 1}, {2, 3}, {6, 5}, {9, 8}};
+  const auto base = NAMRig::OutputTransformer::controlValues(
+      NAMRig::OutputTransformer::parametersForProfile(_state->transformerProfile));
+  bool changed = false;
+  _state->transformerSpecEditing[group] = true;
+  for (size_t k = 0; k < 2; ++k) {
+    const size_t index = indices[group][k];
+    const auto range = _state->transformerControlRange(index);
+    const float value = (float)std::clamp(values[k], (double)range[0], (double)range[1]);
+    const float trim = NAMRig::kTransformerControls[index].defaultValue == 1.0f
+        ? value / base[index] : value - base[index];
+    if (std::fabs(trim - _state->transformerAdjustments[index]) <= 1.0e-6f) continue;
+    const uint32_t port = NAMRig::kTransformerControlFirstPort + index;
+    _state->sendControl(port, trim);
+    _state->updateControl(port, trim);
+    changed = true;
+  }
+  reject();
+  if (changed) [self markPresetModified];
 }
 
 - (void)transformerControlChanged:(NSControl*)sender {
@@ -6003,6 +6072,17 @@ static void addLowerStudioDeck(RigUIState* state,
                                      [NSFont monospacedDigitSystemFontOfSize:9.5 weight:NSFontWeightSemibold],
                                      [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.32 alpha:0.98],
                                      NSTextAlignmentLeft);
+        vLbl.editable = YES;
+        vLbl.selectable = YES;
+        vLbl.delegate = state->uiController;
+        vLbl.tag = pillIdx;
+        vLbl.target = state->uiController;
+        vLbl.action = @selector(transformerSpecCommitted:);
+        vLbl.focusRingType = NSFocusRingTypeExterior;
+        vLbl.toolTip = @[@"Type low and high cut, e.g. 80 Hz - 12 kHz.",
+            @"Type drive and saturation mix, e.g. 3x / 44%.",
+            @"Type voice gain and frequency, e.g. +2.8 dB @ 2.85 kHz.",
+            @"Type leakage gain and frequency, e.g. +1.6 dB @ 6.5 kHz."][pillIdx];
         vLbl.lineBreakMode = NSLineBreakByTruncatingTail;
         vLbl.translatesAutoresizingMaskIntoConstraints = NO;
         [[vLbl.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:8] setActive:YES];
@@ -7677,6 +7757,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       if (!state->valueLabels[k] && state->deckValueLabels[k]) state->valueLabels[k] = state->deckValueLabels[k];
     }
 
+    rigInstallGraphControls(state);
     state->workspace = rigCreateWorkspace(state, rigPane, boxRow, expansionSlot,
         @[knobGroups[0], knobGroups[1], knobGroups[2]]);
     addToneBrowser(state, tonePane);
