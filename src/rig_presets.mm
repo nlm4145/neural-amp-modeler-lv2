@@ -203,6 +203,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
   p->_controls[NAMRig::kOverdriveVoicingPort] = 0.0f;
   p->_controls[42] = 0.0f;  // Captured / Off
+  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port)
+    p->_controls[port] = NAMRig::toneEqDefault(port);
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
@@ -288,6 +290,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset->_controls[NAMRig::kPowerTubeCharacterPort] = NAMRig::kPowerTubeCharacterDefault;
   preset->_controls[NAMRig::kOverdriveVoicingPort] = 0.0f;
   // Presets saved before graph pins existed recall with no pins placed.
+  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port)
+    preset->_controls[port] = NAMRig::toneEqDefault(port);
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
@@ -457,6 +461,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = state->pinEqControls[i];
 
+  for (uint32_t i = 0; i < NAMRig::kToneEqControlCount; ++i)
+    p->_controls[NAMRig::kToneEqModePort + i] = state->toneEqControls[i];
+
   // IR Normalization
   if (state->irNormPopup) {
     p->_stages[2].irNormalization = state->irNormPopup.indexOfSelectedItem == 0 ? 1.0f : 2.0f;
@@ -518,6 +525,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
 - (void)applyToState:(RigUIState*)state {
   if (!state) return;
   state->cancelTransformerEditing();
+  const bool wasSyncingToneEq = state->syncingToneEq;
+  state->syncingToneEq = true;
 
   // 1. Models: discover sibling models and send stage path changes before
   // touching oversample/cab-enable controls so the audio thread never reloads
@@ -622,6 +631,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     state->sendControl(port, value);
     state->updateControl(port, value);
   }
+  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port) {
+    auto it = _controls.find(port);
+    const float value = it != _controls.end() ? it->second : NAMRig::toneEqDefault(port);
+    state->sendControl(port, value);
+    state->updateControl(port, value);
+  }
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);
@@ -642,6 +657,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     state->sendControl(port, val);
     state->updateControl(port, val);
   }
+
+  state->syncingToneEq = wasSyncingToneEq;
+  if (!wasSyncingToneEq) state->synchronizeToneEq(state->toneEqControls[0] >= 0.5f);
 
   // 5. Stage thumbnails
   for (size_t s = 0; s < 6; ++s) {

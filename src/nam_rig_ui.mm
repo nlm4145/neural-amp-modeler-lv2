@@ -999,6 +999,8 @@ static double copilotParseClock(NSString* text) {
   NSString* s = [[sender.stringValue stringByTrimmingCharactersInSet:
                   [NSCharacterSet whitespaceCharacterSet]]
                  stringByReplacingOccurrencesOfString:@"dB" withString:@""];
+  if ((port == NAMRig::kOutputCeilingPort && [s.uppercaseString isEqualToString:@"OFF"]) ||
+      (port == NAMRig::kOutputBalancePort && [s.uppercaseString isEqualToString:@"CENTER"])) s = @"0";
   static NSCharacterSet* numeric = nil;
   static dispatch_once_t once;
   dispatch_once(&once, ^{ numeric = [NSCharacterSet characterSetWithCharactersInString:@"0123456789+-.eE"]; });
@@ -1341,6 +1343,7 @@ static double copilotParseClock(NSString* text) {
 - (void)resetAllKnobs:(id)sender {
   (void)sender;
   if (!_state) return;
+  _state->syncingToneEq = true;
   for (size_t k = 0; k < kRigKnobCount; ++k) {
     _state->sendControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
     _state->updateControl(kRigKnobPorts[k], kRigKnobDefaults[k]);
@@ -1356,6 +1359,12 @@ static double copilotParseClock(NSString* text) {
   }
   _state->sendControl(NAMRig::kPostCompressorEnabledPort, 1.0f);
   _state->updateControl(NAMRig::kPostCompressorEnabledPort, 1.0f);
+  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port) {
+    _state->sendControl(port, NAMRig::toneEqDefault(port));
+    _state->updateControl(port, NAMRig::toneEqDefault(port));
+  }
+  _state->syncingToneEq = false;
+  _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
   [self markPresetModified];
 }
@@ -2624,7 +2633,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   (void)sender;
   const BOOL show = self.aiEngineStrip.hidden;
   self.aiEngineStrip.hidden = !show;
-  self.aiCardsTopConstraint.constant = show ? -58 : 10;
+  self.aiCardsTopConstraint.constant = show ? 10 : -58;
   self.aiEngineToggleButton.title = show ? @"Hide AI Settings" : @"AI Settings";
   self.aiEngineToggleButton.primary = show;
 }
@@ -2649,7 +2658,7 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   aiTitle.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:aiTitle];
   [[aiTitle.leadingAnchor constraintEqualToAnchor:aiPane.leadingAnchor constant:pad] setActive:YES];
-  [[aiTitle.topAnchor constraintEqualToAnchor:aiPane.topAnchor constant:10] setActive:YES];
+  [[aiTitle.topAnchor constraintEqualToAnchor:aiPane.topAnchor constant:44] setActive:YES];
   [[aiTitle.heightAnchor constraintEqualToConstant:26] setActive:YES];
 
   NSTextField* aiSub = addLabel(aiPane, @"Describe a sound or match a reference. Review every change before applying.", NSZeroRect,
@@ -2766,16 +2775,19 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
 
   [self updateCopilotProviderControlsForProvider:config.provider];
 
+  const CGFloat cardH = 844.0;
+  const CGFloat contentW = 448.0;
+
   // Main 3-Column Deck
-  RigPanel* card1 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  RigPanel* card1 = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, 480, cardH)];
   card1.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:card1];
 
-  RigPanel* card2 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  RigPanel* card2 = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, 480, cardH)];
   card2.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:card2];
 
-  RigPanel* card3 = [[RigPanel alloc] initWithFrame:NSZeroRect];
+  RigPanel* card3 = [[RigPanel alloc] initWithFrame:NSMakeRect(0, 0, 480, cardH)];
   self.copilotMatchingCard = card3;
   card3.translatesAutoresizingMaskIntoConstraints = NO;
   [aiPane addSubview:card3];
@@ -2795,9 +2807,6 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   [[card3.topAnchor constraintEqualToAnchor:card1.topAnchor] setActive:YES];
   [[card3.bottomAnchor constraintEqualToAnchor:card1.bottomAnchor] setActive:YES];
   [[card3.trailingAnchor constraintEqualToAnchor:aiPane.trailingAnchor constant:-pad] setActive:YES];
-
-  const CGFloat cardH = 844.0;
-  const CGFloat contentW = 448.0;
 
   auto addSep = [](NSView* parent, CGFloat y, CGFloat w) {
     NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(16, y, w, 1)];
@@ -3260,6 +3269,12 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
              @"Provides gentle, mathematically optimal pin EQ adjustments to bridge the gap between pure amplifier tone and commercial album mastering curves.",
              rigGreen());
   self.copilotDiagnosticViews = [card3.subviews subarrayWithRange:NSMakeRange(diagnosticsStart, card3.subviews.count - diagnosticsStart)];
+
+  for (NSView* card in @[card1, card2, card3]) {
+    for (NSView* sub in card.subviews) {
+      sub.autoresizingMask = (sub == scroll) ? NSViewHeightSizable : NSViewMinYMargin;
+    }
+  }
 
   // Trigger initial UI refreshes
   [self refreshCopilotModelsUI];
@@ -3954,9 +3969,9 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   const BOOL proposalReady = self.copilotProposal && (!localProposal || resultsReady);
   const BOOL auditionReady = proposalReady && r.renderHandler && r.recordedDIFrames.length &&
       !r.isDIClipped && !r.recordingMetadata[@"warning"];
-  self.copilotMatchingCard.hidden = !inputsReady && !self.copilotLocalMatching;
+  self.copilotMatchingCard.hidden = NO;
   for (NSView* view in self.copilotResultViews) view.hidden = !resultsReady;
-  for (NSView* view in self.copilotDiagnosticViews) view.hidden = !resultsReady;
+  for (NSView* view in self.copilotDiagnosticViews) view.hidden = NO;
   self.copilotMatchMixEQButton.hidden = !resultsReady;
   const BOOL hideAudition = !auditionReady;
   if (self.copilotAuditionViews.firstObject.hidden != hideAudition) {
@@ -3973,8 +3988,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotUndoBtn.hidden = ![RigAICopilot sharedCopilot].canUndo;
   self.copilotPlayAlongBtn.hidden = !r.referenceFrames.length && !self.copilotRecordIsPlayAlong;
   NSArray<NSNumber*>* guideReady = @[@YES, @(inputsReady || self.copilotLocalMatching), @(auditionReady), @(proposalReady)];
-  for (NSUInteger i = 0; i < self.copilotGuideCards.count; ++i)
-    self.copilotGuideCards[i].hidden = !guideReady[i].boolValue;
+  for (NSUInteger i = 0; i < self.copilotGuideCards.count; ++i) {
+    self.copilotGuideCards[i].hidden = NO;
+    self.copilotGuideCards[i].alphaValue = guideReady[i].boolValue ? 1.0 : 0.65;
+  }
   NSString* nextStep;
   if (self.copilotDemucsRunning)
     nextStep = @"Step 1: Separating the target guitar… wait for extraction to finish.";
@@ -7012,6 +7029,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     NSView* tonePane = [[NSView alloc] initWithFrame:NSZeroRect];
     tonePane.translatesAutoresizingMaskIntoConstraints = NO;
+    tonePane.hidden = YES;
     [content addSubview:tonePane];
     [[tonePane.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
     [[tonePane.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
@@ -7021,6 +7039,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     NSView* aiPane = [[NSView alloc] initWithFrame:NSZeroRect];
     aiPane.translatesAutoresizingMaskIntoConstraints = NO;
+    aiPane.hidden = YES;
     [content addSubview:aiPane];
     [[aiPane.leadingAnchor constraintEqualToAnchor:content.leadingAnchor] setActive:YES];
     [[aiPane.trailingAnchor constraintEqualToAnchor:content.trailingAnchor] setActive:YES];
@@ -7185,7 +7204,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
                                       @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
-                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE", @"OD TIGHT"];
+                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE", @"OD TIGHT", @"CEILING", @"BALANCE"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -7193,7 +7212,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
-                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms", @"720 Hz"];
+                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms", @"720 Hz", @"OFF", @"CENTER"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -7242,19 +7261,21 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Post-cab stereo compression before delay and reverb. Amount lowers threshold, raises ratio and adds makeup gain. Both channels share gain reduction to preserve the stereo image. 0% is exact bypass; independent of pre-amp compression.",
       @"Post-cab compressor attack (1 to 100 ms). Slower attack preserves pick punch; faster attack controls peaks. No lookahead or added latency.",
       @"Post-cab compressor release (10 to 1000 ms). Short releases recover between notes; longer releases smooth sustained leads.",
-      @"Overdrive tight high-pass cutoff (100 to 1500 Hz). Sweeps the pre-clip bass roll-off frequency: lower settings give warm, full-range drive; higher settings tighten flub and sharpen pick attack for modern rhythms."
+      @"Overdrive tight high-pass cutoff (100 to 1500 Hz). Sweeps the pre-clip bass roll-off frequency: lower settings give warm, full-range drive; higher settings tighten flub and sharpen pick attack for modern rhythms.",
+      @"Final stereo-linked peak limiter. 0 dB reads OFF and bypasses completely. Turn below 0 dB to set the sample-peak ceiling. No added latency or makeup gain.",
+      @"Final left/right balance, including effects. CENTER is exact bypass. Negative values attenuate right; positive values attenuate left. Neither side is boosted."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0, 100.0};
+        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0, 100.0, -24.0, -100.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0, 1500.0};
+        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0, 1500.0, 0.0, 100.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -7267,15 +7288,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     // Reserve pedal header space beside the meters without shrinking the amp's
     // six 70pt value cells. Cabinet blend controls live in the lower console;
-    // only the OUTPUT knob remains under the cabinet card.
+    // Output utilities share the group later mounted in the master console.
     const CGFloat tileUnits[3] = {4.65, 6.0, 6.0};
     NSView* knobGroups[3] = {nil, nil, nil};
     RigPanel* tileBoxes[3] = {nil, nil, nil};
 
     // Display slots grouped per tile in signal-flow order.
     // Pedal tile displays Gate threshold and release, plus Input level trim when a pedal model is active.
-    const size_t groupSlots[3][6] = {{0, 1, 2, 0, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 0, 0, 0, 0, 0}};
-    const size_t groupCounts[3] = {3, 6, 1};
+    const size_t groupSlots[3][6] = {{0, 1, 2, 0, 0, 0}, {4, 14, 15, 5, 6, 7}, {11, 48, 49, 0, 0, 0}};
+    const size_t groupCounts[3] = {3, 6, 3};
 
     const CGFloat groupPad = 4.0;
     const CGFloat knobSide = 64.0;

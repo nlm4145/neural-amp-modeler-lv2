@@ -27,6 +27,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/rig_ui_state.h` | `RigUIState` struct: URIDs, LV2 write fn, stage views, UI-side persistence |
 | `src/rig_theme.{h,mm}` | Dark palette (`rigBG`…`rigGreen`) + `rigKnobValueText` |
 | `src/rig_widgets.{h,mm}` | Shared custom controls: `RigKnob` (arc knob), `RigPanel` (gradient panel), `RigButton`, ImageIO thumbnail decode helpers. Used by BOTH UI targets |
+| `src/master_output.h` | Final stereo balance and linked sample-peak limiter; OFF/CENTER bypass all sample processing, including limiter history; zero added latency |
 | `src/rig_knobs.{h,cpp}` | `kRigKnobPorts` / `kRigKnobDisplayOrder` (display order = signal chain, not port order) |
 | `src/rack_controls.h`, `src/power_tube_controls.h`, `src/transformer_controls.h` | Shared nine-rack order/enable ports, tube-inspired profile parameters, and output-transformer profile definitions |
 | `src/rig_control_contract.h`, `src/rig_control_metadata.h` | Auto-generated canonical port/knob/enum schema (`scripts/generate_rig_control_contract.py`) and preset port-to-symbol metadata |
@@ -256,6 +257,26 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 186–189 | `post_compressor`/`post_compressor_attack`/`post_compressor_release`/`post_compressor_enabled` | in | Post-FX Studio stereo compressor: amount 0–100%, attack 1–100 ms (default 8), release 10–1000 ms (default 120), independent enable (default 1); all optional |
 | 190 | `od_tight` | in | Pre-amp overdrive tight high-pass cutoff (100–1500 Hz, default 720 Hz); sweeps pre-clip low-cut bandpass corner |
 | 191 | `od_voicing` | in | Pre-amp overdrive diode voicing: 0=Classic TS (symmetric silicon), 1=SD-1 (asymmetric silicon, rich 2nd harmonic), 2=LED Turbo (high headroom red LEDs), 3=Germanium (vintage warm early compression), 4=Clean / No Diodes (linear boost without diode clipping or self-bias; Drive, Tight, Tone and Level remain active); default 0 |
+
+| 195 | `output_ceiling` | in | -24..0 dB; default 0 = OFF/exact bypass, negative values enable final stereo-linked sample-peak limiting after FX and reference tone; instantaneous attack, 80 ms release, no makeup gain or lookahead |
+| 196 | `output_balance` | in | -100..100%; default 0 = CENTER/exact bypass; attenuate right for negative values, left for positive; 5 ms smoothing away from center |
+| 197 | `output_reduction` | out | Limiter gain reduction in dB, with meter decay; zero while bypassed; excluded from presets |
+| 198 | `tone_eq_mode` | in | Tone & Voicing post-stack EQ: 0 = original Bass/Mid/Treble (default), 1 = seven-band graphic EQ; stores the last edited audio source; view switching does not change it; optional |
+| 199–226 | `tone_eq_pin{1..7}_{shape,freq,gain,q}` | in | Independent stereo tone EQ at the original post-stack position; fixed bell bands at 40, 80, 240, 750, 2200, 6600, 12000 Hz, ±18 dB; shape/frequency/Q ports fixed for compatibility; optional |
+
+The Tone & Voicing selector switches between linked knob and lever views without
+writing audio controls. Edits project the complete EQ response into the other
+view with a bounded least-squares fit (`src/tone_eq_link.h`). The last edited
+control set remains the audio source, so toggling views never changes the tone
+or discards seven-band detail. The three knobs approximate a seven-band curve.
+Preset restore batches both sets of values, then updates the derived view once;
+legacy presets with only Bass/Mid/Treble populate the levers on recall. Repeated
+host echoes do not trigger reciprocal writes. Cab Console pins remain independent.
+
+
+Neutral output utilities skip sample writes entirely, including peaks above full scale.
+Returning to OFF/CENTER clears their histories immediately. Existing output trim placement,
+FX behavior and reported latency are unchanged; older presets initialize both new controls to zero.
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
 is never part of the serial chain or a True domain; it loads at the session rate.

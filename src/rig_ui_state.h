@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include "rig_knobs.h"
+#include "tone_eq_link.h"
 #include "rack_controls.h"
 #include "power_tube_controls.h"
 #include "oversample_modes.h"
@@ -234,6 +235,47 @@ struct RigUIState {
   __strong NAMCabConsoleVisualizer* cabConsoleVisualizer = nil;
   // Graph pins (Sculpt / Transformer / Cab Console): logical values for preset
   // and A/B capture, plus the editors drawn over each graph.
+  NAMRig::ToneKnobGains toneEqKnobValues{};
+  bool syncingToneEq = false;
+  bool toneEqShowsGraphic = false;
+  void showToneEqView(bool graphic) {
+    toneEqShowsGraphic = graphic;
+    toneEqKnobView.hidden = graphic;
+    toneEqGraphView.hidden = !graphic;
+    toneEqModeSwitch.selectedSegment = graphic ? 1 : 0;
+  }
+  void synchronizeToneEq(bool fromGraphic) {
+    if (syncingToneEq) return;
+    syncingToneEq = true;
+    if (fromGraphic) {
+      NAMRig::ToneLeverGains gains;
+      for (size_t b = 0; b < gains.size(); ++b)
+        gains[b] = toneEqControls[1 + b * NAMRig::kPinEqBandParams + NAMRig::kPinGain];
+      const auto knobs = NAMRig::toneKnobsFromLevers(gains);
+      for (size_t i = 0; i < knobs.size(); ++i) {
+        sendControl(12 + i, knobs[i]);
+        updateControl(12 + i, knobs[i]);
+      }
+    } else {
+      const auto gains = NAMRig::toneLeversFromKnobs(toneEqKnobValues);
+      for (size_t b = 0; b < gains.size(); ++b) {
+        const uint32_t port = NAMRig::toneEqPort(b, NAMRig::kPinGain);
+        sendControl(port, gains[b]);
+        updateControl(port, gains[b]);
+      }
+    }
+    // The mode port recalls the last edited audio source. View changes never
+    // rewrite it, so inspecting the other controls cannot change the sound.
+    sendControl(NAMRig::kToneEqModePort, fromGraphic ? 1 : 0);
+    updateControl(NAMRig::kToneEqModePort, fromGraphic ? 1 : 0);
+    syncingToneEq = false;
+  }
+  std::array<float, NAMRig::kToneEqControlCount> toneEqControls = NAMRig::toneEqDefaults();
+  std::array<__strong NSSlider*, NAMRig::kToneEqBandCount> toneEqLevers{};
+  std::array<__strong NSTextField*, NAMRig::kToneEqBandCount> toneEqLeverValues{};
+  __strong NSView* toneEqKnobView = nil;
+  __strong NSView* toneEqGraphView = nil;
+  __strong NSSegmentedControl* toneEqModeSwitch = nil;
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls = NAMRig::pinEqDefaults();
   std::array<__strong NAMPinEQEditor*, NAMRig::kPinEqPaneCount> pinEditors{};
   __strong RigButton* cab2PolarityButton = nil;
@@ -536,6 +578,8 @@ struct RigUIState {
   std::array<__strong NSSlider*, kRigKnobCount> knobs{};
   std::array<__strong NSTextField*, kRigKnobCount> valueLabels{};
   __strong NSView* pedalInputKnobCell = nil;
+  __strong NSLevelIndicator* outputReductionMeter = nil;
+  __strong NSTextField* outputReductionLabel = nil;
   // Editable knob value boxes: while the user is typing in one, host-driven
   // updates must not clobber that field (index = kRigKnobPorts index).
   std::array<bool, kRigKnobCount> knobFieldEditing{};
@@ -1359,6 +1403,8 @@ struct RigUIState {
   }
 
   float currentPortValueForSlot(uint32_t port) const {
+    if (port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount)
+      return toneEqControls[port - NAMRig::kToneEqModePort];
     if (port == NAMRig::kPedalOrderPort) return pedalOrder;
     if (port == NAMRig::kPedal2EnabledPort || port == NAMRig::kPedal3EnabledPort)
       return extraPedalEnabled[port - NAMRig::kPedal2EnabledPort];
@@ -1967,7 +2013,9 @@ struct RigUIState {
 
   void updateStageArchBadge(size_t stage, NSString* path) {
     RigModelArchInfo info = inspectModelArch(path);
-    if (stage >= 4 && stage < stageArchBadges.size()) applyArchBadgeStyle(stageArchBadges[stage], info, nil);
+    if (stage >= 3 && stage < stageArchBadges.size() && stageArchBadges[stage]) {
+      applyArchBadgeStyle(stageArchBadges[stage], info, nil);
+    }
     if (stage < stageHeaderArchBadges.size() && stageHeaderArchBadges[stage]) {
       applyArchBadgeStyle(stageHeaderArchBadges[stage], info, nil);
     }
@@ -2201,10 +2249,10 @@ struct RigUIState {
       NSImage* icon = [NSImage imageWithSystemSymbolName:placeholderSymbolForStage(s)
                                   accessibilityDescription:nil];
       icon = [icon imageWithSymbolConfiguration:
-              [NSImageSymbolConfiguration configurationWithPointSize:22 weight:NSFontWeightRegular]];
+              [NSImageSymbolConfiguration configurationWithPointSize:56 weight:NSFontWeightLight]];
       stageImages[s].image = icon;
-      stageImages[s].contentTintColor = [NSColor colorWithSRGBRed:0.58 green:0.60 blue:0.65 alpha:1.0];
-      stageImages[s].imageScaling = NSImageScaleProportionallyUpOrDown;
+      stageImages[s].contentTintColor = [NSColor colorWithSRGBRed:0.58 green:0.60 blue:0.65 alpha:0.65];
+      stageImages[s].imageScaling = NSImageScaleProportionallyDown;
     });
 
     NSImage* image = nil;
@@ -2397,6 +2445,26 @@ struct RigUIState {
   int pedalOrder = 0;
   std::array<float, 2> extraPedalEnabled{};
   void updateControl(uint32_t port, float value) {
+    if (port >= 12 && port <= 14)
+      value = std::isfinite(value) ? std::clamp(value, -12.0f, 12.0f) : 0.0f;
+    if (((port >= 12 && port <= 14) ||
+         (port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount)) &&
+        ![NSThread isMainThread]) {
+      auto alive = isAlive;
+      dispatch_async(dispatch_get_main_queue(), ^{ if (alive && *alive) updateControl(port, value); });
+      return;
+    }
+    if (port == NAMRig::kOutputReductionPort) {
+      const float db = std::isfinite(value) ? std::clamp(value, 0.0f, 240.0f) : 0.0f;
+      auto alive = isAlive;
+      auto refresh = ^{
+        if (!alive || !*alive) return;
+        if (outputReductionMeter) outputReductionMeter.doubleValue = db;
+        if (outputReductionLabel) outputReductionLabel.stringValue = [NSString stringWithFormat:@"%.1f dB", db];
+      };
+      if ([NSThread isMainThread]) refresh(); else dispatch_async(dispatch_get_main_queue(), refresh);
+      return;
+    }
     if (port >= NAMRig::kPedal2EnabledPort && port <= NAMRig::kPedalOrderPort) {
       if (port == NAMRig::kPedalOrderPort)
         pedalOrder = std::isfinite(value) ? (int)(std::clamp(value, 0.0f, 5.0f) + 0.5f) : 0;
@@ -2528,6 +2596,24 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateTube();
       else dispatch_async(dispatch_get_main_queue(), updateTube);
+      return;
+    }
+    if (port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount) {
+      const float toneValue = NAMRig::clampToneEqValue(port, value);
+      const bool changed = toneEqControls[port - NAMRig::kToneEqModePort] != toneValue;
+      toneEqControls[port - NAMRig::kToneEqModePort] = toneValue;
+      auto updateTone = ^{
+        if (!alive || !*alive) return;
+        if (port != NAMRig::kToneEqModePort &&
+            (port - NAMRig::kToneEqFirstPort) % NAMRig::kPinEqBandParams == NAMRig::kPinGain) {
+          const size_t band = (port - NAMRig::kToneEqFirstPort) / NAMRig::kPinEqBandParams;
+          toneEqLevers[band].floatValue = toneValue;
+          toneEqLeverValues[band].stringValue = [NSString stringWithFormat:@"%+.1f", toneValue];
+          if (changed) synchronizeToneEq(true);
+        }
+      };
+      if ([NSThread isMainThread]) updateTone();
+      else dispatch_async(dispatch_get_main_queue(), updateTone);
       return;
     }
     if (NAMRig::isPinEqPort(port)) {
@@ -2668,6 +2754,11 @@ struct RigUIState {
         powerTubeCharacter = value;
         if (powerTubeVisualizer) powerTubeVisualizer.character = value;
       }
+      bool toneKnobChanged = false;
+      if (port >= 12 && port <= 14) {
+        toneKnobChanged = toneEqKnobValues[port - 12] != value;
+        toneEqKnobValues[port - 12] = value;
+      }
       if (knobs[index]) knobs[index].floatValue = value;
       if (!knobFieldEditing[index] && valueLabels[index])
         valueLabels[index].stringValue = rigKnobValueText(port, value);
@@ -2675,6 +2766,7 @@ struct RigUIState {
       if (deckKnobs[index]) deckKnobs[index].floatValue = value;
       if (!deckKnobFieldEditing[index] && deckValueLabels[index])
         deckValueLabels[index].stringValue = rigKnobValueText(port, value);
+      if (toneKnobChanged) synchronizeToneEq(false);
 
       if (delayVisualizer && (port >= 50 && port <= 53)) {
         if (port == 50) delayVisualizer.timeMs = value;

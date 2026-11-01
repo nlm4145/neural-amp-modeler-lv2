@@ -54,6 +54,8 @@ run_cpp c++17 /tmp/verify_rig_control_metadata -Isrc \
 
 echo "== tests/verify_noise_gate.cpp =="
 run_cpp c++17 /tmp/verify_noise_gate -Isrc tests/verify_noise_gate.cpp
+echo "== tests/verify_master_output.cpp =="
+run_cpp c++17 /tmp/verify_master_output -Isrc tests/verify_master_output.cpp
 echo "== tests/verify_compressor.cpp =="
 run_cpp c++17 /tmp/verify_compressor -Isrc tests/verify_compressor.cpp
 echo "== tests/verify_output_transformer.cpp =="
@@ -66,6 +68,8 @@ echo "== tests/verify_overdrive.cpp =="
 run_cpp c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
 echo "== tests/verify_pin_eq.cpp =="
 run_cpp c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
+echo "== tests/verify_tone_eq_link.cpp =="
+run_cpp c++17 /tmp/verify_tone_eq_link -Isrc tests/verify_tone_eq_link.cpp
 echo "== tests/verify_control_work.cpp (control caching / smoothing equivalence) =="
 run_cpp c++17 /tmp/verify_control_work -Isrc tests/verify_control_work.cpp
 echo "== tests/verify_rig_dsp_cache.cpp (gain / timing / stereo width caches) =="

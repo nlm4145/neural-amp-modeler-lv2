@@ -225,9 +225,13 @@ void drawText(NSString* text, NSRect rect, NSColor* color, CGFloat size = 10) {
   else if (metric==1) _confidence=value;
   else if (metric==2) _level=value;
 }
+- (void)viewDidHide {
+  [super viewDidHide];
+  [self stopTone];
+}
 - (void)tick {
   if (![self validState]) return;
-  if (!_active || self.isHiddenOrHasHiddenAncestor || _state->activeDeckTab!=0 || _state->tunerButton.state!=NSControlStateValueOn) { [self stopTone]; return; }
+  if (!_active || self.isHiddenOrHasHiddenAncestor || _state->activeTab!=0 || _state->activeDeckTab!=0 || _state->tunerButton.state!=NSControlStateValueOn) { [self stopTone]; return; }
   double now=CACurrentMediaTime();
   if (_lastLiveAt>-99) [self pushPitch:now-_lastLiveAt<.2?_livePitch:-1 confidence:_confidence level:_level atTime:now];
   if (_toneOn && now-_lastLease>.2) [self renewTone];

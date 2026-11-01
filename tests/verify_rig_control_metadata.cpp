@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     ++defaultCount;
   });
   const RigPreset defaultPreset = RigPreset::createDefault();
-  CHECK(defaultCount == 86 && defaultPreset.controls.size() == 86, "exact Windows default key coverage");
+  CHECK(defaultCount == 117 && defaultPreset.controls.size() == 117, "exact Windows default key coverage");
   const std::map<uint32_t, float> nonzeroStaticDefaults = {
       {7, 1.0f}, {8, 1.0f}, {9, 1.0f}, {15, -80.0f},
       {20, static_cast<float>(kOversampleTrue8)}, {21, static_cast<float>(kOversampleTrue8)},
@@ -70,6 +70,7 @@ int main(int argc, char** argv) {
       expected = kTransformerControlDefaults[port - kTransformerControlFirstPort];
     if (port >= kRackControlFirstPort && port < kRackControlFirstPort + kRackCount)
       expected = kRackControlDefaults[port - kRackControlFirstPort];
+    if (port >= kToneEqModePort) expected = toneEqDefault(port);
     CHECK(hostDefaults[port] == expected, "unchanged Windows default value at %u", port);
   }
   CHECK(defaultPreset.name == "Default Rig" && defaultPreset.speakerProfile == 0.0f, "default preset identity/profile");
@@ -117,7 +118,7 @@ int main(int argc, char** argv) {
     CHECK(ttlSymbols.emplace(std::stoul((*it)[1]), (*it)[2]).second, "unique TTL port");
   CHECK(ttlSymbols.size() == kRigControlPortCount, "complete shipped TTL fixture");
 
-  const std::set<uint32_t> excluded = {0, 1, 2, 3, 6, 10, 11, 16, 17, 18, 19, 29, 31};
+  const std::set<uint32_t> excluded = {0, 1, 2, 3, 6, 10, 11, 16, 17, 18, 19, 29, 31, kOutputReductionPort};
   std::map<uint32_t, const char*> symbols;
   std::set<std::string> names;
   forEachRigControlSymbol([&](uint32_t port, const char* symbol) {
@@ -128,7 +129,7 @@ int main(int argc, char** argv) {
     CHECK(ttlSymbols.count(port) && ttlSymbols.at(port) == symbol, "TTL parity at %u", port);
     CHECK(rigControlSymbol(port) == symbol, "lookup/enumeration pointer identity at %u", port);
   });
-  CHECK(symbols.size() == 182, "exact macOS/shared preset coverage");
+  CHECK(symbols.size() == 213, "exact macOS/shared preset coverage");
 
   for (uint32_t port = 0; port <= kRigControlPortCount; ++port) {
     const char* symbol = rigControlSymbol(port);
@@ -178,7 +179,7 @@ int main(int argc, char** argv) {
     file >> saved;
   }
   CHECK(saved["ports"].size() == preset.controls.size(), "all numeric ports preserved, including unknowns");
-  CHECK(saved["params"].size() == 86, "Windows named coverage includes post compression and od controls");
+  CHECK(saved["params"].size() == 117, "Windows named coverage includes post compression and od controls");
   for (const auto& control : preset.controls) {
     CHECK(saved["ports"][std::to_string(control.first)] == control.second, "numeric value at %u", control.first);
     const char* symbol = rigControlSymbol(control.first);

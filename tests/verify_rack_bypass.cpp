@@ -26,7 +26,7 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 195 &&
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 227 &&
                   kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
@@ -135,6 +135,8 @@ Controls defaults(int mode) {
   c[kPowerTubeCharacterPort] = kPowerTubeCharacterDefault;
   const auto pins = pinEqDefaults();
   std::copy(pins.begin(), pins.end(), c.begin() + kPinEqFirstPort);
+  const auto tone = toneEqDefaults();
+  std::copy(tone.begin(), tone.end(), c.begin() + kToneEqModePort);
   c[kOverdriveTonePort] = Overdrive::kToneDefault;
   return c;
 }
@@ -936,6 +938,43 @@ void verifyPins(const LV2_Descriptor* d) {
   }
 }
 
+void verifyToneEQ(const LV2_Descriptor* d) {
+  for (int mode : {0, 6}) {
+    Controls flat = defaults(mode), three = flat, multi = flat, inactive = flat;
+    three[12] = 9; three[13] = -6; three[14] = 8;
+    multi = three;
+    multi[kToneEqModePort] = 1;
+    inactive[toneEqPort(6, kPinShape)] = kPinBell;
+    inactive[toneEqPort(6, kPinFreq)] = 997;
+    inactive[toneEqPort(6, kPinGain)] = 12;
+    Controls boosted = inactive;
+    boosted[kToneEqModePort] = 1;
+    Host reference(d, 48000, flat), knobs(d, 48000, three), bypassKnobs(d, 48000, multi),
+         hiddenPins(d, 48000, inactive), pins(d, 48000, boosted);
+    bool bypass = true, hidden = true;
+    double refEnergy = 0, pinEnergy = 0;
+    for (int block = 0; block < 400; ++block) {
+      reference.run(); knobs.run(); bypassKnobs.run(); hiddenPins.run(); pins.run();
+      bypass &= reference.difference(bypassKnobs) == 0;
+      hidden &= reference.difference(hiddenPins) == 0;
+      if (block > 200) for (size_t i = 0; i < kBlock; ++i) {
+        refEnergy += double(reference.left[i]) * reference.left[i];
+        pinEnergy += double(pins.left[i]) * pins.left[i];
+      }
+    }
+    check(bypass, "Multiband bypasses saved Bass/Mid/Treble; empty EQ is bit-exact");
+    check(hidden, "3-Band ignores saved parametric bands");
+    check(pinEnergy > refEnergy * 1.05 && pins.finite, "Seventh tone EQ band reaches stereo audio");
+    bypassKnobs.controls[kToneEqModePort] = 0;
+    pins.controls[kToneEqModePort] = 0;
+    for (int block = 0; block < 200; ++block) {
+      reference.run(); knobs.run(); bypassKnobs.run(); pins.run();
+    }
+    check(bypassKnobs.difference(knobs) < 1e-5 && pins.difference(reference) < 1e-6,
+          "Switching back restores three-band sound and smoothly removes parametric bands");
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc != 2) { std::puts("usage: verify_rack_bypass <fresh rig .so>"); return 2; }
   void* library = dlopen(argv[1], RTLD_NOW);
@@ -945,6 +984,7 @@ int main(int argc, char** argv) {
     require(descriptor && descriptor(0), "rig descriptor exported");
     verify(descriptor(0));
     verifyPins(descriptor(0));
+    verifyToneEQ(descriptor(0));
   } catch (const std::exception& error) {
     check(false, error.what());
   }

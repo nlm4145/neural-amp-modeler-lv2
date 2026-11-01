@@ -40,6 +40,8 @@ inline void forEachWin32ControlDefault(Set&& set) {
         value = NAMRig::kOverdriveVoicingDefault; break;
       default: break;
     }
+    if (entry.port >= NAMRig::kToneEqModePort && entry.port < NAMRig::kRigControlPortCount)
+      value = NAMRig::toneEqDefault(entry.port);
     set(entry.port, value);
   }
   for (uint32_t i = 0; i < NAMRig::kTransformerControlCount; ++i)

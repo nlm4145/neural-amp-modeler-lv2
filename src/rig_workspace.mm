@@ -36,16 +36,6 @@ static void detachWorkspaceView(NSView* view) {
   view.translatesAutoresizingMaskIntoConstraints = YES;
 }
 
-static void deactivateViewConstraints(NSView* view) {
-  for (NSView* ancestor = view.superview; ancestor; ancestor = ancestor.superview) {
-    for (NSLayoutConstraint* constraint in ancestor.constraints.copy) {
-      if (constraint.firstItem == view || constraint.secondItem == view)
-        constraint.active = NO;
-    }
-  }
-  view.translatesAutoresizingMaskIntoConstraints = YES;
-}
-
 // Only the card header starts an internal drag; model controls remain clickable.
 static BOOL isPedalModelURL(NSURL* url) {
   return [@[@"nam", @"nammodel", @"aidax", @"aidadspmodel"] containsObject:url.pathExtension.lowercaseString];
@@ -101,6 +91,40 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
 }
 @end
 
+// Native slider tracking and accessibility, with a short metal lever cap.
+@interface RigGraphicEQSliderCell : NSSliderCell
+@end
+@implementation RigGraphicEQSliderCell
+- (NSRect)knobRectFlipped:(BOOL)flipped {
+  const NSRect bounds = self.controlView.bounds;
+  const CGFloat t = (self.doubleValue - self.minValue) / (self.maxValue - self.minValue);
+  const CGFloat y = 7 + (flipped ? 1 - t : t) * (bounds.size.height - 14);
+  return NSMakeRect(NSMidX(bounds) - 15, y - 6, 30, 12);
+}
+- (void)drawBarInside:(NSRect)rect flipped:(BOOL)flipped {
+  const NSRect bounds = self.controlView.bounds;
+  NSRect track = NSMakeRect(NSMidX(bounds) - 3, 7, 6, bounds.size.height - 14);
+  [[NSColor colorWithWhite:0.025 alpha:1] setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:track xRadius:3 yRadius:3] fill];
+  for (int i = 0; i <= 6; ++i) {
+    CGFloat y = 7 + i * (bounds.size.height - 14) / 6;
+    [[rigDimText() colorWithAlphaComponent:i == 3 ? 0.75 : 0.35] setStroke];
+    NSBezierPath* tick = [NSBezierPath bezierPath];
+    [tick moveToPoint:NSMakePoint(NSMidX(bounds) - 12, y)];
+    [tick lineToPoint:NSMakePoint(NSMidX(bounds) + 12, y)]; [tick stroke];
+  }
+}
+- (void)drawKnob:(NSRect)rect {
+  NSBezierPath* cap = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(rect, 0.5, 0.5) xRadius:2 yRadius:2];
+  NSGradient* metal = [[NSGradient alloc] initWithStartingColor:[NSColor colorWithWhite:0.86 alpha:1]
+      endingColor:[NSColor colorWithWhite:0.38 alpha:1]];
+  [metal drawInBezierPath:cap angle:270];
+  [[NSColor colorWithWhite:0.12 alpha:1] setStroke]; cap.lineWidth = 1; [cap stroke];
+  [rigOrange() setFill];
+  NSRectFill(NSMakeRect(NSMinX(rect) + 3, NSMidY(rect) - 1, rect.size.width - 6, 2));
+}
+@end
+
 @interface NAMRigWorkspace ()
 @property(nonatomic, assign) RigUIState* state;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber*, RigPedalCard*>* pedalCards;
@@ -111,6 +135,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
 @property(nonatomic, strong) NSMutableArray<RigButton*>* chainButtons;
 @property(nonatomic, strong) NSArray<NSView*>* knobGroups;
 @property(nonatomic, strong) NSMutableDictionary<NSString*, RigPanel*>* moduleRacks;
+@property(nonatomic, strong) RigPanel* powerTubeRack;
 @property(nonatomic, readwrite) NSInteger selectedStage;
 @property(nonatomic, copy, readwrite) NSString* selectedModule;
 @end
@@ -153,17 +178,94 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   return group.subviews.copy;
 }
 
+- (void)toneEqLeverChanged:(NSSlider*)sender {
+  const uint32_t port = (uint32_t)sender.tag;
+  self.state->sendControl(port, sender.floatValue);
+  self.state->updateControl(port, sender.floatValue);
+  self.state->markModified();
+}
+
+- (void)toneEqModeChanged:(NSSegmentedControl*)sender {
+  self.state->showToneEqView(sender.selectedSegment == 1);
+}
+
 - (RigPanel*)knobPanelWithTitle:(NSString*)title group:(NSView*)group parent:(NSView*)parent
                               x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w h:(CGFloat)h columns:(NSInteger)columns {
   RigPanel* panel = [self panelAt:parent x:x y:y w:w h:h];
-  [self label:title parent:panel x:24 y:22 w:w - 48 size:19 weight:NSFontWeightSemibold color:rigText()];
-  [self label:@"Signal-chain controls" parent:panel x:24 y:52 w:w - 48 size:11 weight:NSFontWeightRegular color:rigDimText()];
+  [self label:title parent:panel x:24 y:18 w:w - 48 size:18 weight:NSFontWeightSemibold color:rigText()];
+  [self label:@"Amp drive, power voicing, and switchable post-stack EQ."
+       parent:panel x:24 y:44 w:w - 48 size:11 weight:NSFontWeightRegular color:rigDimText()];
+
+  RigPanel* driveCard = [self panelAt:panel x:20 y:76 w:w - 40 h:294];
+  driveCard.cornerRadius = 10;
+  [self label:@"AMP DRIVE & POWER VOICING" parent:driveCard x:20 y:16 w:w - 80 size:11 weight:NSFontWeightBold color:rigOrange()];
+  [self label:@"Drive feeds the amp; Presence adds bite; Depth adds thump."
+       parent:driveCard x:20 y:36 w:w - 80 size:10.5 weight:NSFontWeightRegular color:rigDimText()];
+
+  RigPanel* eqCard = [self panelAt:panel x:20 y:388 w:w - 40 h:294];
+  eqCard.cornerRadius = 10;
+  [self label:@"POST-STACK EQ" parent:eqCard x:20 y:16 w:150 size:11 weight:NSFontWeightBold color:rigAccent()];
+  NSSegmentedControl* mode = [NSSegmentedControl segmentedControlWithLabels:@[@"3-Band", @"7-Band"]
+      trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(toneEqModeChanged:)];
+  mode.segmentStyle = NSSegmentStyleRounded;
+  mode.toolTip = @"Two linked views of the same tone. Knob edits update the levers; lever edits update approximate knob values. Switching views preserves the sound.";
+  [self placeNew:mode parent:eqCard x:w - 238 y:10 w:178 h:26];
+  self.state->toneEqModeSwitch = mode;
+
+  NSView* knobView = [[NSView alloc] initWithFrame:eqCard.bounds];
+  [eqCard addSubview:knobView positioned:NSWindowBelow relativeTo:mode];
+  self.state->toneEqKnobView = knobView;
+  [self label:@"Shelving and midrange bell filters for final tone balance."
+       parent:knobView x:20 y:40 w:w - 80 size:10.5 weight:NSFontWeightRegular color:rigDimText()];
+  NSView* graphView = [[NSView alloc] initWithFrame:[self topRect:eqCard x:14 y:44 w:w - 68 h:236]];
+  [eqCard addSubview:graphView];
+  self.state->toneEqGraphView = graphView;
+  [self label:@"GRAPHIC EQ · Boost / cut ±18 dB"
+       parent:graphView x:6 y:0 w:w - 80 size:10 weight:NSFontWeightRegular color:rigDimText()];
+  const CGFloat leverW = (graphView.bounds.size.width - 28) / NAMRig::kToneEqBandCount;
+  for (size_t band = 0; band < NAMRig::kToneEqBandCount; ++band) {
+    const CGFloat x = 14 + band * leverW;
+    const float hz = NAMRig::kToneEqFreqDefaults[band];
+    NSString* frequency = hz >= 1000 ? [NSString stringWithFormat:@"%.1fk", hz / 1000] : [NSString stringWithFormat:@"%.0f", hz];
+    NSTextField* label = workspaceLabel(graphView, frequency, 10, NSFontWeightBold, rigText());
+    label.alignment = NSTextAlignmentCenter;
+    label.frame = [self topRect:graphView x:x y:24 w:leverW h:16];
+    NSSlider* lever = [[NSSlider alloc] initWithFrame:[self topRect:graphView x:x + (leverW - 36) / 2 y:45 w:36 h:158]];
+    lever.cell = [[RigGraphicEQSliderCell alloc] init];
+    lever.minValue = -NAMRig::kPinGainMax; lever.maxValue = NAMRig::kPinGainMax;
+    lever.continuous = YES;
+    lever.tag = NAMRig::toneEqPort(band, NAMRig::kPinGain);
+    lever.target = self; lever.action = @selector(toneEqLeverChanged:);
+    lever.toolTip = [NSString stringWithFormat:@"%@ Hz: boost / cut ±18 dB. Center is flat.", frequency];
+    [lever setAccessibilityLabel:[NSString stringWithFormat:@"Graphic EQ %@ Hz", frequency]];
+    [graphView addSubview:lever];
+    self.state->toneEqLevers[band] = lever;
+    NSTextField* value = workspaceLabel(graphView, @"0.0", 10, NSFontWeightMedium, rigDimText());
+    value.alignment = NSTextAlignmentCenter;
+    value.frame = [self topRect:graphView x:x y:211 w:leverW h:16];
+    self.state->toneEqLeverValues[band] = value;
+  }
+  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port)
+    self.state->updateControl(port, self.state->toneEqControls[port - NAMRig::kToneEqModePort]);
+  self.state->showToneEqView(self.state->toneEqShowsGraphic);
+
   NSArray<NSView*>* cells = [self knobCells:group];
-  const CGFloat cellW = (w - 48) / columns;
+  const CGFloat subW = w - 40;
+  const CGFloat cellW = (subW - 36) / columns;
+  NSArray<NSString*>* row0Tags = @[@"PRE-AMP GAIN", @"UPPER-MID BITE", @"SUB RESONANCE"];
+  NSArray<NSString*>* row1Tags = @[@"150 Hz SHELF", @"700 Hz BELL", @"3.0 kHz SHELF"];
   for (NSUInteger i = 0; i < cells.count; ++i) {
     const NSInteger col = (NSInteger)i % columns;
     const NSInteger row = (NSInteger)i / columns;
-    [self place:cells[i] parent:panel x:24 + col * cellW y:104 + row * 170 w:cellW h:142];
+    NSView* hostCard = (row == 0) ? driveCard : knobView;
+    [self place:cells[i] parent:hostCard x:18 + col * cellW y:82 w:cellW h:128];
+    NSString* tagText = (row == 0 && col < (NSInteger)row0Tags.count) ? row0Tags[(NSUInteger)col]
+                      : (row == 1 && col < (NSInteger)row1Tags.count) ? row1Tags[(NSUInteger)col] : @"";
+    if (tagText.length) {
+      NSTextField* tag = workspaceLabel(hostCard, tagText, 9.5, NSFontWeightBold, rigDimText());
+      tag.alignment = NSTextAlignmentCenter;
+      tag.frame = [self topRect:hostCard x:18 + col * cellW y:244 w:cellW h:16];
+    }
   }
   return panel;
 }
@@ -171,11 +273,13 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
 // Help belongs beside the controls, rather than in a separate full-height card.
 - (void)pageHeading:(NSString*)title subtitle:(NSString*)subtitle parent:(NSView*)parent
                   x:(CGFloat)x w:(CGFloat)w {
-  [self label:title parent:parent x:x y:4 w:w size:19 weight:NSFontWeightSemibold color:rigText()];
-  NSTextField* help = workspaceLabel(parent, subtitle ?: @"", 11, NSFontWeightRegular, rigDimText());
-  help.lineBreakMode = NSLineBreakByWordWrapping;
-  help.maximumNumberOfLines = 2;
-  help.frame = [self topRect:parent x:x y:34 w:w h:34];
+  [self label:title parent:parent x:x y:2 w:w size:18 weight:NSFontWeightSemibold color:rigText()];
+  if (subtitle.length) {
+    NSTextField* help = workspaceLabel(parent, subtitle, 11, NSFontWeightRegular, rigDimText());
+    help.lineBreakMode = NSLineBreakByTruncatingTail;
+    help.maximumNumberOfLines = 1;
+    help.frame = [self topRect:parent x:x y:26 w:w h:18];
+  }
 }
 
 - (NSView*)newPageWithKey:(NSString*)key {
@@ -188,22 +292,20 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
 
 - (void)addStageHero:(NSInteger)stage page:(NSView*)page {
   RigPanel* card = self.state->stageCards[(size_t)stage];
-  const CGFloat cardWidth = 960;
-  [self place:card parent:page x:stage == 0 ? 256 : 0 y:0 w:cardWidth h:640];
-  const CGFloat imageHeight = stage == 2 ? 350 : 400;
+  const CGFloat cardWidth = (stage == 2) ? 728 : 960;
+  const CGFloat cardHeight = 702;
+  [self place:card parent:page x:stage == 0 ? 256 : 0 y:0 w:cardWidth h:cardHeight];
   NSImageView* thumb = self.state->stageImages[(size_t)stage];
-  deactivateViewConstraints(thumb);
-  thumb.frame = [self topRect:card x:16 y:54 w:cardWidth - 32 h:imageHeight];
-  RigPopUpButton* picker = self.state->modelPickers[(size_t)stage];
-  deactivateViewConstraints(picker);
-  const CGFloat pickerX = stage == 2 ? 35 : 16;
-  const CGFloat pickerW = stage == 2 ? 815 : 898;
-  picker.frame = [self topRect:card x:pickerX y:54 + imageHeight + 8 w:pickerW h:23];
-  if (stage == 2) {
-    RigPopUpButton* pickerB = self.state->modelPickers[3];
-    deactivateViewConstraints(pickerB);
-    pickerB.frame = [self topRect:card x:pickerX y:54 + imageHeight + 35 w:pickerW h:23];
+  const CGFloat imageHeight = cardHeight - 101;
+  for (NSLayoutConstraint* c in thumb.constraints) {
+    if (c.firstItem == thumb && c.firstAttribute == NSLayoutAttributeHeight)
+      c.constant = imageHeight;
   }
+  for (NSLayoutConstraint* c in card.constraints) {
+    if (c.firstItem == thumb && c.firstAttribute == NSLayoutAttributeHeight)
+      c.constant = imageHeight;
+  }
+  [card layoutSubtreeIfNeeded];
 }
 
 - (void)addContextNavigationForPage:(NSView*)page stage:(NSInteger)stage {
@@ -228,31 +330,59 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
     button.accessibilityIdentifier = keys[i];
     button.buttonType = NSButtonTypeToggle;
     button.customTextColor = rigOrange();
-    [self placeNew:button parent:page x:18 y:92 + i * 58 w:184 h:40];
+    [self placeNew:button parent:page x:18 y:68 + i * 52 w:184 h:40];
     [buttons addObject:button];
   }
   [self.moduleButtons addObjectsFromArray:buttons];
+
+  const CGFloat cardY = 68 + keys.count * 52 + 12;
+  const CGFloat cardH = 794 - cardY - 16;
+  if (cardH >= 200) {
+    RigPanel* flowCard = [self panelAt:page x:14 y:cardY w:192 h:cardH];
+    flowCard.cornerRadius = 8;
+    [self label:@"STAGE SIGNAL PATH" parent:flowCard x:14 y:14 w:164 size:10 weight:NSFontWeightBold color:rigOrange()];
+    NSArray<NSString*>* steps = stage <= 1
+        ? @[@"1. Input Trim & Noise Gate",
+            @"2. Preamp Studio Compressor",
+            @"3. Preamp Sculpt & Pin EQ",
+            @"4. Clean Boost / Overdrive",
+            @"5. Into Pedalboard & Amp"]
+        : @[@"1. Stereo Bus Compressor",
+            @"2. Ping-Pong Tape Delay",
+            @"3. Studio Plate Reverb",
+            @"4. Spatial Room & Width",
+            @"5. Master Stereo Output"];
+    for (NSUInteger s = 0; s < steps.count; ++s) {
+      [self label:steps[s] parent:flowCard x:14 y:42 + s * 32 w:164 size:10.5 weight:NSFontWeightMedium color:rigDimText()];
+    }
+    NSTextField* tip = workspaceLabel(flowCard,
+        @"Tip: Drag response graph pins directly or double-click any pin/knob to reset to default.",
+        10, NSFontWeightRegular, rigDimText());
+    tip.lineBreakMode = NSLineBreakByWordWrapping;
+    tip.maximumNumberOfLines = 4;
+    tip.frame = [self topRect:flowCard x:14 y:214 w:164 h:64];
+  }
 }
 
 - (NSView*)modulePageForStage:(NSInteger)stage key:(NSString*)key title:(NSString*)title
                          rack:(RigPanel*)rack rightRack:(RigPanel*)rightRack info:(NSString*)info {
   NSView* page = [self newPageWithKey:key];
   if (stage == 2 || stage == 3) {
-    [self pageHeading:title subtitle:info parent:page x:0 w:1472];
+    [self pageHeading:title subtitle:info ?: @"Interactive response curves and studio hardware voicing." parent:page x:0 w:1472];
     self.moduleRacks[key] = rack;
-    [self place:rack parent:page x:0 y:78 w:rightRack ? 1000 : 1472 h:598];
-    if (rightRack) [self place:rightRack parent:page x:1016 y:78 w:456 h:598];
+    [self place:rack parent:page x:0 y:48 w:rightRack ? 888 : 1472 h:654];
+    if (rightRack) [self place:rightRack parent:page x:904 y:48 w:568 h:654];
     return page;
   }
   RigPanel* nav = [self panelAt:page x:0 y:0 w:220 h:794];
   NSString* navTitle = stage <= 1 ? @"Input & Preamp" : (stage == 2 ? @"Amp Processing" :
       (stage == 3 ? @"Cab Processing" : @"Output & Post-FX"));
-  [self label:navTitle parent:nav x:18 y:22 w:184 size:18 weight:NSFontWeightSemibold color:rigText()];
+  [self label:navTitle parent:nav x:18 y:20 w:184 size:18 weight:NSFontWeightSemibold color:rigText()];
   [self addContextNavigationForPage:nav stage:stage];
   [self pageHeading:title subtitle:info parent:page x:236 w:1236];
   self.moduleRacks[key] = rack;
-  [self place:rack parent:page x:236 y:78 w:rightRack ? 824 : 1236 h:716];
-  if (rightRack) [self place:rightRack parent:page x:1076 y:78 w:396 h:716];
+  [self place:rack parent:page x:236 y:48 w:rightRack ? 824 : 1236 h:746];
+  if (rightRack) [self place:rightRack parent:page x:1076 y:48 w:396 h:746];
   return page;
 }
 
@@ -318,90 +448,178 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
 - (void)buildPedalBoard:(NSView*)page {
   self.pedalCards = [NSMutableDictionary dictionary];
   [self pageHeading:@"Pedalboard" subtitle:@"Signal flows left to right into the amp. Drag a card header to reorder. Drop a .nam file onto a card to load it."
-             parent:page x:0 w:1200];
+             parent:page x:0 w:1020];
+  [self label:@"Pedal quality (all three slots)" parent:page x:1048 y:12 w:220 size:13 weight:NSFontWeightMedium color:rigDimText()];
+  [self place:self.state->stageOsPopup[0] parent:page x:1276 y:8 w:196 h:28];
   __weak NAMRigWorkspace* weakSelf = self;
   for (NSInteger slot : {0, 4, 5}) {
-    RigPedalCard* card = [[RigPedalCard alloc] initWithFrame:[self topRect:page x:0 y:88 w:480 h:540]];
+    RigPedalCard* card = [[RigPedalCard alloc] initWithFrame:[self topRect:page x:0 y:52 w:480 h:742]];
     card.slot = slot; card.cornerRadius = 12;
     card.moveSlot = ^(NSInteger from, NSInteger to) { [weakSelf movePedal:from to:to]; };
     card.loadFile = ^(NSURL* url) { [weakSelf loadPedalURL:url slot:slot]; };
     [page addSubview:card]; self.pedalCards[@(slot)] = card;
     if (slot == 0) self.state->stageCards[0] = card;
-    NSTextField* badge = workspaceLabel(card, @"", 10, NSFontWeightMedium, rigDimText());
-    badge.frame = [self topRect:card x:20 y:52 w:440 h:18];
-    self.state->stageArchBadges[slot] = badge;
-    if (slot == 0) self.state->stageHeaderArchBadges[0] = badge;
     [self label:[NSString stringWithFormat:@"⠿  PEDAL %ld", (long)(slot == 0 ? 1 : slot - 2)] parent:card
-               x:20 y:18 w:290 size:18 weight:NSFontWeightSemibold color:rigText()];
+               x:20 y:16 w:140 size:18 weight:NSFontWeightSemibold color:rigText()];
+    NSTextField* badge = workspaceLabel(card, @"", 9.5, NSFontWeightBold, rigDimText());
+    badge.alignment = NSTextAlignmentCenter;
+    badge.wantsLayer = YES;
+    badge.layer.cornerRadius = 5.0;
+    badge.layer.borderWidth = 1.0;
+    badge.layer.masksToBounds = YES;
+    badge.frame = [self topRect:card x:170 y:18 w:200 h:20];
+    self.state->stageArchBadges[slot] = badge;
+    if (slot == 0) {
+      self.state->stageHeaderArchBadges[0] = badge;
+      self.state->updateStageArchBadge(0, nil);
+    }
     RigButton* power = workspaceButton(card, @"OFF", self, @selector(togglePedal:));
     power.tag = slot; power.buttonType = NSButtonTypeToggle;
     power.state = slot == 0 ? self.state->powerButtons[0].state : NSControlStateValueOff;
     power.title = power.state ? @"ON" : @"OFF";
     self.state->powerButtons[slot] = power;
-    [self placeNew:power parent:card x:386 y:14 w:72 h:32];
+    [self placeNew:power parent:card x:386 y:12 w:74 h:32];
     NSImageView* image = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    image.wantsLayer = YES;
+    image.layer.cornerRadius = 8.0;
+    image.layer.masksToBounds = YES;
+    image.layer.backgroundColor = rigBG().CGColor;
     image.imageScaling = NSImageScaleProportionallyUpOrDown;
     self.state->stageImages[slot] = image;
-    [self placeNew:image parent:card x:20 y:70 w:440 h:320];
+    [self placeNew:image parent:card x:20 y:54 w:440 h:580];
     RigPopUpButton* picker = slot == 0 ? self.state->modelPickers[0] : [[RigPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     picker.tag = slot; picker.target = self.state->uiController; picker.action = @selector(stageModelChanged:);
     self.state->modelPickers[slot] = picker;
-    [self place:picker parent:card x:20 y:402 w:440 h:28];
+    [self place:picker parent:card x:20 y:646 w:440 h:28];
     RigButton* load = workspaceButton(card, @"Load Model…", self, @selector(choosePedal:)); load.tag = slot;
-    [self placeNew:load parent:card x:20 y:454 w:210 h:36];
+    [self placeNew:load parent:card x:20 y:686 w:212 h:38];
     RigButton* clear = workspaceButton(card, @"Remove Model", self, @selector(clearPedal:)); clear.tag = slot;
-    [self placeNew:clear parent:card x:246 y:454 w:214 h:36];
+    [self placeNew:clear parent:card x:248 y:686 w:212 h:38];
     self.state->displayPath(slot, self.state->selectedPaths[slot].c_str());
     self.state->setStageThumb(slot, nil, 0, nil);
   }
-  [self label:@"Pedal quality (all three slots)" parent:page x:0 y:656 w:260 size:13 weight:NSFontWeightMedium color:rigDimText()];
-  [self place:self.state->stageOsPopup[0] parent:page x:270 y:650 w:180 h:28];
   [self refreshPedalBoard];
 }
 
 - (void)buildMainPages {
   // Compact level controls leave room for the live processing racks below.
   NSView* input = [self newPageWithKey:@"main:0"];
-  [self pageHeading:@"Input & Gate" subtitle:@"Set input gain and gate response before the preamp processors."
-             parent:input x:0 w:540];
+  RigPanel* inputConsole = [self panelAt:input x:0 y:0 w:1472 h:148];
+  [self label:@"Input & Gate" parent:inputConsole x:28 y:36 w:580 size:20 weight:NSFontWeightSemibold color:rigText()];
+  [self label:@"Set input gain and noise gate response before the preamp processors below."
+       parent:inputConsole x:28 y:68 w:580 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
   NSArray<NSView*>* inputCells = [self knobCells:self.knobGroups[0]];
   for (NSUInteger i = 0; i < inputCells.count; ++i)
-    [self place:inputCells[i] parent:input x:600 + i * 200 y:4 w:160 h:142];
+    [self place:inputCells[i] parent:inputConsole x:680 + i * 260 y:14 w:220 h:124];
 
   NSView* pedal = [self newPageWithKey:@"main:1"];
   [self buildPedalBoard:pedal];
 
   NSView* amp = [self newPageWithKey:@"main:2"];
   [self addStageHero:1 page:amp];
-  [self knobPanelWithTitle:@"Tone" group:self.knobGroups[1] parent:amp x:976 y:0 w:496 h:640 columns:3];
+  [self knobPanelWithTitle:@"Tone & Voicing" group:self.knobGroups[1] parent:amp x:976 y:0 w:496 h:702 columns:3];
 
   NSView* cab = [self newPageWithKey:@"main:3"];
   [self addStageHero:2 page:cab];
-  [self pageHeading:@"Speaker Dynamics" subtitle:@"Shape the speaker response. Cabinet Blend opens levels, alignment, and cuts."
-             parent:cab x:976 w:496];
+  RigPanel* cabACard = self.state->stageCards[2];
+  cabACard.onClickWithEvent = nil;
+  cabACard.onClick = self.state->modelPickers[2].onClick;
+  NSView* browseB = nil;
+  NSView* labelB = nil;
+  for (NSView* sub in cabACard.subviews.copy) {
+    if ([sub isKindOfClass:NSButton.class] && ((NSButton*)sub).tag == 3 &&
+        ((NSButton*)sub).action == NSSelectorFromString(@"chooseModel:")) {
+      browseB = sub;
+    } else if ([sub isKindOfClass:NSTextField.class] &&
+               [((NSTextField*)sub).stringValue isEqualToString:@"B"]) {
+      labelB = sub;
+    } else {
+      for (NSView* hSub in sub.subviews) {
+        if ([hSub isKindOfClass:NSTextField.class] &&
+            [((NSTextField*)hSub).stringValue isEqualToString:@"CAB"]) {
+          ((NSTextField*)hSub).stringValue = @"CAB A";
+        }
+      }
+    }
+  }
+
+  RigPanel* cabBCard = [self panelAt:cab x:744 y:0 w:728 h:702];
+  cabBCard.onClick = self.state->modelPickers[3].onClick;
+  [self label:@"3B" parent:cabBCard x:16 y:18 w:24 size:12 weight:NSFontWeightBold color:rigOrange()];
+  [self label:@"CAB B" parent:cabBCard x:44 y:17 w:54 size:13 weight:NSFontWeightSemibold color:rigText()];
+  NSTextField* cabBBadge = workspaceLabel(cabBCard, @"", 9.5, NSFontWeightBold, rigDimText());
+  cabBBadge.alignment = NSTextAlignmentCenter;
+  cabBBadge.wantsLayer = YES;
+  cabBBadge.layer.cornerRadius = 5.0;
+  cabBBadge.layer.borderWidth = 1.0;
+  cabBBadge.layer.masksToBounds = YES;
+  cabBBadge.frame = [self topRect:cabBCard x:104 y:18 w:180 h:18];
+  self.state->stageArchBadges[3] = cabBBadge;
+  self.state->updateStageArchBadge(3, nil);
+  if (self.state->powerButtons[3]) {
+    [self place:self.state->powerButtons[3] parent:cabBCard x:652 y:14 w:60 h:26];
+  }
+  NSImageView* cabBImage = [[NSImageView alloc] initWithFrame:NSZeroRect];
+  cabBImage.wantsLayer = YES;
+  cabBImage.layer.cornerRadius = 8.0;
+  cabBImage.layer.masksToBounds = YES;
+  cabBImage.layer.backgroundColor = rigBG().CGColor;
+  cabBImage.imageScaling = NSImageScaleProportionallyUpOrDown;
+  self.state->stageImages[3] = cabBImage;
+  [self placeNew:cabBImage parent:cabBCard x:16 y:54 w:696 h:601];
+  if (labelB) {
+    [self place:labelB parent:cabBCard x:16 y:666 w:14 h:17];
+  } else {
+    [self label:@"B" parent:cabBCard x:16 y:666 w:14 size:11 weight:NSFontWeightBold color:rigDimText()];
+  }
+  if (self.state->modelPickers[3]) {
+    [self place:self.state->modelPickers[3] parent:cabBCard x:35 y:663 w:583 h:23];
+  }
+  if (browseB) {
+    [self place:browseB parent:cabBCard x:622 y:663 w:26 h:23];
+  }
+  RigButton* clearCabB = workspaceButton(cabBCard, @"CLEAR", self, @selector(clearPedal:));
+  clearCabB.tag = 3;
+  clearCabB.toolTip = @"Unload the second cabinet (Cab B) model or impulse response.";
+  [self placeNew:clearCabB parent:cabBCard x:652 y:663 w:60 h:23];
+  [cabACard layoutSubtreeIfNeeded];
+  self.state->setStageThumb(3, nil, 0, nil);
 
   NSView* output = [self newPageWithKey:@"main:4"];
-  [self pageHeading:@"Master Output" subtitle:@"Set the final level and shape the stereo post-FX chain below."
-             parent:output x:0 w:540];
+  RigPanel* outputConsole = [self panelAt:output x:0 y:0 w:1472 h:148];
+  [self label:@"Master Output" parent:outputConsole x:28 y:36 w:580 size:20 weight:NSFontWeightSemibold color:rigText()];
+  [self label:@"Set level, catch peaks, and balance the final stereo image."
+       parent:outputConsole x:28 y:68 w:580 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
   NSArray<NSView*>* outputCells = [self knobCells:self.knobGroups[2]];
   for (NSUInteger i = 0; i < outputCells.count; ++i)
-    [self place:outputCells[i] parent:output x:600 + i * 160 y:4 w:160 h:142];
+    [self place:outputCells[i] parent:outputConsole x:700 + i * 180 y:14 w:180 h:124];
+  [self label:@"Ceiling OFF + Balance CENTER preserves the current sound."
+       parent:outputConsole x:28 y:91 w:620 size:11 weight:NSFontWeightRegular color:rigDimText()];
+  [self label:@"LIMITER REDUCTION" parent:outputConsole x:1260 y:38 w:180 size:10 weight:NSFontWeightMedium color:rigDimText()];
+  NSLevelIndicator* reduction = [[NSLevelIndicator alloc] initWithFrame:NSZeroRect];
+  reduction.levelIndicatorStyle = NSLevelIndicatorStyleContinuousCapacity;
+  reduction.minValue = 0; reduction.maxValue = 24;
+  reduction.warningValue = 12; reduction.criticalValue = 20;
+  reduction.editable = NO;
+  reduction.toolTip = @"Gain removed by the final peak limiter in dB. Ceiling OFF bypasses completely.";
+  self.state->outputReductionMeter = reduction;
+  [self placeNew:reduction parent:outputConsole x:1260 y:65 w:180 h:12];
+  NSTextField* reductionLabel = workspaceLabel(outputConsole, @"0.0 dB", 11, NSFontWeightMedium, rigDimText());
+  self.state->outputReductionLabel = reductionLabel;
+  [self place:reductionLabel parent:outputConsole x:1260 y:86 w:180 h:18];
 }
 
 // Reuse the same controls on overview and detail pages, preserving all bindings
 // and preset menus. Only their parent and frame change when navigating.
 - (void)mountOverviewRacksForStage:(NSInteger)stage {
   NSArray<NSString*>* keys = stage == 0 ? @[@"compressor", @"sculpt", @"boost"] :
-      (stage == 4 ? @[@"postcomp", @"delay", @"reverb", @"spatial"] :
-      (stage == 3 ? @[@"speaker"] : @[]));
+      (stage == 4 ? @[@"postcomp", @"delay", @"reverb", @"spatial"] : @[]);
   if (!keys.count) return;
   NSView* page = self.pages[[NSString stringWithFormat:@"main:%ld", (long)stage]];
-  const BOOL besideHero = stage == 3;
-  const CGFloat width = besideHero ? 496 : (1472 - 16 * (keys.count - 1)) / MAX((NSUInteger)1, keys.count);
+  const CGFloat width = (1472 - 16 * (keys.count - 1)) / MAX((NSUInteger)1, keys.count);
   for (NSUInteger i = 0; i < keys.count; ++i) {
     RigPanel* rack = self.moduleRacks[keys[i]];
-    [self place:rack parent:page x:besideHero ? 976 : i * (width + 16)
-              y:besideHero ? 78 : 164 w:width h:besideHero ? 562 : 630];
+    [self place:rack parent:page x:i * (width + 16) y:164 w:width h:630];
   }
 }
 
@@ -429,7 +647,9 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
                         info:@"Clean boost or diode overdrive with tightness, tone, level, and voicing controls."];
   }
   if (power.count == 3) {
-    [self modulePageForStage:2 key:@"power" title:@"Power Stage" rack:power[0] rightRack:power[1] info:nil];
+    self.powerTubeRack = power[1];
+    [self modulePageForStage:2 key:@"power" title:@"Power Stage" rack:power[0] rightRack:power[1]
+                        info:@"Dynamic power amp compression, push-pull sag, presence/depth, and power tube harmonic saturation."];
     [self modulePageForStage:2 key:@"transformer" title:@"Output Transformer" rack:power[2] rightRack:nil
                         info:@"Transformer profile, core behavior, voicing, passband filters, and advanced adjustment controls."];
   }
@@ -491,7 +711,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   self.contextHost.hidden = self.selectedStage <= 1 || self.selectedStage == 4 ||
       [self.selectedModule isEqualToString:@"tuner"];
   if (self.contextHost.hidden) return;
-  RigPanel* strip = [self panelAt:self.contextHost x:0 y:0 w:1472 h:118];
+  RigPanel* strip = [self panelAt:self.contextHost x:0 y:0 w:1472 h:76];
   NSArray<NSString*>* titles;
   NSArray<NSString*>* keys;
   NSString* heading;
@@ -504,8 +724,8 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
     titles = @[@"Cabinet", @"Speaker Dynamics", @"Cabinet Blend"];
     keys = @[@"main", @"speaker", @"cablab"];
   }
-  [self label:heading parent:strip x:22 y:22 w:250 size:11 weight:NSFontWeightBold color:rigDimText()];
-  [self label:@"Relevant processing, right where you need it." parent:strip x:22 y:52 w:270 size:11 weight:NSFontWeightRegular color:rigDimText()];
+  [self label:heading parent:strip x:22 y:16 w:250 size:11 weight:NSFontWeightBold color:rigDimText()];
+  [self label:@"Relevant processing, right where you need it." parent:strip x:22 y:38 w:270 size:11 weight:NSFontWeightRegular color:rigDimText()];
   const CGFloat startX = 310;
   const CGFloat gap = 14;
   const CGFloat width = (1472 - startX - 22 - gap * (titles.count - 1)) / titles.count;
@@ -515,7 +735,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
     button.buttonType = NSButtonTypeToggle;
     button.primary = [keys[i] isEqualToString:self.selectedModule];
     button.state = button.primary ? NSControlStateValueOn : NSControlStateValueOff;
-    [self placeNew:button parent:strip x:startX + i * (width + gap) y:26 w:width h:66];
+    [self placeNew:button parent:strip x:startX + i * (width + gap) y:15 w:width h:46];
   }
 }
 
@@ -576,11 +796,15 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
     NSString* key = self.selectedModule;
     RigPanel* rack = self.moduleRacks[key];
     if (rack) {
-      BOOL bottomNavigation = self.selectedStage == 2 || self.selectedStage == 3;
-      [self place:rack parent:self.pages[key] x:bottomNavigation ? 0 : 236 y:78
-                 w:bottomNavigation ? ([key isEqualToString:@"power"] ? 1000 : 1472)
+      BOOL bottomNavigation = [@[@"power", @"transformer", @"speaker", @"cablab"] containsObject:key];
+      [self place:rack parent:self.pages[key] x:bottomNavigation ? 0 : 236 y:48
+                 w:bottomNavigation ? ([key isEqualToString:@"power"] ? 888 : 1472)
                                     : ([key isEqualToString:@"power"] ? 824 : 1236)
-                 h:bottomNavigation ? 598 : 716];
+                 h:bottomNavigation ? 654 : 746];
+      if ([key isEqualToString:@"power"] && self.powerTubeRack) {
+        [self place:self.powerTubeRack parent:self.pages[key] x:bottomNavigation ? 904 : 1076 y:48
+                   w:bottomNavigation ? 568 : 396 h:bottomNavigation ? 654 : 746];
+      }
     }
   }
   NSString* pageKey = [self.selectedModule isEqualToString:@"main"]
@@ -606,7 +830,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
     self.wantsLayer = YES;
     self.pageHost = [[NSView alloc] initWithFrame:[self topRect:self x:24 y:154 w:1472 h:794]];
     [self addSubview:self.pageHost];
-    self.contextHost = [[NSView alloc] initWithFrame:[self topRect:self x:24 y:830 w:1472 h:118]];
+    self.contextHost = [[NSView alloc] initWithFrame:[self topRect:self x:24 y:872 w:1472 h:76]];
     [self addSubview:self.contextHost];
     [self buildChain];
     [self buildMeters];

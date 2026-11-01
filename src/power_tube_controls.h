@@ -50,7 +50,14 @@ inline constexpr float kOverdriveVoicingMax = 4.0f;
 inline constexpr uint32_t kPedal2EnabledPort = 192;
 inline constexpr uint32_t kPedal3EnabledPort = 193;
 inline constexpr uint32_t kPedalOrderPort = 194;
-inline constexpr uint32_t kRigControlPortCount = 195;
+// Final output utilities, append-only. Ceiling 0 is exact bypass.
+inline constexpr uint32_t kOutputCeilingPort = 195;
+inline constexpr uint32_t kOutputBalancePort = 196;
+inline constexpr uint32_t kOutputReductionPort = 197;
+inline constexpr uint32_t kToneEqModePort = 198;
+inline constexpr uint32_t kToneEqFirstPort = 199;
+inline constexpr uint32_t kToneEqControlCount = 29;
+inline constexpr uint32_t kRigControlPortCount = 227;
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

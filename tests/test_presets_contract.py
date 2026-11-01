@@ -42,13 +42,13 @@ static_symbols = dict(static_pairs)
 assert len(static_symbols) == len(static_pairs), "no duplicate static ports"
 ttl_symbols = {int(port): symbol for port, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^\"]+)"', ttl)}
-excluded_ports = {0, 1, 2, 3, 6, 10, 11, 16, 17, 18, 19, 29, 31}
+excluded_ports = {0, 1, 2, 3, 6, 10, 11, 16, 17, 18, 19, 29, 31, 197}
 family_ports = set(range(60, 80)) | set(range(83, 179))
 assert static_symbols == {port: symbol for port, symbol in ttl_symbols.items()
                           if port not in excluded_ports | family_ports}, (
     "shared static ports and symbols must exactly match shipped preset coverage and TTL"
 )
-assert "kRigKnobCount = 48" in knobs_h
+assert "kRigKnobCount = 50" in knobs_h
 expected_ports = [
     15, 23, 4, 28, 22, 12, 13, 14, 25, 26, 27, 5, 32, 33,
     34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46,
@@ -236,8 +236,8 @@ for required_audio_sym in (
     assert required_audio_sym in standalone_mm, f"standalone_main.mm missing {required_audio_sym}"
 
 assert '@"CAB A LVL"' in ui_mm, "knobNames[8] must be labeled CAB A LVL"
-assert "const size_t groupCounts[3] = {3, 6, 1};" in ui_mm, \
-    "Input has 3 controls; amp overview has 6 controls; output has 1"
+assert "const size_t groupCounts[3] = {3, 6, 3};" in ui_mm, \
+    "Input has 3 controls; amp overview has 6 controls; output has 3"
 plugin_cpp = (ROOT / "src" / "nam_rig_plugin.cpp").read_text()
 assert "if (haveA && consoleOn) {\n      for (uint32_t i = 0; i < n; ++i) {\n        smoothedCabLevel += (targetCab - smoothedCabLevel) * glide10;" in plugin_cpp, \
     "cab_level (CAB A LVL) must scale Cab A independently before blending with Cab B"

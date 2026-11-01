@@ -428,7 +428,10 @@ struct Host {
     plugin.ports.post_compressor_enabled = &controls[NAMRig::kPostCompressorEnabledPort];
     plugin.ports.od_tight = &controls[NAMRig::kOverdriveTightPort];
     plugin.ports.od_voicing = &controls[NAMRig::kOverdriveVoicingPort];
-    static_assert(Plugin::kPortCount == 195, "update connections if ports change");
+    plugin.ports.output_ceiling = &controls[NAMRig::kOutputCeilingPort];
+    plugin.ports.output_balance = &controls[NAMRig::kOutputBalancePort];
+    plugin.ports.output_reduction = &controls[NAMRig::kOutputReductionPort];
+    static_assert(Plugin::kPortCount == 227, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),
@@ -576,7 +579,7 @@ struct Pair {
              uint64_t cabinetDeadlineTicks = 0) {
     check(count > 0 && count <= kMaximum, "block count in harness range");
     for (uint32_t i = 0; i < count; ++i) {
-      noise = noise * 1664525u + 1013904223u;
+      noise = noise * 1664525u + 1013904227u;
       const double random = static_cast<double>(noise >> 8) / 16777216.0 - 0.5;
       const float sample = silence ? 0.0f : static_cast<float>(
           0.17 * std::sin(6.283185307179586 * 173.0 * time) +

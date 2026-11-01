@@ -279,6 +279,38 @@ void verify(const LV2_Descriptor* current, const LV2_Descriptor* baseline, bool 
 }
 }
 
+static void verifyMasterOutput(const LV2_Descriptor* descriptor) {
+  for (double rate : {44100.0, 48000.0, 96000.0}) {
+    Host neutral(descriptor, rate, 0), legacy(descriptor, rate, 0), active(descriptor, rate, 0);
+    legacy.d->connect_port(legacy.instance, kOutputCeilingPort, nullptr);
+    legacy.d->connect_port(legacy.instance, kOutputBalancePort, nullptr);
+    for (Host* h : {&neutral, &legacy, &active}) {
+      h->amplitude = 3.0f;
+      h->controls[53] = 20; h->controls[54] = 15; // FX tails reach final utilities.
+    }
+    active.controls[kOutputCeilingPort] = -6;
+    active.controls[kOutputBalancePort] = 100;
+    for (int block = 0; block < 40; ++block) {
+      neutral.run(1024); legacy.run(1024); active.run(1024);
+      require(std::memcmp(neutral.left.data(), legacy.left.data(), 1024 * sizeof(float)) == 0 &&
+              std::memcmp(neutral.right.data(), legacy.right.data(), 1024 * sizeof(float)) == 0,
+              "neutral utilities bit-equal to unconnected legacy ports");
+      for (unsigned i = 0; i < 1024; ++i)
+        require(std::fabs(active.left[i]) <= .5011883f && std::fabs(active.right[i]) <= .5011883f,
+                "final ceiling catches peaks including effects");
+    }
+    require(std::fabs(active.left[1023]) < 1e-6f, "full right balance mutes left");
+    require(active.controls[kOutputReductionPort] > 0, "limiter meter reports reduction");
+    active.controls[kOutputCeilingPort] = active.controls[kOutputBalancePort] = 0;
+    neutral.run(64); active.run(64);
+    require(std::memcmp(neutral.left.data(), active.left.data(), 64 * sizeof(float)) == 0 &&
+            std::memcmp(neutral.right.data(), active.right.data(), 64 * sizeof(float)) == 0,
+            "return to neutral exactly restores unchanged rig output");
+    require(active.controls[kOutputReductionPort] == 0, "bypass clears reduction meter");
+  }
+  std::puts("PASS: final output utilities neutral/legacy bit equality, FX ceiling, balance and neutral restoration");
+}
+
 int main(int argc, char** argv) {
   try {
     require(argc >= 2 && argc <= 4, "usage: verify_low_buffer_rig <new .so> [baseline .so] [--bench]");
@@ -286,6 +318,7 @@ int main(int argc, char** argv) {
     const bool bench = argc >= 3 && std::strcmp(argv[argc - 1], "--bench") == 0;
     Library baseline(argc >= 3 && std::strcmp(argv[2], "--bench") != 0 ? argv[2] : argv[1]);
     verify(current.descriptor, baseline.descriptor, bench);
+    verifyMasterOutput(current.descriptor);
     verifyPedalOrder(current.descriptor);
     verifySinglePedal(current.descriptor, baseline.descriptor);
     if (const char* path = std::getenv("AXE_FX_PEDAL_REAL_MODEL")) {

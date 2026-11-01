@@ -1316,7 +1316,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 195 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 227 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -2208,7 +2208,7 @@ static void verifyStageMeters(Runtime& runtime) {
   for (size_t i = 0; i < 3; ++i) {
     [state->workspace selectStage:(NSInteger)i + 1];
     CHECK(!state->stageCards[i].isHiddenOrHasHiddenAncestor);
-    CHECK(near(state->stageCards[i].bounds.size.width, i == 0 ? 480 : 960));
+    CHECK(near(state->stageCards[i].bounds.size.width, i == 0 ? 480 : (i == 1 ? 960 : 728)));
   }
   for (size_t i = 0; i < 3; ++i) {
     NSTextField* badge = state->stageHeaderArchBadges[i];
@@ -2236,12 +2236,41 @@ static void verifyStageMeters(Runtime& runtime) {
                          [knob convertRect:knob.bounds toView:cell]));
   }
 
+  stage = "master output / neutral controls / reduction meter";
+  [state->workspace selectStage:4];
+  state->updateControl(NAMRig::kOutputCeilingPort, 0);
+  state->updateControl(NAMRig::kOutputBalancePort, 0);
+  drain();
+  for (size_t k : {48u, 49u}) {
+    REQUIRE(state->knobs[k] && state->valueLabels[k]);
+    NSView* cell = state->knobs[k].superview;
+    CHECK(!cell.isHiddenOrHasHiddenAncestor);
+    CHECK(NSContainsRect(cell.superview.bounds, cell.frame));
+    CHECK(state->knobs[k].floatValue == 0);
+  }
+  CHECK([state->valueLabels[48].stringValue isEqualToString:@"OFF"]);
+  CHECK([state->valueLabels[49].stringValue isEqualToString:@"CENTER"]);
+  REQUIRE(state->outputReductionMeter && state->outputReductionLabel);
+  float reduction = 4.5f;
+  runtime.descriptor->port_event(state, NAMRig::kOutputReductionPort, sizeof(float), 0, &reduction);
+  drain();
+  CHECK(near(state->outputReductionMeter.doubleValue, 4.5));
+  CHECK([state->outputReductionLabel.stringValue isEqualToString:@"4.5 dB"]);
+  state->updateControl(NAMRig::kOutputReductionPort, 0);
+  if (const char* png = std::getenv("AXE_FX_OUTPUT_UI_PNG")) {
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    NSBitmapImageRep* image = [state->view bitmapImageRepForCachingDisplayInRect:state->view.bounds];
+    [state->view cacheDisplayInRect:state->view.bounds toBitmapImageRep:image];
+    CHECK([[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithUTF8String:png] atomically:YES]);
+  }
+
   stage = "workspace / compact overviews / shared meters / detail navigation";
   id workspace = state->workspace;
   NSDictionary* pages = [workspace valueForKey:@"pages"];
   NSDictionary* racks = [workspace valueForKey:@"moduleRacks"];
   NSArray<NSArray<NSString*>*>* overviewKeys = @[
-    @[@"compressor", @"sculpt", @"boost"], @[], @[], @[@"speaker"],
+    @[@"compressor", @"sculpt", @"boost"], @[], @[], @[],
     @[@"postcomp", @"delay", @"reverb", @"spatial"]
   ];
   for (NSInteger index = 0; index < 5; ++index) {
@@ -2565,6 +2594,85 @@ static void verify(const char* modulePath) {
   RigUIState* state = runtime.state;
   REQUIRE((__bridge NSView*)widget == state->view);
   REQUIRE(state->presetManager);
+  stage = "linked tone EQ views, edits, and preset recall";
+  REQUIRE(state->toneEqModeSwitch && state->toneEqLevers[6]);
+  CHECK(state->toneEqGraphView.hidden && !state->toneEqKnobView.hidden);
+  const ToneKnobGains initialKnobs = {6, -4, 3};
+  for (size_t i = 0; i < initialKnobs.size(); ++i) {
+    NSSlider* knob = state->knobs[5 + i];
+    REQUIRE(knob && knob.tag == 12 + i);
+    knob.floatValue = initialKnobs[i];
+    [NSApp sendAction:knob.action to:knob.target from:knob];
+  }
+  const auto projected = toneLeversFromKnobs(initialKnobs);
+  for (size_t b = 0; b < projected.size(); ++b)
+    CHECK(near(state->toneEqLevers[b].floatValue, projected[b]));
+  CHECK(state->toneEqControls[0] == 0);
+  host.writes.clear();
+  state->toneEqModeSwitch.selectedSegment = 1;
+  [NSApp sendAction:state->toneEqModeSwitch.action to:state->toneEqModeSwitch.target from:state->toneEqModeSwitch];
+  CHECK(state->toneEqKnobView.hidden && !state->toneEqGraphView.hidden);
+  CHECK(state->toneEqControls[0] == 0);
+  CHECK(host.writes.empty()); // A view switch never changes audio parameters.
+  const std::array<float, 7> leverGains = {7, 5, -2, -9, -3, 5, 7};
+  for (size_t band = 0; band < kToneEqBandCount; ++band) {
+    NSSlider* lever = state->toneEqLevers[band];
+    REQUIRE(lever);
+    CHECK(lever.isVertical && lever.tag == toneEqPort(band, kPinGain));
+    lever.floatValue = leverGains[band];
+    [NSApp sendAction:lever.action to:lever.target from:lever];
+    CHECK(state->toneEqControls[1 + band * kPinEqBandParams + kPinGain] == leverGains[band]);
+    CHECK(state->toneEqLeverValues[band].stringValue.floatValue == leverGains[band]);
+  }
+  const auto projectedKnobs = toneKnobsFromLevers(leverGains);
+  for (size_t i = 0; i < projectedKnobs.size(); ++i)
+    CHECK(near(state->knobs[5 + i].floatValue, projectedKnobs[i]));
+  CHECK(state->toneEqControls[0] == 1);
+  host.writes.clear();
+  for (size_t b = 0; b < leverGains.size(); ++b)
+    state->updateControl(toneEqPort(b, kPinGain), leverGains[b]);
+  for (size_t i = 0; i < projectedKnobs.size(); ++i)
+    state->updateControl(12 + i, projectedKnobs[i]);
+  CHECK(host.writes.empty()); // Host echoes must not start a feedback loop.
+  state->updateControl(toneEqPort(6, kPinFreq), 997);
+  CHECK(state->currentPortValueForSlot(toneEqPort(6, kPinFreq)) == 12000);
+  RigPreset* tonePreset = [NSClassFromString(@"RigPreset") captureFromState:state name:@"Tone EQ runtime"];
+  CHECK([tonePreset controlForPort:kToneEqModePort] == 1);
+  CHECK([tonePreset controlForPort:toneEqPort(6, kPinGain)] == 7);
+  if (const char* png = std::getenv("AXE_FX_TONE_EQ_UI_PNG")) {
+    state->selectTab(0);
+    [state->workspace selectStage:2];
+    [runtime.window.contentView layoutSubtreeIfNeeded];
+    NSBitmapImageRep* image = [state->view bitmapImageRepForCachingDisplayInRect:state->view.bounds];
+    [state->view cacheDisplayInRect:state->view.bounds toBitmapImageRep:image];
+    CHECK([[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithUTF8String:png] atomically:YES]);
+  }
+  host.writes.clear();
+  state->toneEqModeSwitch.selectedSegment = 0;
+  [NSApp sendAction:state->toneEqModeSwitch.action to:state->toneEqModeSwitch.target from:state->toneEqModeSwitch];
+  CHECK(host.writes.empty() && state->toneEqControls[0] == 1);
+  CHECK(state->toneEqGraphView.hidden && !state->toneEqKnobView.hidden);
+  CHECK(state->toneEqControls[1 + 6 * kPinEqBandParams + kPinGain] == 7);
+  [tonePreset applyToState:state];
+  CHECK(state->toneEqModeSwitch.selectedSegment == 0 && state->toneEqGraphView.hidden);
+  for (size_t band = 0; band < kToneEqBandCount; ++band)
+    CHECK(state->toneEqLevers[band].floatValue == leverGains[band]);
+  RigPreset* oldTone = [NSClassFromString(@"RigPreset") defaultPreset];
+  [oldTone setControl:12 value:6];
+  [oldTone setControl:13 value:-4];
+  [oldTone setControl:14 value:3];
+  [oldTone applyToState:state];
+  CHECK(state->toneEqControls[0] == 0);
+  for (size_t b = 0; b < projected.size(); ++b)
+    CHECK(near(state->toneEqLevers[b].floatValue, projected[b]));
+  // Transformer selection must leave the linked EQ untouched.
+  [state->transformerPopup selectItemAtIndex:1];
+  [NSApp sendAction:state->transformerPopup.action to:state->transformerPopup.target from:state->transformerPopup];
+  for (size_t b = 0; b < projected.size(); ++b)
+    CHECK(near(state->toneEqLevers[b].floatValue, projected[b]));
+  [(id<TransformerTestController>)state->uiController resetAllKnobs:nil];
+  for (NSSlider* lever : state->toneEqLevers) CHECK(lever.floatValue == 0);
   stage = "pedalboard / layout, order echo and preset round trip";
   const NSInteger savedBoardTab = state->activeTab;
   state->selectTab(0);

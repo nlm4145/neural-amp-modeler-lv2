@@ -117,6 +117,50 @@ inline PinBands readPinBands(PinEqPane pane, Get&& get) {
   return bands;
 }
 
+// Tone EQ owns seven bands on independent, append-only ports.
+inline constexpr size_t kToneEqBandCount = 7;
+using ToneEqBands = std::array<PinBand, kToneEqBandCount>;
+inline constexpr std::array<float, kToneEqBandCount> kToneEqFreqDefaults = {
+    40.0f, 80.0f, 240.0f, 750.0f, 2200.0f, 6600.0f, 12000.0f};
+static_assert(kToneEqControlCount == 1 + kToneEqBandCount * kPinEqBandParams);
+inline uint32_t toneEqPort(size_t band, size_t param) {
+  return kToneEqFirstPort + static_cast<uint32_t>(band * kPinEqBandParams + param);
+}
+inline float toneEqDefault(uint32_t port) {
+  if (port == kToneEqModePort) return 0.0f;
+  const size_t index = port - kToneEqFirstPort;
+  switch (index % kPinEqBandParams) {
+    case kPinFreq: return kToneEqFreqDefaults[index / kPinEqBandParams];
+    case kPinQ: return kPinQDefault;
+    case kPinShape: return kPinBell;
+    default: return 0.0f;
+  }
+}
+inline float clampToneEqValue(uint32_t port, float value) {
+  if (port == kToneEqModePort) return std::isfinite(value) && value >= 0.5f ? 1.0f : 0.0f;
+  if ((port - kToneEqFirstPort) % kPinEqBandParams != kPinGain || !std::isfinite(value))
+    return toneEqDefault(port);
+  // Clamp by parameter type; no dependency on the six-band pane layout.
+  return clampPinEqValue(kPinEqFirstPort + (port - kToneEqFirstPort) % kPinEqBandParams, value);
+}
+inline std::array<float, kToneEqControlCount> toneEqDefaults() {
+  std::array<float, kToneEqControlCount> values{};
+  for (uint32_t i = 0; i < values.size(); ++i) values[i] = toneEqDefault(kToneEqModePort + i);
+  return values;
+}
+template <typename Get>
+inline ToneEqBands readToneEqBands(Get&& get) {
+  ToneEqBands bands;
+  for (size_t b = 0; b < bands.size(); ++b) {
+    auto value = [&](size_t param) {
+      const auto port = toneEqPort(b, param);
+      return clampToneEqValue(port, get(port));
+    };
+    bands[b] = {static_cast<int>(value(kPinShape)), value(kPinFreq), value(kPinGain), value(kPinQ)};
+  }
+  return bands;
+}
+
 struct PinCoeffs {
   double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
 };
@@ -193,7 +237,8 @@ inline double pinMagnitudeDb(const PinCoeffs& f, double hz, double rate) noexcep
 }
 
 // Sum of every placed pin's response (dB) at `hz`.
-inline double pinBandsMagnitudeDb(const PinBands& bands, double hz, double rate) noexcept {
+template <size_t BandCount>
+inline double pinBandsMagnitudeDb(const std::array<PinBand, BandCount>& bands, double hz, double rate) noexcept {
   double db = 0.0;
   for (const auto& b : bands)
     if (b.shape != kPinOff && b.gainDb != 0.0)
@@ -205,7 +250,8 @@ inline double pinBandsMagnitudeDb(const PinBands& bands, double hz, double rate)
 // ~20 ms on a 32-sample cadence; a shape change glides the band to 0 dB,
 // switches at unity and glides back, so adding, removing or reshaping a pin
 // never steps the filter.
-class PinEq {
+template <size_t BandCount>
+class BasicPinEq {
  public:
   static constexpr size_t kMaxChannels = 2;
 
@@ -216,7 +262,7 @@ class PinEq {
   }
 
   void process(float* const* channels, size_t channelCount, size_t count, double rate,
-               const PinBands& targets) noexcept {
+               const std::array<PinBand, BandCount>& targets) noexcept {
     channelCount = std::min(channelCount, kMaxChannels);
     if (rate != rate_) {
       // A new processing domain: histories at the old rate mean nothing.
@@ -224,13 +270,13 @@ class PinEq {
       rate_ = rate;
     }
     // Targets stay fixed throughout this call, including every smoothing chunk.
-    std::array<double, kPinEqBandCount> targetLogFreq, targetLogQ;
-    for (size_t b = 0; b < kPinEqBandCount; ++b) {
+    std::array<double, BandCount> targetLogFreq, targetLogQ;
+    for (size_t b = 0; b < BandCount; ++b) {
       targetLogFreq[b] = std::log(clampFreq(targets[b].freq));
       targetLogQ[b] = std::log(targets[b].q);
     }
     if (!primed_) {
-      for (size_t b = 0; b < kPinEqBandCount; ++b) {
+      for (size_t b = 0; b < BandCount; ++b) {
         auto& st = bands_[b];
         st.shape = targets[b].shape;
         st.gainDb = st.shape == kPinOff ? 0.0 : targets[b].gainDb;
@@ -243,7 +289,7 @@ class PinEq {
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
       const double glide = 1.0 - std::exp(-static_cast<double>(n) / (rate * 0.020));
-      for (size_t b = 0; b < kPinEqBandCount; ++b) {
+      for (size_t b = 0; b < BandCount; ++b) {
         auto& st = bands_[b];
         const auto& t = targets[b];
         const double gainTarget = (t.shape == st.shape && t.shape != kPinOff) ? t.gainDb : 0.0;
@@ -314,9 +360,12 @@ class PinEq {
     return true;
   }
 
-  std::array<BandState, kPinEqBandCount> bands_{};
+  std::array<BandState, BandCount> bands_{};
   bool primed_ = false;
   double rate_ = 0.0;
 };
+
+using PinEq = BasicPinEq<kPinEqBandCount>;
+using ToneEq = BasicPinEq<kToneEqBandCount>;
 
 }  // namespace NAMRig

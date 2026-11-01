@@ -270,6 +270,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
   postCompressor.initialize(rate);
+  masterOutput.initialize(rate);
 
   if (options)
     optionsSet(this, options);
@@ -302,6 +303,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
   postCompressor.initialize(rate);
+  masterOutput.initialize(rate);
   appliedBass = -999.0f;
   appliedMid = -999.0f;
   appliedTreble = -999.0f;
@@ -1858,11 +1860,17 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       dcBlockerR.reset();
     }
 
+    const bool multibandTone = portValue(ports.tone_eq[0], 0.0f) >= 0.5f;
+    const ToneEqBands toneBands = readToneEqBands([&](uint32_t port) {
+      const uint32_t index = port - kToneEqModePort;
+      return portValue(ports.tone_eq[index], toneEqDefault(kToneEqModePort + index));
+    });
+    // Glide the inactive EQ to flat while retaining its recalled control values.
     for (uint32_t start = 0; start < n; start += kEqChunk) {
       const uint32_t m = std::min<uint32_t>(kEqChunk, n - start);
-      glideValue(smoothedBass, *ports.bass, chunkGlide, 0.005f);
-      glideValue(smoothedMid, *ports.mid, chunkGlide, 0.005f);
-      glideValue(smoothedTreble, *ports.treble, chunkGlide, 0.005f);
+      glideValue(smoothedBass, multibandTone ? 0.0f : *ports.bass, chunkGlide, 0.005f);
+      glideValue(smoothedMid, multibandTone ? 0.0f : *ports.mid, chunkGlide, 0.005f);
+      glideValue(smoothedTreble, multibandTone ? 0.0f : *ports.treble, chunkGlide, 0.005f);
       const bool bassOn = smoothedBass != 0.0f;
       const bool midOn = smoothedMid != 0.0f;
       const bool trebleOn = smoothedTreble != 0.0f;
@@ -1891,6 +1899,11 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         R[i] = r;
       }
     }
+
+    auto activeToneBands = toneBands;
+    if (!multibandTone) for (auto& band : activeToneBands) band.shape = kPinOff;
+    float* toneChannels[2] = {L, R};
+    tonePins.process(toneChannels, 2, n, sampleRate, activeToneBands);
 
     float gain = smoothedOutputLevel;
     for (uint32_t i = 0; i < n; ++i) {
@@ -1978,6 +1991,11 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     }
     if (tunerToneGain < 1e-7f) tunerToneGain = 0;
   }
+
+  // Final balance and linked peak limiting, including FX tails/reference tone.
+  const float reduction = masterOutput.process(ports.audio_out, ports.audio_out_r, count,
+      portValue(ports.output_ceiling, 0.0f), portValue(ports.output_balance, 0.0f));
+  if (ports.output_reduction) *ports.output_reduction = reduction;
 
   // ---- Master output level meter (post-effects, final output) ----
   {

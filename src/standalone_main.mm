@@ -593,7 +593,9 @@ class StandaloneHost {
         {NAMRig::kPostCompressorFirstPort, postCompressorControls_},
         {NAMRig::kOverdriveTightPort, {&overdriveTight_, 1}},
         {NAMRig::kOverdriveVoicingPort, {&overdriveVoicing_, 1}},
-        {NAMRig::kPedal2EnabledPort, pedalBoardControls_}});
+        {NAMRig::kPedal2EnabledPort, pedalBoardControls_},
+        {NAMRig::kOutputCeilingPort, masterOutputControls_},
+        {NAMRig::kToneEqModePort, toneEqControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -958,6 +960,14 @@ class StandaloneHost {
       host->pinEqControls_[port - NAMRig::kPinEqFirstPort] = *static_cast<const float*>(buffer);
       return;
     }
+    if (format == 0 && port >= NAMRig::kOutputCeilingPort && port <= NAMRig::kOutputBalancePort && size == sizeof(float)) {
+      host->masterOutputControls_[port - NAMRig::kOutputCeilingPort] = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount && size == sizeof(float)) {
+      host->toneEqControls_[port - NAMRig::kToneEqModePort] = *static_cast<const float*>(buffer);
+      return;
+    }
     if (port == 0 && format == host->eventTransfer_)
       host->uiToAudio_.push(size, format, buffer);
   }
@@ -1035,6 +1045,8 @@ class StandaloneHost {
     for (uint32_t port : {11u, 17u, 18u, 29u})
       uiDescriptor_->port_event(uiHandle_, port, sizeof(float), 0, &controls_[port - 4]);
 
+    uiDescriptor_->port_event(uiHandle_, NAMRig::kOutputReductionPort, sizeof(float), 0,
+                                &masterOutputControls_[2]);
     updateCpuDisplay();
     updateAnimatedAmpIcons();
   }
@@ -1800,10 +1812,12 @@ class StandaloneHost {
   std::array<float, 3> overdriveControls_ = {0.0f, NAMRig::Overdrive::kToneDefault, 0.0f};
   float overdriveTight_ = NAMRig::kOverdriveTightDefault;
   std::array<float, 3> pedalBoardControls_{};
+  std::array<float, 3> masterOutputControls_{};
   float overdriveVoicing_ = NAMRig::kOverdriveVoicingDefault;
   float overdriveEnabled_ = 1.0f;
   std::array<float, 3> compressorControls_ = {NAMRig::kCompressorAttackDefault, NAMRig::kCompressorReleaseDefault, 1.0f};
   std::array<float, 4> postCompressorControls_ = NAMRig::kPostCompressorDefaults;
+  std::array<float, NAMRig::kToneEqControlCount> toneEqControls_ = NAMRig::toneEqDefaults();
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

@@ -22,6 +22,7 @@
 #include "oversample.h"
 #include "oversample_modes.h"
 #include "dynamics.h"
+#include "master_output.h"
 #include "amp_advanced.h"
 #include "output_transformer.h"
 #include "overdrive.h"
@@ -214,6 +215,10 @@ public:
     float* pedal2_enabled;
     float* pedal3_enabled;
     float* pedal_order;
+    float* output_ceiling;
+    float* output_balance;
+    float* output_reduction;
+    std::array<float*, kToneEqControlCount> tone_eq;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -263,7 +268,12 @@ public:
   static_assert(kPostCompressorFirstPort == kOverdriveEnabledPort + 1);
   static_assert(kOverdriveTightPort == kPostCompressorEnabledPort + 1);
   static_assert(kOverdriveVoicingPort == kOverdriveTightPort + 1);
-  static_assert(kPortCount == kPedalOrderPort + 1);
+  static_assert(offsetof(Ports, output_ceiling) == kOutputCeilingPort * sizeof(void*));
+  static_assert(offsetof(Ports, output_balance) == kOutputBalancePort * sizeof(void*));
+  static_assert(offsetof(Ports, output_reduction) == kOutputReductionPort * sizeof(void*));
+  static_assert(kOutputCeilingPort == kPedalOrderPort + 1);
+  static_assert(offsetof(Ports, tone_eq) == kToneEqModePort * sizeof(void*));
+  static_assert(kPortCount == kToneEqModePort + kToneEqControlCount);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -342,6 +352,7 @@ private:
   std::array<bool, kStageCount> notifyPending{};
   float smoothedInputLevel = 1.0f;
   float smoothedOutputLevel = 1.0f;
+  MasterOutput masterOutput;
   float smoothedAmpDrive = 1.0f;
   float smoothedCabLevel = 1.0f;
   // Rate-independent ~2 ms one-pole coefficient for the input/output trims
@@ -383,6 +394,7 @@ private:
   OutputTransformer outputTransformer;
   // Graph pin EQs: Sculpt and Transformer run in the amp's domain, Console at base rate.
   PinEq sculptPins, transformerPins, consolePins, speakerPins;
+  ToneEq tonePins;
   SpeakerDynamics speakerDynamics;
   int transformerRequested = OutputTransformer::kCaptured;
   int transformerApplied = OutputTransformer::kCaptured;
