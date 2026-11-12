@@ -115,8 +115,7 @@ inline constexpr RigControlSymbol kRigStaticControlSymbols[] = {
     {224, "tone_eq_pin7_freq"},
     {225, "tone_eq_pin7_gain"},
     {226, "tone_eq_pin7_q"},
-
-
+    {kDropPitchPort, "drop_pitch"},
 };
 
 // Non-null results have static lifetime, including generated pin names.

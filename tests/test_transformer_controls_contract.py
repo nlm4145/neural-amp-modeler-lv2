@@ -61,13 +61,14 @@ port_pairs = [(int(index), symbol) for index, symbol in re.findall(
     r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
 )]
 appended_symbols += ["tone_eq_mode"] + [f"tone_eq_pin{b}_{p}" for b in range(1, 8) for p in ("shape", "freq", "gain", "q")]
+appended_symbols += ["drop_pitch"]
 assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + appended_symbols)), (
     "ports 0..78 must stay unchanged; Power/Tube appends at 79..81, Mid Push at 82"
 )
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
 assert "kPortCount = kRigControlPortCount;" in header
-assert "kRigControlPortCount = 227;" in tube_controls
+assert "kRigControlPortCount = 228;" in tube_controls
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
@@ -77,7 +78,7 @@ assert "kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount" in header
 assert "kPostCompressorFirstPort == kOverdriveEnabledPort + 1" in header
 assert "kOverdriveTightPort == kPostCompressorEnabledPort + 1" in header
 assert "kOverdriveVoicingPort == kOverdriveTightPort + 1" in header
-assert "kPortCount == kToneEqModePort + kToneEqControlCount" in header
+assert "kPortCount == kDropPitchPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 # The metadata table is the shared host/preset order, not absolute profile values.

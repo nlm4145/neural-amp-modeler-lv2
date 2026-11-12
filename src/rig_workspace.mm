@@ -245,7 +245,8 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
     value.frame = [self topRect:graphView x:x y:211 w:leverW h:16];
     self.state->toneEqLeverValues[band] = value;
   }
-  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port)
+  for (uint32_t port = NAMRig::kToneEqModePort;
+       port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount; ++port)
     self.state->updateControl(port, self.state->toneEqControls[port - NAMRig::kToneEqModePort]);
   self.state->showToneEqView(self.state->toneEqShowsGraphic);
 
@@ -508,6 +509,48 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   [self label:@"Input & Gate" parent:inputConsole x:28 y:36 w:580 size:20 weight:NSFontWeightSemibold color:rigText()];
   [self label:@"Set input gain and noise gate response before the preamp processors below."
        parent:inputConsole x:28 y:68 w:580 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
+
+  // Drop Pitch / Virtual Capo strip
+  [self label:@"DROP PITCH" parent:inputConsole x:28 y:105 w:82 size:10.5 weight:NSFontWeightBold color:rigDimText()];
+  RigButton* dropDownBtn = workspaceButton(inputConsole, @"−", self.state->uiController,
+                                           @selector(dropPitchStepDown:));
+  dropDownBtn.frame = [self topRect:inputConsole x:114 y:100 w:26 h:24];
+  dropDownBtn.toolTip = @"Drop pitch down 1 semitone (e.g. D Standard → Db → C → B).";
+
+  NSPopUpButton* dropPop = [[NSPopUpButton alloc] initWithFrame:[self topRect:inputConsole x:144 y:100 w:176 h:24] pullsDown:NO];
+  dropPop.controlSize = NSControlSizeSmall;
+  dropPop.target = self.state->uiController;
+  dropPop.action = @selector(dropPitchChanged:);
+  dropPop.toolTip = @"Polyphonic pre-amp Drop Pitch / Virtual Capo (-12 to +12 semitones). Example from D Standard: -1 = Db, -2 = C, -3 = B. 0 = exact bypass.";
+  auto addDropItem = [&](NSString* title, int tag) {
+    [dropPop addItemWithTitle:title];
+    dropPop.lastItem.tag = tag;
+  };
+  addDropItem(@"+12 st (+1 Oct)", 12);
+  for (int st = 11; st >= 1; --st) {
+    addDropItem([NSString stringWithFormat:@"+%d st", st], st);
+  }
+  addDropItem(@"OFF (0 st)", 0);
+  addDropItem(@"-1 st (½ Step / Db)", -1);
+  addDropItem(@"-2 st (Whole Step / C)", -2);
+  addDropItem(@"-3 st (1½ Steps / B)", -3);
+  addDropItem(@"-4 st (2 Steps / Bb)", -4);
+  addDropItem(@"-5 st (2½ Steps / A)", -5);
+  addDropItem(@"-6 st (3 Steps / Ab)", -6);
+  addDropItem(@"-7 st (3½ Steps / G)", -7);
+  addDropItem(@"-8 st (4 Steps / F#)", -8);
+  addDropItem(@"-9 st (4½ Steps / F)", -9);
+  addDropItem(@"-10 st (5 Steps / E)", -10);
+  addDropItem(@"-11 st (5½ Steps / Eb)", -11);
+  addDropItem(@"-12 st (-1 Octave)", -12);
+  [dropPop selectItemWithTag:self.state->dropPitch];
+  self.state->dropPitchPopup = dropPop;
+  [inputConsole addSubview:dropPop];
+
+  RigButton* dropUpBtn = workspaceButton(inputConsole, @"+", self.state->uiController,
+                                         @selector(dropPitchStepUp:));
+  dropUpBtn.frame = [self topRect:inputConsole x:324 y:100 w:26 h:24];
+  dropUpBtn.toolTip = @"Raise pitch up 1 semitone.";
   NSArray<NSView*>* inputCells = [self knobCells:self.knobGroups[0]];
   for (NSUInteger i = 0; i < inputCells.count; ++i)
     [self place:inputCells[i] parent:inputConsole x:680 + i * 260 y:14 w:220 h:124];

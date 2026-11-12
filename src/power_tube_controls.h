@@ -57,7 +57,17 @@ inline constexpr uint32_t kOutputReductionPort = 197;
 inline constexpr uint32_t kToneEqModePort = 198;
 inline constexpr uint32_t kToneEqFirstPort = 199;
 inline constexpr uint32_t kToneEqControlCount = 29;
-inline constexpr uint32_t kRigControlPortCount = 227;
+// Pre-amp polyphonic Drop Pitch / Virtual Capo (-12..+12 semitones, 0 = bypass).
+inline constexpr uint32_t kDropPitchPort = 227;
+inline constexpr float kDropPitchMin = -12.0f;
+inline constexpr float kDropPitchMax = 12.0f;
+inline constexpr float kDropPitchDefault = 0.0f;
+inline constexpr uint32_t kRigControlPortCount = 228;
+
+inline int clampDropPitch(float value) noexcept {
+  if (!std::isfinite(value)) return 0;
+  return std::clamp(static_cast<int>(std::lround(value)), -12, 12);
+}
 
 namespace PowerTube {
 inline constexpr int kCaptured = 0;

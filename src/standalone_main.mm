@@ -627,7 +627,8 @@ class StandaloneHost {
         {NAMRig::kOverdriveVoicingPort, {&overdriveVoicing_, 1}},
         {NAMRig::kPedal2EnabledPort, pedalBoardControls_},
         {NAMRig::kOutputCeilingPort, masterOutputControls_},
-        {NAMRig::kToneEqModePort, toneEqControls_}});
+        {NAMRig::kToneEqModePort, toneEqControls_},
+        {NAMRig::kDropPitchPort, {&dropPitchControl_, 1}}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -996,8 +997,13 @@ class StandaloneHost {
       host->masterOutputControls_[port - NAMRig::kOutputCeilingPort] = *static_cast<const float*>(buffer);
       return;
     }
-    if (format == 0 && port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount && size == sizeof(float)) {
+    if (format == 0 && port >= NAMRig::kToneEqModePort &&
+        port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount && size == sizeof(float)) {
       host->toneEqControls_[port - NAMRig::kToneEqModePort] = *static_cast<const float*>(buffer);
+      return;
+    }
+    if (format == 0 && port == NAMRig::kDropPitchPort && size == sizeof(float)) {
+      host->dropPitchControl_ = static_cast<float>(NAMRig::clampDropPitch(*static_cast<const float*>(buffer)));
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1868,6 +1874,7 @@ class StandaloneHost {
   std::array<float, 3> compressorControls_ = {NAMRig::kCompressorAttackDefault, NAMRig::kCompressorReleaseDefault, 1.0f};
   std::array<float, 4> postCompressorControls_ = NAMRig::kPostCompressorDefaults;
   std::array<float, NAMRig::kToneEqControlCount> toneEqControls_ = NAMRig::toneEqDefaults();
+  float dropPitchControl_ = NAMRig::kDropPitchDefault;
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

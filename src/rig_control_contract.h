@@ -231,6 +231,7 @@ inline constexpr RigControlContract kRigControlContracts[] = {
     {224, "tone_eq_pin7_freq", 12000.0f, 12000.0f, 12000.0f, "", false, 0u, ""},
     {225, "tone_eq_pin7_gain", -18.0f, 18.0f, 0.0f, "", false, 0u, ""},
     {226, "tone_eq_pin7_q", 1.0f, 1.0f, 1.0f, "", false, 0u, ""},
+    {227, "drop_pitch", -12.0f, 12.0f, 0.0f, "", true, 0u, ""},
 };
 inline const RigControlContract* rigControlContract(uint32_t port) {
   for (const auto& c : kRigControlContracts) if (c.port == port) return &c;

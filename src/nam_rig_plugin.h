@@ -21,6 +21,7 @@
 
 #include "oversample.h"
 #include "oversample_modes.h"
+#include "drop_pitch.h"
 #include "dynamics.h"
 #include "master_output.h"
 #include "amp_advanced.h"
@@ -219,6 +220,7 @@ public:
     float* output_balance;
     float* output_reduction;
     std::array<float*, kToneEqControlCount> tone_eq;
+    float* drop_pitch;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -273,7 +275,9 @@ public:
   static_assert(offsetof(Ports, output_reduction) == kOutputReductionPort * sizeof(void*));
   static_assert(kOutputCeilingPort == kPedalOrderPort + 1);
   static_assert(offsetof(Ports, tone_eq) == kToneEqModePort * sizeof(void*));
-  static_assert(kPortCount == kToneEqModePort + kToneEqControlCount);
+  static_assert(offsetof(Ports, drop_pitch) == kDropPitchPort * sizeof(void*));
+  static_assert(kDropPitchPort == kToneEqModePort + kToneEqControlCount);
+  static_assert(kPortCount == kDropPitchPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -386,6 +390,7 @@ private:
   StereoDelay delayFx;
   PlateReverb reverbFx;
   NoiseGate noiseGate;
+  DropPitch dropPitch;
   StereoCompressor postCompressor;
   float compressorEnvelope = 0.0f;
   float compressorGain = 1.0f;

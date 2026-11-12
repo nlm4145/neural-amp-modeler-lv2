@@ -215,6 +215,8 @@ struct RigUIState {
   float boostEnabled = 1.0f;
   int boostVoicing = 0;
   __strong NSPopUpButton* boostVoicingPopup = nil;
+  int dropPitch = 0;
+  __strong NSPopUpButton* dropPitchPopup = nil;
   __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
@@ -1403,8 +1405,10 @@ struct RigUIState {
   }
 
   float currentPortValueForSlot(uint32_t port) const {
-    if (port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount)
+    if (port >= NAMRig::kToneEqModePort &&
+        port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount)
       return toneEqControls[port - NAMRig::kToneEqModePort];
+    if (port == NAMRig::kDropPitchPort) return (float)dropPitch;
     if (port == NAMRig::kPedalOrderPort) return pedalOrder;
     if (port == NAMRig::kPedal2EnabledPort || port == NAMRig::kPedal3EnabledPort)
       return extraPedalEnabled[port - NAMRig::kPedal2EnabledPort];
@@ -2448,7 +2452,8 @@ struct RigUIState {
     if (port >= 12 && port <= 14)
       value = std::isfinite(value) ? std::clamp(value, -12.0f, 12.0f) : 0.0f;
     if (((port >= 12 && port <= 14) ||
-         (port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount)) &&
+         (port >= NAMRig::kToneEqModePort &&
+          port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount)) &&
         ![NSThread isMainThread]) {
       auto alive = isAlive;
       dispatch_async(dispatch_get_main_queue(), ^{ if (alive && *alive) updateControl(port, value); });
@@ -2598,7 +2603,21 @@ struct RigUIState {
       else dispatch_async(dispatch_get_main_queue(), updateTube);
       return;
     }
-    if (port >= NAMRig::kToneEqModePort && port < NAMRig::kRigControlPortCount) {
+    if (port == NAMRig::kDropPitchPort) {
+      const int st = NAMRig::clampDropPitch(value);
+      auto updateDrop = ^{
+        if (!alive || !*alive) return;
+        dropPitch = st;
+        if (dropPitchPopup) {
+          [dropPitchPopup selectItemWithTag:st];
+        }
+      };
+      if ([NSThread isMainThread]) updateDrop();
+      else dispatch_async(dispatch_get_main_queue(), updateDrop);
+      return;
+    }
+    if (port >= NAMRig::kToneEqModePort &&
+        port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount) {
       const float toneValue = NAMRig::clampToneEqValue(port, value);
       const bool changed = toneEqControls[port - NAMRig::kToneEqModePort] != toneValue;
       toneEqControls[port - NAMRig::kToneEqModePort] = toneValue;

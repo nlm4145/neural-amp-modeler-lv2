@@ -269,6 +269,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
+  dropPitch.prepare(rate);
   postCompressor.initialize(rate);
   masterOutput.initialize(rate);
 
@@ -302,6 +303,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   cabAlign.initialize(rate, 20.0);
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
+  dropPitch.prepare(rate);
   postCompressor.initialize(rate);
   masterOutput.initialize(rate);
   appliedBass = -999.0f;
@@ -965,6 +967,11 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   }
   smoothedInputLevel = gain;
 
+  // Pre-amp polyphonic Drop Pitch / Virtual Capo: shifts the gated, trimmed
+  // DI before compression, overdrive, pedal, and amp saturation.
+  const int dropSemitones = clampDropPitch(portValue(ports.drop_pitch, kDropPitchDefault));
+  dropPitch.process(ports.audio_out, sampleCount, dropSemitones);
+
   // Feed-forward guitar compressor before the pedal/amp chain.
   // Amount progressively lowers threshold (-12 -> -36 dB), raises ratio
   // (1:1 -> 6:1), and adds up to 6 dB makeup. Attack (1..100 ms, default 8 ms)
@@ -1426,6 +1433,7 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
     parallelCabExtras(extraA, extraB);
     latencyFrames += std::max(extraA, extraB);
   }
+  latencyFrames += static_cast<uint32_t>(dropPitch.latencySamples(dropSemitones));
   if (ports.latency)
     *ports.latency = static_cast<float>(latencyFrames);
 

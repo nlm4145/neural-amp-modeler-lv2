@@ -38,9 +38,12 @@ inline void forEachWin32ControlDefault(Set&& set) {
         value = NAMRig::kOverdriveTightDefault; break;
       case NAMRig::kOverdriveVoicingPort:
         value = NAMRig::kOverdriveVoicingDefault; break;
+      case NAMRig::kDropPitchPort:
+        value = NAMRig::kDropPitchDefault; break;
       default: break;
     }
-    if (entry.port >= NAMRig::kToneEqModePort && entry.port < NAMRig::kRigControlPortCount)
+    if (entry.port >= NAMRig::kToneEqModePort &&
+        entry.port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount)
       value = NAMRig::toneEqDefault(entry.port);
     set(entry.port, value);
   }

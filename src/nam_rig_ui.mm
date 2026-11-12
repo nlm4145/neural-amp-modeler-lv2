@@ -1359,10 +1359,13 @@ static double copilotParseClock(NSString* text) {
   }
   _state->sendControl(NAMRig::kPostCompressorEnabledPort, 1.0f);
   _state->updateControl(NAMRig::kPostCompressorEnabledPort, 1.0f);
-  for (uint32_t port = NAMRig::kToneEqModePort; port < NAMRig::kRigControlPortCount; ++port) {
+  for (uint32_t port = NAMRig::kToneEqModePort;
+       port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount; ++port) {
     _state->sendControl(port, NAMRig::toneEqDefault(port));
     _state->updateControl(port, NAMRig::toneEqDefault(port));
   }
+  _state->sendControl(NAMRig::kDropPitchPort, NAMRig::kDropPitchDefault);
+  _state->updateControl(NAMRig::kDropPitchPort, NAMRig::kDropPitchDefault);
   _state->syncingToneEq = false;
   _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
@@ -1526,6 +1529,31 @@ static double copilotParseClock(NSString* text) {
   _state->sendControl(NAMRig::kOverdriveVoicingPort, val);
   _state->updateControl(NAMRig::kOverdriveVoicingPort, val);
   [self markPresetModified];
+}
+
+- (void)setDropPitchSemitones:(int)semitones {
+  if (!_state) return;
+  const int clamped = NAMRig::clampDropPitch(static_cast<float>(semitones));
+  _state->sendControl(NAMRig::kDropPitchPort, static_cast<float>(clamped));
+  _state->updateControl(NAMRig::kDropPitchPort, static_cast<float>(clamped));
+  [self markPresetModified];
+}
+
+- (void)dropPitchChanged:(NSPopUpButton*)sender {
+  if (!sender.selectedItem) return;
+  [self setDropPitchSemitones:(int)sender.selectedItem.tag];
+}
+
+- (void)dropPitchStepDown:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  [self setDropPitchSemitones:_state->dropPitch - 1];
+}
+
+- (void)dropPitchStepUp:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  [self setDropPitchSemitones:_state->dropPitch + 1];
 }
 
 - (void)applyBoostPreset:(NSButton*)sender {
@@ -5455,6 +5483,76 @@ static void addLowerStudioDeck(RigUIState* state,
   [[deckSub.leadingAnchor constraintEqualToAnchor:deckTitle.trailingAnchor constant:10] setActive:YES];
   [[deckSub.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
 
+  // Drop Pitch / Virtual Capo strip in the deck header (always accessible)
+  NSView* dropGroup = [[NSView alloc] initWithFrame:NSZeroRect];
+  dropGroup.translatesAutoresizingMaskIntoConstraints = NO;
+  [deckHeader addSubview:dropGroup];
+  [[dropGroup.leadingAnchor constraintEqualToAnchor:deckSub.trailingAnchor constant:18] setActive:YES];
+  [[dropGroup.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
+  [[dropGroup.heightAnchor constraintEqualToConstant:26] setActive:YES];
+
+  NSTextField* dropLbl = addLabel(dropGroup, @"DROP PITCH", NSZeroRect,
+                                  [NSFont systemFontOfSize:9 weight:NSFontWeightBold],
+                                  rigDimText(), NSTextAlignmentLeft);
+  rigApplyTracking(dropLbl, 0.8);
+  dropLbl.translatesAutoresizingMaskIntoConstraints = NO;
+  [[dropLbl.leadingAnchor constraintEqualToAnchor:dropGroup.leadingAnchor] setActive:YES];
+  [[dropLbl.centerYAnchor constraintEqualToAnchor:dropGroup.centerYAnchor] setActive:YES];
+
+  RigButton* dropDownBtn = rigButton(dropGroup, @"−", state->uiController,
+                                     @selector(dropPitchStepDown:), NSZeroRect);
+  dropDownBtn.toolTip = @"Drop pitch down 1 semitone (e.g. D Standard → Db → C → B).";
+  dropDownBtn.translatesAutoresizingMaskIntoConstraints = NO;
+  [[dropDownBtn.leadingAnchor constraintEqualToAnchor:dropLbl.trailingAnchor constant:8] setActive:YES];
+  [[dropDownBtn.centerYAnchor constraintEqualToAnchor:dropGroup.centerYAnchor] setActive:YES];
+  [[dropDownBtn.widthAnchor constraintEqualToConstant:22] setActive:YES];
+  [[dropDownBtn.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+  NSPopUpButton* dropPop = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  dropPop.controlSize = NSControlSizeSmall;
+  dropPop.target = state->uiController;
+  dropPop.action = @selector(dropPitchChanged:);
+  dropPop.toolTip = @"Polyphonic pre-amp Drop Pitch / Virtual Capo (-12 to +12 semitones). Example from D Standard: -1 = Db, -2 = C, -3 = B. 0 = exact bypass.";
+  dropPop.translatesAutoresizingMaskIntoConstraints = NO;
+  auto addDropItem = [&](NSString* title, int tag) {
+    [dropPop addItemWithTitle:title];
+    dropPop.lastItem.tag = tag;
+  };
+  addDropItem(@"+12 st (+1 Oct)", 12);
+  for (int st = 11; st >= 1; --st) {
+    addDropItem([NSString stringWithFormat:@"+%d st", st], st);
+  }
+  addDropItem(@"OFF (0 st)", 0);
+  addDropItem(@"-1 st (½ Step / Db)", -1);
+  addDropItem(@"-2 st (Whole Step / C)", -2);
+  addDropItem(@"-3 st (1½ Steps / B)", -3);
+  addDropItem(@"-4 st (2 Steps / Bb)", -4);
+  addDropItem(@"-5 st (2½ Steps / A)", -5);
+  addDropItem(@"-6 st (3 Steps / Ab)", -6);
+  addDropItem(@"-7 st (3½ Steps / G)", -7);
+  addDropItem(@"-8 st (4 Steps / F#)", -8);
+  addDropItem(@"-9 st (4½ Steps / F)", -9);
+  addDropItem(@"-10 st (5 Steps / E)", -10);
+  addDropItem(@"-11 st (5½ Steps / Eb)", -11);
+  addDropItem(@"-12 st (-1 Octave)", -12);
+  [dropPop selectItemWithTag:state->dropPitch];
+  state->dropPitchPopup = dropPop;
+  [dropGroup addSubview:dropPop];
+  [[dropPop.leadingAnchor constraintEqualToAnchor:dropDownBtn.trailingAnchor constant:4] setActive:YES];
+  [[dropPop.centerYAnchor constraintEqualToAnchor:dropGroup.centerYAnchor] setActive:YES];
+  [[dropPop.widthAnchor constraintEqualToConstant:156] setActive:YES];
+  [[dropPop.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
+  RigButton* dropUpBtn = rigButton(dropGroup, @"+", state->uiController,
+                                   @selector(dropPitchStepUp:), NSZeroRect);
+  dropUpBtn.toolTip = @"Raise pitch up 1 semitone.";
+  dropUpBtn.translatesAutoresizingMaskIntoConstraints = NO;
+  [[dropUpBtn.leadingAnchor constraintEqualToAnchor:dropPop.trailingAnchor constant:4] setActive:YES];
+  [[dropUpBtn.trailingAnchor constraintEqualToAnchor:dropGroup.trailingAnchor] setActive:YES];
+  [[dropUpBtn.centerYAnchor constraintEqualToAnchor:dropGroup.centerYAnchor] setActive:YES];
+  [[dropUpBtn.widthAnchor constraintEqualToConstant:22] setActive:YES];
+  [[dropUpBtn.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
   // Tab Buttons stack on the right
   NSStackView* tabStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
   tabStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -5465,6 +5563,7 @@ static void addLowerStudioDeck(RigUIState* state,
   [[tabStack.trailingAnchor constraintEqualToAnchor:deckHeader.trailingAnchor] setActive:YES];
   [[tabStack.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
   [[tabStack.heightAnchor constraintEqualToConstant:26] setActive:YES];
+  [[dropGroup.trailingAnchor constraintLessThanOrEqualToAnchor:tabStack.leadingAnchor constant:-12] setActive:YES];
 
   NSArray<NSString*>* tabTitles = @[
     @"TUNER",

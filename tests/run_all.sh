@@ -66,6 +66,8 @@ echo "== tests/verify_amp_advanced.cpp =="
 run_cpp c++17 /tmp/verify_amp_advanced -Isrc tests/verify_amp_advanced.cpp
 echo "== tests/verify_overdrive.cpp =="
 run_cpp c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
+echo "== tests/verify_drop_pitch.cpp =="
+run_cpp c++17 /tmp/verify_drop_pitch -Isrc tests/verify_drop_pitch.cpp
 echo "== tests/verify_pin_eq.cpp =="
 run_cpp c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
 echo "== tests/verify_tone_eq_link.cpp =="
