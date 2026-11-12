@@ -216,7 +216,8 @@ struct RigUIState {
   int boostVoicing = 0;
   __strong NSPopUpButton* boostVoicingPopup = nil;
   int dropPitch = 0;
-  __strong NSPopUpButton* dropPitchPopup = nil;
+  // Every Drop Pitch dropdown (Studio Pro Deck header and Input workspace).
+  __strong NSMutableArray<NSPopUpButton*>* dropPitchPopups = [NSMutableArray array];
   __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
@@ -2608,9 +2609,7 @@ struct RigUIState {
       auto updateDrop = ^{
         if (!alive || !*alive) return;
         dropPitch = st;
-        if (dropPitchPopup) {
-          [dropPitchPopup selectItemWithTag:st];
-        }
+        for (NSPopUpButton* popup in dropPitchPopups) [popup selectItemWithTag:st];
       };
       if ([NSThread isMainThread]) updateDrop();
       else dispatch_async(dispatch_get_main_queue(), updateDrop);

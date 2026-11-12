@@ -1298,6 +1298,7 @@ static NSDictionary* rigAICLIEnvironment() {
 + (NSDictionary*)contextForPreset:(RigPreset*)preset compact:(BOOL)compact {
   NSMutableDictionary* controls = [NSMutableDictionary dictionary];
   for (const auto& kv : preset.allControls) {
+    if (kv.first == NAMRig::kDropPitchPort) continue;  // player's tuning, not tone
     const auto* c = NAMRig::rigControlContract(kv.first);
     const char* sym = NAMRig::rigControlSymbol(kv.first);
     if (sym && (!compact || !c || kv.second != c->defaultValue)) controls[@(sym)] = @(kv.second);
@@ -1346,7 +1347,11 @@ static NSDictionary* rigAICLIEnvironment() {
     [preset stageAtIndex:s]->path = path.fileSystemRepresentation;
     [preset setControl:enables[s] value:1];
   }
-  for (NSString* symbol in result.controls) [preset setControl:[symbols[symbol] unsignedIntValue] value:[result.controls[symbol] floatValue]];
+  for (NSString* symbol in result.controls) {
+    const uint32_t port = [symbols[symbol] unsignedIntValue];
+    if (port == NAMRig::kDropPitchPort) continue;  // keep the base preset's tuning
+    [preset setControl:port value:[result.controls[symbol] floatValue]];
+  }
   for (size_t s = 0; s < 4; ++s) {
     if ([preset stageAtIndex:s]->path.empty()) [preset setControl:enables[s] value:0];
   }

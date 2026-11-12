@@ -5536,7 +5536,7 @@ static void addLowerStudioDeck(RigUIState* state,
   addDropItem(@"-11 st (5½ Steps / Eb)", -11);
   addDropItem(@"-12 st (-1 Octave)", -12);
   [dropPop selectItemWithTag:state->dropPitch];
-  state->dropPitchPopup = dropPop;
+  [state->dropPitchPopups addObject:dropPop];
   [dropGroup addSubview:dropPop];
   [[dropPop.leadingAnchor constraintEqualToAnchor:dropDownBtn.trailingAnchor constant:4] setActive:YES];
   [[dropPop.centerYAnchor constraintEqualToAnchor:dropGroup.centerYAnchor] setActive:YES];

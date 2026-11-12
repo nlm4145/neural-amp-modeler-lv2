@@ -15,6 +15,8 @@ static BOOL fail(NSError** error, NSString* message) {
 NSString* rigAIControlReference() {
   NSMutableString* text = [NSMutableString string];
   NAMRig::forEachRigControlSymbol([&](uint32_t port, const char*) {
+    // Drop Pitch is the player's tuning, not part of a tone; AI never sets it.
+    if (port == NAMRig::kDropPitchPort) return;
     const auto* c = NAMRig::rigControlContract(port);
     if (!c) return;
     [text appendFormat:@"%s: %g..%g %s; default %g%s%s\n", c->symbol,

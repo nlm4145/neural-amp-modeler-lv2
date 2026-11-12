@@ -116,10 +116,105 @@ void testTransitionsAndClamping() {
   }
 }
 
+void testEngageHasNoDropout() {
+  // Play D3 bypassed, then engage -2 st mid-note: the first 20 ms after
+  // engaging must keep roughly the same level (no silence while the shifter fills).
+  const double sr = 48000.0;
+  constexpr double kTwoPi = 6.28318530717958647692;
+  NAMRig::DropPitch dp;
+  dp.prepare(sr);
+  std::vector<float> buf(9600);
+  for (size_t i = 0; i < buf.size(); ++i)
+    buf[i] = 0.5f * static_cast<float>(std::sin(kTwoPi * 146.8324 * static_cast<double>(i) / sr));
+  dp.process(buf.data(), 4800, 0);
+  dp.process(buf.data() + 4800, 4800, -2);
+  double rms = 0.0;
+  for (size_t i = 4800; i < 4800 + 960; ++i) rms += double(buf[i]) * buf[i];
+  rms = std::sqrt(rms / 960.0);
+  assert(rms > 0.25);  // a full-scale 0.5 sine is 0.354 RMS
+}
+
+void testNoStaleReadsAfterSilence() {
+  // After the input stops, output must decay cleanly to silence within the
+  // shifter's delay, grain window, and 38 Hz compensation filter ringdown:
+  // nothing old is read back.
+  const double sr = 48000.0;
+  NAMRig::DropPitch dp;
+  dp.prepare(sr);
+  std::vector<float> buf(24000, 0.0f);
+  for (size_t i = 0; i < 4800; ++i) buf[i] = 0.5f * std::sin(0.02f * static_cast<float>(i));
+  for (int st : {-12, -3, 12}) {
+    std::vector<float> run = buf;
+    dp.reset();
+    dp.process(run.data(), static_cast<uint32_t>(run.size()), st);
+    const size_t grainEnd = 4800 + static_cast<size_t>(dp.latencySamples(st)) + 2 * 1728 + 1024;
+    for (size_t i = grainEnd; i < run.size(); ++i) assert(std::fabs(run[i]) < 5.0e-3f);
+    const size_t quiet = grainEnd + 6000;
+    for (size_t i = quiet; i < run.size(); ++i) assert(std::fabs(run[i]) < 1.0e-6f);
+  }
+}
+
+void testTransientPunchPreserved() {
+  // Simulate 4 palm-muted guitar chugs at 96 kHz, dropped -3 st: each pick attack
+  // must retain strong transient peak energy and avoid double-attack flamming.
+  const double sr = 96000.0;
+  constexpr double kTwoPi = 6.28318530717958647692;
+  NAMRig::DropPitch dp;
+  dp.prepare(sr);
+
+  const size_t period = 14400;  // 150 ms between chugs
+  std::vector<float> dry(period * 4, 0.0f);
+  for (size_t c = 0; c < 4; ++c) {
+    const size_t base = c * period;
+    for (size_t i = 0; i < period - 2400; ++i) {
+      const double t = static_cast<double>(i) / sr;
+      const double pickEnv = std::exp(-t / 0.0025);
+      const double bodyEnv = std::exp(-t / 0.035);
+      const double click = pickEnv * (0.45 * std::sin(kTwoPi * 2600.0 * t) +
+                                      0.30 * std::sin(kTwoPi * 4100.0 * t));
+      const double body = bodyEnv * 0.45 * (std::sin(kTwoPi * 146.8324 * t) +
+                                            0.5 * std::sin(kTwoPi * 293.6648 * t));
+      dry[base + i] = static_cast<float>(click + body);
+    }
+  }
+
+  std::vector<float> wet = dry;
+  for (size_t off = 0; off < wet.size(); off += 64) {
+    const uint32_t n = static_cast<uint32_t>(std::min<size_t>(64, wet.size() - off));
+    dp.process(wet.data() + off, n, -3);
+  }
+
+  for (size_t c = 0; c < 4; ++c) {
+    const size_t base = c * period;
+    float dryPeak = 0.0f;
+    for (size_t i = 0; i < 1200; ++i) dryPeak = std::max(dryPeak, std::fabs(dry[base + i]));
+    float wetPeak = 0.0f;
+    size_t wetPeakIdx = 0;
+    for (size_t i = 0; i < 4000; ++i) {
+      const float a = std::fabs(wet[base + i]);
+      if (a > wetPeak) {
+        wetPeak = a;
+        wetPeakIdx = base + i;
+      }
+    }
+    assert(wetPeak >= dryPeak * 0.75f);
+    // Check 14..24 ms after the attack peak for double-attack flamming:
+    // damped palm mute should keep decaying cleanly (< 65% of attack peak).
+    float afterPeak = 0.0f;
+    for (size_t i = wetPeakIdx + 1344; i < std::min(wet.size(), wetPeakIdx + 2400); ++i) {
+      afterPeak = std::max(afterPeak, std::fabs(wet[i]));
+    }
+    assert(afterPeak < wetPeak * 0.65f);
+  }
+}
+
 }  // namespace
 
 int main() {
   testExactBypass();
+  testEngageHasNoDropout();
+  testNoStaleReadsAfterSilence();
+  testTransientPunchPreserved();
   testSingleNoteShift(48000.0, 146.8324, -1);  // D3 -> Db3
   testSingleNoteShift(48000.0, 146.8324, -2);  // D3 -> C3
   testSingleNoteShift(48000.0, 146.8324, -3);  // D3 -> B2
@@ -128,6 +223,8 @@ int main() {
   testSingleNoteShift(48000.0, 146.8324, 12);  // D3 -> D4
   testSingleNoteShift(44100.0, 110.0, -2);     // 44.1 kHz
   testSingleNoteShift(96000.0, 110.0, -3);     // 96 kHz
+  testSingleNoteShift(96000.0, 61.7354, -2);   // Low B1 at 96 kHz (-2 st)
+  testSingleNoteShift(96000.0, 61.7354, -3);   // Low B1 at 96 kHz (-3 st)
   testPolyphonicPowerChord();
   testTransitionsAndClamping();
   std::puts("verify_drop_pitch: all checks passed");

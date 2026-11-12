@@ -544,7 +544,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   addDropItem(@"-11 st (5½ Steps / Eb)", -11);
   addDropItem(@"-12 st (-1 Octave)", -12);
   [dropPop selectItemWithTag:self.state->dropPitch];
-  self.state->dropPitchPopup = dropPop;
+  [self.state->dropPitchPopups addObject:dropPop];
   [inputConsole addSubview:dropPop];
 
   RigButton* dropUpBtn = workspaceButton(inputConsole, @"+", self.state->uiController,
