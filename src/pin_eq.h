@@ -270,25 +270,53 @@ class BasicPinEq {
       rate_ = rate;
     }
     // Targets stay fixed throughout this call, including every smoothing chunk.
-    std::array<double, BandCount> targetLogFreq, targetLogQ;
+    bool anyActiveOrTargetActive = false;
     for (size_t b = 0; b < BandCount; ++b) {
-      targetLogFreq[b] = std::log(clampFreq(targets[b].freq));
-      targetLogQ[b] = std::log(targets[b].q);
+      auto& st = bands_[b];
+      const auto& t = targets[b];
+      if (t.freq != st.cachedFreq) {
+        st.targetLogFreq = std::log(clampFreq(t.freq));
+        st.cachedFreq = t.freq;
+      }
+      if (t.q != st.cachedQ) {
+        st.targetLogQ = std::log(t.q);
+        st.cachedQ = t.q;
+      }
+      if (st.gainDb != 0.0 || (t.shape != kPinOff && t.gainDb != 0.0)) {
+        anyActiveOrTargetActive = true;
+      }
     }
     if (!primed_) {
       for (size_t b = 0; b < BandCount; ++b) {
         auto& st = bands_[b];
         st.shape = targets[b].shape;
         st.gainDb = st.shape == kPinOff ? 0.0 : targets[b].gainDb;
-        st.logFreq = targetLogFreq[b];
-        st.logQ = targetLogQ[b];
+        st.logFreq = st.targetLogFreq;
+        st.logQ = st.targetLogQ;
         st.dirty = true;
       }
       primed_ = true;
     }
+    if (!anyActiveOrTargetActive && count > 0) {
+      for (size_t b = 0; b < BandCount; ++b) {
+        auto& st = bands_[b];
+        const auto& t = targets[b];
+        if (t.shape != st.shape) {
+          st.shape = t.shape;
+          st.dirty = true;
+        }
+        st.dirty |= st.logFreq != st.targetLogFreq || st.logQ != st.targetLogQ;
+        st.logFreq = st.targetLogFreq;
+        st.logQ = st.targetLogQ;
+      }
+      return;
+    }
+    const double fullGlide = 1.0 - std::exp(-static_cast<double>(kChunk) / (rate * 0.020));
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
-      const double glide = 1.0 - std::exp(-static_cast<double>(n) / (rate * 0.020));
+      const double glide = (n == kChunk)
+          ? fullGlide
+          : (1.0 - std::exp(-static_cast<double>(n) / (rate * 0.020)));
       for (size_t b = 0; b < BandCount; ++b) {
         auto& st = bands_[b];
         const auto& t = targets[b];
@@ -299,8 +327,8 @@ class BasicPinEq {
           st.shape = t.shape;
           st.dirty = true;
         }
-        const double freqTarget = targetLogFreq[b];
-        const double qTarget = targetLogQ[b];
+        const double freqTarget = st.targetLogFreq;
+        const double qTarget = st.targetLogQ;
         if (st.active()) {
           st.dirty |= glideTo(st.logFreq, freqTarget, glide, 1.0e-5);
           st.dirty |= glideTo(st.logQ, qTarget, glide, 1.0e-5);
@@ -339,6 +367,8 @@ class BasicPinEq {
 
   struct BandState {
     int shape = kPinOff;
+    float cachedFreq = -1.0f, cachedQ = -1.0f;
+    double targetLogFreq = 0.0, targetLogQ = 0.0;
     double gainDb = 0.0, logFreq = 0.0, logQ = 0.0;
     PinCoeffs c;
     double z[kMaxChannels][2] = {};

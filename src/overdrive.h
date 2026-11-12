@@ -102,10 +102,19 @@ class Overdrive {
       }
       targetVoicing_ = newTargetVoicing;
     }
+    const double safeRate = std::max(1.0, rate);
+    const float fullSmooth = 1.0f - static_cast<float>(
+        std::exp(-static_cast<double>(kChunk) / (safeRate * 0.010)));
+    const float fadeStep = static_cast<float>(1.0 / (safeRate * 0.010));
+    // Dynamic bias drift tracking: tau = 25 ms virtual-ground sag / feedback cap memory
+    const double biasK = 1.0 - std::exp(-1.0 / (safeRate * 0.025));
+    float cachedDrive = -1.0f, cachedTight = -1.0f, cachedTone = -1.0f, cachedLevel = -999.0f;
+    double g = 0.0, hpK = 0.0, lpK = 0.0, toneK = 0.0, level = 1.0;
+
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
-      const float smooth = 1.0f - static_cast<float>(
-          std::exp(-static_cast<double>(n) / (std::max(1.0, rate) * 0.010)));
+      const float smooth = (n == kChunk) ? fullSmooth : (1.0f - static_cast<float>(
+          std::exp(-static_cast<double>(n) / (safeRate * 0.010))));
       const float onStart = smoothOn_;
       glide(smoothOn_, onTarget, smooth);
       glide(smoothDrive_, driveTarget, smooth);
@@ -113,14 +122,23 @@ class Overdrive {
       glide(smoothTone_, toneTarget, smooth);
       glide(smoothLevel_, levelTarget, smooth);
 
-      const double g = branchGain(smoothDrive_);
-      const double hpK = onePole(smoothTight_, rate);
-      const double lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * rate), rate);
-      const double toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
-      const double level = std::pow(10.0, smoothLevel_ / 20.0);
-      const float fadeStep = static_cast<float>(1.0 / (std::max(1.0, rate) * 0.010));
-      // Dynamic bias drift tracking: tau = 25 ms virtual-ground sag / feedback cap memory
-      const double biasK = 1.0 - std::exp(-1.0 / (std::max(1.0, rate) * 0.025));
+      if (smoothDrive_ != cachedDrive) {
+        g = branchGain(smoothDrive_);
+        lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * rate), rate);
+        cachedDrive = smoothDrive_;
+      }
+      if (smoothTight_ != cachedTight) {
+        hpK = onePole(smoothTight_, rate);
+        cachedTight = smoothTight_;
+      }
+      if (smoothTone_ != cachedTone) {
+        toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
+        cachedTone = smoothTone_;
+      }
+      if (smoothLevel_ != cachedLevel) {
+        level = std::pow(10.0, smoothLevel_ / 20.0);
+        cachedLevel = smoothLevel_;
+      }
       // Ramp the engage fade per sample so it never zippers.
       double on = onStart;
       const double onStep = (static_cast<double>(smoothOn_) - onStart) / static_cast<double>(n);

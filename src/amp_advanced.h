@@ -59,9 +59,10 @@ class AmpAdvanced {
       appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
       return;
     }
+    const float fullSmooth = chunkCoeff(rate, kChunk);
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
-      const float smooth = chunkCoeff(rate, n);
+      const float smooth = (n == kChunk) ? fullSmooth : chunkCoeff(rate, n);
       glide(smoothBright_, brightTarget, smooth);
       glide(smoothInputEq_, inputEqTarget, smooth);
       glide(smoothMidPush_, midPushTarget, smooth);
@@ -148,9 +149,16 @@ class AmpAdvanced {
       return;
     }
 
+    const float fullSmooth = chunkCoeff(rate, kChunk);
+    const double attack = 1.0 - std::exp(-1.0 / (rate * 0.015));
+    const double release = 1.0 - std::exp(-1.0 / (rate * 0.220));
+    float cachedMaster = -1.0f;
+    double drive = 1.0;
+    double outputScale = 1.0;
+
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
-      const float smooth = chunkCoeff(rate, n);
+      const float smooth = (n == kChunk) ? fullSmooth : chunkCoeff(rate, n);
       glide(smoothPresence_, presenceTarget, smooth);
       glide(smoothDepth_, depthTarget, smooth);
       glide(smoothSag_, sagTarget, smooth);
@@ -176,9 +184,12 @@ class AmpAdvanced {
         appliedFeedback_ = smoothFeedback_;
         appliedPostRate_ = rate;
       }
-      const double drive = std::pow(10.0, 1.8 * smoothMaster_);
+      if (smoothMaster_ != cachedMaster) {
+        drive = std::pow(10.0, 1.8 * smoothMaster_);
+        outputScale = 1.0 / std::sqrt(drive);
+        cachedMaster = smoothMaster_;
+      }
       const double inputScale = drive * (1.0 + loopGain) / kOpenLoopGain;
-      const double outputScale = 1.0 / std::sqrt(drive);
       const double sagDepth = 0.5 * smoothSag_;
       const double excursionDepth = 0.4 * smoothSag_;
       const double biasStatic = 0.45 * smoothBias_;
@@ -193,8 +204,6 @@ class AmpAdvanced {
                    static_cast<double>(smoothMaster_)));
       const double nonlinearAmount = Legacy ? legacyNonlinearAmount
                                             : std::max(legacyNonlinearAmount, character);
-      const double attack = 1.0 - std::exp(-1.0 / (rate * 0.015));
-      const double release = 1.0 - std::exp(-1.0 / (rate * 0.220));
 
       float* s = samples + start;
       for (size_t i = 0; i < n; ++i) {

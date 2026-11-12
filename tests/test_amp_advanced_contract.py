@@ -62,7 +62,7 @@ assert "setLowShelf(bassEq, smoothedBass, 150.0f, sampleRate);" in dsp
 assert "setPeaking(midEq, smoothedMid, 700.0f, sampleRate);" in dsp
 assert "setHighShelf(trebleEq, smoothedTreble, 3000.0f, sampleRate);" in dsp
 for name in ("smoothedBass", "smoothedMid", "smoothedTreble"):
-    assert re.search(rf"glideValue\({name}, \*ports\.", dsp), f"{name} must glide from its port"
+    assert re.search(rf"glideValue\({name}, (?:multibandTone \? 0\.0f : )?\*ports\.", dsp), f"{name} must glide from its port"
 assert re.search(
     r"if \(bassOn\) \{ l = bassEq\.process\(l\); r = bassEqR\.process\(r\); \}\s*"
     r"if \(midOn\) \{ l = midEq\.process\(l\); r = midEqR\.process\(r\); \}\s*"

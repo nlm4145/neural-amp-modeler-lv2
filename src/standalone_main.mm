@@ -426,6 +426,8 @@ class AudioSampleRing {
   void clear() noexcept {
     read_.store(0, std::memory_order_relaxed);
     write_.store(0, std::memory_order_relaxed);
+    primed_ = false;
+    lastSample_ = 0.0f;
     samples_.fill(0.0f);
   }
 
@@ -449,27 +451,55 @@ class AudioSampleRing {
     const uint64_t w = write_.load(std::memory_order_acquire);
     uint64_t avail = (w >= r) ? (w - r) : 0;
 
+    // Wait for a 1-buffer cushion before draining so normal callback jitter
+    // between separate input and output devices does not cause underrun clicks.
+    const uint64_t targetCushion = static_cast<uint64_t>(count) * 2;
+    if (!primed_) {
+      if (avail < targetCushion) {
+        for (uint32_t i = 0; i < count; ++i) {
+          lastSample_ *= 0.9f;
+          dst[i] = lastSample_;
+        }
+        return;
+      }
+      primed_ = true;
+      r = w - targetCushion;
+      avail = targetCushion;
+    }
+
     // Prevent latency build-up when input and output devices run on independent clocks.
-    const uint64_t cap = std::max<uint64_t>(maxQueuedFrames, count * 2);
+    const uint64_t cap = std::max<uint64_t>(maxQueuedFrames, static_cast<uint64_t>(count) * 3);
+    bool slipped = false;
     if (avail > cap) {
-      r = w - count * 2;
-      avail = count * 2;
+      r = w - targetCushion;
+      avail = targetCushion;
+      slipped = true;
     }
 
     if (avail >= count) {
       for (uint32_t i = 0; i < count; ++i) {
         dst[i] = samples_[(r + i) & kMask];
       }
+      if (slipped) {
+        const uint32_t fadeLen = std::min<uint32_t>(count, 32);
+        for (uint32_t i = 0; i < fadeLen; ++i) {
+          const float alpha = static_cast<float>(i + 1) / static_cast<float>(fadeLen + 1);
+          dst[i] = lastSample_ + alpha * (dst[i] - lastSample_);
+        }
+      }
+      lastSample_ = dst[count - 1];
       read_.store(r + count, std::memory_order_release);
     } else {
-      const uint32_t pad = count - static_cast<uint32_t>(avail);
-      for (uint32_t i = 0; i < pad; ++i) {
-        dst[i] = 0.0f;
-      }
       for (uint32_t i = 0; i < static_cast<uint32_t>(avail); ++i) {
-        dst[pad + i] = samples_[(r + i) & kMask];
+        dst[i] = samples_[(r + i) & kMask];
+        lastSample_ = dst[i];
+      }
+      for (uint32_t i = static_cast<uint32_t>(avail); i < count; ++i) {
+        lastSample_ *= 0.9f;
+        dst[i] = lastSample_;
       }
       read_.store(r + avail, std::memory_order_release);
+      primed_ = false;
     }
   }
 
@@ -479,6 +509,8 @@ class AudioSampleRing {
   std::array<float, kCapacity> samples_{};
   std::atomic<uint64_t> read_{0};
   std::atomic<uint64_t> write_{0};
+  bool primed_ = false;
+  float lastSample_ = 0.0f;
 };
 
 struct FixedMessage {
@@ -1689,6 +1721,24 @@ class StandaloneHost {
           outDev = d.deviceID;
           break;
         }
+      }
+    }
+
+    // When Input is left at System Default ("") and Output is a duplex audio
+    // interface (e.g. Scarlett Solo) while macOS's default input is the built-in
+    // microphone, prefer the duplex output interface so input and output share
+    // a single hardware clock (avoiding split-HAL clock-drift clicks/pops).
+    if (inputDeviceUID_.empty() && inDev != outDev && outDev != kAudioObjectUnknown) {
+      const CoreAudioDeviceInfo* inInfo = nullptr;
+      const CoreAudioDeviceInfo* outInfo = nullptr;
+      for (const auto& d : devices) {
+        if (d.deviceID == inDev) inInfo = &d;
+        if (d.deviceID == outDev) outInfo = &d;
+      }
+      const bool inIsBuiltInMic = !inInfo || inInfo->inputChannels == 0 ||
+          inInfo->uid.find("BuiltInMicrophone") != std::string::npos;
+      if (outInfo && outInfo->inputChannels > 0 && inIsBuiltInMic) {
+        inDev = outDev;
       }
     }
 

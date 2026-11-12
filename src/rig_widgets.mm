@@ -2132,6 +2132,9 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
 @implementation RigStageMeterView {
   float _levelDb;
   float _peakDb;
+  float _drawnLevelDb;
+  float _drawnPeakDb;
+  BOOL _drawnClipping;
   CFAbsoluteTime _peakHoldTime;
   CFAbsoluteTime _lastPeakUpdateTime;
   CFAbsoluteTime _clipUntil;
@@ -2147,6 +2150,9 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
     _accentColor = accentColor ?: rigAccent();
     _levelDb = -120.0f;
     _peakDb = -120.0f;
+    _drawnLevelDb = -999.0f;
+    _drawnPeakDb = -999.0f;
+    _drawnClipping = NO;
     _peakHoldTime = 0.0;
     self.wantsLayer = YES;
   }
@@ -2164,8 +2170,16 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
   _meterTimer = [NSTimer timerWithTimeInterval:1.0 / 30.0 repeats:YES block:^(NSTimer* timer) {
     RigStageMeterView* meter = weakSelf;
     if (!meter) { [timer invalidate]; return; }
+    if (meter.hiddenOrHasHiddenAncestor) return;
     [meter advancePeakAtTime:CACurrentMediaTime()];
-    meter.needsDisplay = YES;
+    const BOOL clip = meter.clipping;
+    const float clampedLvl = std::clamp(meter->_levelDb, -120.0f, 6.0f);
+    const float clampedPk = std::clamp(meter->_peakDb, -120.0f, 6.0f);
+    if (std::fabs(clampedLvl - meter->_drawnLevelDb) >= 0.05f ||
+        std::fabs(clampedPk - meter->_drawnPeakDb) >= 0.05f ||
+        clip != meter->_drawnClipping) {
+      meter.needsDisplay = YES;
+    }
   }];
   [[NSRunLoop mainRunLoop] addTimer:_meterTimer forMode:NSRunLoopCommonModes];
 }
@@ -2196,23 +2210,36 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
 
 - (void)drawHorizontalMeter {
   const CGFloat w = self.bounds.size.width;
+  static NSFont* sNameFont = nil;
+  static NSFont* sValFont = nil;
+  static NSDictionary* sTickAttrs = nil;
+  static NSMutableParagraphStyle* sRightStyle = nil;
+  if (!sNameFont) {
+    sNameFont = [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold];
+    sValFont = [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightMedium];
+    sRightStyle = [[NSMutableParagraphStyle alloc] init];
+    sRightStyle.alignment = NSTextAlignmentRight;
+    sTickAttrs = @{
+      NSFontAttributeName: [NSFont systemFontOfSize:7],
+      NSForegroundColorAttributeName: rigDimText()
+    };
+  }
   NSString* name = [NSString stringWithFormat:@"%@ · %@", _title, _subtitle];
   [name drawInRect:NSMakeRect(0, 0, w - 90, 14) withAttributes:@{
-    NSFontAttributeName: [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold],
+    NSFontAttributeName: sNameFont,
     NSForegroundColorAttributeName: _accentColor
   }];
-  NSMutableParagraphStyle* right = [[NSMutableParagraphStyle alloc] init];
-  right.alignment = NSTextAlignmentRight;
   NSColor* hot = [NSColor colorWithSRGBRed:0.95 green:0.20 blue:0.18 alpha:1];
-  NSColor* color = self.clipping ? hot : (_levelDb >= -6 ? rigOrange() : _accentColor);
+  const BOOL isClipping = self.clipping;
+  NSColor* color = isClipping ? hot : (_levelDb >= -6 ? rigOrange() : _accentColor);
   NSString* value = _levelDb <= -119 ? @"— dB" : [NSString stringWithFormat:@"%+.1f dB", _levelDb];
   [value drawInRect:NSMakeRect(w - 90, 0, 78, 14) withAttributes:@{
-    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightMedium],
+    NSFontAttributeName: sValFont,
     NSForegroundColorAttributeName: color,
-    NSParagraphStyleAttributeName: right
+    NSParagraphStyleAttributeName: sRightStyle
   }];
   NSBezierPath* led = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(w - 6, 4, 5, 5)];
-  [(self.clipping ? hot : [hot colorWithAlphaComponent:0.2]) setFill];
+  [(isClipping ? hot : [hot colorWithAlphaComponent:0.2]) setFill];
   [led fill];
   const CGFloat trackW = w - 2;
   NSRect track = NSMakeRect(1, 18, trackW, 7);
@@ -2229,13 +2256,14 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
     [rigText() setFill];
     NSRectFill(NSMakeRect(peakX, 17, 1.5, 9));
   }
-  for (int db : {-60, -24, -12, -6, 0}) {
-    CGFloat x = 1 + trackW * (db + 60) / 60;
+  static NSString* const kTickStrings[5] = {@"-60", @"-24", @"-12", @"-6", @"0"};
+  static const int kTickDbs[5] = {-60, -24, -12, -6, 0};
+  for (int i = 0; i < 5; ++i) {
+    CGFloat x = 1 + trackW * (kTickDbs[i] + 60) / 60;
     [rigPanelBorder() setFill];
     NSRectFill(NSMakeRect(MIN(x, w - 1), 27, 1, 2));
-    [[NSString stringWithFormat:@"%d", db] drawInRect:NSMakeRect(std::clamp(x - 8, 0.0, w - 20), 30, 20, 10)
-        withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:7],
-                         NSForegroundColorAttributeName: rigDimText()}];
+    [kTickStrings[i] drawInRect:NSMakeRect(std::clamp(x - 8, 0.0, w - 20), 30, 20, 10)
+                 withAttributes:sTickAttrs];
   }
 }
 
@@ -2244,6 +2272,10 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
   const CGFloat w = bounds.size.width;
   const CGFloat h = bounds.size.height;
   if (w <= 0 || h <= 0) return;
+
+  _drawnLevelDb = std::clamp(_levelDb, -120.0f, 6.0f);
+  _drawnPeakDb = std::clamp(_peakDb, -120.0f, 6.0f);
+  _drawnClipping = self.clipping;
 
   if (self.horizontal) { [self drawHorizontalMeter]; return; }
 

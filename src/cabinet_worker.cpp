@@ -91,7 +91,8 @@ bool CabinetWorker::start(void* workgroup, double periodSeconds) noexcept {
     return false;
   }
   periodTicks_ = periodTicks;
-  computationTicks_ = periodTicks > 1 ? periodTicks / 2 : 1;
+  computationTicks_ = periodTicks > 3 ? periodTicks - (periodTicks / 4)
+                                      : (periodTicks > 1 ? periodTicks / 2 : 1);
   policyConstraint_ = periodTicks;
   started_ = true;
   return true;
@@ -154,13 +155,14 @@ bool CabinetWorker::publish(void (*process)(void*) noexcept,
     return false;
   std::fenv_t environment;
   if (std::fegetenv(&environment) != 0) return false;
-  uint32_t constraint = deadlineConstraint ? periodTicks_
-                                           : std::max<uint32_t>(1, computationTicks_);
+  uint32_t constraint = periodTicks_;
   if (deadlineTicks != 0) {
     const uint64_t now = mach_absolute_time();
-    if (deadlineTicks <= now || deadlineTicks - now < minimumWindowTicks_)
+    if (deadlineTicks <= now)
       return false;
     if (deadlineConstraint) {
+      if (deadlineTicks - now < minimumWindowTicks_)
+        return false;
       constraint = static_cast<uint32_t>(
           std::min<uint64_t>(periodTicks_, deadlineTicks - now));
       if (constraint < minimumWindowTicks_) return false;
@@ -204,7 +206,9 @@ void CabinetWorker::wait() noexcept {
 void CabinetWorker::run(uint32_t periodTicks) noexcept {
   // Startup installs the original budget; submit adjusts it on this thread's
   // Mach port before publishing/waking each job with a different constraint.
-  const uint32_t computationTicks = periodTicks > 1 ? periodTicks / 2 : 1;
+  const uint32_t computationTicks =
+      periodTicks > 3 ? periodTicks - (periodTicks / 4)
+                      : (periodTicks > 1 ? periodTicks / 2 : 1);
   thread_time_constraint_policy_data_t policy{};
   policy.period = periodTicks;
   policy.computation = computationTicks;
