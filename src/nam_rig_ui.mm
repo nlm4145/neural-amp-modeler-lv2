@@ -409,12 +409,16 @@ static double copilotParseClock(NSString* text) {
   _state->sendPath(2, pathB.c_str());
   _state->sendPath(3, pathA.c_str());
   _state->updateThumbnailForStagePath(2, pathB.empty() ? nil : [NSString stringWithUTF8String:pathB.c_str()]);
+  _state->updateThumbnailForStagePath(3, pathA.empty() ? nil : [NSString stringWithUTF8String:pathA.c_str()]);
   _state->selectedImageURLs[2] = imageB;
   _state->selectedImageURLs[3] = imageA;
   _state->selectedToneIds[2] = toneB;
   _state->selectedToneIds[3] = toneA;
   if (!imageB.empty() || toneB > 0) {
     _state->setStageThumb(2, nil, toneB, imageB.empty() ? nil : [NSString stringWithUTF8String:imageB.c_str()]);
+  }
+  if (!imageA.empty() || toneA > 0) {
+    _state->setStageThumb(3, nil, toneA, imageA.empty() ? nil : [NSString stringWithUTF8String:imageA.c_str()]);
   }
   _state->persistSelectedPaths();
   [self markPresetModified];

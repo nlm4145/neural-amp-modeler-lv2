@@ -207,7 +207,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
        port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount; ++port)
     p->_controls[port] = NAMRig::toneEqDefault(port);
   p->_controls[NAMRig::kDropPitchPort] = NAMRig::kDropPitchDefault;
+  p->_controls[NAMRig::kModelBandLimitPort] = NAMRig::kModelBandLimitDefault;
+  p->_controls[NAMRig::kModelBandLimitCutoffPort] = NAMRig::kModelBandLimitCutoffDefault;
   p->_controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
+  p->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
@@ -297,7 +300,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
        port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount; ++port)
     preset->_controls[port] = NAMRig::toneEqDefault(port);
   preset->_controls[NAMRig::kDropPitchPort] = NAMRig::kDropPitchDefault;
+  preset->_controls[NAMRig::kModelBandLimitPort] = NAMRig::kModelBandLimitDefault;
+  preset->_controls[NAMRig::kModelBandLimitCutoffPort] = NAMRig::kModelBandLimitCutoffDefault;
   preset->_controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
+  preset->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
@@ -470,7 +476,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   for (uint32_t i = 0; i < NAMRig::kToneEqControlCount; ++i)
     p->_controls[NAMRig::kToneEqModePort + i] = state->toneEqControls[i];
   p->_controls[NAMRig::kDropPitchPort] = static_cast<float>(state->dropPitch);
+  p->_controls[NAMRig::kModelBandLimitPort] = state->modelBandLimit ? 1.0f : 0.0f;
+  p->_controls[NAMRig::kModelBandLimitCutoffPort] = state->currentPortValueForSlot(NAMRig::kModelBandLimitCutoffPort);
   p->_controls[NAMRig::kModelBandLimitSlopePort] = static_cast<float>(state->modelBandLimitSlope);
+  p->_controls[NAMRig::kModelBandLimitRipplePort] = state->currentPortValueForSlot(NAMRig::kModelBandLimitRipplePort);
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -649,10 +658,25 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   const float dropPitchVal = static_cast<float>(NAMRig::clampDropPitch([self controlForPort:NAMRig::kDropPitchPort]));
   state->sendControl(NAMRig::kDropPitchPort, dropPitchVal);
   state->updateControl(NAMRig::kDropPitchPort, dropPitchVal);
-  const float bandLimitSlopeVal = static_cast<float>(
-      NAMRig::ModelBandLimit::clampSlope([self controlForPort:NAMRig::kModelBandLimitSlopePort]));
+  auto bandLimitIt = _controls.find(NAMRig::kModelBandLimitPort);
+  const float bandLimitVal = (bandLimitIt != _controls.end() ? bandLimitIt->second : NAMRig::kModelBandLimitDefault) >= 0.5f ? 1.0f : 0.0f;
+  state->sendControl(NAMRig::kModelBandLimitPort, bandLimitVal);
+  state->updateControl(NAMRig::kModelBandLimitPort, bandLimitVal);
+  auto bandLimitCutoffIt = _controls.find(NAMRig::kModelBandLimitCutoffPort);
+  const float bandLimitCutoffVal = bandLimitCutoffIt != _controls.end()
+      ? bandLimitCutoffIt->second : NAMRig::kModelBandLimitCutoffDefault;
+  state->sendControl(NAMRig::kModelBandLimitCutoffPort, bandLimitCutoffVal);
+  state->updateControl(NAMRig::kModelBandLimitCutoffPort, bandLimitCutoffVal);
+  auto bandLimitSlopeIt = _controls.find(NAMRig::kModelBandLimitSlopePort);
+  const float bandLimitSlopeVal = static_cast<float>(NAMRig::ModelBandLimit::clampSlope(
+      bandLimitSlopeIt != _controls.end() ? bandLimitSlopeIt->second : NAMRig::kModelBandLimitSlopeDefault));
   state->sendControl(NAMRig::kModelBandLimitSlopePort, bandLimitSlopeVal);
   state->updateControl(NAMRig::kModelBandLimitSlopePort, bandLimitSlopeVal);
+  auto bandLimitRippleIt = _controls.find(NAMRig::kModelBandLimitRipplePort);
+  const float bandLimitRippleVal = bandLimitRippleIt != _controls.end()
+      ? bandLimitRippleIt->second : NAMRig::kModelBandLimitRippleDefault;
+  state->sendControl(NAMRig::kModelBandLimitRipplePort, bandLimitRippleVal);
+  state->updateControl(NAMRig::kModelBandLimitRipplePort, bandLimitRippleVal);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);
