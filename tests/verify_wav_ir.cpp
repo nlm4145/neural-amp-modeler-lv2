@@ -325,6 +325,101 @@ int main(int argc, char** argv) {
     CHECK(worstDb < 0.10, msg);
   }
 
+  // Minimum-phase / peak-near-0 IRs have t = 0 right next to the left
+  // boundary: resampling across rate families must not drop pre-ringing energy
+  // or distort frequency response or inter-channel phase alignment.
+  {
+    std::vector<float> damped(512, 0.0f);
+    for (size_t i = 0; i < damped.size(); ++i)
+      damped[i] = std::exp(-static_cast<float>(i) / 30.0f) *
+                  std::cos(0.15f * static_cast<float>(i));
+
+    struct RatePair { double from; double to; double maxAllowedDb; };
+    const RatePair pairs[] = {
+        {48000.0, 96000.0, 0.10},
+        {96000.0, 48000.0, 0.15},
+        {192000.0, 48000.0, 0.25},
+        {44100.0, 48000.0, 0.05},
+        {48000.0, 44100.0, 0.08},
+    };
+    double worstMinPhaseDb = 0.0;
+    for (const auto& rp : pairs) {
+      const std::string path = std::string(dir) + "/ir_minphase0.wav";
+      writeWavF32(path, damped, static_cast<uint32_t>(rp.from));
+      const auto taps = NAMRig::WavIR::loadTaps(path.c_str(), rp.to);
+      double caseWorst = 0.0;
+      for (double freq : {50.0, 100.0, 500.0, 1000.0, 5000.0, 10000.0, 18000.0}) {
+        const double a = magnitudeAt(damped, rp.from, freq);
+        const double b = magnitudeAt(taps, rp.to, freq);
+        caseWorst = std::max(caseWorst, std::fabs(20.0 * std::log10(b / a)));
+      }
+      worstMinPhaseDb = std::max(worstMinPhaseDb, caseWorst);
+      char msg[160];
+      std::snprintf(msg, sizeof(msg),
+                    "peak@0 resampling %.0f->%.0f preserves FR (worst %.3f dB < %.2f dB)",
+                    rp.from, rp.to, caseWorst, rp.maxAllowedDb);
+      CHECK(caseWorst < rp.maxAllowedDb, msg);
+    }
+    (void)worstMinPhaseDb;
+
+    // Peak at sample 2 (early-peak 192->48 worst case for boundary wsum skew).
+    std::vector<float> peak2(512, 0.0f);
+    for (size_t i = 2; i < peak2.size(); ++i) peak2[i] = damped[i - 2];
+    const std::string path2 = std::string(dir) + "/ir_minphase2.wav";
+    writeWavF32(path2, peak2, 192000);
+    const auto taps2 = NAMRig::WavIR::loadTaps(path2.c_str(), 48000.0);
+    double worstPeak2Db = 0.0;
+    for (double freq : {50.0, 100.0, 500.0, 1000.0, 5000.0, 10000.0, 18000.0}) {
+      const double a = magnitudeAt(peak2, 192000.0, freq);
+      const double b = magnitudeAt(taps2, 48000.0, freq);
+      worstPeak2Db = std::max(worstPeak2Db, std::fabs(20.0 * std::log10(b / a)));
+    }
+    char msg2[160];
+    std::snprintf(msg2, sizeof(msg2),
+                  "peak@2 resampling 192000->48000 preserves FR (worst %.3f dB < 0.15 dB)",
+                  worstPeak2Db);
+    CHECK(worstPeak2Db < 0.15, msg2);
+
+    // Stereo phase alignment: L starts at sample 0, R is delayed by 12 samples
+    // at 48 kHz; both are resampled to 96 kHz and must retain their L+R comb
+    // transfer function without relative group-delay drift.
+    const size_t stFrames = 512;
+    std::vector<float> stereoInterleaved(stFrames * 2, 0.0f);
+    for (size_t i = 0; i < stFrames; ++i) {
+      stereoInterleaved[2 * i] = damped[i];
+      stereoInterleaved[2 * i + 1] = i >= 12 ? damped[i - 12] : 0.0f;
+    }
+    const std::string stPath = std::string(dir) + "/ir_stereo_comb.wav";
+    writeWavF32Stereo(stPath, stereoInterleaved, 48000);
+    const auto l96 = NAMRig::WavIR::loadTaps(stPath.c_str(), 96000.0, 0);
+    const auto r96 = NAMRig::WavIR::loadTaps(stPath.c_str(), 96000.0, 1);
+    std::vector<float> sum48(stFrames, 0.0f), sum96(std::min(l96.size(), r96.size()), 0.0f);
+    for (size_t i = 0; i < stFrames; ++i)
+      sum48[i] = stereoInterleaved[2 * i] + stereoInterleaved[2 * i + 1];
+    for (size_t i = 0; i < sum96.size(); ++i)
+      sum96[i] = l96[i] + r96[i];
+    double worstCombDb = 0.0;
+    for (double freq : {100.0, 500.0, 1000.0, 3000.0, 6000.0, 12000.0, 16000.0}) {
+      const double a = magnitudeAt(sum48, 48000.0, freq);
+      const double b = magnitudeAt(sum96, 96000.0, freq);
+      if (a > 1.0e-3) worstCombDb = std::max(worstCombDb, std::fabs(20.0 * std::log10(b / a)));
+    }
+    char combMsg[160];
+    std::snprintf(combMsg, sizeof(combMsg),
+                  "stereo L@0 + R@12 retains L+R comb response across 48k->96k (worst %.3f dB < 0.15 dB)",
+                  worstCombDb);
+    CHECK(worstCombDb < 0.15, combMsg);
+
+    // Silence IR resampling remains finite and zero.
+    std::vector<float> silent(128, 0.0f);
+    const std::string silentPath = std::string(dir) + "/ir_silent.wav";
+    writeWavF32(silentPath, silent, 96000);
+    const auto silentOut = NAMRig::WavIR::loadTaps(silentPath.c_str(), 48000.0);
+    bool allZero = !silentOut.empty();
+    for (float v : silentOut) allZero &= (v == 0.0f && std::isfinite(v));
+    CHECK(allZero, "all-zero IR resamples cleanly to finite zeros");
+  }
+
   // Switching modes should not step the output gain at a block boundary.
   {
     const std::string path = std::string(dir) + "/ir_smooth.wav";
