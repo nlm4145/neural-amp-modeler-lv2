@@ -551,6 +551,15 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
                                          @selector(dropPitchStepUp:));
   dropUpBtn.frame = [self topRect:inputConsole x:324 y:100 w:26 h:24];
   dropUpBtn.toolTip = @"Raise pitch up 1 semitone.";
+
+  RigButton* bandLimitBtn = workspaceButton(inputConsole, @"HF FILTER", self.state->uiController,
+                                            @selector(modelBandLimitToggled:));
+  bandLimitBtn.buttonType = NSButtonTypeToggle;
+  bandLimitBtn.check = YES;
+  bandLimitBtn.state = self.state->modelBandLimit ? NSControlStateValueOn : NSControlStateValueOff;
+  bandLimitBtn.frame = [self topRect:inputConsole x:366 y:100 w:104 h:24];
+  bandLimitBtn.toolTip = @"A/B switch. On: a 20.5 kHz low-pass in front of each oversampled NAM model removes ultrasonic content from the overdrive and pedal models, which the models were not trained on. Off: the models receive the full oversampled signal. Presets do not change this switch.";
+  [self.state->modelBandLimitButtons addObject:bandLimitBtn];
   NSArray<NSView*>* inputCells = [self knobCells:self.knobGroups[0]];
   for (NSUInteger i = 0; i < inputCells.count; ++i)
     [self place:inputCells[i] parent:inputConsole x:680 + i * 260 y:14 w:220 h:124];

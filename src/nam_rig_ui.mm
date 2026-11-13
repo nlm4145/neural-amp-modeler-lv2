@@ -1539,6 +1539,13 @@ static double copilotParseClock(NSString* text) {
   [self markPresetModified];
 }
 
+- (void)modelBandLimitToggled:(NSButton*)sender {
+  if (!_state) return;
+  const float value = sender.state == NSControlStateValueOn ? 1.0f : 0.0f;
+  _state->sendControl(NAMRig::kModelBandLimitPort, value);
+  _state->updateControl(NAMRig::kModelBandLimitPort, value);
+}
+
 - (void)dropPitchChanged:(NSPopUpButton*)sender {
   if (!sender.selectedItem) return;
   [self setDropPitchSemitones:(int)sender.selectedItem.tag];
@@ -5553,6 +5560,19 @@ static void addLowerStudioDeck(RigUIState* state,
   [[dropUpBtn.widthAnchor constraintEqualToConstant:22] setActive:YES];
   [[dropUpBtn.heightAnchor constraintEqualToConstant:22] setActive:YES];
 
+  RigButton* bandLimitBtn = rigButton(deckHeader, @"HF FILTER", state->uiController,
+                                      @selector(modelBandLimitToggled:), NSZeroRect);
+  bandLimitBtn.buttonType = NSButtonTypeToggle;
+  bandLimitBtn.check = YES;
+  bandLimitBtn.state = state->modelBandLimit ? NSControlStateValueOn : NSControlStateValueOff;
+  bandLimitBtn.toolTip = @"A/B switch. On: a 20.5 kHz low-pass in front of each oversampled NAM model removes ultrasonic content from the overdrive and pedal models, which the models were not trained on. Off: the models receive the full oversampled signal. Presets do not change this switch.";
+  bandLimitBtn.translatesAutoresizingMaskIntoConstraints = NO;
+  [state->modelBandLimitButtons addObject:bandLimitBtn];
+  [[bandLimitBtn.leadingAnchor constraintEqualToAnchor:dropGroup.trailingAnchor constant:12] setActive:YES];
+  [[bandLimitBtn.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
+  [[bandLimitBtn.widthAnchor constraintEqualToConstant:86] setActive:YES];
+  [[bandLimitBtn.heightAnchor constraintEqualToConstant:22] setActive:YES];
+
   // Tab Buttons stack on the right
   NSStackView* tabStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
   tabStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -5563,7 +5583,7 @@ static void addLowerStudioDeck(RigUIState* state,
   [[tabStack.trailingAnchor constraintEqualToAnchor:deckHeader.trailingAnchor] setActive:YES];
   [[tabStack.centerYAnchor constraintEqualToAnchor:deckHeader.centerYAnchor] setActive:YES];
   [[tabStack.heightAnchor constraintEqualToConstant:26] setActive:YES];
-  [[dropGroup.trailingAnchor constraintLessThanOrEqualToAnchor:tabStack.leadingAnchor constant:-12] setActive:YES];
+  [[bandLimitBtn.trailingAnchor constraintLessThanOrEqualToAnchor:tabStack.leadingAnchor constant:-12] setActive:YES];
 
   NSArray<NSString*>* tabTitles = @[
     @"TUNER",

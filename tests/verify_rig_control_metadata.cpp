@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     ++defaultCount;
   });
   const RigPreset defaultPreset = RigPreset::createDefault();
-  CHECK(defaultCount == 118 && defaultPreset.controls.size() == 118, "exact Windows default key coverage");
+  CHECK(defaultCount == 119 && defaultPreset.controls.size() == 119, "exact Windows default key coverage");
   const std::map<uint32_t, float> nonzeroStaticDefaults = {
       {7, 1.0f}, {8, 1.0f}, {9, 1.0f}, {15, -80.0f},
       {20, static_cast<float>(kOversampleTrue8)}, {21, static_cast<float>(kOversampleTrue8)},
@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
     CHECK(ttlSymbols.count(port) && ttlSymbols.at(port) == symbol, "TTL parity at %u", port);
     CHECK(rigControlSymbol(port) == symbol, "lookup/enumeration pointer identity at %u", port);
   });
-  CHECK(symbols.size() == 214, "exact macOS/shared preset coverage");
+  CHECK(symbols.size() == 215, "exact macOS/shared preset coverage");
 
   for (uint32_t port = 0; port <= kRigControlPortCount; ++port) {
     const char* symbol = rigControlSymbol(port);
@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
     file >> saved;
   }
   CHECK(saved["ports"].size() == preset.controls.size(), "all numeric ports preserved, including unknowns");
-  CHECK(saved["params"].size() == 118, "Windows named coverage includes post compression, od, and drop pitch controls");
+  CHECK(saved["params"].size() == 119, "Windows named coverage includes post compression, od, drop pitch, and model band-limit controls");
   for (const auto& control : preset.controls) {
     CHECK(saved["ports"][std::to_string(control.first)] == control.second, "numeric value at %u", control.first);
     const char* symbol = rigControlSymbol(control.first);

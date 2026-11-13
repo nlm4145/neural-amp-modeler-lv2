@@ -218,6 +218,10 @@ struct RigUIState {
   int dropPitch = 0;
   // Every Drop Pitch dropdown (Studio Pro Deck header and Input workspace).
   __strong NSMutableArray<NSPopUpButton*>* dropPitchPopups = [NSMutableArray array];
+  // A/B switch for the low-pass in front of oversampled NAM models. It is a
+  // listening choice for the whole rig, so presets do not store or recall it.
+  bool modelBandLimit = false;
+  __strong NSMutableArray<NSButton*>* modelBandLimitButtons = [NSMutableArray array];
   __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
@@ -1410,6 +1414,7 @@ struct RigUIState {
         port < NAMRig::kToneEqModePort + NAMRig::kToneEqControlCount)
       return toneEqControls[port - NAMRig::kToneEqModePort];
     if (port == NAMRig::kDropPitchPort) return (float)dropPitch;
+    if (port == NAMRig::kModelBandLimitPort) return modelBandLimit ? 1.0f : 0.0f;
     if (port == NAMRig::kPedalOrderPort) return pedalOrder;
     if (port == NAMRig::kPedal2EnabledPort || port == NAMRig::kPedal3EnabledPort)
       return extraPedalEnabled[port - NAMRig::kPedal2EnabledPort];
@@ -2602,6 +2607,18 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateTube();
       else dispatch_async(dispatch_get_main_queue(), updateTube);
+      return;
+    }
+    if (port == NAMRig::kModelBandLimitPort) {
+      const bool on = value >= 0.5f;
+      auto updateBandLimit = ^{
+        if (!alive || !*alive) return;
+        modelBandLimit = on;
+        for (NSButton* button in modelBandLimitButtons)
+          button.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+      };
+      if ([NSThread isMainThread]) updateBandLimit();
+      else dispatch_async(dispatch_get_main_queue(), updateBandLimit);
       return;
     }
     if (port == NAMRig::kDropPitchPort) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 
@@ -43,6 +44,12 @@ class Overdrive {
   static constexpr float kLevelMinDb = -12.0f;
   static constexpr float kLevelMaxDb = 12.0f;
 
+  // Builds the diode integral tables on the host thread.
+  Overdrive() noexcept {
+    ledIntegral();
+    germaniumIntegral();
+  }
+
   void reset() noexcept {
     bass_ = lp_ = tone_ = bias_ = 0.0;
     smoothOn_ = smoothDrive_ = smoothTone_ = smoothLevel_ = 0.0f;
@@ -50,6 +57,7 @@ class Overdrive {
     currentVoicing_ = targetVoicing_ = 0;
     voicingFade_ = 1.0f;
     primed_ = false;
+    for (ClipSlot& slot : clipSlots_) slot.valid = false;
   }
 
   bool active() const noexcept { return smoothOn_ > 0.0f; }
@@ -108,6 +116,9 @@ class Overdrive {
     const float fadeStep = static_cast<float>(1.0 / (safeRate * 0.010));
     // Dynamic bias drift tracking: tau = 25 ms virtual-ground sag / feedback cap memory
     const double biasK = 1.0 - std::exp(-1.0 / (safeRate * 0.025));
+    const bool antialias = safeRate >= kAntialiasMinRate;
+    if (!antialias)
+      for (ClipSlot& slot : clipSlots_) slot.valid = false;
     float cachedDrive = -1.0f, cachedTight = -1.0f, cachedTone = -1.0f, cachedLevel = -999.0f;
     double g = 0.0, hpK = 0.0, lpK = 0.0, toneK = 0.0, level = 1.0;
 
@@ -151,11 +162,13 @@ class Overdrive {
         // Clipper input is modulated by dynamic bias drift
         const double u = g * lp_ - bias_;
         const bool currentClean = currentVoicing_ == static_cast<int>(Voicing::Clean);
-        double clipped = clip(currentClean ? g * lp_ : u, currentVoicing_);
+        double clipped = shape(currentClean ? g * lp_ : u, currentVoicing_, 0, antialias);
         double biasSignal = currentClean ? 0.0 : clipped;
-        if (voicingFade_ < 1.0f) {
+        if (voicingFade_ >= 1.0f) {
+          clipSlots_[1].valid = false;
+        } else {
           const bool targetClean = targetVoicing_ == static_cast<int>(Voicing::Clean);
-          const double c1 = clip(targetClean ? g * lp_ : u, targetVoicing_);
+          const double c1 = shape(targetClean ? g * lp_ : u, targetVoicing_, 1, antialias);
           clipped = (1.0 - voicingFade_) * clipped + voicingFade_ * c1;
           biasSignal = (1.0 - voicingFade_) * biasSignal + voicingFade_ * (targetClean ? 0.0 : c1);
           voicingFade_ += fadeStep;
@@ -256,12 +269,145 @@ class Overdrive {
     }
   }
 
+  // Antiderivative of clip() in u, for antiderivative antialiasing.
+  static double clipIntegral(double u, int voicing) noexcept {
+    switch (voicing) {
+      case static_cast<int>(Voicing::Clean):
+        return 0.5 * u * u;
+      case 1: {
+        const double a = u >= 0.0 ? 0.50 : 0.25;
+        const double v = u / a;
+        return a * a * (std::sqrt(1.0 + v * v) - 1.0);
+      }
+      case 2:
+        return 0.60 * 0.60 * ledIntegral().value(std::fabs(u) / 0.60);
+      case 3:
+        return 0.15 * 0.15 * germaniumIntegral().value(std::fabs(u) / 0.15);
+      case 0:
+      default: {
+        const double v = u / kDiodeLevel;
+        return kDiodeLevel * kDiodeLevel * std::sqrt(1.0 + v * v);
+      }
+    }
+  }
+
+  // Below this rate the two-sample average of the antialiased clipper is an
+  // audible treble loss, so the clipper stays instantaneous.
+  static constexpr double kAntialiasMinRate = 352000.0;
   static constexpr double kHighPassHz = 720.0;
   static constexpr double kDiodeLevel = 0.25;
 
  private:
   static constexpr size_t kChunk = 32;
   static constexpr double kPi = 3.14159265358979323846;
+
+  // Integral from 0 to v of v / (1 + v^p)^(1/p), the normalized diode curve
+  // of the LED (p = 4) and Germanium (p = 4/3) voicings. These have no closed
+  // form: a Hermite table covers v < kMax and a series covers the rest.
+  struct PNormIntegral {
+    static constexpr int kCells = 2048;
+    static constexpr double kMax = 32.0;
+    static constexpr double kStep = kMax / kCells;
+
+    explicit PNormIntegral(bool cubeRootKnee) : cubeRoot_(cubeRootKnee) {
+      static constexpr double nodes[5] = {-0.9061798459386640, -0.5384693101056831, 0.0,
+                                          0.5384693101056831, 0.9061798459386640};
+      static constexpr double weights[5] = {0.2369268850561891, 0.4786286704993665,
+                                            0.5688888888888889, 0.4786286704993665,
+                                            0.2369268850561891};
+      integral_[0] = 0.0;
+      slope_[0] = 0.0;
+      for (int c = 0; c < kCells; ++c) {
+        const double mid = (c + 0.5) * kStep;
+        double sum = 0.0;
+        for (int k = 0; k < 5; ++k) sum += weights[k] * curve(mid + 0.5 * kStep * nodes[k]);
+        integral_[static_cast<size_t>(c + 1)] = integral_[static_cast<size_t>(c)] + 0.5 * kStep * sum;
+        slope_[static_cast<size_t>(c + 1)] = curve((c + 1) * kStep);
+      }
+      tailOffset_ = integral_[kCells] - tail(kMax);
+    }
+
+    double value(double v) const noexcept {
+      if (v >= kMax) return tailOffset_ + tail(v);
+      const double position = v / kStep;
+      const int cell = std::min(kCells - 1, static_cast<int>(position));
+      const double t = position - cell;
+      const double t2 = t * t, t3 = t2 * t;
+      const size_t i = static_cast<size_t>(cell);
+      return (2.0 * t3 - 3.0 * t2 + 1.0) * integral_[i] + (t3 - 2.0 * t2 + t) * kStep * slope_[i] +
+             (3.0 * t2 - 2.0 * t3) * integral_[i + 1] + (t3 - t2) * kStep * slope_[i + 1];
+    }
+
+   private:
+    double curve(double v) const noexcept {
+      if (cubeRoot_) {
+        const double z = 1.0 + v * std::cbrt(v);
+        return v / std::sqrt(z * std::sqrt(z));
+      }
+      const double v2 = v * v;
+      return v / std::sqrt(std::sqrt(1.0 + v2 * v2));
+    }
+    // Termwise integral of the large-v series of the curve.
+    double tail(double v) const noexcept {
+      if (cubeRoot_) {
+        const double x = 1.0 / std::cbrt(v);
+        const double x2 = x * x, x4 = x2 * x2;
+        return v + x * (9.0 / 4.0 - (63.0 / 160.0) * x4 + (77.0 / 384.0) * x4 * x4);
+      }
+      const double x = 1.0 / v;
+      const double x3 = x * x * x;
+      return v + x3 * (1.0 / 12.0 - (5.0 / 224.0) * x3 * x);
+    }
+
+    bool cubeRoot_;
+    double tailOffset_ = 0.0;
+    std::array<double, kCells + 1> integral_{};
+    std::array<double, kCells + 1> slope_{};
+  };
+
+  static const PNormIntegral& ledIntegral() noexcept {
+    static const PNormIntegral table(false);
+    return table;
+  }
+  static const PNormIntegral& germaniumIntegral() noexcept {
+    static const PNormIntegral table(true);
+    return table;
+  }
+
+  struct ClipSlot {
+    double x = 0.0;
+    double integral = 0.0;
+    int voicing = 0;
+    bool valid = false;
+  };
+
+  // The diode curve of one voicing. With antialias on, the output is the mean
+  // of the curve between the last input and this input (first-order
+  // antiderivative antialiasing), which removes most of the fold-back of the
+  // clipper harmonics. The linear voicing needs none.
+  double shape(double x, int voicing, int slotIndex, bool antialias) noexcept {
+    ClipSlot& slot = clipSlots_[static_cast<size_t>(slotIndex)];
+    if (!antialias || voicing == static_cast<int>(Voicing::Clean)) {
+      slot.valid = false;
+      return clip(x, voicing);
+    }
+    const double integral = clipIntegral(x, voicing);
+    double y;
+    if (!slot.valid || slot.voicing != voicing) {
+      y = clip(x, voicing);
+    } else {
+      const double dx = x - slot.x;
+      y = std::fabs(dx) > 1.0e-5 ? (integral - slot.integral) / dx
+                                 : clip(0.5 * (x + slot.x), voicing);
+    }
+    slot.x = x;
+    slot.integral = integral;
+    slot.voicing = voicing;
+    slot.valid = true;
+    return y;
+  }
+
+  std::array<ClipSlot, 2> clipSlots_{};
 
   static double onePole(double hz, double rate) noexcept {
     return 1.0 - std::exp(-2.0 * kPi * hz / std::max(1.0, rate));

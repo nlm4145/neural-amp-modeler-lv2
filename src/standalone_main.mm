@@ -628,7 +628,8 @@ class StandaloneHost {
         {NAMRig::kPedal2EnabledPort, pedalBoardControls_},
         {NAMRig::kOutputCeilingPort, masterOutputControls_},
         {NAMRig::kToneEqModePort, toneEqControls_},
-        {NAMRig::kDropPitchPort, {&dropPitchControl_, 1}}});
+        {NAMRig::kDropPitchPort, {&dropPitchControl_, 1}},
+        {NAMRig::kModelBandLimitPort, {&modelBandLimitControl_, 1}}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1004,6 +1005,10 @@ class StandaloneHost {
     }
     if (format == 0 && port == NAMRig::kDropPitchPort && size == sizeof(float)) {
       host->dropPitchControl_ = static_cast<float>(NAMRig::clampDropPitch(*static_cast<const float*>(buffer)));
+      return;
+    }
+    if (format == 0 && port == NAMRig::kModelBandLimitPort && size == sizeof(float)) {
+      host->modelBandLimitControl_ = *static_cast<const float*>(buffer) >= 0.5f ? 1.0f : 0.0f;
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1875,6 +1880,7 @@ class StandaloneHost {
   std::array<float, 4> postCompressorControls_ = NAMRig::kPostCompressorDefaults;
   std::array<float, NAMRig::kToneEqControlCount> toneEqControls_ = NAMRig::toneEqDefaults();
   float dropPitchControl_ = NAMRig::kDropPitchDefault;
+  float modelBandLimitControl_ = NAMRig::kModelBandLimitDefault;
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

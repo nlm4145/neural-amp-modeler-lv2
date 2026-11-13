@@ -53,12 +53,12 @@ comp_symbols = ["compressor_attack", "compressor_release", "compressor_enabled"]
 boost_symbols = ["od_enabled"]
 post_comp_symbols = ["post_compressor", "post_compressor_attack", "post_compressor_release", "post_compressor_enabled"]
 tight_symbols = ["od_tight", "od_voicing", "pedal2_enabled", "pedal3_enabled", "pedal_order", "output_ceiling", "output_balance", "output_reduction"]
-tight_symbols += ["tone_eq_mode"] + [f"tone_eq_pin{b}_{p}" for b in range(1, 8) for p in ("shape", "freq", "gain", "q")] + ["drop_pitch"]
+tight_symbols += ["tone_eq_mode"] + [f"tone_eq_pin{b}_{p}" for b in range(1, 8) for p in ("shape", "freq", "gain", "q")] + ["drop_pitch", "model_band_limit"]
 assert port_pairs == list(enumerate(legacy_symbols + new_symbols + pin_symbols + od_symbols + comp_symbols + boost_symbols + post_comp_symbols + tight_symbols)), (
     "ports 0..78 must stay unchanged; power-tube controls append at 79..81, Mid Push at 82"
 )
 for name, value in (("kPowerTubeTypePort", 80), ("kPowerTubeCharacterPort", 81),
-                    ("kRigControlPortCount", 228)):
+                    ("kRigControlPortCount", 229)):
     assert re.search(rf"\b{name}\s*=\s*{value}\s*;", controls), name
 assert "kPowerTubeCharacterDefault = 50.0f;" in controls
 assert "kCaptured = 0;" in controls and "kProfileCount = 3;" in controls

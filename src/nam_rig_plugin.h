@@ -23,6 +23,7 @@
 #include "oversample_modes.h"
 #include "rate_adapter.h"
 #include "drop_pitch.h"
+#include "model_band_limit.h"
 #include "dynamics.h"
 #include "master_output.h"
 #include "amp_advanced.h"
@@ -222,6 +223,7 @@ public:
     float* output_reduction;
     std::array<float*, kToneEqControlCount> tone_eq;
     float* drop_pitch;
+    float* model_band_limit;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -278,7 +280,9 @@ public:
   static_assert(offsetof(Ports, tone_eq) == kToneEqModePort * sizeof(void*));
   static_assert(offsetof(Ports, drop_pitch) == kDropPitchPort * sizeof(void*));
   static_assert(kDropPitchPort == kToneEqModePort + kToneEqControlCount);
-  static_assert(kPortCount == kDropPitchPort + 1);
+  static_assert(offsetof(Ports, model_band_limit) == kModelBandLimitPort * sizeof(void*));
+  static_assert(kModelBandLimitPort == kDropPitchPort + 1);
+  static_assert(kPortCount == kModelBandLimitPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -396,6 +400,8 @@ private:
   PlateReverb reverbFx;
   NoiseGate noiseGate;
   DropPitch dropPitch;
+  std::array<ModelBandLimit, kStageCount> modelBandLimit;
+  bool modelBandLimitOn = false;
   StereoCompressor postCompressor;
   CompressorCore preCompressor;
   AmpAdvanced ampAdvanced;

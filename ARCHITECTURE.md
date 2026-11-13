@@ -21,6 +21,10 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/overdrive.h` | Built-in analog overdrive / boost voices (Mid Drive, Clean Boost, K-Style, Fuzz/Rectified, Tight Metal, etc.) before Pedal NAM |
 | `src/pin_eq.h` | 64-pin interactive graphic/custom EQ curve processor (Pre-Amp and Post-Amp Pin EQ slots) |
 | `src/oversample.{h,cpp}`, `src/oversample_modes.h`, `src/polyphase_worker.h` | Multi-rate polyphase FIR/IIR oversampling (Off, 2x, 4x, 8x, Eco/True cascades) and background worker state |
+<<<<<<< Updated upstream
+=======
+| `src/model_band_limit.h` | Switchable 20.5 kHz low-pass in front of each NAM model that runs above its training rate (port 228, A/B switch) |
+>>>>>>> Stashed changes
 | `src/rate_adapter.h` | Rational polyphase sample-rate converter and the 44.1 kHz-family session adapter constants |
 | `src/cabinet_worker.{h,cpp}`, `src/ir_normalization.h` | Dual-slot cabinet blending, phase alignment, mic/room modeling, and IR loudness/peak normalization |
 | `src/dsp_accel.{h,cpp}`, `src/rig_dsp_cache.h` | SIMD/Accelerate helpers and thread-safe DSP model/IR cache |
@@ -264,6 +268,8 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 197 | `output_reduction` | out | Limiter gain reduction in dB, with meter decay; zero while bypassed; excluded from presets |
 | 198 | `tone_eq_mode` | in | Tone & Voicing post-stack EQ: 0 = original Bass/Mid/Treble (default), 1 = seven-band graphic EQ; stores the last edited audio source; view switching does not change it; optional |
 | 199–226 | `tone_eq_pin{1..7}_{shape,freq,gain,q}` | in | Independent stereo tone EQ at the original post-stack position; fixed bell bands at 40, 80, 240, 750, 2200, 6600, 12000 Hz, ±18 dB; shape/frequency/Q ports fixed for compatibility; optional |
+| 227 | `drop_pitch` | in | -12..12 semitones; default 0 = exact bypass; pre-amp Drop Pitch / Virtual Capo (`src/drop_pitch.h`); integer; optional |
+| 228 | `model_band_limit` | in | 0 = off (default), 1 = on; A/B switch for the 20.5 kHz low-pass in front of each NAM model that runs above its training rate (`src/model_band_limit.h`), 5 ms fade; rig-wide, not stored in or recalled by presets, never set by the AI Copilot; optional |
 
 The Tone & Voicing selector switches between linked knob and lever views without
 writing audio controls. Edits project the complete EQ response into the other
@@ -370,7 +376,12 @@ passes at unity and only the op-amp feedback branch clips,
 `y = tone(x + clip(g · bp(x))) · level`. `bp` is the 720 Hz high-pass
 (4.7k/47n) plus the feedback-cap low-pass (51p across 51k + Drive);
 `g = (51k + Drive)/4.7k` with an audio-taper 500k pot; `clip` is a soft
-symmetric algebraic limit at 0.25 FS. It runs first in Sculpt, before Amp
+symmetric algebraic limit at 0.25 FS. At domain rates of 352.8 kHz and above
+the clipper output is the mean of the diode curve between consecutive inputs
+(first-order antiderivative antialiasing, `clipIntegral`; the LED and
+Germanium integrals come from a Hermite table plus a series). Below that rate
+the two-sample mean is an audible treble loss, so the clipper stays
+instantaneous. It runs first in Sculpt, before Amp
 Drive, Input EQ, Bright, Mid Push and the Sculpt pins, so those shape the
 pedal's output into the capture. Engaging/disengaging crossfades over ~10 ms
 and Drive 0 is bit-exact. The Sculpt graph adds the linear post-clip Tone and

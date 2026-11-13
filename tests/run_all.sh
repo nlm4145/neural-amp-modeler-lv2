@@ -68,6 +68,11 @@ echo "== tests/verify_overdrive.cpp =="
 run_cpp c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
 echo "== tests/verify_drop_pitch.cpp =="
 run_cpp c++17 /tmp/verify_drop_pitch -Isrc tests/verify_drop_pitch.cpp
+<<<<<<< Updated upstream
+=======
+echo "== tests/verify_model_band_limit.cpp =="
+run_cpp c++17 /tmp/verify_model_band_limit -Isrc tests/verify_model_band_limit.cpp
+>>>>>>> Stashed changes
 echo "== tests/verify_rate_adapter.cpp =="
 run_cpp c++17 /tmp/verify_rate_adapter -Isrc tests/verify_rate_adapter.cpp
 echo "== tests/verify_pin_eq.cpp =="

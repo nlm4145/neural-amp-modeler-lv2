@@ -62,7 +62,11 @@ inline constexpr uint32_t kDropPitchPort = 227;
 inline constexpr float kDropPitchMin = -12.0f;
 inline constexpr float kDropPitchMax = 12.0f;
 inline constexpr float kDropPitchDefault = 0.0f;
-inline constexpr uint32_t kRigControlPortCount = 228;
+// Low-pass in front of each NAM model that runs above its training rate
+// (0 = off, 1 = on). See model_band_limit.h.
+inline constexpr uint32_t kModelBandLimitPort = 228;
+inline constexpr float kModelBandLimitDefault = 0.0f;
+inline constexpr uint32_t kRigControlPortCount = 229;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

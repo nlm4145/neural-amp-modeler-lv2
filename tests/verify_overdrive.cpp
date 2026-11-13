@@ -339,6 +339,21 @@ int main() {
           "Switching from asymmetric clipping to Clean settles without retained diode bias");
   }
 
+  {
+    // The antialiased clipper divides differences of clipIntegral, so its
+    // slope must equal clip for each diode voicing, small signal to hard clip.
+    double worst = 0.0;
+    for (int voicing = 0; voicing < 4; ++voicing) {
+      for (double u = -150.0; u <= 150.0; u += 0.0737) {
+        const double h = 1.0e-4;
+        const double slope = (NAMRig::Overdrive::clipIntegral(u + h, voicing) -
+                              NAMRig::Overdrive::clipIntegral(u - h, voicing)) / (2.0 * h);
+        worst = std::max(worst, std::fabs(slope - NAMRig::Overdrive::clip(u, voicing)));
+      }
+    }
+    check(worst < 1.0e-6, "clipIntegral is the antiderivative of clip for all diode voicings");
+  }
+
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);
   return failures ? 1 : 0;
 }
