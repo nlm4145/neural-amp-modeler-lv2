@@ -31,6 +31,8 @@ class DropPitch {
   static constexpr int kMaxSemitones = 12;
   static constexpr int kRingSize = 65536;
   static constexpr int kRingMask = kRingSize - 1;
+  static constexpr int kSnapRingSize = 8192;
+  static constexpr int kSnapRingMask = kSnapRingSize - 1;
 
   DropPitch() { prepare(48000.0); }
 
@@ -41,36 +43,50 @@ class DropPitch {
     templateLen_ = std::max(64, ms(10.0));
     shortTemplateLen_ = std::max(16, ms(1.5));
     minJump_ = std::max(32, ms(2.5));
-    maxSpan_ = std::max(minJump_ * 2, ms(26.0));
+    maxSpan_ = std::max(minJump_ * 2, ms(42.0));
     attemptStep_ = std::max(4, ms(0.75));
     coarseStride_ = std::clamp(static_cast<int>(std::lround(sampleRate_ / 12000.0)), 1, kMaxStride);
     fineStride_ = std::max(1, (coarseStride_ + 1) / 2);
     xfadeMin_ = std::max(16, ms(3.0));
     xfadeMax_ = std::max(xfadeMin_, ms(8.0));
+    xfadePostAttack_ = std::max(xfadeMin_, ms(4.0));
     xfadeFloor_ = std::max(8, ms(1.0));
-    xfadeTransient_ = std::max(8, ms(1.5));
+    xfadeLowRho_ = std::max(xfadeFloor_, ms(2.0));
+    xfadeTransient_ = std::max(6, ms(0.35));
     upXfadeCap_ = std::max(16, ms(5.0));
     preRoll_ = std::max(8, ms(2.0));
     transientGuard_ = std::max(16, ms(4.0));
+    transientProtect_ = std::max(32, ms(12.0));
+    postAttackWindow_ = std::max(transientProtect_, ms(45.0));
+    quietHoldSamples_ = std::max(32, ms(18.0));
     minResyncGain_ = std::max(2, ms(0.25));
+    minResyncGainDrop_ = std::max(8, ms(0.9));
     nominalSwing_ = std::max(8, ms(8.0));
     fadeSamples_ = std::max(1, ms(5.0));
 
-    fastCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.001));
-    slowCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.035));
-    transientCooldownSamples_ = std::max(32, ms(28.0));
+    fastCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.0005));
+    slowCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.024));
+    transientCooldownSamples_ = std::max(32, ms(24.0));
+    vetoCooldownSamples_ = std::max(16, ms(2.0));
+
+    snapHoldSamples_ = std::max(6, ms(1.8));
+    snapAttackCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.00005));
+    snapDecayFactor_ = std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.0018));
+    snapXoverCoeff_ = 1.0f - std::exp(-6.28318530717958647692f * 1600.0f / static_cast<float>(sampleRate_));
+
+    detHpf_.setHighPass(sampleRate_, 850.0, 0.707);
     reset();
   }
 
   void reset() noexcept {
     ring_.fill(0.0f);
+    snapRing_.fill(0.0f);
     writePos_ = 0;
     active_ = false;
     currentSemitones_ = 0;
     ratio_ = 1.0;
     wetMix_ = 0.0f;
     overlapRho_ = 1.0f;
-    prevDry_ = 0.0f;
     fastEnv_ = 0.0f;
     slowEnv_ = 0.0f;
     transientCooldown_ = 0;
@@ -80,12 +96,17 @@ class DropPitch {
     appliedFilterSt_ = 0;
     subHpf_.reset();
     presenceShelf_.reset();
+    detHpf_.reset();
+    dryLpState_ = 0.0f;
+    snapMix_ = 0.0f;
+    snapEnv_ = 0.0f;
+    snapGateLeft_ = 0;
+    snapDelay_ = kHeadMargin;
     for (Voice& v : voices_) v = Voice{};
     lead_ = 0;
     fadeLen_ = 0;
     fadePos_ = 0;
     lastAttemptDelay_ = 0.0;
-    scannedLag_ = 0;
   }
 
   // Typical delay of a sustained note. The real delay follows the played
@@ -121,12 +142,14 @@ class DropPitch {
       appliedFilterSt_ = 0;
       transientPending_ = false;
       lastTransientPos_ = -1;
+      snapEnv_ = 0.0f;
+      snapGateLeft_ = 0;
+      snapDelay_ = kHeadMargin;
       startVoices();
     } else if (targetSt != 0 && targetSt != currentSemitones_) {
       currentSemitones_ = targetSt;
       ratio_ = std::pow(2.0, static_cast<double>(targetSt) / 12.0);
       lastAttemptDelay_ = leadDelay();
-      scannedLag_ = 0;
     }
 
     if (currentSemitones_ != appliedFilterSt_) {
@@ -153,6 +176,21 @@ class DropPitch {
       }
       wet = presenceShelf_.process(wet);
 
+      if (currentSemitones_ < 0 && (snapEnv_ > 0.0f || snapGateLeft_ > 0)) {
+        if (snapGateLeft_ > 0) {
+          --snapGateLeft_;
+          snapEnv_ += (1.0f - snapEnv_) * snapAttackCoeff_;
+        } else {
+          snapEnv_ *= snapDecayFactor_;
+          if (snapEnv_ < 1.0e-5f) snapEnv_ = 0.0f;
+        }
+        if (snapEnv_ > 0.0f) {
+          const size_t snapIdx = static_cast<size_t>(
+              (static_cast<int64_t>(writePos_) - snapDelay_) & kSnapRingMask);
+          wet += (snapEnv_ * snapMix_) * snapRing_[snapIdx];
+        }
+      }
+
       if (wetMix_ < targetWet) {
         wetMix_ = std::min(targetWet, wetMix_ + fadeStep);
       } else if (wetMix_ > targetWet) {
@@ -168,6 +206,9 @@ class DropPitch {
       appliedFilterSt_ = 0;
       subHpf_.reset();
       presenceShelf_.reset();
+      snapMix_ = 0.0f;
+      snapEnv_ = 0.0f;
+      snapGateLeft_ = 0;
     }
   }
 
@@ -180,7 +221,7 @@ class DropPitch {
   static constexpr int kMaxStride = 16;
   static constexpr int kVoiceCount = 4;
   static constexpr int kMaxTemplateTaps = 512;
-  static constexpr float kQuietLevel = 1.0e-3f;
+  static constexpr float kQuietLevel = 2.0e-4f;
   static constexpr float kEarlyAcceptSimilarity = 0.95f;
   static constexpr float kForcedAcceptSimilarity = 0.90f;
   static constexpr float kPeriodicVetoSimilarity = 0.80f;
@@ -242,28 +283,32 @@ class DropPitch {
 
   void configureToneCompensation(int semitones) noexcept {
     if (semitones < 0) {
-      subHpf_.setHighPass(sampleRate_, 26.0, 0.707);
-      const double boostDb = std::min(4.2, 0.50 * static_cast<double>(-semitones));
+      const double subHz = 20.0 + 0.25 * static_cast<double>(-semitones);
+      subHpf_.setHighPass(sampleRate_, subHz, 0.707);
+      const double boostDb = std::min(3.8, 0.42 * static_cast<double>(-semitones));
       presenceShelf_.setHighShelf(sampleRate_, 2400.0, boostDb, 0.707);
+      const float depth = std::clamp(static_cast<float>(-semitones) / 12.0f, 0.0f, 1.0f);
+      snapMix_ = 0.32f + 0.32f * std::sqrt(depth);
     } else if (semitones > 0) {
       subHpf_.reset();
       const double cutDb = -std::min(3.5, 0.40 * static_cast<double>(semitones));
       presenceShelf_.setHighShelf(sampleRate_, 2800.0, cutDb, 0.707);
+      snapMix_ = 0.0f;
     }
   }
 
   void pushInputSample(float dry) noexcept {
     const float absIn = std::fabs(dry);
-    const float hf = std::fabs(dry - prevDry_);
-    prevDry_ = dry;
-    const float impulse = 0.65f * absIn + 0.85f * hf;
+    const float detHp = detHpf_.process(dry);
+    dryLpState_ += (dry - dryLpState_) * snapXoverCoeff_;
+    const float snapHp = dry - dryLpState_;
+    const float impulse = 0.008f * absIn + std::fabs(detHp);
     fastEnv_ += (impulse - fastEnv_) * fastCoeff_;
     slowEnv_ += (impulse - slowEnv_) * slowCoeff_;
 
     if (transientCooldown_ > 0) --transientCooldown_;
-    if (transientCooldown_ == 0 && fastEnv_ > 0.004f && fastEnv_ > slowEnv_ * 2.3f) {
+    if (transientCooldown_ == 0 && fastEnv_ > 0.0020f && fastEnv_ > slowEnv_ * 2.2f) {
       transientPending_ = true;
-      transientCooldown_ = transientCooldownSamples_;
     }
 
     if (absIn < kQuietLevel) {
@@ -273,6 +318,7 @@ class DropPitch {
     }
 
     ring_[static_cast<size_t>(writePos_ & kRingMask)] = dry;
+    snapRing_[static_cast<size_t>(writePos_ & kSnapRingMask)] = snapHp;
     ++writePos_;
   }
 
@@ -298,7 +344,6 @@ class DropPitch {
     fadeLen_ = 0;
     fadePos_ = 0;
     lastAttemptDelay_ = delay;
-    scannedLag_ = 0;
   }
 
   float readCubic(double pos) const noexcept {
@@ -392,7 +437,6 @@ class DropPitch {
     fadePos_ = 0;
     overlapRho_ = std::clamp(rho, 0.0f, 1.0f);
     lastAttemptDelay_ = static_cast<double>(writePos_) - newPos;
-    scannedLag_ = 0;
   }
 
   struct Template {
@@ -451,7 +495,8 @@ class DropPitch {
     const float penaltyScale = kDelayPenalty / static_cast<float>(maxSpan_);
     const auto score = [&](const Template& t, int lag, float& similarity, float& rho) {
       evaluateLag(t, q0, lag, similarity, rho);
-      return similarity - penaltyScale * static_cast<float>(refDelay - static_cast<double>(lag));
+      const float matchQuality = 0.50f * similarity + 0.50f * rho;
+      return matchQuality - penaltyScale * static_cast<float>(refDelay - static_cast<double>(lag));
     };
 
     loadTemplate(coarseTemplate_, q0, tLen, coarseStride_);
@@ -501,30 +546,92 @@ class DropPitch {
     return match;
   }
 
-  int spliceFadeLength(double jump) const noexcept {
+  int spliceFadeLength(double jump, bool postAttack = false, float rho = 1.0f) const noexcept {
     const double distance = std::fabs(jump);
-    double len = std::clamp(distance, static_cast<double>(xfadeMin_), static_cast<double>(xfadeMax_));
+    double maxFade = static_cast<double>(postAttack ? xfadePostAttack_ : xfadeMax_);
+    if (rho < 0.88f) {
+      const double t = std::clamp((0.88 - static_cast<double>(rho)) / 0.28, 0.0, 1.0);
+      const double lowRhoCap = maxFade + t * (static_cast<double>(xfadeLowRho_) - maxFade);
+      maxFade = std::min(maxFade, lowRhoCap);
+    }
+    double len = std::clamp(distance, static_cast<double>(xfadeFloor_), maxFade);
+    if (rho >= 0.88f && !postAttack) {
+      len = std::max(len, std::min(distance, static_cast<double>(xfadeMin_)));
+    }
     len = std::min(len, 0.8 * distance / std::max(1.0e-3, std::fabs(1.0 - ratio_)));
     if (ratio_ > 1.0) len = std::min(len, static_cast<double>(upXfadeCap_));
     return std::max(xfadeFloor_, static_cast<int>(len));
   }
 
+  double findDropOnsetDelay() const noexcept {
+    const int maxD = kHeadMargin + preRoll_;
+    float peakSnap = 0.0f;
+    for (int d = 1; d <= maxD; ++d) {
+      const float v = std::fabs(snapRing_[static_cast<size_t>((static_cast<int64_t>(writePos_) - d) & kSnapRingMask)]);
+      if (v > peakSnap) peakSnap = v;
+    }
+    if (peakSnap <= 1.0e-5f) return static_cast<double>(maxD);
+    const float thresh = 0.18f * peakSnap;
+    int onsetD = kHeadMargin;
+    for (int d = maxD; d >= kHeadMargin; --d) {
+      const float v = std::fabs(snapRing_[static_cast<size_t>((static_cast<int64_t>(writePos_) - d) & kSnapRingMask)]);
+      if (v >= thresh) {
+        onsetD = std::min(maxD, d + xfadeTransient_);
+        break;
+      }
+    }
+    return static_cast<double>(std::clamp(onsetD, kHeadMargin, maxD));
+  }
+
+  bool isPeriodicPeak(double periodicJump) const noexcept {
+    if (fastEnv_ > slowEnv_ * 3.0f) return false;
+    const int lag = static_cast<int>(std::llround(periodicJump));
+    const int64_t base = static_cast<int64_t>(writePos_) - shortTemplateLen_;
+    float curSnapE = 0.0f;
+    float pastSnapE = 0.0f;
+    for (int k = 0; k < shortTemplateLen_; ++k) {
+      const float c = snapRing_[static_cast<size_t>((base + k) & kSnapRingMask)];
+      const float p = snapRing_[static_cast<size_t>((base + k + lag) & kSnapRingMask)];
+      curSnapE += c * c;
+      pastSnapE += p * p;
+    }
+    if (curSnapE > pastSnapE * 2.0f + 1.0e-8f) return false;
+    return true;
+  }
+
   void handleTransient() noexcept {
     const Voice& lead = voices_[static_cast<size_t>(lead_)];
     const double delay = static_cast<double>(writePos_) - lead.pos;
-    const double target = ratio_ < 1.0
-                              ? static_cast<double>(kHeadMargin + preRoll_)
-                              : upLowDelay(ratio_) + upHeadroom(ratio_) + static_cast<double>(preRoll_);
-    const double gain = ratio_ < 1.0 ? delay - target : std::fabs(delay - target);
 
     // A waveform peak of a sustained note repeats one period earlier. A pick
-    // attack does not.
+    // attack does not (and a re-pick over a sustained chord carries a burst
+    // of high-frequency pick energy).
     const Match periodic = findJump(static_cast<double>(writePos_ - 1), shortTemplateLen_,
                                     -maxSpan_, -minJump_, 0.0);
-    if (periodic.similarity >= kPeriodicVetoSimilarity) return;
+    if (periodic.similarity >= kPeriodicVetoSimilarity && isPeriodicPeak(periodic.jump)) {
+      transientCooldown_ = vetoCooldownSamples_;
+      return;
+    }
 
+    transientCooldown_ = transientCooldownSamples_;
     lastTransientPos_ = static_cast<int64_t>(writePos_);
-    if (gain < static_cast<double>(minResyncGain_)) return;
+    if (ratio_ < 1.0) {
+      const double target = findDropOnsetDelay();
+      const double gain = delay - target;
+      if (gain >= static_cast<double>(minResyncGainDrop_) || fadePos_ < fadeLen_) {
+        const double landDelay = gain >= 0.0 ? target : delay;
+        splice(static_cast<double>(writePos_) - landDelay, xfadeTransient_, 0.0f);
+        snapDelay_ = std::clamp(static_cast<int>(std::llround(landDelay)), 0, kSnapRingSize - 1);
+      } else {
+        snapDelay_ = std::clamp(static_cast<int>(std::llround(delay)), 0, kSnapRingSize - 1);
+      }
+      snapGateLeft_ = snapHoldSamples_;
+      return;
+    }
+
+    const double target = upLowDelay(ratio_) + upHeadroom(ratio_) + static_cast<double>(preRoll_);
+    const double gain = std::fabs(delay - target);
+    if (gain < static_cast<double>(minResyncGain_) && fadePos_ >= fadeLen_) return;
     splice(static_cast<double>(writePos_) - target, xfadeTransient_, 0.0f);
   }
 
@@ -535,26 +642,38 @@ class DropPitch {
     if (ratio_ < 1.0) {
       const double drift = delay - static_cast<double>(kHeadMargin);
       if (drift < static_cast<double>(attemptStep_)) return;
-      if (static_cast<double>(quietRun_) >= delay) {
-        splice(static_cast<double>(writePos_ - kHeadMargin), xfadeMin_, 1.0f);
+      if (quietRun_ >= quietHoldSamples_) {
+        if (fadePos_ < fadeLen_) return;
+        if (delay >= static_cast<double>(quietRun_ - kHeadMargin) ||
+            delay > static_cast<double>(kHeadMargin + minJump_)) {
+          splice(static_cast<double>(writePos_ - kHeadMargin), fadeSamples_, 1.0f);
+        } else {
+          for (int i = 0; i < kVoiceCount; ++i) {
+            voices_[static_cast<size_t>(i)].on = (i == lead_);
+          }
+          voices_[static_cast<size_t>(lead_)].pos = static_cast<double>(writePos_ - kHeadMargin);
+          fadeLen_ = 0;
+          fadePos_ = 0;
+          lastAttemptDelay_ = static_cast<double>(kHeadMargin);
+        }
         return;
       }
       if (drift < static_cast<double>(minJump_ + 2)) return;
+      const int64_t sinceTransient =
+          lastTransientPos_ >= 0 ? static_cast<int64_t>(writePos_) - lastTransientPos_ : kRingSize;
       const bool forced = drift >= static_cast<double>(maxSpan_);
       if (!forced) {
+        if (sinceTransient < static_cast<int64_t>(transientProtect_)) return;
         if (delay - lastAttemptDelay_ < static_cast<double>(attemptStep_)) return;
         // An attack that the detector did not confirm yet can be at the write head.
-        if (fastEnv_ > 0.004f && fastEnv_ > slowEnv_ * 1.6f) return;
+        if (fastEnv_ > 0.0020f && fastEnv_ > slowEnv_ * 1.6f) return;
       }
       lastAttemptDelay_ = delay;
 
-      // Lags below the last scanned lag did not match on earlier attempts.
-      // Only a forced splice scans the full range again.
       const int lagHi = static_cast<int>(std::floor(drift));
-      int lagLo = std::max(minJump_, lagHi - maxSpan_);
-      if (!forced) lagLo = std::max(lagLo, std::min(lagHi, scannedLag_ - 3 * coarseStride_));
-      scannedLag_ = lagHi;
+      const int lagLo = std::max(minJump_, lagHi - maxSpan_);
       const Match match = findJump(lead.pos, templateLen_, lagLo, lagHi, delay);
+      const bool postAttack = sinceTransient < static_cast<int64_t>(postAttackWindow_);
       if (!forced) {
         if (!match.interior) return;
         const float x = static_cast<float>(drift) / static_cast<float>(maxSpan_);
@@ -562,16 +681,20 @@ class DropPitch {
             x < 0.5f ? kEarlyAcceptSimilarity
                      : kEarlyAcceptSimilarity -
                            (x - 0.5f) * 2.0f * (kEarlyAcceptSimilarity - kForcedAcceptSimilarity);
-        if (match.similarity < threshold) return;
+        const float rhoMin = x < 0.45f ? 0.945f : 0.945f - (x - 0.45f) * (0.045f / 0.55f);
+        const float simMin = x < 0.45f ? 0.82f : 0.76f;
+        const bool decayPeriodOk = match.rho >= rhoMin && match.similarity >= simMin;
+        if (match.similarity < threshold && !decayPeriodOk) return;
       }
-      splice(lead.pos + match.jump, spliceFadeLength(match.jump), match.rho);
+      splice(lead.pos + match.jump, spliceFadeLength(match.jump, postAttack, match.rho), match.rho);
       return;
     }
 
     if (delay > upLowDelay(ratio_)) return;
 
     const int quietJump = minJump_ + kHeadMargin;
-    if (static_cast<double>(quietRun_) >= delay + static_cast<double>(quietJump + 2)) {
+    if (static_cast<double>(quietRun_) >= std::max(delay + static_cast<double>(quietJump + 2),
+                                                   static_cast<double>(quietHoldSamples_))) {
       splice(lead.pos - static_cast<double>(quietJump), spliceFadeLength(quietJump), 1.0f);
       return;
     }
@@ -598,33 +721,44 @@ class DropPitch {
   int templateLen_ = 480;
   int shortTemplateLen_ = 72;
   int minJump_ = 120;
-  int maxSpan_ = 1248;
+  int maxSpan_ = 2016;
   int attemptStep_ = 36;
   int coarseStride_ = 4;
   int fineStride_ = 2;
   int xfadeMin_ = 144;
   int xfadeMax_ = 384;
+  int xfadePostAttack_ = 192;
   int xfadeFloor_ = 48;
-  int xfadeTransient_ = 72;
+  int xfadeLowRho_ = 96;
+  int xfadeTransient_ = 17;
   int upXfadeCap_ = 240;
   int preRoll_ = 96;
   int transientGuard_ = 192;
+  int transientProtect_ = 576;
+  int postAttackWindow_ = 2160;
+  int quietHoldSamples_ = 864;
   int minResyncGain_ = 12;
+  int minResyncGainDrop_ = 43;
   int nominalSwing_ = 384;
   int fadeSamples_ = 240;
 
-  float fastCoeff_ = 0.02f;
-  float slowCoeff_ = 0.0006f;
-  int transientCooldownSamples_ = 1344;
+  float fastCoeff_ = 0.045f;
+  float slowCoeff_ = 0.00087f;
+  int transientCooldownSamples_ = 1152;
+  int vetoCooldownSamples_ = 96;
+  int snapHoldSamples_ = 86;
+  float snapAttackCoeff_ = 0.13f;
+  float snapDecayFactor_ = 0.988f;
+  float snapXoverCoeff_ = 0.27f;
 
   std::array<float, kRingSize> ring_{};
+  std::array<float, kSnapRingSize> snapRing_{};
   uint64_t writePos_ = 0;
   std::array<Voice, kVoiceCount> voices_{};
   int lead_ = 0;
   int fadeLen_ = 0;
   int fadePos_ = 0;
   double lastAttemptDelay_ = 0.0;
-  int scannedLag_ = 0;
   Template coarseTemplate_;
   Template fineTemplate_;
   double ratio_ = 1.0;
@@ -633,7 +767,6 @@ class DropPitch {
   float wetMix_ = 0.0f;
   float overlapRho_ = 1.0f;
 
-  float prevDry_ = 0.0f;
   float fastEnv_ = 0.0f;
   float slowEnv_ = 0.0f;
   int transientCooldown_ = 0;
@@ -641,9 +774,16 @@ class DropPitch {
   int64_t lastTransientPos_ = -1;
   int quietRun_ = kRingSize;
 
+  float dryLpState_ = 0.0f;
+  float snapMix_ = 0.0f;
+  float snapEnv_ = 0.0f;
+  int snapGateLeft_ = 0;
+  int snapDelay_ = kHeadMargin;
+
   int appliedFilterSt_ = 0;
   Biquad subHpf_;
   Biquad presenceShelf_;
+  Biquad detHpf_;
 };
 
 }  // namespace NAMRig

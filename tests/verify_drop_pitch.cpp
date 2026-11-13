@@ -333,6 +333,73 @@ int main() {
     }
   }
   testSemitoneChangeIsImmediate();
+  // Verify re-picking over a ringing low power chord across every drop setting
+  // retains crisp high-frequency pick snap inside the first 10 ms (not delayed
+  // 15-20 ms or skipped by periodic veto / slowEnv masking).
+  {
+    const double sr = 48000.0;
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const size_t total = static_cast<size_t>(sr * 0.50);
+    const size_t onset = static_cast<size_t>(sr * 0.25);
+    std::vector<float> dry(total, 0.0f);
+    for (size_t i = 0; i < total; ++i) {
+      const double t = static_cast<double>(i) / sr;
+      double s = 0.32 * (std::sin(kTwoPi * 82.41 * t) + 0.7 * std::sin(kTwoPi * 123.47 * t));
+      if (i >= onset) {
+        const double tp = static_cast<double>(i - onset) / sr;
+        s += std::exp(-tp / 0.0022) *
+             (0.40 * std::sin(kTwoPi * 2600.0 * tp) + 0.28 * std::sin(kTwoPi * 4100.0 * tp));
+        s += std::exp(-tp / 0.060) * 0.35 * std::sin(kTwoPi * 164.81 * tp);
+      }
+      dry[i] = static_cast<float>(s);
+    }
+    const double lpCoeff = 1.0 - std::exp(-kTwoPi * 1600.0 / sr);
+    for (int st = -1; st >= -12; --st) {
+      std::vector<float> wet = dry;
+      NAMRig::DropPitch dp;
+      dp.prepare(sr);
+      processInBlocks(dp, wet, st);
+      double lp = 0.0;
+      double hf10 = 0.0;
+      for (size_t i = onset; i < onset + static_cast<size_t>(sr * 0.010); ++i) {
+        lp += (static_cast<double>(wet[i]) - lp) * lpCoeff;
+        const double hp = static_cast<double>(wet[i]) - lp;
+        hf10 += hp * hp;
+      }
+      assert(hf10 > 2.0);
+    }
+  }
+  // Verify rapid 16th-note chugs at -5 st and -12 st retain punch and low latency.
+  {
+    const double sr = 48000.0;
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const size_t period = static_cast<size_t>(sr * 0.070);
+    std::vector<float> dry(period * 6, 0.0f);
+    for (size_t c = 0; c < 6; ++c) {
+      for (size_t i = 0; i < period; ++i) {
+        const double t = static_cast<double>(i) / sr;
+        const double click = std::exp(-t / 0.0020) *
+                             (0.42 * std::sin(kTwoPi * 2700.0 * t) + 0.28 * std::sin(kTwoPi * 4200.0 * t));
+        const double body = std::exp(-t / 0.030) * 0.50 * std::sin(kTwoPi * 98.0 * t);
+        dry[c * period + i] += static_cast<float>(click + body);
+      }
+    }
+    for (int st : {-5, -12}) {
+      std::vector<float> wet = dry;
+      NAMRig::DropPitch dp;
+      dp.prepare(sr);
+      processInBlocks(dp, wet, st);
+      for (size_t c = 0; c < 6; ++c) {
+        const size_t base = c * period;
+        float dryPeak = 0.0f, wetPeak = 0.0f;
+        for (size_t i = 0; i < 480; ++i) {
+          dryPeak = std::max(dryPeak, std::fabs(dry[base + i]));
+          wetPeak = std::max(wetPeak, std::fabs(wet[base + i]));
+        }
+        assert(wetPeak >= dryPeak * 0.85f);
+      }
+    }
+  }
   testSingleNoteShift(48000.0, 146.8324, -1);  // D3 -> Db3
   testSingleNoteShift(48000.0, 146.8324, -2);  // D3 -> C3
   testSingleNoteShift(48000.0, 146.8324, -3);  // D3 -> B2
@@ -345,6 +412,86 @@ int main() {
   testSingleNoteShift(96000.0, 61.7354, -3);   // Low B1 at 96 kHz (-3 st)
   testPolyphonicPowerChord();
   testTransitionsAndClamping();
+  auto rmsRange = [](const std::vector<float>& buf, size_t a, size_t b) {
+    double e = 0.0;
+    for (size_t i = a; i < b; ++i) e += static_cast<double>(buf[i]) * static_cast<double>(buf[i]);
+    return std::sqrt(e / static_cast<double>(b - a));
+  };
+  // Verify decaying low-string palm mutes preserve sub-fundamental body and quiet tail sustain.
+  {
+    const double sr = 48000.0;
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const size_t start = static_cast<size_t>(sr * 0.04);
+    const size_t noteEnd = start + static_cast<size_t>(sr * 0.36);
+    const size_t total = noteEnd + static_cast<size_t>(sr * 0.12);
+    std::vector<float> dry(total, 0.0f);
+    double phase = 0.0;
+    for (size_t i = start; i < noteEnd; ++i) {
+      const double t = static_cast<double>(i - start) / sr;
+      const double fInst = 61.7354 * (1.0 + 0.012 * std::exp(-t / 0.025));
+      phase += kTwoPi * fInst / sr;
+      const double click = std::exp(-t / 0.0020) * (0.35 * std::sin(kTwoPi * 2400.0 * t) +
+                                                    0.22 * std::sin(kTwoPi * 3800.0 * t));
+      const double h = std::exp(-t / 0.070) *
+                       (1.00 * std::sin(phase) + 0.50 * std::exp(-t / 0.030) * std::sin(2.0 * phase) +
+                        0.22 * std::exp(-t / 0.016) * std::sin(3.0 * phase));
+      dry[i] = static_cast<float>(0.12 * (click + h));
+    }
+    for (int st : {-3, -5, -7, -12}) {
+      std::vector<float> wet = dry;
+      NAMRig::DropPitch dp;
+      dp.prepare(sr);
+      processInBlocks(dp, wet, st);
+      const size_t w0 = start + static_cast<size_t>(sr * 0.030);
+      const size_t w1 = start + static_cast<size_t>(sr * 0.180);
+      const size_t w2 = start + static_cast<size_t>(sr * 0.320);
+      assert(rmsRange(wet, w0, w1) >= 0.72 * rmsRange(dry, w0, w1));
+      assert(rmsRange(wet, w1, w2) >= 0.72 * rmsRange(dry, w1, w2));
+      const size_t win = static_cast<size_t>(sr * 0.036);
+      for (size_t pos = w0; pos + win <= w2; pos += win) {
+        assert(rmsRange(wet, pos, pos + win) >= 0.65 * rmsRange(dry, pos, pos + win));
+      }
+      assert(rmsRange(wet, noteEnd + static_cast<size_t>(sr * 0.060), total) < 1.0e-4);
+    }
+  }
+  // Verify dropped palm-muted power chords below E2 track periodic cycles without dropouts.
+  {
+    const double sr = 48000.0;
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const size_t start = static_cast<size_t>(sr * 0.04);
+    const size_t noteEnd = start + static_cast<size_t>(sr * 0.34);
+    const size_t total = noteEnd + static_cast<size_t>(sr * 0.12);
+    for (double f1 : {73.416, 65.406, 61.7354}) {
+      std::vector<float> dry(total, 0.0f);
+      double p1 = 0.0, p2 = 0.0;
+      for (size_t i = start; i < noteEnd; ++i) {
+        const double t = static_cast<double>(i - start) / sr;
+        const double pitchEnv = 1.0 + 0.012 * std::exp(-t / 0.025);
+        p1 += kTwoPi * f1 * pitchEnv / sr;
+        p2 += kTwoPi * (f1 * 1.4983) * pitchEnv / sr;
+        const double click = std::exp(-t / 0.0020) * (0.35 * std::sin(kTwoPi * 2400.0 * t) +
+                                                      0.22 * std::sin(kTwoPi * 3800.0 * t));
+        const double body = std::exp(-t / 0.085) *
+                            (0.75 * std::sin(p1) + 0.55 * std::sin(p2) +
+                             0.25 * std::exp(-t / 0.035) * std::sin(2.0 * p1));
+        dry[i] = static_cast<float>(0.30 * (click + body));
+      }
+      for (int st : {-2, -5}) {
+        std::vector<float> wet = dry;
+        NAMRig::DropPitch dp;
+        dp.prepare(sr);
+        processInBlocks(dp, wet, st);
+        const size_t a = start + static_cast<size_t>(sr * 0.040);
+        const size_t b = start + static_cast<size_t>(sr * 0.280);
+        assert(rmsRange(wet, a, b) >= 0.75 * rmsRange(dry, a, b));
+        const size_t win = static_cast<size_t>(sr * 0.045);
+        for (size_t pos = a; pos + win <= b; pos += win) {
+          assert(rmsRange(wet, pos, pos + win) >= 0.65 * rmsRange(dry, pos, pos + win));
+        }
+        assert(rmsRange(wet, noteEnd + static_cast<size_t>(sr * 0.060), total) < 1.0e-4);
+      }
+    }
+  }
   std::puts("verify_drop_pitch: all checks passed");
   return 0;
 }
