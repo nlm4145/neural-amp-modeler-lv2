@@ -5575,7 +5575,7 @@ static void addLowerStudioDeck(RigUIState* state,
   bandLimitBtn.buttonType = NSButtonTypeToggle;
   bandLimitBtn.check = YES;
   bandLimitBtn.state = state->modelBandLimit ? NSControlStateValueOn : NSControlStateValueOff;
-  bandLimitBtn.toolTip = @"Bypass switch for the oversampled NAM model low-pass (Cutoff, Slope, Ripple in Input & Gate). On: filters ultrasonic content above the model's training band. Off: exact bit-identical bypass. Presets do not change this switch.";
+  bandLimitBtn.toolTip = @"High-frequency filter before pedals and amps (adjust Cutoff, Slope, Ripple in Input & Gate). On: smooths out harsh top-end fizz and digital edge by trimming ultra-high frequencies that drive and amp models weren't trained on. Off: raw, unfiltered signal (exact bypass). Presets do not change this switch.";
   bandLimitBtn.translatesAutoresizingMaskIntoConstraints = NO;
   [state->modelBandLimitButtons addObject:bandLimitBtn];
   [[bandLimitBtn.leadingAnchor constraintEqualToAnchor:dropGroup.trailingAnchor constant:12] setActive:YES];
@@ -7397,8 +7397,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Final left/right balance, including effects. CENTER is exact bypass. Negative values attenuate right; positive values attenuate left. Neither side is boosted.",
       @"Drop pitch transient attack & pick snap (0–100%). 50% is calibrated neutral. Raise to accentuate pick bite and sharpen onset resync on fast riffs and palm mutes; lower for softer attack.",
       @"Drop pitch note & palm-mute sustain (0–100%). 50% is calibrated neutral. Above 50% holds pitch tracking longer and gently recovers decaying body while staying silent when muted; below 50% tightens tails.",
-      @"HF Filter passband cutoff frequency (4000–24000 Hz, default 20500 Hz). Controls where the pre-NAM oversampled low-pass rolls off ultrasonic content. Toggle HF FILTER off for exact bit-identical bypass.",
-      @"HF Filter Chebyshev type I passband ripple (0.01–1.00 dB, default 0.05 dB). Higher ripple yields a steeper transition roll-off at the cutoff frequency."
+      @"Where the high-frequency filter starts cutting treble (4,000–24,000 Hz, default 20.5 kHz). At 20.5 kHz it leaves audible guitar tone intact and only clears ultra-high fizz; turn lower for a warmer, darker, less buzzy top end, or toggle HF FILTER off for raw bypass.",
+      @"Shapes how abruptly the filter transitions right at the Cutoff point (0.01–1.00 dB, default 0.05 dB). Higher settings make the cut kick in sooner and add a subtle presence bump just before the roll-off; lower settings keep the transition smooth and flat."
     ];
 
     const std::array<double, kRigKnobCount> mins{

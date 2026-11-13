@@ -579,7 +579,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   bandLimitBtn.check = YES;
   bandLimitBtn.state = self.state->modelBandLimit ? NSControlStateValueOn : NSControlStateValueOff;
   bandLimitBtn.frame = [self topRect:hfFilterCard x:14 y:34 w:124 h:26];
-  bandLimitBtn.toolTip = @"Bypass switch for the oversampled NAM model low-pass. On: filters ultrasonic content using the Cutoff, Slope, and Ripple controls. Off: exact bit-identical bypass. Presets do not change this switch.";
+  bandLimitBtn.toolTip = @"Turns the high-frequency filter on or off. On: smooths harsh top-end fizz and digital edge before your pedals and amp using Cutoff, Slope, and Ripple. Off: completely bypassed for the raw, untouched signal. Presets do not change this switch.";
   [self.state->modelBandLimitButtons addObject:bandLimitBtn];
 
   NSTextField* slopeLbl = workspaceLabel(hfFilterCard, @"SLOPE", 9.5, NSFontWeightBold, rigDimText());
@@ -590,7 +590,7 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   slopePop.controlSize = NSControlSizeSmall;
   slopePop.target = self.state->uiController;
   slopePop.action = @selector(modelBandLimitSlopeChanged:);
-  slopePop.toolTip = @"HF Filter roll-off steepness (Chebyshev Type I order: 2nd / 4th / 6th / 8th order).";
+  slopePop.toolTip = @"How sharply treble drops off above the Cutoff (12 to 48 dB/oct). Lower values give a gentle, natural roll-off; higher values cut sizzle like a brick wall while keeping everything below the Cutoff untouched.";
   auto addSlopeItem = [&](NSString* title, int tag) {
     [slopePop addItemWithTitle:title];
     slopePop.lastItem.tag = tag;
