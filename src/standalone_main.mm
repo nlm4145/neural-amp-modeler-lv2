@@ -869,7 +869,7 @@ class StandaloneHost {
 
   bool restartAudioEngine(NSString** error) {
     stopAudioUnits();
-    if (plugin_ && std::fabs(plugin_->sampleRate - sampleRate_) > 0.5) {
+    if (plugin_ && std::fabs(plugin_->hostSampleRate - sampleRate_) > 0.5) {
       plugin_->setSampleRateAndReload(sampleRate_);
     }
     const bool ok = startAudio(error);

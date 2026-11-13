@@ -21,6 +21,7 @@
 
 #include "oversample.h"
 #include "oversample_modes.h"
+#include "rate_adapter.h"
 #include "drop_pitch.h"
 #include "dynamics.h"
 #include "master_output.h"
@@ -281,7 +282,10 @@ public:
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
+  // Rate of all internal DSP. It equals hostSampleRate except for sessions of
+  // the 44.1 kHz family, which run at the matching 48 kHz-family rate.
   double sampleRate = 0.0;
+  double hostSampleRate = 0.0;
   LV2_URID_Map* map = nullptr;
   LV2_Log_Logger logger = {};
   LV2_Worker_Schedule* schedule = nullptr;
@@ -300,6 +304,7 @@ public:
   void setSampleRateAndReload(double rate) noexcept;
   void setMaxBufferSize(int size) noexcept;
   void process(uint32_t sampleCount, uint64_t cabinetDeadlineTicks = 0) noexcept;
+  bool rateAdapted() const noexcept { return hostRateAdapted; }
   // The standalone host owns this executor; change it only with audio stopped.
   void setCabinetWorker(CabinetWorker* worker) noexcept { cabinetWorker = worker; }
   void setPolyphaseWorker(PolyphaseWorker* worker) noexcept { polyphaseWorker = worker; }
@@ -392,8 +397,7 @@ private:
   NoiseGate noiseGate;
   DropPitch dropPitch;
   StereoCompressor postCompressor;
-  float compressorEnvelope = 0.0f;
-  float compressorGain = 1.0f;
+  CompressorCore preCompressor;
   AmpAdvanced ampAdvanced;
   Overdrive overdrive;  // Sculpt's TS-style drive, ahead of Amp Drive
   OutputTransformer outputTransformer;
@@ -410,7 +414,25 @@ private:
   int tubeRequested = PowerTube::kCaptured;
   int tubeApplied = PowerTube::kCaptured;
   bool tubeLatched = false;
+  // Largest block of the internal DSP, and the host block it was derived from.
   int32_t maxBufferSize = 512;
+  int32_t hostMaxBufferSize = 512;
+
+  void processCore(uint32_t sampleCount, uint64_t cabinetDeadlineTicks) noexcept;
+  void configureHostRateAdapter() noexcept;
+  bool hostRateAdapted = false;
+  static constexpr uint32_t kAdapterMinCapacity = 8192;
+  static constexpr size_t kAdapterQueue = 8;
+  uint32_t adapterCapacity = 0;
+  RationalResampler adapterIn;
+  std::array<RationalResampler, 2> adapterOut;
+  std::vector<float> adapterInput;
+  std::array<std::vector<float>, 2> adapterCore;
+  std::array<std::vector<float>, 2> adapterBack;
+  std::array<std::array<float, kAdapterQueue>, 2> adapterQueue{};
+  size_t adapterQueued = 0;
+  std::vector<uint8_t> adapterNotify;
+  LV2_Atom_Sequence adapterEmptyControl = {};
 
   // Tuner: analyzes the RAW input signal (before gate/trim/stages/EQ).
   // Front end: 2-pole×2 lowpass then decimate to ~12 kHz (kills harmonics →
@@ -501,6 +523,12 @@ private:
   std::array<std::vector<float>, kStageCount> osScratch2;  // domain buffer B (ping-pong)
   std::vector<float> osChain;
   uint64_t osTopologySignature = ~uint64_t{0};
+  // True domains of the amp's analog-modelled stages when the amp model runs
+  // at its native rate: bank 0 in front of the model, bank 1 behind it.
+  static constexpr size_t kAnalogBanks = 2;
+  std::array<std::array<Up2x, kMaxOsLevels>, kAnalogBanks> analogUp;
+  std::array<std::array<Down2x, kMaxOsLevels>, kAnalogBanks> analogDown;
+  std::array<std::array<std::vector<float>, 2>, kAnalogBanks> analogScratch;
 
   // Last-applied mode per stage (models were loaded for this domain). Index 2
   // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.

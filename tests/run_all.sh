@@ -68,6 +68,8 @@ echo "== tests/verify_overdrive.cpp =="
 run_cpp c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
 echo "== tests/verify_drop_pitch.cpp =="
 run_cpp c++17 /tmp/verify_drop_pitch -Isrc tests/verify_drop_pitch.cpp
+echo "== tests/verify_rate_adapter.cpp =="
+run_cpp c++17 /tmp/verify_rate_adapter -Isrc tests/verify_rate_adapter.cpp
 echo "== tests/verify_pin_eq.cpp =="
 run_cpp c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
 echo "== tests/verify_tone_eq_link.cpp =="
@@ -131,6 +133,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
   run_cpp c++20 /tmp/verify_low_buffer_rig -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
     -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_low_buffer_rig.cpp \
     -- "$RIG_SO" "${RIG_BASELINE_SO:-$RIG_SO}"
+  echo "== tests/verify_rate_adapted_rig.cpp (44.1 kHz sessions / real model tone) =="
+  run_cpp c++20 /tmp/verify_rate_adapted_rig -pthread -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+    -Ideps/NeuralAudio/deps/RTNeural/modules/json src/standalone_worker.cpp \
+    tests/verify_rate_adapted_rig.cpp \
+    -- "$RIG_SO" deps/NeuralAudio/Utils/Models/BossWN-standard.nam
+  echo "== tests/verify_lstm_oversampling.cpp (LSTM amp in the True domain / alias noise) =="
+  run_cpp c++20 /tmp/verify_lstm_oversampling -pthread -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+    -Ideps/NeuralAudio/deps/RTNeural/modules/json src/standalone_worker.cpp \
+    tests/verify_lstm_oversampling.cpp \
+    -- "$RIG_SO" deps/NeuralAudio/Utils/Models/BossLSTM-1x16.nam
 fi
 
 echo "== tests/verify_tuner_tools_dsp.c (low strings / reference tone / expiry) =="

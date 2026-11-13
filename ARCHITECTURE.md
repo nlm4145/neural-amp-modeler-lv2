@@ -21,6 +21,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/overdrive.h` | Built-in analog overdrive / boost voices (Mid Drive, Clean Boost, K-Style, Fuzz/Rectified, Tight Metal, etc.) before Pedal NAM |
 | `src/pin_eq.h` | 64-pin interactive graphic/custom EQ curve processor (Pre-Amp and Post-Amp Pin EQ slots) |
 | `src/oversample.{h,cpp}`, `src/oversample_modes.h`, `src/polyphase_worker.h` | Multi-rate polyphase FIR/IIR oversampling (Off, 2x, 4x, 8x, Eco/True cascades) and background worker state |
+| `src/rate_adapter.h` | Rational polyphase sample-rate converter and the 44.1 kHz-family session adapter constants |
 | `src/cabinet_worker.{h,cpp}`, `src/ir_normalization.h` | Dual-slot cabinet blending, phase alignment, mic/room modeling, and IR loudness/peak normalization |
 | `src/dsp_accel.{h,cpp}`, `src/rig_dsp_cache.h` | SIMD/Accelerate helpers and thread-safe DSP model/IR cache |
 | `src/nam_rig_ui.mm` | macOS LV2 & standalone UI: `NAMRigUIController`, AI Copilot drawer (`AICopilot` category), Tone3000 browser tab, header bar, Studio Pro Deck (`addLowerStudioDeck`), LV2 UI descriptor |
@@ -348,7 +349,14 @@ change; signals below the opening threshold still cannot reliably reopen the gat
 post EQ and output trim, before stereo delay and plate/room reverb. It uses the
 louder channel's envelope and one shared gain for both channels, preserving the
 stereo image. Amount uses the pre-amp compressor's 6 dB soft-knee curve: threshold
-−12 to −36 dB, ratio 1:1 to 6:1, makeup 0 to +6 dB. It adds no lookahead or latency.
+−12 to −36 dB, ratio 1:1 to 6:1. Makeup is the static reduction of a −12 dBFS
+peak (`compressorMakeupDb`, 0 to +20 dB), so a signal that peaks there keeps
+its level at every Amount. It adds no lookahead or latency.
+Both compressors share `CompressorCore`: the sidechain passes a 100 Hz
+one-pole high-pass, the level is the peak of the last
+10 ms (flat across the cycles of a low note, no detector release), and the
+gain reduction is smoothed once, in dB, so Attack and Release are its time
+constants at every signal level (release starts after the 10 ms window).
 Amount and wet bypass glide over ~10 ms; settled OFF or Amount 0 is bit-exact.
 Bypass leaves all controls and delay/reverb tails intact. The existing nine-rack
 contiguous port array is unchanged; the new independent enable lives at 189.
@@ -393,8 +401,12 @@ It multiplies WaveNet dilations by `hostRate/modelRate` at LOAD time. There
 is no resampler. Consequences:
 
 - Only `architecture == "WaveNet"` models (and the WaveNet submodels of an A2
-  `SlimmableContainer`) are rate-adapted; **LSTM models never are**. The rig
-  therefore runs every other architecture at its native rate: `work()` records
+  `SlimmableContainer`) are rate-adapted by dilation scaling. An **LSTM** has
+  no dilations, but the loader runs it as F native-rate phase copies whenever
+  the domain rate is an integer multiple F of the model rate (see the
+  polyphase paragraph below), so it joins the True domain like a WaveNet. The
+  rig runs every other architecture, and an LSTM whose phase split failed, at
+  its native rate: `work()` records
   the model's own rate (`LV2SwitchModelMsg::nativeRate`) and `process()` wraps
   the stage in DOWN(session/native) → model → UP on the stage's own converter
   bank (`Plugin::runNativeDomain`). The converters emit a count that jitters
@@ -402,9 +414,23 @@ is no resampler. Consequences:
   pass into an exact, block-size-independent delay (47 frames at 2:1, 141 at
   4:1, 329 at 8:1) that is added to `lv2:latency`; the first frames after a
   converter reset are silence. Mode NONE keeps the unadapted reference
-  behaviour.
-- Only works when `hostRate % modelRate == 0`; otherwise the model silently
-  runs at the wrong rate (detuned). `modelRate` defaults to 48000 if absent.
+  behaviour. A native-rate AMP model cannot join a True domain, so with a
+  True mode selected its analog-modelled stages get their own: UP → overdrive,
+  Amp Drive, Sculpt → DOWN in front of the model and UP → power stage,
+  transformer, speaker → DOWN behind it (`analogUp` / `analogDown`, two
+  cascade latencies added to `lv2:latency`).
+- Only works when `hostRate % modelRate == 0`. `modelRate` defaults to 48000
+  if absent. Sessions at 44.1 / 88.2 / 176.4 kHz do not divide 48 kHz, so the
+  rig runs at 48 / 96 / 192 kHz internally instead (`Plugin::sampleRate`) and
+  converts at its edges (`Plugin::hostSampleRate`, `src/rate_adapter.h`):
+  `Plugin::process()` resamples the input 160/147, calls `processCore()` on
+  private buffers, and resamples both outputs 147/160. The converters are
+  polyphase Kaiser sinc filters (flat to 20 kHz, 100 dB stopband). The path is
+  an exact 70-frame delay at every block size, added to `lv2:latency` together
+  with the internal latency scaled to session frames. The final balance and
+  ceiling (`MasterOutput`) then run on the session-rate output, so the ceiling
+  stays a hard sample limit. Other rates that do not divide the model rate
+  still run the model at the wrong rate.
 - Changing host rate requires reloading every model
   (`loader.SetExternalSampleRate()` must precede `CreateFromFile()`).
 - Even when it engages, the model's nonlinearity still fires once per
@@ -419,9 +445,13 @@ native-rate models in a `PolyphaseModel` that deinterleaves each block, runs
 the copies, and reinterleaves. Same output as dilation scaling to float
 rounding (≥120 dB below signal), but each copy gets the fast static/A2 kernels
 instead of falling back to NAM Core / the dynamic WaveNet (scaled dilations
-never match the static architectures). It only applies to plain WaveNets
-(no `condition_dsp`, no post-stack head conv wider than 1); others keep
-dilation scaling. 8-channel layers (A2) also have an ARM NEON kernel
+never match the static architectures). It applies to plain WaveNets
+(no `condition_dsp`, no post-stack head conv wider than 1); other WaveNets
+keep dilation scaling. It also applies to every LSTM: F copies on the F
+sample phases are the recurrent network with each unit delay stretched to F
+samples, which is the only way to run an LSTM above its native rate. A True
+mode therefore oversamples an LSTM amp instead of leaving it at 48 kHz
+(alias noise of the 16-unit fixture at a 96 kHz session: -53 dB to -91 dB). 8-channel layers (A2) also have an ARM NEON kernel
 (`Neon8.h`), bit-identical to the scalar path. A2 at True 8x / 96k session:
 681 → 308 ms of CPU per second of audio in `nam_bench`; full rig 894 → 453
 µs per 128-frame block. Verified by `tests/verify_polyphase_model.cpp`
@@ -608,8 +638,12 @@ NeuralAudio's oversampling multiplies WaveNet dilations by
 `hostRate/modelRate` at LOAD time. There is no resampler. Consequences:
 
 - Only `architecture == "WaveNet"` models (and the WaveNet submodels of an A2
-  `SlimmableContainer`) are rate-adapted; **LSTM models never are**. The rig
-  therefore runs every other architecture at its native rate: `work()` records
+  `SlimmableContainer`) are rate-adapted by dilation scaling. An **LSTM** has
+  no dilations, but the loader runs it as F native-rate phase copies whenever
+  the domain rate is an integer multiple F of the model rate (see the
+  polyphase paragraph below), so it joins the True domain like a WaveNet. The
+  rig runs every other architecture, and an LSTM whose phase split failed, at
+  its native rate: `work()` records
   the model's own rate (`LV2SwitchModelMsg::nativeRate`) and `process()` wraps
   the stage in DOWN(session/native) → model → UP on the stage's own converter
   bank (`Plugin::runNativeDomain`). The converters emit a count that jitters
@@ -617,9 +651,23 @@ NeuralAudio's oversampling multiplies WaveNet dilations by
   pass into an exact, block-size-independent delay (47 frames at 2:1, 141 at
   4:1, 329 at 8:1) that is added to `lv2:latency`; the first frames after a
   converter reset are silence. Mode NONE keeps the unadapted reference
-  behaviour.
-- Only works when `hostRate % modelRate == 0`; otherwise the model silently
-  runs at the wrong rate (detuned). `modelRate` defaults to 48000 if absent.
+  behaviour. A native-rate AMP model cannot join a True domain, so with a
+  True mode selected its analog-modelled stages get their own: UP → overdrive,
+  Amp Drive, Sculpt → DOWN in front of the model and UP → power stage,
+  transformer, speaker → DOWN behind it (`analogUp` / `analogDown`, two
+  cascade latencies added to `lv2:latency`).
+- Only works when `hostRate % modelRate == 0`. `modelRate` defaults to 48000
+  if absent. Sessions at 44.1 / 88.2 / 176.4 kHz do not divide 48 kHz, so the
+  rig runs at 48 / 96 / 192 kHz internally instead (`Plugin::sampleRate`) and
+  converts at its edges (`Plugin::hostSampleRate`, `src/rate_adapter.h`):
+  `Plugin::process()` resamples the input 160/147, calls `processCore()` on
+  private buffers, and resamples both outputs 147/160. The converters are
+  polyphase Kaiser sinc filters (flat to 20 kHz, 100 dB stopband). The path is
+  an exact 70-frame delay at every block size, added to `lv2:latency` together
+  with the internal latency scaled to session frames. The final balance and
+  ceiling (`MasterOutput`) then run on the session-rate output, so the ceiling
+  stays a hard sample limit. Other rates that do not divide the model rate
+  still run the model at the wrong rate.
 - Changing host rate requires reloading every model
   (`loader.SetExternalSampleRate()` must precede `CreateFromFile()`).
 

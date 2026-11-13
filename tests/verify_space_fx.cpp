@@ -52,6 +52,30 @@ double highEnergy(const std::vector<float>& x, double rate) {
   return sum;
 }
 
+// Mean energy in each window of a band-pass filtered signal (two passes of
+// an RBJ band-pass, Q 1.4).
+std::vector<double> bandEnergy(const std::vector<float>& x, double hz, double rate, size_t window) {
+  const double w0 = 2.0 * kPi * hz / rate, alpha = std::sin(w0) / 2.8, a0 = 1.0 + alpha;
+  const double b0 = alpha / a0, b2 = -alpha / a0, a1 = -2.0 * std::cos(w0) / a0, a2 = (1.0 - alpha) / a0;
+  std::vector<double> y(x.begin(), x.end());
+  for (int pass = 0; pass < 2; ++pass) {
+    double z1 = 0.0, z2 = 0.0;
+    for (double& v : y) {
+      const double out = b0 * v + z1;
+      z1 = -a1 * out + z2;
+      z2 = b2 * v - a2 * out;
+      v = out;
+    }
+  }
+  std::vector<double> result;
+  for (size_t start = 0; start + window <= y.size(); start += window) {
+    double sum = 0.0;
+    for (size_t i = 0; i < window; ++i) sum += y[start + i] * y[start + i];
+    result.push_back(sum / static_cast<double>(window));
+  }
+  return result;
+}
+
 std::vector<float> impulse(size_t count) {
   std::vector<float> x(count, 0.0f);
   x[0] = 1.0f;
@@ -470,6 +494,79 @@ int main() {
                   "the full space chain is finite and bounded at %.0f Hz",
                   sessionRate);
     check(allFinite(left) && allFinite(right) && peak < 4.0f, label);
+  }
+
+  // A settled feedback path reads whole samples. An interpolated read there
+  // loses treble on every repeat, beyond what Damping asks.
+  {
+    const double rate = 48000.0;
+    const size_t count = static_cast<size_t>(rate * 5.0);
+    const auto run = [&](double delaySamples) {
+      auto left = impulse(count);
+      auto right = left;
+      NAMRig::StereoDelay delay;
+      delay.initialize(rate);
+      const float timeMs = static_cast<float>(delaySamples * 1000.0 / rate);
+      for (size_t off = 0; off < count; off += 256)
+        delay.process(left.data() + off, right.data() + off, std::min<size_t>(256, count - off),
+                      timeMs, 85.0f, 0.0f, 100.0f);
+      return left;
+    };
+    const auto whole = run(16002.0);
+    const auto fractional = run(16002.4);
+    float worst = 0.0f;
+    for (size_t i = 0; i < count; ++i) worst = std::max(worst, std::fabs(whole[i] - fractional[i]));
+    check(allFinite(fractional) && worst < 1.0e-7f,
+          "StereoDelay repeats at a fractional time equal the whole-sample delay: no interpolation loss in the feedback path");
+  }
+  {
+    const double rate = 48000.0;
+    const size_t count = static_cast<size_t>(rate * 3.0);
+    const size_t window = static_cast<size_t>(rate * 0.1);
+    const auto decaySeconds = [&](float sizePercent, double hz) {
+      auto left = impulse(count);
+      auto right = left;
+      NAMRig::PlateReverb reverb;
+      reverb.initialize(rate);
+      for (size_t off = 0; off < count; off += 256)
+        reverb.process(left.data() + off, right.data() + off, std::min<size_t>(256, count - off),
+                       0.0f, 100.0f, 85.0f, sizePercent, 0.0f, 10.0f);
+      left[0] = 0.0f;
+      const auto e = bandEnergy(left, hz, rate, window);
+      const double dropDb = 10.0 * std::log10(e[3] / e[23]);
+      return 60.0 * 2.0 / std::max(1.0e-6, dropDb);
+    };
+    const double t12Half = decaySeconds(50.0f, 12000.0), t12Odd = decaySeconds(37.0f, 12000.0);
+    const double t8Half = decaySeconds(50.0f, 8000.0);
+    char label[200];
+    std::snprintf(label, sizeof(label),
+                  "PlateReverb keeps its treble with Damping 0: decay %.2f s at 8 kHz, %.2f s and %.2f s at 12 kHz (Size 50, 37)",
+                  t8Half, t12Half, t12Odd);
+    check(t8Half > 7.0 && t12Half > 5.8 && t12Odd > 5.4, label);
+  }
+  // A Size change glides without a jump in the tail.
+  {
+    const double rate = 48000.0;
+    const size_t count = static_cast<size_t>(rate * 3.0);
+    auto left = tone(count, rate, 440.0);
+    auto right = left;
+    NAMRig::PlateReverb reverb;
+    reverb.initialize(rate);
+    float worstStep = 0.0f, previous = 0.0f;
+    for (size_t off = 0; off < count; off += 64) {
+      const size_t n = std::min<size_t>(64, count - off);
+      const float size = off < count / 3 ? 20.0f : 90.0f;
+      std::vector<float> dry(left.begin() + static_cast<long>(off), left.begin() + static_cast<long>(off + n));
+      reverb.process(left.data() + off, right.data() + off, n, 0.0f, 100.0f, 70.0f, size, 30.0f, 10.0f);
+      for (size_t i = 0; i < n; ++i) {
+        const float wet = left[off + i] - dry[i];
+        if (off + i > static_cast<size_t>(rate * 0.5))
+          worstStep = std::max(worstStep, std::fabs(wet - previous));
+        previous = wet;
+      }
+    }
+    check(allFinite(left) && worstStep < 0.12f,
+          "PlateReverb Size glide, and the switch to whole-sample taps when it settles, leave no jump in the tail");
   }
 
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n",

@@ -7,20 +7,23 @@
 
 namespace NAMRig {
 
-// Low-latency polyphonic transient-preserving WSOLA pitch shifter for pre-amp
-// guitar Drop Tuning / Virtual Capo (-12 to +12 semitones).
+// Low-latency polyphonic pitch shifter for pre-amp guitar Drop Tuning /
+// Virtual Capo (-12 to +12 semitones).
 //
-// Improvements over v1:
-//  - 36 ms Hann grains / +/-10 ms search span / 12 ms bidirectional matching
-//    window ([-6 ms, +6 ms]) with energy-consistent similarity so low notes
-//    (down to B1/A1) lock cleanly to full cycles.
-//  - Anti-flam / anti-skip transient lock: detects guitar pick attacks and
-//    locks both overlapping grains to the same read position across the attack
-//    so chugs pass through without overlap smearing or double attacks.
-//  - Correlation-adaptive power normalization across crossfades to remove
-//    18 ms AM flutter on chords.
-//  - Gentle pickup-character / presence shelf & sub-rumble filter when active
-//    so shifted tones keep their bite before hitting overdrive/amp models.
+// A single resampling read tap follows the write head. The tap output is the
+// exact resampled input, so there is no window modulation between splices.
+// When the tap drifts away from the write head (drop) or reaches it (capo),
+// the tap jumps by a waveform-matched distance and a short crossfade hides
+// the splice:
+//  - Drop: the tap jumps toward the write head as soon as one matched period
+//    of drift is available, so the delay stays below one period of the note.
+//  - Capo: the tap jumps back by the best matched distance when it reaches
+//    the write head.
+//  - Pick attacks move the tap to the write head immediately, so attacks are
+//    not delayed, smeared, skipped, or played twice.
+//  - Silence parks the tap at the write head.
+//  - Splice positions use integer-lag matching on raw samples plus parabolic
+//    sub-sample refinement.
 //  - Zero heap allocations and bit-identical bypass when semitones == 0.
 class DropPitch {
  public:
@@ -28,63 +31,71 @@ class DropPitch {
   static constexpr int kMaxSemitones = 12;
   static constexpr int kRingSize = 65536;
   static constexpr int kRingMask = kRingSize - 1;
-  static constexpr int kMaxWindow = 8192;
-  static constexpr int kMaxCorr = 2560;
 
   DropPitch() { prepare(48000.0); }
 
   void prepare(double sampleRate) noexcept {
     sampleRate_ = std::clamp(sampleRate > 0.0 ? sampleRate : 48000.0, 22050.0, 192000.0);
-    // ~18 ms half-window hop (36 ms Hann grain), forced even via winLen = 2 * hs.
-    hs_ = std::clamp(static_cast<int>(std::lround(sampleRate_ * 0.018)), 384, kMaxWindow / 2);
-    winLen_ = hs_ * 2;
-    // ~10 ms search radius (+/- 10 ms = 20 ms span, covers full period down to 50 Hz).
-    searchRadius_ = std::clamp(static_cast<int>(std::lround(sampleRate_ * 0.010)), 220, 2048);
-    // ~12 ms bidirectional correlation template ([-corrHalf_, +corrHalf_)).
-    corrHalf_ = std::clamp(static_cast<int>(std::lround(sampleRate_ * 0.006)), 128, kMaxCorr / 2);
-    corrLen_ = corrHalf_ * 2;
-    fadeSamples_ = std::max(1, static_cast<int>(std::lround(sampleRate_ * 0.005)));
+    const auto ms = [this](double v) { return static_cast<int>(std::lround(sampleRate_ * v * 0.001)); };
 
-    // Transient detector and anti-flam window (~14 ms mark, ~28 ms cooldown).
+    templateLen_ = std::max(64, ms(10.0));
+    shortTemplateLen_ = std::max(16, ms(1.5));
+    minJump_ = std::max(32, ms(2.5));
+    maxSpan_ = std::max(minJump_ * 2, ms(26.0));
+    attemptStep_ = std::max(4, ms(0.75));
+    coarseStride_ = std::clamp(static_cast<int>(std::lround(sampleRate_ / 12000.0)), 1, kMaxStride);
+    fineStride_ = std::max(1, (coarseStride_ + 1) / 2);
+    xfadeMin_ = std::max(16, ms(3.0));
+    xfadeMax_ = std::max(xfadeMin_, ms(8.0));
+    xfadeFloor_ = std::max(8, ms(1.0));
+    xfadeTransient_ = std::max(8, ms(1.5));
+    upXfadeCap_ = std::max(16, ms(5.0));
+    preRoll_ = std::max(8, ms(2.0));
+    transientGuard_ = std::max(16, ms(4.0));
+    minResyncGain_ = std::max(2, ms(0.25));
+    nominalSwing_ = std::max(8, ms(8.0));
+    fadeSamples_ = std::max(1, ms(5.0));
+
     fastCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.001));
     slowCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.035));
-    attackMarkSamples_ = std::max(16, static_cast<int>(std::lround(sampleRate_ * 0.014)));
-    transientCooldownSamples_ = std::max(32, static_cast<int>(std::lround(sampleRate_ * 0.028)));
-    maxTransientDrift_ = std::max(64, static_cast<int>(std::lround(sampleRate_ * 0.015)));
-
-    constexpr double kTwoPi = 6.28318530717958647692;
-    for (int i = 0; i < winLen_; ++i) {
-      hann_[static_cast<size_t>(i)] =
-          static_cast<float>(0.5 * (1.0 - std::cos(kTwoPi * static_cast<double>(i) / winLen_)));
-    }
+    transientCooldownSamples_ = std::max(32, ms(28.0));
     reset();
   }
 
   void reset() noexcept {
     ring_.fill(0.0f);
-    transientRing_.fill(0);
     writePos_ = 0;
     active_ = false;
     currentSemitones_ = 0;
+    ratio_ = 1.0;
     wetMix_ = 0.0f;
     overlapRho_ = 1.0f;
     prevDry_ = 0.0f;
     fastEnv_ = 0.0f;
     slowEnv_ = 0.0f;
     transientCooldown_ = 0;
-    transientMarkLeft_ = 0;
-    lastTransientEndPos_ = -1;
+    transientPending_ = false;
+    lastTransientPos_ = -1;
+    quietRun_ = kRingSize;
     appliedFilterSt_ = 0;
     subHpf_.reset();
     presenceShelf_.reset();
-    initGrains(1.0);
+    for (Voice& v : voices_) v = Voice{};
+    lead_ = 0;
+    fadeLen_ = 0;
+    fadePos_ = 0;
+    lastAttemptDelay_ = 0.0;
+    scannedLag_ = 0;
   }
 
+  // Typical delay of a sustained note. The real delay follows the played
+  // pitch and stays between the minimum tap delay and one matched period.
   int latencySamples(int semitones) const noexcept {
     const int st = clampSemitones(semitones);
     if (st == 0) return 0;
     const double ratio = std::pow(2.0, static_cast<double>(st) / 12.0);
-    return searchRadius_ + minDelayForRatio(ratio);
+    const double low = ratio < 1.0 ? static_cast<double>(kHeadMargin) : upLowDelay(ratio);
+    return static_cast<int>(std::lround(low)) + nominalSwing_ / 2;
   }
 
   void process(float* samples, uint32_t count, int semitones) noexcept {
@@ -92,25 +103,30 @@ class DropPitch {
     const int targetSt = clampSemitones(semitones);
 
     if (targetSt == 0 && !active_) {
-      // Keep the history and transient detector warm so engaging has real
-      // audio immediately; output stays bit-identical.
       for (uint32_t i = 0; i < count; ++i) {
         pushInputSample(samples[i]);
       }
+      transientPending_ = false;
       return;
     }
 
     if (targetSt != 0 && !active_) {
       active_ = true;
       currentSemitones_ = targetSt;
+      ratio_ = std::pow(2.0, static_cast<double>(targetSt) / 12.0);
       wetMix_ = 0.0f;
       overlapRho_ = 1.0f;
       subHpf_.reset();
       presenceShelf_.reset();
       appliedFilterSt_ = 0;
-      initGrains(std::pow(2.0, static_cast<double>(targetSt) / 12.0));
+      transientPending_ = false;
+      lastTransientPos_ = -1;
+      startVoices();
     } else if (targetSt != 0 && targetSt != currentSemitones_) {
       currentSemitones_ = targetSt;
+      ratio_ = std::pow(2.0, static_cast<double>(targetSt) / 12.0);
+      lastAttemptDelay_ = leadDelay();
+      scannedLag_ = 0;
     }
 
     if (currentSemitones_ != appliedFilterSt_) {
@@ -118,7 +134,6 @@ class DropPitch {
       appliedFilterSt_ = currentSemitones_;
     }
 
-    const double targetRatio = std::pow(2.0, static_cast<double>(currentSemitones_) / 12.0);
     const float fadeStep = 1.0f / static_cast<float>(fadeSamples_);
     const float targetWet = targetSt != 0 ? 1.0f : 0.0f;
 
@@ -126,23 +141,13 @@ class DropPitch {
       const float dry = samples[i];
       pushInputSample(dry);
 
-      float w[2] = {0.0f, 0.0f};
-      float y[2] = {0.0f, 0.0f};
-      for (int g = 0; g < 2; ++g) {
-        Grain& gr = grains_[static_cast<size_t>(g)];
-        if (gr.phase >= winLen_) {
-          restartGrain(g, targetRatio);
-        }
-        w[g] = hann_[static_cast<size_t>(gr.phase)];
-        y[g] = readCubic(gr.readPos);
-        gr.readPos += gr.ratio;
-        ++gr.phase;
+      if (transientPending_) {
+        transientPending_ = false;
+        handleTransient();
       }
+      updateSplice();
 
-      const float powerVar =
-          w[0] * w[0] + w[1] * w[1] + 2.0f * w[0] * w[1] * overlapRho_;
-      const float norm = 1.0f / std::sqrt(std::max(0.5f, powerVar));
-      float wet = (y[0] * w[0] + y[1] * w[1]) * norm;
+      float wet = renderVoices();
       if (currentSemitones_ < 0) {
         wet = subHpf_.process(wet);
       }
@@ -171,12 +176,27 @@ class DropPitch {
   }
 
  private:
-  static constexpr int kSafetyMargin = 32;
+  static constexpr int kHeadMargin = 4;
+  static constexpr int kMaxStride = 16;
+  static constexpr int kVoiceCount = 4;
+  static constexpr int kMaxTemplateTaps = 512;
+  static constexpr float kQuietLevel = 1.0e-3f;
+  static constexpr float kEarlyAcceptSimilarity = 0.95f;
+  static constexpr float kForcedAcceptSimilarity = 0.90f;
+  static constexpr float kPeriodicVetoSimilarity = 0.80f;
+  static constexpr float kDelayPenalty = 0.03f;
 
-  struct Grain {
-    double readPos = 0.0;
-    double ratio = 1.0;
-    int phase = 0;
+  struct Voice {
+    double pos = 0.0;
+    float startGain = 0.0f;
+    bool on = false;
+  };
+
+  struct Match {
+    double jump = 0.0;
+    float similarity = 0.0f;
+    float rho = 1.0f;
+    bool interior = false;
   };
 
   struct Biquad {
@@ -242,33 +262,43 @@ class DropPitch {
 
     if (transientCooldown_ > 0) --transientCooldown_;
     if (transientCooldown_ == 0 && fastEnv_ > 0.004f && fastEnv_ > slowEnv_ * 2.3f) {
-      transientMarkLeft_ = attackMarkSamples_;
+      transientPending_ = true;
       transientCooldown_ = transientCooldownSamples_;
     }
 
-    const size_t slot = static_cast<size_t>(writePos_ & kRingMask);
-    ring_[slot] = dry;
-    if (transientMarkLeft_ > 0) {
-      transientRing_[slot] = 1;
-      lastTransientEndPos_ = static_cast<int64_t>(writePos_);
-      --transientMarkLeft_;
+    if (absIn < kQuietLevel) {
+      if (quietRun_ < kRingSize) ++quietRun_;
     } else {
-      transientRing_[slot] = 0;
+      quietRun_ = 0;
     }
+
+    ring_[static_cast<size_t>(writePos_ & kRingMask)] = dry;
     ++writePos_;
   }
 
-  int minDelayForRatio(double ratio) const noexcept {
-    const int corrLookahead = static_cast<int>(std::ceil(static_cast<double>(corrHalf_) * ratio));
-    const int grainLookahead = ratio > 1.0 ? static_cast<int>(std::ceil(winLen_ * (ratio - 1.0))) : 0;
-    return kSafetyMargin + std::max(corrLookahead, grainLookahead);
+  double upLowDelay(double ratio) const noexcept {
+    return static_cast<double>(kHeadMargin) + static_cast<double>(upXfadeCap_) * (ratio - 1.0);
   }
 
-  void initGrains(double ratio) noexcept {
-    const double startPos =
-        static_cast<double>(writePos_) - static_cast<double>(searchRadius_ + minDelayForRatio(ratio));
-    grains_[0] = {startPos, ratio, 0};
-    grains_[1] = {startPos, ratio, hs_};
+  double upHeadroom(double ratio) const noexcept {
+    return static_cast<double>(transientGuard_ + preRoll_ + minJump_) * (ratio - 1.0) / ratio;
+  }
+
+  double leadDelay() const noexcept {
+    return static_cast<double>(writePos_) - voices_[static_cast<size_t>(lead_)].pos;
+  }
+
+  void startVoices() noexcept {
+    for (Voice& v : voices_) v = Voice{};
+    lead_ = 0;
+    const double delay = ratio_ < 1.0 ? static_cast<double>(kHeadMargin)
+                                      : upLowDelay(ratio_) + static_cast<double>(minJump_);
+    voices_[0].pos = static_cast<double>(writePos_) - delay;
+    voices_[0].on = true;
+    fadeLen_ = 0;
+    fadePos_ = 0;
+    lastAttemptDelay_ = delay;
+    scannedLag_ = 0;
   }
 
   float readCubic(double pos) const noexcept {
@@ -285,146 +315,319 @@ class DropPitch {
     return ((c3 * t + c2) * t + c1) * t + c0;
   }
 
-  bool hasTransientInSpan(int64_t startIdx, int64_t endIdx) const noexcept {
-    if (endIdx < startIdx) return false;
-    const int step = std::max(1, attackMarkSamples_ / 16);
-    for (int64_t idx = startIdx; idx <= endIdx; idx += step) {
-      if (transientRing_[static_cast<size_t>(idx & kRingMask)]) return true;
-    }
-    return transientRing_[static_cast<size_t>(endIdx & kRingMask)] != 0;
+  float fadeShape() const noexcept {
+    const float t = static_cast<float>(fadePos_) / static_cast<float>(fadeLen_);
+    return t * t * (3.0f - 2.0f * t);
   }
 
-  void restartGrain(int gIdx, double nextRatio) noexcept {
-    const Grain& other = grains_[static_cast<size_t>(1 - gIdx)];
-    const int minDelay = minDelayForRatio(nextRatio);
-    const int targetDelay = searchRadius_ + minDelay;
-    const double nominal = static_cast<double>(writePos_) - static_cast<double>(targetDelay);
-    const double maxReadAllowed = static_cast<double>(writePos_) - static_cast<double>(minDelay);
-    const double minReadAllowed = static_cast<double>(writePos_) -
-                                  static_cast<double>(targetDelay + maxTransientDrift_);
+  float voiceGain(int index) const noexcept {
+    const Voice& v = voices_[static_cast<size_t>(index)];
+    if (!v.on) return 0.0f;
+    if (fadePos_ >= fadeLen_) return index == lead_ ? 1.0f : 0.0f;
+    const float s = fadeShape();
+    return index == lead_ ? s : v.startGain * (1.0f - s);
+  }
 
-    // 1. Transient lock: if a pick attack is entering or spanning the active
-    //    grain's window (or lies between other.readPos and the jump target),
-    //    lock the new grain to other.readPos so both grains play the identical
-    //    trajectory with zero crossfade smearing or attack skipping.
-    const int64_t checkStart = static_cast<int64_t>(std::floor(other.readPos)) - corrHalf_ / 4;
-    const int64_t checkEnd = static_cast<int64_t>(std::ceil(
-        std::max(other.readPos + static_cast<double>(hs_) * other.ratio,
-                 nominal + static_cast<double>(searchRadius_))));
-    const bool lockSafe =
-        (other.ratio == nextRatio) &&
-        (other.readPos <= maxReadAllowed) &&
-        (other.readPos >= minReadAllowed) &&
-        (static_cast<double>(writePos_) - other.readPos < static_cast<double>(kRingSize - kMaxWindow * 2));
+  float renderVoices() noexcept {
+    const double maxPos = static_cast<double>(writePos_) - static_cast<double>(kHeadMargin);
+    float wet = 0.0f;
+    if (fadePos_ < fadeLen_) {
+      ++fadePos_;
+      const float s = fadeShape();
+      float sum = 0.0f;
+      float squares = 0.0f;
+      for (int i = 0; i < kVoiceCount; ++i) {
+        Voice& v = voices_[static_cast<size_t>(i)];
+        if (!v.on) continue;
+        if (v.pos > maxPos) v.pos = maxPos;
+        const float g = i == lead_ ? s : v.startGain * (1.0f - s);
+        sum += g * readCubic(v.pos);
+        squares += g * g;
+        v.pos += ratio_;
+      }
+      const float power = squares + overlapRho_ * (1.0f - squares);
+      wet = sum / std::sqrt(std::max(0.5f, power));
+      if (fadePos_ >= fadeLen_) {
+        for (int i = 0; i < kVoiceCount; ++i) {
+          if (i != lead_) voices_[static_cast<size_t>(i)].on = false;
+        }
+      }
+    } else {
+      Voice& v = voices_[static_cast<size_t>(lead_)];
+      if (v.pos > maxPos) v.pos = maxPos;
+      wet = readCubic(v.pos);
+      v.pos += ratio_;
+    }
+    return wet;
+  }
 
-    if (lockSafe && hasTransientInSpan(checkStart, checkEnd)) {
-      grains_[static_cast<size_t>(gIdx)] = {other.readPos, nextRatio, 0};
-      overlapRho_ = 1.0f;
+  void splice(double newPos, int fadeLen, float rho) noexcept {
+    std::array<float, kVoiceCount> gains{};
+    int slot = -1;
+    int quietest = 0;
+    for (int i = 0; i < kVoiceCount; ++i) {
+      gains[static_cast<size_t>(i)] = voiceGain(i);
+      if (gains[static_cast<size_t>(i)] <= 0.0f) {
+        voices_[static_cast<size_t>(i)].on = false;
+        if (slot < 0) slot = i;
+      }
+      if (gains[static_cast<size_t>(i)] < gains[static_cast<size_t>(quietest)]) quietest = i;
+    }
+    if (slot < 0) {
+      slot = quietest;
+      gains[static_cast<size_t>(slot)] = 0.0f;
+    }
+    float total = 0.0f;
+    for (float g : gains) total += g;
+    const float scale = total > 1.0e-6f ? 1.0f / total : 0.0f;
+    for (int i = 0; i < kVoiceCount; ++i) {
+      voices_[static_cast<size_t>(i)].startGain = gains[static_cast<size_t>(i)] * scale;
+    }
+    Voice& lead = voices_[static_cast<size_t>(slot)];
+    lead.pos = newPos;
+    lead.startGain = 0.0f;
+    lead.on = true;
+    lead_ = slot;
+    fadeLen_ = std::max(2, fadeLen);
+    fadePos_ = 0;
+    overlapRho_ = std::clamp(rho, 0.0f, 1.0f);
+    lastAttemptDelay_ = static_cast<double>(writePos_) - newPos;
+    scannedLag_ = 0;
+  }
+
+  struct Template {
+    std::array<float, kMaxTemplateTaps> taps{};
+    float energy = 0.0f;
+    int count = 0;
+    int stride = 1;
+  };
+
+  void loadTemplate(Template& t, int64_t q0, int tLen, int stride) const noexcept {
+    t.stride = stride;
+    t.count = std::min(kMaxTemplateTaps, (tLen + stride - 1) / stride);
+    t.energy = 0.0f;
+    for (int k = 0; k < t.count; ++k) {
+      const float r = ring_[static_cast<size_t>((q0 + static_cast<int64_t>(k) * stride) & kRingMask)];
+      t.taps[static_cast<size_t>(k)] = r;
+      t.energy += r * r;
+    }
+  }
+
+  void evaluateLag(const Template& t, int64_t q0, int lag, float& similarity, float& rho) const noexcept {
+    float dot = 0.0f;
+    float candE = 0.0f;
+    const size_t start = static_cast<size_t>((q0 + lag) & kRingMask);
+    const size_t stride = static_cast<size_t>(t.stride);
+    if (start + static_cast<size_t>(t.count) * stride < static_cast<size_t>(kRingSize)) {
+      const float* cand = ring_.data() + start;
+      for (int k = 0; k < t.count; ++k) {
+        const float v = cand[static_cast<size_t>(k) * stride];
+        dot += t.taps[static_cast<size_t>(k)] * v;
+        candE += v * v;
+      }
+    } else {
+      for (int k = 0; k < t.count; ++k) {
+        const float v = ring_[(start + static_cast<size_t>(k) * stride) & static_cast<size_t>(kRingMask)];
+        dot += t.taps[static_cast<size_t>(k)] * v;
+        candE += v * v;
+      }
+    }
+    const float energy = t.energy + candE;
+    if (energy < 1.0e-10f) {
+      similarity = 0.0f;
+      rho = 1.0f;
+      return;
+    }
+    similarity = 2.0f * dot / energy;
+    rho = dot / std::sqrt(t.energy * candE + 1.0e-20f);
+  }
+
+  // Finds the lag in [lagLo, lagHi] at which the tLen samples that end at
+  // refPos best match the samples that end at refPos + lag. refDelay is the
+  // delay of refPos behind the write head; shorter landing delays score higher.
+  Match findJump(double refPos, int tLen, int lagLo, int lagHi, double refDelay) noexcept {
+    Match match;
+    const int64_t q0 = static_cast<int64_t>(std::floor(refPos)) - tLen + 1;
+    const float penaltyScale = kDelayPenalty / static_cast<float>(maxSpan_);
+    const auto score = [&](const Template& t, int lag, float& similarity, float& rho) {
+      evaluateLag(t, q0, lag, similarity, rho);
+      return similarity - penaltyScale * static_cast<float>(refDelay - static_cast<double>(lag));
+    };
+
+    loadTemplate(coarseTemplate_, q0, tLen, coarseStride_);
+    float bestScore = -1.0e30f;
+    int bestCoarse = lagLo;
+    for (int lag = lagLo;; lag += coarseStride_) {
+      if (lag > lagHi) lag = lagHi;
+      float similarity = 0.0f;
+      float rho = 1.0f;
+      const float s = score(coarseTemplate_, lag, similarity, rho);
+      if (s > bestScore) {
+        bestScore = s;
+        bestCoarse = lag;
+      }
+      if (lag == lagHi) break;
+    }
+
+    loadTemplate(fineTemplate_, q0, tLen, fineStride_);
+    const int fineLo = std::max(lagLo, bestCoarse - coarseStride_);
+    const int fineHi = std::min(lagHi, bestCoarse + coarseStride_);
+    std::array<float, 2 * kMaxStride + 1> fineScores{};
+    bestScore = -1.0e30f;
+    int bestLag = bestCoarse;
+    for (int lag = fineLo; lag <= fineHi; ++lag) {
+      float similarity = 0.0f;
+      float rho = 1.0f;
+      const float s = score(fineTemplate_, lag, similarity, rho);
+      fineScores[static_cast<size_t>(lag - fineLo)] = s;
+      if (s > bestScore) {
+        bestScore = s;
+        bestLag = lag;
+        match.similarity = similarity;
+        match.rho = rho;
+      }
+    }
+
+    match.jump = static_cast<double>(bestLag);
+    match.interior = bestLag > lagLo && bestLag < lagHi;
+    if (bestLag > fineLo && bestLag < fineHi) {
+      const float left = fineScores[static_cast<size_t>(bestLag - 1 - fineLo)];
+      const float right = fineScores[static_cast<size_t>(bestLag + 1 - fineLo)];
+      const float curvature = left - 2.0f * bestScore + right;
+      if (curvature < -1.0e-9f) {
+        match.jump += static_cast<double>(std::clamp(0.5f * (left - right) / curvature, -0.5f, 0.5f));
+      }
+    }
+    return match;
+  }
+
+  int spliceFadeLength(double jump) const noexcept {
+    const double distance = std::fabs(jump);
+    double len = std::clamp(distance, static_cast<double>(xfadeMin_), static_cast<double>(xfadeMax_));
+    len = std::min(len, 0.8 * distance / std::max(1.0e-3, std::fabs(1.0 - ratio_)));
+    if (ratio_ > 1.0) len = std::min(len, static_cast<double>(upXfadeCap_));
+    return std::max(xfadeFloor_, static_cast<int>(len));
+  }
+
+  void handleTransient() noexcept {
+    const Voice& lead = voices_[static_cast<size_t>(lead_)];
+    const double delay = static_cast<double>(writePos_) - lead.pos;
+    const double target = ratio_ < 1.0
+                              ? static_cast<double>(kHeadMargin + preRoll_)
+                              : upLowDelay(ratio_) + upHeadroom(ratio_) + static_cast<double>(preRoll_);
+    const double gain = ratio_ < 1.0 ? delay - target : std::fabs(delay - target);
+
+    // A waveform peak of a sustained note repeats one period earlier. A pick
+    // attack does not.
+    const Match periodic = findJump(static_cast<double>(writePos_ - 1), shortTemplateLen_,
+                                    -maxSpan_, -minJump_, 0.0);
+    if (periodic.similarity >= kPeriodicVetoSimilarity) return;
+
+    lastTransientPos_ = static_cast<int64_t>(writePos_);
+    if (gain < static_cast<double>(minResyncGain_)) return;
+    splice(static_cast<double>(writePos_) - target, xfadeTransient_, 0.0f);
+  }
+
+  void updateSplice() noexcept {
+    const Voice& lead = voices_[static_cast<size_t>(lead_)];
+    const double delay = static_cast<double>(writePos_) - lead.pos;
+
+    if (ratio_ < 1.0) {
+      const double drift = delay - static_cast<double>(kHeadMargin);
+      if (drift < static_cast<double>(attemptStep_)) return;
+      if (static_cast<double>(quietRun_) >= delay) {
+        splice(static_cast<double>(writePos_ - kHeadMargin), xfadeMin_, 1.0f);
+        return;
+      }
+      if (drift < static_cast<double>(minJump_ + 2)) return;
+      const bool forced = drift >= static_cast<double>(maxSpan_);
+      if (!forced) {
+        if (delay - lastAttemptDelay_ < static_cast<double>(attemptStep_)) return;
+        // An attack that the detector did not confirm yet can be at the write head.
+        if (fastEnv_ > 0.004f && fastEnv_ > slowEnv_ * 1.6f) return;
+      }
+      lastAttemptDelay_ = delay;
+
+      // Lags below the last scanned lag did not match on earlier attempts.
+      // Only a forced splice scans the full range again.
+      const int lagHi = static_cast<int>(std::floor(drift));
+      int lagLo = std::max(minJump_, lagHi - maxSpan_);
+      if (!forced) lagLo = std::max(lagLo, std::min(lagHi, scannedLag_ - 3 * coarseStride_));
+      scannedLag_ = lagHi;
+      const Match match = findJump(lead.pos, templateLen_, lagLo, lagHi, delay);
+      if (!forced) {
+        if (!match.interior) return;
+        const float x = static_cast<float>(drift) / static_cast<float>(maxSpan_);
+        const float threshold =
+            x < 0.5f ? kEarlyAcceptSimilarity
+                     : kEarlyAcceptSimilarity -
+                           (x - 0.5f) * 2.0f * (kEarlyAcceptSimilarity - kForcedAcceptSimilarity);
+        if (match.similarity < threshold) return;
+      }
+      splice(lead.pos + match.jump, spliceFadeLength(match.jump), match.rho);
       return;
     }
 
-    // 2. Sustained-body WSOLA: 12 ms bidirectional correlation template centered
-    //    at the splice point, scored by energy-consistent normalized similarity.
-    float refEnergy = 0.0f;
-    for (int m = 0; m < corrLen_; ++m) {
-      const int offset = m - corrHalf_;
-      const float s = readCubic(other.readPos + static_cast<double>(offset) * other.ratio);
-      refBuf_[static_cast<size_t>(m)] = s;
-      refEnergy += s * s;
+    if (delay > upLowDelay(ratio_)) return;
+
+    const int quietJump = minJump_ + kHeadMargin;
+    if (static_cast<double>(quietRun_) >= delay + static_cast<double>(quietJump + 2)) {
+      splice(lead.pos - static_cast<double>(quietJump), spliceFadeLength(quietJump), 1.0f);
+      return;
     }
 
-    int bestDelta = 0;
-    float bestRho = 1.0f;
-    if (refEnergy > 1.0e-8f) {
-      const int coarseStep = std::max(1, searchRadius_ / 110);
-      const int corrStep = std::max(1, corrLen_ / 96);
-      float bestScore = -1.0e30f;
-      int bestCoarse = 0;
-
-      const bool blockJumpBackPastTransient =
-          lastTransientEndPos_ >= 0 &&
-          lastTransientEndPos_ < static_cast<int64_t>(std::floor(other.readPos));
-
-      const auto evalOffset = [&](int d, int step, float& outRho) -> float {
-        const double candCenter = nominal + static_cast<double>(d);
-        // Reject jumping backward to or before an already-played pick transient (anti-flam).
-        if (blockJumpBackPastTransient &&
-            static_cast<int64_t>(std::llround(candCenter)) <= lastTransientEndPos_) {
-          outRho = 0.0f;
-          return -1.0e20f;
-        }
-        float dot = 0.0f;
-        float refSubE = 0.0f;
-        float candE = 0.0f;
-        for (int m = 0; m < corrLen_; m += step) {
-          const int offset = m - corrHalf_;
-          const int64_t idx =
-              static_cast<int64_t>(std::floor(candCenter + static_cast<double>(offset) * nextRatio));
-          const float r = refBuf_[static_cast<size_t>(m)];
-          const float v = ring_[static_cast<size_t>(idx & kRingMask)];
-          dot += r * v;
-          refSubE += r * r;
-          candE += v * v;
-        }
-        const float denomEnergy = refSubE + candE + 1.0e-12f;
-        const float energyConsistentScore = (2.0f * dot) / denomEnergy;
-        const float distPenalty =
-            0.01f * static_cast<float>(std::abs(d)) / static_cast<float>(searchRadius_);
-        outRho = dot / std::sqrt((refSubE * candE) + 1.0e-12f);
-        return energyConsistentScore - distPenalty;
-      };
-
-      for (int d = -searchRadius_; d <= searchRadius_; d += coarseStep) {
-        float rho = 0.0f;
-        const float score = evalOffset(d, corrStep, rho);
-        if (score > bestScore) {
-          bestScore = score;
-          bestCoarse = d;
-          bestRho = rho;
-        }
-      }
-
-      const int fineLo = std::max(-searchRadius_, bestCoarse - coarseStep);
-      const int fineHi = std::min(searchRadius_, bestCoarse + coarseStep);
-      const int fineStep = std::max(1, corrLen_ / 192);
-      bestScore = -1.0e30f;
-      bestDelta = bestCoarse;
-      for (int d = fineLo; d <= fineHi; ++d) {
-        float rho = 0.0f;
-        const float score = evalOffset(d, fineStep, rho);
-        if (score > bestScore) {
-          bestScore = score;
-          bestDelta = d;
-          bestRho = rho;
-        }
+    int lagLo = -maxSpan_;
+    const int lagHi = -minJump_;
+    if (lastTransientPos_ >= 0) {
+      // Do not jump back to a pick attack that the tap already played.
+      const double limit = static_cast<double>(lastTransientPos_ + transientGuard_);
+      if (lead.pos > static_cast<double>(lastTransientPos_ - preRoll_) &&
+          lead.pos - static_cast<double>(maxSpan_) < limit) {
+        lagLo = static_cast<int>(std::ceil(limit - lead.pos));
       }
     }
-
-    grains_[static_cast<size_t>(gIdx)] = {
-        nominal + static_cast<double>(bestDelta), nextRatio, 0};
-    overlapRho_ = std::clamp(bestRho, 0.0f, 1.0f);
+    if (lagLo >= lagHi) {
+      splice(lead.pos - static_cast<double>(minJump_), spliceFadeLength(minJump_), 0.5f);
+      return;
+    }
+    const Match match = findJump(lead.pos, templateLen_, lagLo, lagHi, delay);
+    splice(lead.pos + match.jump, spliceFadeLength(match.jump), match.rho);
   }
 
   double sampleRate_ = 48000.0;
-  int hs_ = 864;
-  int winLen_ = 1728;
-  int searchRadius_ = 480;
-  int corrHalf_ = 288;
-  int corrLen_ = 576;
+  int templateLen_ = 480;
+  int shortTemplateLen_ = 72;
+  int minJump_ = 120;
+  int maxSpan_ = 1248;
+  int attemptStep_ = 36;
+  int coarseStride_ = 4;
+  int fineStride_ = 2;
+  int xfadeMin_ = 144;
+  int xfadeMax_ = 384;
+  int xfadeFloor_ = 48;
+  int xfadeTransient_ = 72;
+  int upXfadeCap_ = 240;
+  int preRoll_ = 96;
+  int transientGuard_ = 192;
+  int minResyncGain_ = 12;
+  int nominalSwing_ = 384;
   int fadeSamples_ = 240;
 
   float fastCoeff_ = 0.02f;
   float slowCoeff_ = 0.0006f;
-  int attackMarkSamples_ = 672;
   int transientCooldownSamples_ = 1344;
-  int maxTransientDrift_ = 720;
 
   std::array<float, kRingSize> ring_{};
-  std::array<uint8_t, kRingSize> transientRing_{};
-  std::array<float, kMaxWindow> hann_{};
-  std::array<float, kMaxCorr> refBuf_{};
   uint64_t writePos_ = 0;
-  std::array<Grain, 2> grains_{};
+  std::array<Voice, kVoiceCount> voices_{};
+  int lead_ = 0;
+  int fadeLen_ = 0;
+  int fadePos_ = 0;
+  double lastAttemptDelay_ = 0.0;
+  int scannedLag_ = 0;
+  Template coarseTemplate_;
+  Template fineTemplate_;
+  double ratio_ = 1.0;
   bool active_ = false;
   int currentSemitones_ = 0;
   float wetMix_ = 0.0f;
@@ -434,8 +637,9 @@ class DropPitch {
   float fastEnv_ = 0.0f;
   float slowEnv_ = 0.0f;
   int transientCooldown_ = 0;
-  int transientMarkLeft_ = 0;
-  int64_t lastTransientEndPos_ = -1;
+  bool transientPending_ = false;
+  int64_t lastTransientPos_ = -1;
+  int quietRun_ = kRingSize;
 
   int appliedFilterSt_ = 0;
   Biquad subHpf_;

@@ -136,8 +136,8 @@ void testEngageHasNoDropout() {
 
 void testNoStaleReadsAfterSilence() {
   // After the input stops, output must decay cleanly to silence within the
-  // shifter's delay, grain window, and 38 Hz compensation filter ringdown:
-  // nothing old is read back.
+  // shifter's delay, its longest splice search span plus crossfade (40 ms),
+  // and the compensation filter ringdown: nothing old is read back.
   const double sr = 48000.0;
   NAMRig::DropPitch dp;
   dp.prepare(sr);
@@ -147,9 +147,9 @@ void testNoStaleReadsAfterSilence() {
     std::vector<float> run = buf;
     dp.reset();
     dp.process(run.data(), static_cast<uint32_t>(run.size()), st);
-    const size_t grainEnd = 4800 + static_cast<size_t>(dp.latencySamples(st)) + 2 * 1728 + 1024;
-    for (size_t i = grainEnd; i < run.size(); ++i) assert(std::fabs(run[i]) < 5.0e-3f);
-    const size_t quiet = grainEnd + 6000;
+    const size_t tailEnd = 4800 + static_cast<size_t>(dp.latencySamples(st)) + static_cast<size_t>(sr * 0.040);
+    for (size_t i = tailEnd; i < run.size(); ++i) assert(std::fabs(run[i]) < 5.0e-3f);
+    const size_t quiet = tailEnd + 6000;
     for (size_t i = quiet; i < run.size(); ++i) assert(std::fabs(run[i]) < 1.0e-6f);
   }
 }
@@ -208,6 +208,112 @@ void testTransientPunchPreserved() {
   }
 }
 
+size_t firstIndexAbove(const std::vector<float>& buf, size_t from, float level) {
+  for (size_t i = from; i < buf.size(); ++i) {
+    if (std::fabs(buf[i]) > level) return i;
+  }
+  return buf.size();
+}
+
+void processInBlocks(NAMRig::DropPitch& dp, std::vector<float>& buf, int semitones) {
+  for (size_t off = 0; off < buf.size(); off += 64) {
+    const uint32_t n = static_cast<uint32_t>(std::min<size_t>(64, buf.size() - off));
+    dp.process(buf.data() + off, n, semitones);
+  }
+}
+
+void testReportedLatencyIsLow() {
+  // Drop settings report at most 6 ms and capo settings at most 12 ms.
+  for (double sr : {44100.0, 48000.0, 96000.0, 192000.0}) {
+    NAMRig::DropPitch dp;
+    dp.prepare(sr);
+    for (int st = NAMRig::DropPitch::kMinSemitones; st <= NAMRig::DropPitch::kMaxSemitones; ++st) {
+      const double ms = 1000.0 * static_cast<double>(dp.latencySamples(st)) / sr;
+      if (st == 0) {
+        assert(ms == 0.0);
+      } else {
+        assert(ms > 0.0);
+        assert(ms <= (st < 0 ? 6.0 : 12.0));
+      }
+    }
+  }
+}
+
+void testPickAttackLatency(double sr, int semitones, double maxMs) {
+  // A picked note after silence must reach half of its dry attack peak within maxMs.
+  constexpr double kTwoPi = 6.28318530717958647692;
+  NAMRig::DropPitch dp;
+  dp.prepare(sr);
+  const size_t start = static_cast<size_t>(sr * 0.2);
+  std::vector<float> dry(static_cast<size_t>(sr * 0.5), 0.0f);
+  for (size_t i = start; i < dry.size(); ++i) {
+    const double t = static_cast<double>(i - start) / sr;
+    const double click = std::exp(-t / 0.0025) *
+                         (0.45 * std::sin(kTwoPi * 2600.0 * t) + 0.30 * std::sin(kTwoPi * 4100.0 * t));
+    const double body = std::exp(-t / 0.2) * 0.45 * std::sin(kTwoPi * 110.0 * t);
+    dry[i] = static_cast<float>(click + body);
+  }
+  std::vector<float> wet = dry;
+  processInBlocks(dp, wet, semitones);
+
+  float dryPeak = 0.0f;
+  for (size_t i = start; i < start + static_cast<size_t>(sr * 0.010); ++i) {
+    dryPeak = std::max(dryPeak, std::fabs(dry[i]));
+  }
+  const size_t dryIdx = firstIndexAbove(dry, 0, 0.5f * dryPeak);
+  const size_t wetIdx = firstIndexAbove(wet, 0, 0.5f * dryPeak);
+  assert(wetIdx < wet.size());
+  assert(wetIdx >= dryIdx);
+  assert(1000.0 * static_cast<double>(wetIdx - dryIdx) / sr <= maxMs);
+}
+
+void testSustainedLatency(double sr, int semitones, double maxMs) {
+  // A level step inside a sustained D3 must reach the output within maxMs.
+  constexpr double kTwoPi = 6.28318530717958647692;
+  NAMRig::DropPitch dp;
+  dp.prepare(sr);
+  const size_t step = static_cast<size_t>(sr * 0.4);
+  std::vector<float> dry(static_cast<size_t>(sr * 0.7));
+  for (size_t i = 0; i < dry.size(); ++i) {
+    const double amp = i < step ? 0.2 : 0.6;
+    dry[i] = static_cast<float>(amp * std::sin(kTwoPi * 146.8324 * static_cast<double>(i) / sr));
+  }
+  std::vector<float> wet = dry;
+  processInBlocks(dp, wet, semitones);
+
+  const size_t dryIdx = firstIndexAbove(dry, 0, 0.42f);
+  const size_t wetIdx = firstIndexAbove(wet, static_cast<size_t>(sr * 0.1), 0.42f);
+  assert(wetIdx < wet.size());
+  assert(wetIdx >= dryIdx);
+  assert(1000.0 * static_cast<double>(wetIdx - dryIdx) / sr <= maxMs);
+}
+
+void testSemitoneChangeIsImmediate() {
+  // A change from -2 st to -5 st mid-note must sound at the new pitch 5 ms later.
+  const double sr = 48000.0;
+  constexpr double kTwoPi = 6.28318530717958647692;
+  NAMRig::DropPitch dp;
+  dp.prepare(sr);
+  const double inFreq = 146.8324;
+  std::vector<float> buf(static_cast<size_t>(sr * 0.6));
+  for (size_t i = 0; i < buf.size(); ++i) {
+    buf[i] = 0.7f * static_cast<float>(std::sin(kTwoPi * inFreq * static_cast<double>(i) / sr));
+  }
+  const size_t change = static_cast<size_t>(sr * 0.3);
+  for (size_t off = 0; off < buf.size(); off += 64) {
+    const uint32_t n = static_cast<uint32_t>(std::min<size_t>(64, buf.size() - off));
+    dp.process(buf.data() + off, n, off < change ? -2 : -5);
+  }
+  for (float s : buf) assert(std::isfinite(s));
+
+  const size_t measureStart = change + static_cast<size_t>(sr * 0.005);
+  const size_t measureLen = static_cast<size_t>(sr * 0.1);
+  const double magNew = measureMagnitudeAtFreq(buf, measureStart, measureLen, sr, inFreq * std::pow(2.0, -5.0 / 12.0));
+  const double magOld = measureMagnitudeAtFreq(buf, measureStart, measureLen, sr, inFreq * std::pow(2.0, -2.0 / 12.0));
+  assert(magNew > 0.15);
+  assert(magNew > magOld * 8.0);
+}
+
 }  // namespace
 
 int main() {
@@ -215,6 +321,18 @@ int main() {
   testEngageHasNoDropout();
   testNoStaleReadsAfterSilence();
   testTransientPunchPreserved();
+  testReportedLatencyIsLow();
+  for (double sr : {44100.0, 48000.0, 96000.0}) {
+    for (int st : {-12, -7, -3, -2, -1}) {
+      testPickAttackLatency(sr, st, 4.0);
+      testSustainedLatency(sr, st, 8.0);
+    }
+    for (int st : {2, 5, 12}) {
+      testPickAttackLatency(sr, st, 10.0);
+      testSustainedLatency(sr, st, 12.0);
+    }
+  }
+  testSemitoneChangeIsImmediate();
   testSingleNoteShift(48000.0, 146.8324, -1);  // D3 -> Db3
   testSingleNoteShift(48000.0, 146.8324, -2);  // D3 -> C3
   testSingleNoteShift(48000.0, 146.8324, -3);  // D3 -> B2

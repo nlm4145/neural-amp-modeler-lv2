@@ -129,6 +129,83 @@ inline float compressorReductionDb(float levelDb, float thresholdDb,
   return slope * x * x / (2.0f * kneeDb);
 }
 
+// Makeup gain in dB for a threshold and ratio: the static reduction of a
+// peak at the reference level. A signal that peaks there keeps its level at
+// every Amount, and the makeup is 0 dB when the compressor does nothing.
+constexpr float kCompressorReferenceDb = -12.0f;
+inline float compressorMakeupDb(float thresholdDb, float ratio) {
+  return compressorReductionDb(kCompressorReferenceDb, thresholdDb, ratio);
+}
+
+// Detector and ballistics shared by the input and the post-FX compressor.
+//
+// The sidechain passes a 100 Hz high-pass first, so the fundamentals of the
+// low strings do not drive more reduction than the other strings.
+// The level is the peak of the last 10 ms, so it stays flat across the cycles
+// of a low note and needs no release of its own. The gain reduction is then
+// smoothed once, in dB, so Attack and Release are the time constants of the
+// reduction itself at every signal level.
+class CompressorCore {
+ public:
+  void prepare(double rate) noexcept {
+    if (rate == rate_) return;
+    rate_ = rate;
+    window_ = static_cast<uint32_t>(std::clamp<long>(std::lround(rate * 0.010), 1, kCapacity - 1));
+    sidechainCoeff_ = static_cast<float>(-std::expm1(-6.28318530717958647692 * 100.0 / rate));
+    reset();
+  }
+
+  void reset() noexcept {
+    head_ = count_ = clock_ = 0;
+    reduction_ = 0.0f;
+    sidechainLow_[0] = sidechainLow_[1] = 0.0f;
+  }
+
+  // Sidechain high-pass for one channel (0 or 1). Returns the detector level.
+  // The level never falls more than 6 dB below the unfiltered input, so
+  // content far below the filter still gets reduction and cannot pass with
+  // the full makeup gain.
+  float sidechainLevel(int channel, float input) noexcept {
+    float& low = sidechainLow_[channel];
+    low += (input - low) * sidechainCoeff_;
+    if (std::fabs(low) < 1.0e-20f) low = 0.0f;
+    return std::max(std::fabs(input - low), 0.5f * std::fabs(input));
+  }
+
+  // Returns the smoothed gain reduction in dB (positive) for one sample.
+  float process(float level, float thresholdDb, float ratio,
+                float attackCoeff, float releaseCoeff) noexcept {
+    while (count_ > 0 && value_[(head_ + count_ - 1) & kMask] <= level) --count_;
+    const uint32_t slot = (head_ + count_) & kMask;
+    value_[slot] = level;
+    stamp_[slot] = clock_;
+    ++count_;
+    if (clock_ - stamp_[head_] >= window_) {
+      head_ = (head_ + 1) & kMask;
+      --count_;
+    }
+    ++clock_;
+    const float peak = value_[head_];
+    const float db = peak > 1.0e-9f ? 20.0f * std::log10(peak) : -180.0f;
+    const float target = compressorReductionDb(db, thresholdDb, ratio);
+    reduction_ += (target - reduction_) * (target > reduction_ ? attackCoeff : releaseCoeff);
+    if (reduction_ < 1.0e-6f && target == 0.0f) reduction_ = 0.0f;
+    return reduction_;
+  }
+
+ private:
+  static constexpr uint32_t kCapacity = 2048;
+  static constexpr uint32_t kMask = kCapacity - 1;
+  double rate_ = 0.0;
+  uint32_t window_ = 480;
+  uint32_t head_ = 0, count_ = 0, clock_ = 0;
+  float reduction_ = 0.0f;
+  float sidechainCoeff_ = 0.013f;
+  float sidechainLow_[2] = {0.0f, 0.0f};
+  float value_[kCapacity] = {};
+  uint32_t stamp_[kCapacity] = {};
+};
+
 // Feed-forward, zero-lookahead stereo compressor. Both channels receive the
 // same gain, driven by the louder channel, so compression never shifts the image.
 // Amount follows the input compressor's curve; control/bypass changes glide.
@@ -137,14 +214,13 @@ class StereoCompressor {
   void initialize(double rate) {
     rate_ = std::max(1.0, rate);
     controlCoeff_ = coefficient(10.0f);
-    envAttack_ = coefficient(1.0f);
-    envRelease_ = coefficient(80.0f);
+    core_.prepare(rate_);
     reset();
   }
 
   void reset() {
-    envelope_ = amount_ = wet_ = 0.0f;
-    gain_ = 1.0f;
+    amount_ = wet_ = 0.0f;
+    core_.reset();
   }
 
   void process(float* left, float* right, uint32_t count, float amount,
@@ -157,19 +233,17 @@ class StereoCompressor {
       amount_ = glide(amount_, targetAmount);
       wet_ = glide(wet_, targetWet);
       if (wet_ == 0.0f) {
-        envelope_ = 0.0f;
-        gain_ = 1.0f;
+        core_.reset();
         continue; // Settled OFF / Amount 0 is bit-exact, including stereo IRs.
       }
-      const float level = std::max(std::fabs(left[i]), std::fabs(right[i]));
-      envelope_ += (level - envelope_) * (level > envelope_ ? envAttack_ : envRelease_);
-      if (envelope_ < 1.0e-20f) envelope_ = 0.0f;
-      const float db = envelope_ > 1.0e-9f ? 20.0f * std::log10(envelope_) : -180.0f;
-      const float reduction = compressorReductionDb(db, -12.0f - 24.0f * amount_,
-                                                     1.0f + 5.0f * amount_);
-      const float targetGain = std::pow(10.0f, (6.0f * amount_ - reduction) * 0.05f);
-      gain_ += (targetGain - gain_) * (targetGain < gain_ ? attack : release);
-      const float linkedGain = 1.0f + wet_ * (gain_ - 1.0f);
+      const float level = std::max(core_.sidechainLevel(0, left[i]),
+                                   core_.sidechainLevel(1, right[i]));
+      const float thresholdDb = -12.0f - 24.0f * amount_;
+      const float ratio = 1.0f + 5.0f * amount_;
+      const float reduction = core_.process(level, thresholdDb, ratio, attack, release);
+      const float gain = std::pow(
+          10.0f, (compressorMakeupDb(thresholdDb, ratio) - reduction) * 0.05f);
+      const float linkedGain = 1.0f + wet_ * (gain - 1.0f);
       left[i] *= linkedGain;
       right[i] *= linkedGain;
     }
@@ -187,8 +261,9 @@ class StereoCompressor {
         : current + (target - current) * controlCoeff_;
   }
   double rate_ = 48000.0;
-  float controlCoeff_ = 0.002f, envAttack_ = 0.02f, envRelease_ = 0.00026f;
-  float envelope_ = 0.0f, gain_ = 1.0f, amount_ = 0.0f, wet_ = 0.0f;
+  float controlCoeff_ = 0.002f;
+  float amount_ = 0.0f, wet_ = 0.0f;
+  CompressorCore core_;
 };
 
 } // namespace NAMRig

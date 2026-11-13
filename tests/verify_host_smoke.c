@@ -170,16 +170,19 @@ int main(int argc, char** argv) {
   for (int b = 0; b < 220; ++b) {
     ((LV2_Atom_Sequence*)controlBuf)->atom.size = sizeof(LV2_Atom_Sequence_Body);
     ((LV2_Atom_Sequence*)notifyBuf)->atom.size = kAtom - sizeof(LV2_Atom);
-    for (uint32_t i = 0; i < 512; ++i) inBuf[i] = 0.5f;
+    for (uint32_t i = 0; i < 512; ++i) inBuf[i] = 1.0f;
     d->run(h, 512);
   }
-  CHECK(outBuf[511] > 0.04f && outBuf[511] < 0.07f,
+  /* A constant input reaches the detector 6 dB down (sidechain floor), so a
+     full-scale input gets about 25 dB of reduction against 20 dB of makeup. */
+  CHECK(outBuf[511] > 0.53f && outBuf[511] < 0.60f,
         "post compressor reduces peaks independently of pre-amp compression");
   CHECK(outBuf[511] == outRightBuf[511] && ctl[29] == 0,
         "post compressor keeps stereo linked without added latency");
   ctl[189] = 0;
   for (int b = 0; b < 30; ++b) {
     ((LV2_Atom_Sequence*)notifyBuf)->atom.size = kAtom - sizeof(LV2_Atom);
+    for (uint32_t i = 0; i < 512; ++i) inBuf[i] = 0.5f;
     d->run(h, 512);
   }
   CHECK(outBuf[511] == 0.5f && outRightBuf[511] == 0.5f && ctl[186] == 100,

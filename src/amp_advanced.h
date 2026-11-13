@@ -59,6 +59,10 @@ class AmpAdvanced {
       appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
       return;
     }
+    if (rate != appliedPreRate_) {
+      appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
+      appliedPreRate_ = rate;
+    }
     const float fullSmooth = chunkCoeff(rate, kChunk);
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
@@ -393,6 +397,7 @@ class AmpAdvanced {
   float appliedPresence_ = 1.0e9f, appliedDepth_ = 1.0e9f, appliedFeedback_ = 1.0e9f;
   double supplyEnvelope_ = 0.0;
   double appliedPostRate_ = 0.0;
+  double appliedPreRate_ = 0.0;
 };
 
 }  // namespace NAMRig

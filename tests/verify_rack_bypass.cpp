@@ -848,8 +848,9 @@ void verify(const LV2_Descriptor* d) {
         : "Console ON primes Cab B signed alignment immediately without discarding buffered audio");
   }
 
-  // At 44.1 kHz, clamping the nominal 20 kHz neutral cut to 0.45*rate
-  // accidentally enables it. OFF must bypass the filters, not fake neutral Hz.
+  // A 44.1 kHz session runs the rig at 48 kHz, so the nominal 20 kHz neutral
+  // cut stays below the 0.45*rate clamp and must be transparent. OFF must
+  // bypass the filters, not fake neutral Hz.
   Fixtures cuts(44100);
   c = defaults(0); c[port(Rack::Spatial)] = c[port(Rack::CabConsole)] = 0;
   Controls edited = c;
@@ -864,7 +865,7 @@ void verify(const LV2_Descriptor* d) {
     cutsBypassed &= uncut.difference(cutOff) == 0;
     cutDifference += uncut.difference(clamped);
   }
-  check(cutsBypassed && cutDifference > 1e-4, "Console OFF really bypasses cabinet cuts at 44.1 kHz, including the clamped neutral high cut");
+  check(cutsBypassed && cutDifference < 1e-9, "Console OFF really bypasses cabinet cuts at 44.1 kHz, and the neutral high cut is transparent there");
 
   c = defaults(6); c[47] = 1; c[port(Rack::Spatial)] = c[port(Rack::CabConsole)] = 0;
   edited = c;

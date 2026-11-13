@@ -209,8 +209,11 @@ class StereoDelay {
       return;
     }
     cleared_ = false;
-    const double timeTarget = std::max(1.0, std::min(static_cast<double>(left_.capacity()) - 2.0,
-        static_cast<double>(timeMs) * 0.001 * rate_));
+    // A whole-sample delay makes the settled feedback path a plain read. An
+    // interpolated read there loses treble on every repeat.
+    const double timeTarget = std::round(std::max(4.0, std::min(
+        static_cast<double>(left_.capacity()) - 8.0,
+        static_cast<double>(timeMs) * 0.001 * rate_)));
     if (smoothedTime_ <= 0.0) smoothedTime_ = timeTarget;
     const float feedback = clamp01(feedbackPercent * 0.01f) * 0.95f;
     const double cutoff = 12000.0 * std::pow(0.125, clamp01(dampingPercent * 0.01f));
@@ -219,13 +222,14 @@ class StereoDelay {
     const float mixCoeff = static_cast<float>(1.0 - std::exp(-1.0 / (rate_ * 0.020)));
     for (size_t i = 0; i < count; ++i) {
       smoothedTime_ += (timeTarget - smoothedTime_) * timeCoeff;
+      if (std::fabs(timeTarget - smoothedTime_) < 1.0e-3) smoothedTime_ = timeTarget;
       smoothedMix_ += (mixTarget - smoothedMix_) * mixCoeff;
       if (std::fabs(mixTarget - smoothedMix_) < 1.0e-4f) smoothedMix_ = mixTarget;
       // The read happens before this sample is written, so the line's newest
       // sample is already one behind the input.
       const double tapTime = smoothedTime_ - 1.0;
-      const float tapL = left_.readFrac(tapTime);
-      const float tapR = right_.readFrac(tapTime);
+      const float tapL = left_.readSinc8(tapTime);
+      const float tapR = right_.readSinc8(tapTime);
       dampL_ += (tapL - dampL_) * dampCoeff;
       dampR_ += (tapR - dampR_) * dampCoeff;
       left_.write(left[i] + soft(feedback * dampL_));
@@ -338,6 +342,8 @@ class PlateReverb {
       if (std::fabs(roomTarget - smoothedRoom_) < 1.0e-4f) smoothedRoom_ = roomTarget;
       if (std::fabs(mixTarget - smoothedMix_) < 1.0e-4f) smoothedMix_ = mixTarget;
       smoothedSize_ += (sizeTarget - smoothedSize_) * sizeCoeff;
+      if (std::fabs(sizeTarget - smoothedSize_) < 1.0e-4f) smoothedSize_ = sizeTarget;
+      settled_ = smoothedSize_ == sizeTarget;
       const double scale = unit_ * smoothedSize_;
       const double earlyScale = msUnit * smoothedSize_;
       lfoPhase_ += lfoStep;
@@ -346,7 +352,7 @@ class PlateReverb {
 
       const float input = 0.5f * (left[i] + right[i]);
       predelay_.write(input);
-      const float pre = predelay_.readFrac(predelaySamples);
+      const float pre = predelay_.read(static_cast<size_t>(predelaySamples + 0.5));
       bandwidth_ += (pre - bandwidth_) * bandwidthCoeff;
       float v = bandwidth_;
       v = allpass(inputAp_[0], v, kInputAp[0] * scale, 0.75f);
@@ -357,41 +363,41 @@ class PlateReverb {
       early_.write(v);
       float earlyL = 0.0f, earlyR = 0.0f;
       for (size_t t = 0; t < 5; ++t) {
-        earlyL += kEarlyGainL[t] * early_.readFrac(kEarlyMsL[t] * earlyScale);
-        earlyR += kEarlyGainR[t] * early_.readFrac(kEarlyMsR[t] * earlyScale);
+        earlyL += kEarlyGainL[t] * tap(early_, kEarlyMsL[t] * earlyScale);
+        earlyR += kEarlyGainR[t] * tap(early_, kEarlyMsR[t] * earlyScale);
       }
       earlyLpL_ += (earlyL - earlyLpL_) * dampCoeff;
       earlyLpR_ += (earlyR - earlyLpR_) * dampCoeff;
 
       const float inL = v + decay * tankOut_[1];
       const float inR = v + decay * tankOut_[0];
-      float a = allpass(tankAp1_[0], inL, 672.0 * scale + mod, -0.7f);
+      float a = modulatedAllpass(tankAp1_[0], inL, 672.0 * scale + mod, -0.7f);
       tankDelay1_[0].write(a);
-      damp_[0] += (tankDelay1_[0].readFrac(4453.0 * scale) - damp_[0]) * dampCoeff;
+      damp_[0] += (tap(tankDelay1_[0], 4453.0 * scale) - damp_[0]) * dampCoeff;
       a = allpass(tankAp2_[0], damp_[0] * decay, 1800.0 * scale, 0.5f);
       tankDelay2_[0].write(a);
-      float b = allpass(tankAp1_[1], inR, 908.0 * scale - mod, -0.7f);
+      float b = modulatedAllpass(tankAp1_[1], inR, 908.0 * scale - mod, -0.7f);
       tankDelay1_[1].write(b);
-      damp_[1] += (tankDelay1_[1].readFrac(4217.0 * scale) - damp_[1]) * dampCoeff;
+      damp_[1] += (tap(tankDelay1_[1], 4217.0 * scale) - damp_[1]) * dampCoeff;
       b = allpass(tankAp2_[1], damp_[1] * decay, 2656.0 * scale, 0.5f);
       tankDelay2_[1].write(b);
-      tankOut_[0] = tankDelay2_[0].readFrac(3720.0 * scale);
-      tankOut_[1] = tankDelay2_[1].readFrac(3163.0 * scale);
+      tankOut_[0] = tap(tankDelay2_[0], 3720.0 * scale);
+      tankOut_[1] = tap(tankDelay2_[1], 3163.0 * scale);
 
-      const float tankL = 0.6f * (tankDelay1_[1].readFrac(266.0 * scale) +
-                                  tankDelay1_[1].readFrac(2974.0 * scale) -
-                                  tankAp2_[1].readFrac(1913.0 * scale) +
-                                  tankDelay2_[1].readFrac(1996.0 * scale) -
-                                  tankDelay1_[0].readFrac(1990.0 * scale) -
-                                  tankAp2_[0].readFrac(187.0 * scale) -
-                                  tankDelay2_[0].readFrac(1066.0 * scale));
-      const float tankR = 0.6f * (tankDelay1_[0].readFrac(353.0 * scale) +
-                                  tankDelay1_[0].readFrac(3627.0 * scale) -
-                                  tankAp2_[0].readFrac(1228.0 * scale) +
-                                  tankDelay2_[0].readFrac(2673.0 * scale) -
-                                  tankDelay1_[1].readFrac(2111.0 * scale) -
-                                  tankAp2_[1].readFrac(335.0 * scale) -
-                                  tankDelay2_[1].readFrac(121.0 * scale));
+      const float tankL = 0.6f * (tap(tankDelay1_[1], 266.0 * scale) +
+                                  tap(tankDelay1_[1], 2974.0 * scale) -
+                                  tap(tankAp2_[1], 1913.0 * scale) +
+                                  tap(tankDelay2_[1], 1996.0 * scale) -
+                                  tap(tankDelay1_[0], 1990.0 * scale) -
+                                  tap(tankAp2_[0], 187.0 * scale) -
+                                  tap(tankDelay2_[0], 1066.0 * scale));
+      const float tankR = 0.6f * (tap(tankDelay1_[0], 353.0 * scale) +
+                                  tap(tankDelay1_[0], 3627.0 * scale) -
+                                  tap(tankAp2_[0], 1228.0 * scale) +
+                                  tap(tankDelay2_[0], 2673.0 * scale) -
+                                  tap(tankDelay1_[1], 2111.0 * scale) -
+                                  tap(tankAp2_[1], 335.0 * scale) -
+                                  tap(tankDelay2_[1], 121.0 * scale));
 
       left[i] += 0.35f * smoothedRoom_ * earlyLpL_ + smoothedMix_ * tankL;
       right[i] += 0.35f * smoothedRoom_ * earlyLpR_ + smoothedMix_ * tankR;
@@ -412,8 +418,20 @@ class PlateReverb {
     return static_cast<size_t>(std::ceil(base * scale)) + 8;
   }
   static float clamp01(float x) { return std::max(0.0f, std::min(1.0f, x)); }
-  static float allpass(DelayLine& line, float x, double delay, float g) {
-    const float out = line.readFrac(delay);
+  // A fixed tap reads a whole sample once Size settles: an interpolated read
+  // inside the tank loses treble on every pass, beyond what Damping asks.
+  // While Size glides, the tap interpolates so the glide stays smooth.
+  float tap(const DelayLine& line, double delay) const {
+    return settled_ ? line.read(static_cast<size_t>(delay + 0.5)) : line.readSinc8(delay);
+  }
+  float allpass(DelayLine& line, float x, double delay, float g) const {
+    const float out = tap(line, delay);
+    const float v = x - g * out;
+    line.write(v);
+    return out + g * v;
+  }
+  static float modulatedAllpass(DelayLine& line, float x, double delay, float g) {
+    const float out = line.readSinc8(delay);
     const float v = x - g * out;
     line.write(v);
     return out + g * v;
@@ -431,6 +449,7 @@ class PlateReverb {
   float earlyLpL_ = 0.0f, earlyLpR_ = 0.0f;
   double lfoPhase_ = 0.0;
   float smoothedRoom_ = 0.0f, smoothedMix_ = 0.0f, smoothedSize_ = -1.0f;
+  bool settled_ = false;
   bool cleared_ = true;
 };
 

@@ -199,6 +199,8 @@ Plugin::~Plugin() {
 }
 
 bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcept {
+  hostSampleRate = rate;
+  rate = HostRateAdapter::internalRate(rate);
   sampleRate = rate;
   LV2_Options_Option* options = nullptr;
 
@@ -280,12 +282,14 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   // maxBlockLength option, and a null scratch_ would crash on first use.
   // The default (512) is generous for typical blocks; if a host later
   // reports a larger block via optionsSet, it grows.
-  setMaxBufferSize(static_cast<int>(maxBufferSize));
+  setMaxBufferSize(static_cast<int>(hostMaxBufferSize));
   return true;
 }
 
 void Plugin::setSampleRateAndReload(double rate) noexcept {
-  if (rate <= 0.0 || std::fabs(rate - sampleRate) < 0.5) return;
+  if (rate <= 0.0 || std::fabs(rate - hostSampleRate) < 0.5) return;
+  hostSampleRate = rate;
+  rate = HostRateAdapter::internalRate(rate);
   sampleRate = rate;
   for (auto& loader : loaders) {
     loader.SetExternalSampleRate(static_cast<int>(rate));
@@ -312,7 +316,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   appliedLowCut = -1.0f;
   appliedHighCut = -1.0f;
   osTopologySignature = ~uint64_t{0};
-  setMaxBufferSize(static_cast<int>(maxBufferSize));
+  setMaxBufferSize(static_cast<int>(hostMaxBufferSize));
   for (size_t i = 0; i < kStageCount; ++i) {
     if (!modelPaths[i].empty() && modelPaths[i].size() < MAX_FILE_NAME) {
       scheduleModelLoad(static_cast<Stage>(i), modelPaths[i].c_str(),
@@ -321,8 +325,37 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   }
 }
 
+void Plugin::configureHostRateAdapter() noexcept {
+  hostRateAdapted = std::fabs(sampleRate - hostSampleRate) > 0.5;
+  adapterQueued = 0;
+  if (!hostRateAdapted) return;
+  adapterCapacity = std::max<uint32_t>(kAdapterMinCapacity,
+                                       static_cast<uint32_t>(std::max(1, hostMaxBufferSize)));
+  const size_t internalCapacity = HostRateAdapter::internalFrames(adapterCapacity);
+  adapterIn.configure(HostRateAdapter::kUp, HostRateAdapter::kDown,
+                      HostRateAdapter::kProtoLength, HostRateAdapter::kStopbandDb,
+                      adapterCapacity);
+  adapterInput.assign(internalCapacity + 8, 0.0f);
+  for (size_t ch = 0; ch < 2; ++ch) {
+    adapterOut[ch].configure(HostRateAdapter::kDown, HostRateAdapter::kUp,
+                             HostRateAdapter::kProtoLength, HostRateAdapter::kStopbandDb,
+                             internalCapacity);
+    adapterCore[ch].assign(internalCapacity + 8, 0.0f);
+    adapterBack[ch].assign(adapterOut[ch].maxOutput(internalCapacity) + 8, 0.0f);
+    adapterQueue[ch].fill(0.0f);
+  }
+  adapterNotify.assign(16384, 0);
+  // The final balance and ceiling act on the session-rate output: the output
+  // converter reconstructs peaks between limited samples and keeps history.
+  masterOutput.initialize(hostSampleRate);
+}
+
 void Plugin::setMaxBufferSize(int size) noexcept {
+  hostMaxBufferSize = size;
+  if (std::fabs(sampleRate - hostSampleRate) > 0.5)
+    size = static_cast<int>(HostRateAdapter::internalFrames(static_cast<size_t>(std::max(1, size))));
   maxBufferSize = size;
+  configureHostRateAdapter();
   for (auto& loader : loaders)
     loader.SetDefaultMaxAudioBufferSize(size);
   // Per-stage, per-level converter sizing. Level L of a True-2^L cascade sees
@@ -340,6 +373,16 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     osScratch[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
     osScratch2[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
     resetNativeStream(st);
+  }
+  for (size_t bank = 0; bank < kAnalogBanks; ++bank) {
+    for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
+      analogUp[bank][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+      analogDown[bank][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+      analogUp[bank][lvl].reset();
+      analogDown[bank][lvl].reset();
+    }
+    for (auto& scratch : analogScratch[bank])
+      scratch.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   }
   osChain.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   const size_t post = static_cast<size_t>(std::max(1, size));
@@ -425,7 +468,11 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                                                    : sessionRate;
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
+        // Only a True domain has the converters that band-limit a phase-split
+        // LSTM. Legacy, parallel-cabinet and NONE loads keep the LSTM native.
+        loader.SetPolyphaseRecurrent(pipelineFactor > 0);
         response.model = loader.CreateFromFile(message->path);
+        loader.SetPolyphaseRecurrent(false);
         loader.SetExternalSampleRate(sessionRate);
         // The model must be sized for the largest block it will ever be fed.
         // NeuralAudio sizes internal buffers (WaveNet Eigen matrices, ring
@@ -447,8 +494,12 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
           // A model NeuralAudio cannot rate-adapt would otherwise run at the
           // domain rate with weights trained for its own rate. NONE keeps the
           // unadapted reference behaviour on purpose.
+          // An LSTM that the loader split into native-rate phases already
+          // runs at the domain rate.
           const std::string architecture = modelArchitecture(message->path);
-          if (mode != Plugin::kOsNone && !rateAdaptable(architecture)) {
+          const bool phaseSplit =
+              dynamic_cast<NeuralAudio::PolyphaseModel*>(response.model) != nullptr;
+          if (mode != Plugin::kOsNone && !rateAdaptable(architecture) && !phaseSplit) {
             response.nativeRate = response.model->GetSampleRate();
             lv2_log_note(&rig->logger,
                          "Model '%s' (%s) is not rate-adaptable; it runs at its "
@@ -577,6 +628,89 @@ void Plugin::tunerSetRates(double rate) {
 }
 
 void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
+  if (!hostRateAdapted || !ports.control || !ports.notify || !ports.audio_in ||
+      !ports.audio_out || !ports.audio_out_r) {
+    processCore(sampleCount, deadlineTicks);
+    return;
+  }
+
+  // The rig runs at sampleRate. Convert the session input to that rate, run
+  // the rig on private buffers, and convert both outputs back. The converters
+  // emit at least as many session frames as they consume, so a short queue
+  // carries the surplus and the path is an exact delay at every block size.
+  const float* hostIn = ports.audio_in;
+  float* hostOut[2] = {ports.audio_out, ports.audio_out_r};
+  const LV2_Atom_Sequence* hostControl = ports.control;
+  LV2_Atom_Sequence* hostNotify = ports.notify;
+  const uint32_t notifyType = hostNotify->atom.type;
+  const float previousLatency = ports.latency ? *ports.latency : 0.0f;
+  if (ports.latency) *ports.latency = -1.0f;
+
+  uint32_t done = 0;
+  do {
+    const uint32_t n = std::min(adapterCapacity, sampleCount - done);
+    const size_t m = adapterIn.process(hostIn + done, n, adapterInput.data());
+    std::fill(adapterCore[0].begin(), adapterCore[0].begin() + m, 0.0f);
+    std::fill(adapterCore[1].begin(), adapterCore[1].begin() + m, 0.0f);
+    ports.audio_in = adapterInput.data();
+    ports.audio_out = adapterCore[0].data();
+    ports.audio_out_r = adapterCore[1].data();
+    if (done > 0) {
+      // Events and notifications belong to the first pass of a host block.
+      adapterEmptyControl.atom.type = hostControl->atom.type;
+      adapterEmptyControl.atom.size = sizeof(LV2_Atom_Sequence_Body);
+      adapterEmptyControl.body = hostControl->body;
+      ports.control = &adapterEmptyControl;
+      auto* scratch = reinterpret_cast<LV2_Atom_Sequence*>(adapterNotify.data());
+      scratch->atom.type = notifyType;
+      scratch->atom.size = static_cast<uint32_t>(adapterNotify.size() - sizeof(LV2_Atom));
+      ports.notify = scratch;
+    }
+    processCore(static_cast<uint32_t>(m), deadlineTicks);
+    ports.audio_in = hostIn;
+    ports.audio_out = hostOut[0];
+    ports.audio_out_r = hostOut[1];
+    ports.control = hostControl;
+    ports.notify = hostNotify;
+
+    size_t produced = 0;
+    for (size_t ch = 0; ch < 2; ++ch)
+      produced = adapterOut[ch].process(adapterCore[ch].data(), m, adapterBack[ch].data());
+    const size_t fromQueue = std::min<size_t>(adapterQueued, n);
+    const size_t fromProduced = std::min<size_t>(produced, n - fromQueue);
+    const size_t surplus = std::min(produced - fromProduced,
+                                    kAdapterQueue - (adapterQueued - fromQueue));
+    for (size_t ch = 0; ch < 2; ++ch) {
+      float* out = hostOut[ch] + done;
+      auto& queue = adapterQueue[ch];
+      std::copy(queue.begin(), queue.begin() + fromQueue, out);
+      std::copy(queue.begin() + fromQueue, queue.begin() + adapterQueued, queue.begin());
+      std::copy(adapterBack[ch].begin(), adapterBack[ch].begin() + fromProduced, out + fromQueue);
+      std::copy(adapterBack[ch].begin() + fromProduced,
+                adapterBack[ch].begin() + fromProduced + surplus,
+                queue.begin() + (adapterQueued - fromQueue));
+      const size_t written = fromQueue + fromProduced;
+      const float fill = written > 0 ? out[written - 1] : 0.0f;
+      std::fill(out + written, out + n, fill);
+    }
+    adapterQueued = adapterQueued - fromQueue + surplus;
+    const float reduction = masterOutput.process(
+        hostOut[0] + done, hostOut[1] + done, n,
+        portValue(ports.output_ceiling, 0.0f), portValue(ports.output_balance, 0.0f));
+    if (ports.output_reduction) *ports.output_reduction = reduction;
+    done += n;
+  } while (done < sampleCount);
+
+  if (ports.latency) {
+    const float internal = *ports.latency;
+    *ports.latency = internal < 0.0f
+        ? previousLatency
+        : static_cast<float>(std::lround(internal * hostSampleRate / sampleRate) +
+                             HostRateAdapter::kLatencyFrames);
+  }
+}
+
+void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   cabinetDeadlineTicks = deadlineTicks;
   if (!ports.control || !ports.notify || !ports.audio_in || !ports.audio_out ||
       !ports.audio_out_r || !ports.stereo_width || !ports.room ||
@@ -974,40 +1108,32 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
 
   // Feed-forward guitar compressor before the pedal/amp chain.
   // Amount progressively lowers threshold (-12 -> -36 dB), raises ratio
-  // (1:1 -> 6:1), and adds up to 6 dB makeup. Attack (1..100 ms, default 8 ms)
-  // and release (10..1000 ms, default 120 ms) smooth gain reduction with a 6 dB
-  // soft knee to retain pick definition without pumping.
+  // (1:1 -> 6:1), and adds the makeup that keeps a -12 dBFS peak at its level
+  // (up to 20 dB). Attack (1..100 ms, default 8 ms)
+  // and release (10..1000 ms, default 120 ms) are the time constants of the
+  // gain reduction in dB, with a 6 dB soft knee (see CompressorCore).
   // Port 184 (compressor_enabled) bypasses the compressor when toggled off.
   const bool compEnabled = !ports.compressor_enabled || *ports.compressor_enabled >= 0.5f;
   const float compAmount = compEnabled
       ? std::max(0.0f, std::min(1.0f, *ports.compressor * 0.01f))
       : 0.0f;
   if (compAmount <= 0.0001f) {
-    compressorEnvelope = 0.0f;
-    compressorGain = 1.0f;
+    preCompressor.reset();
   } else {
     const float thresholdDb = -12.0f - 24.0f * compAmount;
     const float ratio = 1.0f + 5.0f * compAmount;
-    const float makeupDb = 6.0f * compAmount;
+    const float makeupDb = compressorMakeupDb(thresholdDb, ratio);
     const float attackMs = std::max(0.1f, portValue(ports.compressor_attack, kCompressorAttackDefault));
     const float releaseMs = std::max(1.0f, portValue(ports.compressor_release, kCompressorReleaseDefault));
     compressorTimingCache.configure(sampleRate, attackMs, releaseMs, blockRounding);
-    const float envAttack = rateCache.envAttack;
-    const float envRelease = rateCache.envRelease;
     const float gainAttack = compressorTimingCache.gainAttack;
     const float gainRelease = compressorTimingCache.gainRelease;
+    preCompressor.prepare(sampleRate);
     for (uint32_t i = 0; i < sampleCount; ++i) {
-      const float level = std::fabs(ports.audio_out[i]);
-      compressorEnvelope += (level - compressorEnvelope) *
-          (level > compressorEnvelope ? envAttack : envRelease);
-      const float levelDb = compressorEnvelope > 1.0e-9f
-          ? 20.0f * std::log10(compressorEnvelope) : -180.0f;
-      const float reductionDb = compressorReductionDb(levelDb, thresholdDb,
-                                                       ratio, 6.0f);
-      const float targetGain = dbToLinear(makeupDb - reductionDb);
-      compressorGain += (targetGain - compressorGain) *
-          (targetGain < compressorGain ? gainAttack : gainRelease);
-      ports.audio_out[i] *= compressorGain;
+      const float reductionDb = preCompressor.process(
+          preCompressor.sidechainLevel(0, ports.audio_out[i]), thresholdDb, ratio,
+          gainAttack, gainRelease);
+      ports.audio_out[i] *= dbToLinear(makeupDb - reductionDb);
     }
   }
 
@@ -1218,6 +1344,10 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       for (auto& up : stageUp) up.reset();
     for (auto& stageDown : osDown)
       for (auto& down : stageDown) down.reset();
+    for (auto& bank : analogUp)
+      for (auto& up : bank) up.reset();
+    for (auto& bank : analogDown)
+      for (auto& down : bank) down.reset();
     for (size_t st = 0; st < kStageCount; ++st) resetNativeStream(st);
   }
 
@@ -1235,9 +1365,15 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
   float blockPreAmpPeak = 0.0f;
   float blockPostAmpPeak = 0.0f;
   bool ampMetersCapturedThisSlice = false;
+  // One stage. The amp stage has analog-modelled stages in front of its model
+  // (overdrive, Amp Drive, Pre-Amp Tonal Sculpt) and behind it (power stage,
+  // output transformer, speaker dynamics). `parts` selects them, so a
+  // native-rate amp model can run each part in its own domain.
+  enum : unsigned { kPartPre = 1u, kPartModel = 2u, kPartPost = 4u, kPartAll = 7u };
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
-                        float* samples, size_t count, double domainRate) {
-    if (stage == 1) {
+                        float* samples, size_t count, double domainRate,
+                        unsigned parts = kPartAll) {
+    if (stage == 1 && (parts & kPartPre)) {
       // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
       const bool odOn = portValue(ports.od_enabled, 0.0f) >= 0.5f;
       overdrive.process(samples, count, domainRate, portValue(ports.od_drive, 0.0f),
@@ -1263,8 +1399,8 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         if (a > blockPreAmpPeak) blockPreAmpPeak = a;
       }
     }
-    runModel(stage, model, samples, count, domainRate);
-    if (stage == stageIndex(Stage::Amp)) {
+    if (parts & kPartModel) runModel(stage, model, samples, count, domainRate);
+    if (stage == stageIndex(Stage::Amp) && (parts & kPartPost)) {
       const bool powerOn = rackOn(Rack::Power);
       const int tubeProfile = rackOn(Rack::PowerTube) ? tubeApplied : PowerTube::kCaptured;
       const bool activeTube = tubeProfile != PowerTube::kCaptured &&
@@ -1297,6 +1433,34 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
         blockPostAmpPeak = std::max(blockPostAmpPeak, std::fabs(samples[i]));
       ampMetersCapturedThisSlice = true;
     }
+  };
+
+  // UP(f) -> body(domain, count, rate) -> DOWN(f) on one of the amp's analog
+  // converter banks. A native-rate amp model cannot join a True domain, so
+  // its analog stages get their own.
+  auto runAnalogDomain = [&](size_t bank, float* samples, uint32_t count, int f,
+                             auto&& body) -> uint32_t {
+    const size_t levels = cascadeLevels(f);
+    float* bufs[2] = {analogScratch[bank][0].data(), analogScratch[bank][1].data()};
+    size_t n = analogUp[bank][0].process(samples, count, bufs[0]);
+    for (size_t c = 1; c < levels && n > 0; ++c)
+      n = analogUp[bank][c].process(bufs[(c - 1) % 2], n, bufs[c % 2]);
+    float* domain = bufs[(levels - 1) % 2];
+    if (n + 64 > analogScratch[bank][0].size()) return count;
+    if (n == 0) return 0;
+    body(domain, n, sampleRate * f);
+    size_t back = n;
+    const float* dnIn = domain;
+    for (size_t c = levels; c-- > 0;) {
+      float* dnOut = (c == 0) ? samples : bufs[(c - 1) % 2];
+      back = analogDown[bank][c].process(dnIn, back, dnOut);
+      dnIn = dnOut;
+    }
+    if (back < count) {
+      const float fill = back > 0 ? samples[back - 1] : samples[0];
+      for (size_t i = back; i < count; ++i) samples[i] = fill;
+    }
+    return static_cast<uint32_t>(back);
   };
 
   // Process one or more consecutive models inside ONE TRUE domain. `owner`
@@ -1374,6 +1538,38 @@ void Plugin::process(uint32_t sampleCount, uint64_t deadlineTicks) noexcept {
       // Non-adaptable models (LSTM, ...) run at their own rate: decimate the
       // session stream, process, interpolate back. Same rate = plain base path.
       const int decimation = nativeDecimation(st);
+      const int analogFactor = decimation > 0 && st == stageIndex(Stage::Amp)
+          ? truePipelineFactor(osApplied[st], sampleRate) : 0;
+      if (analogFactor > 1) {
+        // The model stays at its native rate. The analog stages around it
+        // run in the True domain that the amp's mode selects.
+        // A converter that is still priming returns fewer frames. The
+        // frames it did not reach stay silent instead of holding stale input.
+        const uint32_t requested = n;
+        n = runAnalogDomain(0, chain, n, analogFactor,
+                            [&](float* domain, size_t m, double rate) {
+                              applyModel(st, models[st], domain, m, rate, kPartPre);
+                            });
+        if (decimation > 1) {
+          n = runNativeDomain(st, chain, n, decimation,
+                              [&](float* domain, uint32_t m, double rate) {
+                                applyModel(st, models[st], domain, m, rate, kPartModel);
+                              });
+        } else {
+          applyModel(st, models[st], chain, n, sampleRate, kPartModel);
+        }
+        n = runAnalogDomain(1, chain, n, analogFactor,
+                            [&](float* domain, size_t m, double rate) {
+                              applyModel(st, models[st], domain, m, rate, kPartPost);
+                            });
+        if (n < requested) std::fill(chain + n, chain + requested, 0.0f);
+        if (off == 0)
+          latencyFrames += 2 * cascadeLatencyFrames(analogFactor) +
+                           nativeLatencyFrames(decimation);
+        modelProcessed = true;
+        ++position;
+        continue;
+      }
       if (decimation > 0) {
         if (decimation > 1) {
           n = runNativeDomain(st, chain, n, decimation,
@@ -2001,9 +2197,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   }
 
   // Final balance and linked peak limiting, including FX tails/reference tone.
-  const float reduction = masterOutput.process(ports.audio_out, ports.audio_out_r, count,
-      portValue(ports.output_ceiling, 0.0f), portValue(ports.output_balance, 0.0f));
-  if (ports.output_reduction) *ports.output_reduction = reduction;
+  // A rate-adapted session applies them after the output converter instead.
+  if (!hostRateAdapted) {
+    const float reduction = masterOutput.process(ports.audio_out, ports.audio_out_r, count,
+        portValue(ports.output_ceiling, 0.0f), portValue(ports.output_balance, 0.0f));
+    if (ports.output_reduction) *ports.output_reduction = reduction;
+  }
 
   // ---- Master output level meter (post-effects, final output) ----
   {
@@ -2013,6 +2212,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       const float b = std::fabs(ports.audio_out_r[i]);
       if (a > peak) peak = a;
       if (b > peak) peak = b;
+    }
+    if (hostRateAdapted) {
+      // The ceiling runs after this meter, so the meter applies its limit.
+      const float ceilingDb = portValue(ports.output_ceiling, 0.0f);
+      if (std::isfinite(ceilingDb) && ceilingDb < 0.0f)
+        peak = std::min(peak, std::pow(10.0f, std::max(ceilingDb, -24.0f) * 0.05f));
     }
     const float blockDb = peak > 1e-9f ? 20.0f * std::log10(peak) : -120.0f;
     const float releasePerBlock = 20.0f * (float)count / (float)sampleRate;
