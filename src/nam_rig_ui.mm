@@ -224,6 +224,7 @@ static double copilotParseClock(NSString* text) {
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
 - (void)applyTransformerPreset:(NSButton*)sender;
+- (void)applyHfFilterPreset:(NSButton*)sender;
 - (void)slotPresetPopupChanged:(NSPopUpButton*)sender;
 - (void)saveSlotPreset:(NSMenuItem*)sender;
 - (void)saveSlotPresetAs:(NSMenuItem*)sender;
@@ -1557,6 +1558,36 @@ static double copilotParseClock(NSString* text) {
   const int slope = NAMRig::ModelBandLimit::clampSlope(static_cast<float>(sender.selectedItem.tag));
   _state->sendControl(NAMRig::kModelBandLimitSlopePort, static_cast<float>(slope));
   _state->updateControl(NAMRig::kModelBandLimitSlopePort, static_cast<float>(slope));
+  [self markPresetModified];
+}
+
+- (void)applyHfFilterPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct HfPreset {
+    float enabled;
+    float cutoffHz;
+    float slope;
+    float rippleDb;
+  };
+  const HfPreset presets[] = {
+    {0.0f, NAMRig::kModelBandLimitCutoffDefault, NAMRig::kModelBandLimitSlopeDefault, NAMRig::kModelBandLimitRippleDefault}, // OFF / BYPASS
+    {1.0f, 20500.0f, 3.0f, 0.05f}, // Studio Transparent
+    {1.0f, 13500.0f, 2.0f, 0.15f}, // De-Fizz Modern Metal
+    {1.0f, 11000.0f, 1.0f, 0.60f}, // Lead Bite Focus
+    {1.0f,  8500.0f, 0.0f, 0.05f}, // Warm Vintage Amp
+    {1.0f,  6500.0f, 0.0f, 0.05f}, // Smooth Clean / Jazz
+    {1.0f,  4500.0f, 1.0f, 0.30f}, // Dark / Lo-Fi
+  };
+  if (sender.tag < 0 || sender.tag >= static_cast<NSInteger>(sizeof(presets) / sizeof(presets[0]))) return;
+  const HfPreset& p = presets[sender.tag];
+  _state->sendControl(NAMRig::kModelBandLimitCutoffPort, p.cutoffHz);
+  _state->updateControl(NAMRig::kModelBandLimitCutoffPort, p.cutoffHz);
+  _state->sendControl(NAMRig::kModelBandLimitSlopePort, p.slope);
+  _state->updateControl(NAMRig::kModelBandLimitSlopePort, p.slope);
+  _state->sendControl(NAMRig::kModelBandLimitRipplePort, p.rippleDb);
+  _state->updateControl(NAMRig::kModelBandLimitRipplePort, p.rippleDb);
+  _state->sendControl(NAMRig::kModelBandLimitPort, p.enabled);
+  _state->updateControl(NAMRig::kModelBandLimitPort, p.enabled);
   [self markPresetModified];
 }
 
@@ -5459,16 +5490,23 @@ static NSPopUpButton* addSlotPresetDropdown(
     NSNumber* enabledPort = @(NAMRig::kPostCompressorEnabledPort);
     spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
     spec[@"enabledPort"] = enabledPort;
+  } else if ([slotKey isEqualToString:@"hf_filter"]) {
+    NSNumber* enabledPort = @(NAMRig::kModelBandLimitPort);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
   }
   [state->deckSlotSpecs addObject:spec];
   state->rebuildSlotPresetMenu(slotIdx);
 
   if ([container isKindOfClass:[NSStackView class]]) {
     [(NSStackView*)container addArrangedSubview:popup];
-  } else {
+    [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
+  } else if (container) {
     [container addSubview:popup];
+    [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
+  } else {
+    popup.translatesAutoresizingMaskIntoConstraints = YES;
   }
-  [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
   return popup;
 }
 
@@ -7946,6 +7984,19 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     }
 
     rigInstallGraphControls(state);
+    state->hfFilterPresetPopup = addSlotPresetDropdown(
+        nil, state, @"hf_filter", @"HF Filter",
+        @[@(NAMRig::kModelBandLimitCutoffPort),
+          @(NAMRig::kModelBandLimitSlopePort),
+          @(NAMRig::kModelBandLimitRipplePort)],
+        @[@"OFF / BYPASS", @"Studio Transparent", @"De-Fizz Modern Metal",
+          @"Lead Bite Focus", @"Warm Vintage Amp", @"Smooth Clean / Jazz",
+          @"Dark / Lo-Fi"],
+        @selector(applyHfFilterPreset:));
+    if (state->hfFilterPresetPopup) {
+      state->hfFilterPresetPopup.toolTip =
+          @"Quick tone presets for the HF Filter (picking one turns HF FILTER on; OFF / BYPASS turns it off). Also lets you Save, Rename, and Delete your own presets.";
+    }
     state->workspace = rigCreateWorkspace(state, rigPane, boxRow, expansionSlot,
         @[knobGroups[0], knobGroups[1], knobGroups[2], dropPitchKnobGroup, hfFilterKnobGroup]);
     addToneBrowser(state, tonePane);

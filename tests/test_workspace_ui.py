@@ -27,5 +27,8 @@ assert 'self.state->selectDeckTab(1)' in workspace, "Leaving tuner must restore 
 assert 'self.state->stageCards' in workspace, "Existing model cards must be reused"
 assert 'self.state->modelPickers' in workspace, "Existing model dropdowns must be reused"
 assert 'racksForPane' in workspace, "Existing DSP racks must be reused"
+assert 'self.state->hfFilterPresetPopup' in workspace, "HF Filter card must place preset dropdown"
+assert 'addSlotPresetDropdown(\n        nil, state, @"hf_filter"' in ui
+assert 'applyHfFilterPreset:' in ui
 
 print("  PASS  contextual workspace covers every stage and modifier with live control reuse")
