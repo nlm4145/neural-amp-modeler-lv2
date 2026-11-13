@@ -292,6 +292,9 @@ struct RigUIState {
   std::array<__strong NAMPinEQEditor*, NAMRig::kPinEqPaneCount> pinEditors{};
   __strong RigButton* cab2PolarityButton = nil;
   bool cab2PolarityInverted = false;
+  __strong RigButton* spatialCenterBlendButton = nil;
+  bool spatialCenterBlend = false;
+  __strong RigButton* cabAutoAlignButton = nil;
 
   void selectDeckTab(NSInteger index) {
     auto alive = this->isAlive;
@@ -1448,6 +1451,9 @@ struct RigUIState {
     }
     if (port == 59) {
       return cab2PolarityInverted ? 1.0f : 0.0f;
+    }
+    if (port == NAMRig::kSpatialCenterBlendPort) {
+      return spatialCenterBlend ? 1.0f : 0.0f;
     }
     for (size_t k = 0; k < kRigKnobCount; ++k) {
       if (kRigKnobPorts[k] == port) {
@@ -2715,6 +2721,19 @@ struct RigUIState {
       // UI actions must update state before markModified captures an A/B snapshot.
       if ([NSThread isMainThread]) updatePolarity();
       else dispatch_async(dispatch_get_main_queue(), updatePolarity);
+      return;
+    }
+    if (port == NAMRig::kSpatialCenterBlendPort) {
+      const bool centered = value >= 0.5f;
+      auto updateCenterBlend = ^{
+        if (!alive || !*alive) return;
+        spatialCenterBlend = centered;
+        if (!spatialCenterBlendButton) return;
+        spatialCenterBlendButton.state = centered ? NSControlStateValueOn : NSControlStateValueOff;
+        spatialCenterBlendButton.needsDisplay = YES;
+      };
+      if ([NSThread isMainThread]) updateCenterBlend();
+      else dispatch_async(dispatch_get_main_queue(), updateCenterBlend);
       return;
     }
     if ((port >= 7 && port <= 9) || port == 47) {

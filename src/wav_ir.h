@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -30,6 +31,37 @@ public:
   // tapered), before normalization. Used for offline cab screening.
   static std::vector<float> loadTaps(const char* path, double hostRate, int channel = -1);
   static constexpr double kMaxSeconds = 0.17;
+
+  // Compact worker-computed low-band complex response (45..210 Hz) used for
+  // lock-free coherence estimation in dualCabShelf.
+  struct LowBandSignature {
+    static constexpr size_t kBins = 24;
+    static constexpr float kMinHz = 45.0f;
+    static constexpr float kMaxHz = 210.0f;
+    std::array<float, kBins> re{};
+    std::array<float, kBins> im{};
+    float energy = 0.0f;
+  };
+  const LowBandSignature& lowBandSignature() const noexcept { return lowBand; }
+
+  // Band-averaged cosine coherence of two ideal in-phase signals shifted by
+  // alignmentMs across [45..210 Hz]. Equals +1.0 at alignmentMs == 0.
+  static float nominalLowBandDelayCoherence(float alignmentMs) noexcept;
+  // Signed low-band cross-correlation [-1..+1] between irA and irB at signed
+  // alignmentMs (negative delays A, positive delays B). Falls back cleanly to
+  // nominalLowBandDelayCoherence if either branch is non-WAV (nullptr) or silent.
+  static float lowBandCoherence(const WavIR* irA, const WavIR* irB,
+                                float alignmentMs) noexcept;
+
+  struct AlignmentResult {
+    bool valid = false;
+    float delayMs = 0.0f;       // [-10, +10]; negative delays A, positive delays B
+    bool invertPolarity = false;
+    float correlation = 0.0f;   // signed normalized peak correlation [-1, +1]
+  };
+  static AlignmentResult findBestAlignment(const char* pathA, const char* pathB,
+                                           double sampleRate = 48000.0);
+
   ~WavIR();
   // normalizationMode: 1 peak, 2 loudness; all other values use loudness.
   void process(float* samples, uint32_t count, int normalizationMode) noexcept;
@@ -76,6 +108,7 @@ private:
   float loudnessScale = 1.0f;
   double responsePeak = 0.0;
   double responseRms = 0.0;
+  LowBandSignature lowBand{};
   float currentScale = 1.0f;
   float scaleSmoothCoeff = 1.0f;
   bool scaleInitialized = false;

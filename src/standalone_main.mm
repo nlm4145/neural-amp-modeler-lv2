@@ -631,7 +631,8 @@ class StandaloneHost {
         {NAMRig::kDropPitchPort, {&dropPitchControl_, 1}},
         {NAMRig::kModelBandLimitPort, {&modelBandLimitControl_, 1}},
         {NAMRig::kDropPitchAttackPort, dropPitchShapingControls_},
-        {NAMRig::kModelBandLimitCutoffPort, modelBandLimitParamsControls_}});
+        {NAMRig::kModelBandLimitCutoffPort, modelBandLimitParamsControls_},
+        {NAMRig::kSpatialCenterBlendPort, {&spatialCenterBlendControl_, 1}}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1030,6 +1031,10 @@ class StandaloneHost {
       } else {
         host->modelBandLimitParamsControls_[2] = NAMRig::ModelBandLimit::clampRippleDb(v);
       }
+      return;
+    }
+    if (format == 0 && port == NAMRig::kSpatialCenterBlendPort && size == sizeof(float)) {
+      host->spatialCenterBlendControl_ = *static_cast<const float*>(buffer) >= 0.5f ? 1.0f : 0.0f;
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1911,6 +1916,7 @@ class StandaloneHost {
       NAMRig::kModelBandLimitSlopeDefault,
       NAMRig::kModelBandLimitRippleDefault,
   };
+  float spatialCenterBlendControl_ = NAMRig::kSpatialCenterBlendDefault;
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(__x86_64__) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
@@ -247,6 +248,16 @@ RealFFT::RealFFT(size_t n) : n_(n) {
 #if defined(__APPLE__)
   log2n_ = static_cast<uint32_t>(std::round(std::log2(static_cast<double>(n))));
   setup_ = vDSP_create_fftsetup(log2n_, kFFTRadix2);
+  // vDSP_fft_zrip switches SIMD paths depending on 64-byte split-complex
+  // alignment, causing 1-ULP run-to-run drift on 16-byte malloc'd vectors.
+  const size_t halfBins = n_ / 2;
+  const size_t halfBytes = ((halfBins * sizeof(float) + 63) / 64) * 64;
+  void* raw = nullptr;
+  if (halfBytes > 0 && posix_memalign(&raw, 64, halfBytes * 2) == 0 && raw) {
+    workRe_ = static_cast<float*>(raw);
+    workIm_ = reinterpret_cast<float*>(static_cast<char*>(raw) + halfBytes);
+    std::memset(raw, 0, halfBytes * 2);
+  }
 #else
   pffftSetup_ = pffft_new_setup(static_cast<int>(n), PFFFT_REAL);
   work_ = pffft_aligned_malloc(n * sizeof(float));
@@ -255,6 +266,7 @@ RealFFT::RealFFT(size_t n) : n_(n) {
 
 RealFFT::~RealFFT() {
 #if defined(__APPLE__)
+  if (workRe_) std::free(workRe_);
   if (setup_) vDSP_destroy_fftsetup(setup_);
 #else
   if (pffftSetup_) pffft_destroy_setup(static_cast<PFFFT_Setup*>(pffftSetup_));
@@ -264,9 +276,19 @@ RealFFT::~RealFFT() {
 
 void RealFFT::forward(const float* timeDomain, float* outRe, float* outIm) noexcept {
 #if defined(__APPLE__)
-  DSPSplitComplex sp{outRe, outIm};
-  vDSP_ctoz(reinterpret_cast<const DSPComplex*>(timeDomain), 2, &sp, 1, (vDSP_Length)(n_ / 2));
+  const size_t halfBins = n_ / 2;
+  const bool aligned = (((reinterpret_cast<uintptr_t>(outRe) |
+                          reinterpret_cast<uintptr_t>(outIm)) & 63u) == 0);
+  float* targetRe = (!aligned && workRe_) ? workRe_ : outRe;
+  float* targetIm = (!aligned && workIm_) ? workIm_ : outIm;
+  DSPSplitComplex sp{targetRe, targetIm};
+  vDSP_ctoz(reinterpret_cast<const DSPComplex*>(timeDomain), 2, &sp, 1,
+            static_cast<vDSP_Length>(halfBins));
   vDSP_fft_zrip(setup_, &sp, 1, log2n_, kFFTDirection_Forward);
+  if (targetRe != outRe) {
+    std::memcpy(outRe, targetRe, halfBins * sizeof(float));
+    std::memcpy(outIm, targetIm, halfBins * sizeof(float));
+  }
 #else
   auto* setup = static_cast<PFFFT_Setup*>(pffftSetup_);
   auto* work = static_cast<float*>(work_);
@@ -288,9 +310,19 @@ void RealFFT::forward(const float* timeDomain, float* outRe, float* outIm) noexc
 
 void RealFFT::inverse(const float* inRe, const float* inIm, float* timeDomain) noexcept {
 #if defined(__APPLE__)
-  DSPSplitComplex sp{const_cast<float*>(inRe), const_cast<float*>(inIm)};
+  const size_t halfBins = n_ / 2;
+  const bool aligned = (((reinterpret_cast<uintptr_t>(inRe) |
+                          reinterpret_cast<uintptr_t>(inIm)) & 63u) == 0);
+  float* targetRe = (!aligned && workRe_) ? workRe_ : const_cast<float*>(inRe);
+  float* targetIm = (!aligned && workIm_) ? workIm_ : const_cast<float*>(inIm);
+  if (targetRe != inRe) {
+    std::memcpy(targetRe, inRe, halfBins * sizeof(float));
+    std::memcpy(targetIm, inIm, halfBins * sizeof(float));
+  }
+  DSPSplitComplex sp{targetRe, targetIm};
   vDSP_fft_zrip(setup_, &sp, 1, log2n_, kFFTDirection_Inverse);
-  vDSP_ztoc(&sp, 1, reinterpret_cast<DSPComplex*>(timeDomain), 2, (vDSP_Length)(n_ / 2));
+  vDSP_ztoc(&sp, 1, reinterpret_cast<DSPComplex*>(timeDomain), 2,
+            static_cast<vDSP_Length>(halfBins));
 #else
   auto* setup = static_cast<PFFFT_Setup*>(pffftSetup_);
   auto* work = static_cast<float*>(work_);

@@ -211,6 +211,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kModelBandLimitCutoffPort] = NAMRig::kModelBandLimitCutoffDefault;
   p->_controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
   p->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
+  p->_controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
@@ -304,6 +305,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset->_controls[NAMRig::kModelBandLimitCutoffPort] = NAMRig::kModelBandLimitCutoffDefault;
   preset->_controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
   preset->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
+  preset->_controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
@@ -480,6 +482,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kModelBandLimitCutoffPort] = state->currentPortValueForSlot(NAMRig::kModelBandLimitCutoffPort);
   p->_controls[NAMRig::kModelBandLimitSlopePort] = static_cast<float>(state->modelBandLimitSlope);
   p->_controls[NAMRig::kModelBandLimitRipplePort] = state->currentPortValueForSlot(NAMRig::kModelBandLimitRipplePort);
+  p->_controls[NAMRig::kSpatialCenterBlendPort] = state->spatialCenterBlend ? 1.0f : 0.0f;
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -677,6 +680,14 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       ? bandLimitRippleIt->second : NAMRig::kModelBandLimitRippleDefault;
   state->sendControl(NAMRig::kModelBandLimitRipplePort, bandLimitRippleVal);
   state->updateControl(NAMRig::kModelBandLimitRipplePort, bandLimitRippleVal);
+  auto spatialCenterBlendIt = _controls.find(NAMRig::kSpatialCenterBlendPort);
+  const float spatialCenterBlendVal =
+      (spatialCenterBlendIt != _controls.end() ? spatialCenterBlendIt->second
+                                               : NAMRig::kSpatialCenterBlendDefault) >= 0.5f
+          ? 1.0f
+          : 0.0f;
+  state->sendControl(NAMRig::kSpatialCenterBlendPort, spatialCenterBlendVal);
+  state->updateControl(NAMRig::kSpatialCenterBlendPort, spatialCenterBlendVal);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);

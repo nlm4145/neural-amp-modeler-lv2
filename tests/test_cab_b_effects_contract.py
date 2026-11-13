@@ -39,8 +39,8 @@ assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 234;" in (ROOT / "src/power_tube_controls.h").read_text()
-assert sorted(ports) == list(range(234)), "ports stay contiguous; model_band_limit_* append after drop_pitch_sustain"
+assert "kRigControlPortCount = 235;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(235)), "ports stay contiguous; spatial_center_blend appends after model_band_limit_ripple"
 
 
 def port_default(index: int) -> float:
@@ -129,7 +129,9 @@ assert "if (haveA && haveB)" in dsp and "} else if (haveB) {" in dsp and "L[i] =
 assert "kDualCabShelfHz = 200.0f" in dsp and "setLowShelf(dualCabShelf, smoothedDualCabShelfDb, kDualCabShelfHz, sampleRate);" in dsp, (
     "the dual-cab blend must compensate its coherent low-frequency build-up"
 )
-assert "std::log10(coherent) * balance" in dsp, "the compensation must follow the pan law and the A/B level balance"
+assert "WavIR::lowBandCoherence" in dsp and "coherentShelfDb" in dsp, (
+    "the compensation must follow low-band IR/delay/polarity coherence and A/B level balance"
+)
 
 # Stereo WAV impulse responses load both channels into a second convolver.
 assert "WavIR* irRight;" in header and "std::array<WavIR*, kStageCount> irsRight{};" in header

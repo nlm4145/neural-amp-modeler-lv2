@@ -369,6 +369,33 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   const ResponseStats response = measureResponse(taps, sampleRate);
   responsePeak = response.peak;
   responseRms = response.rms;
+  // Precompute complex DFT across [45..210 Hz] so the audio thread can score
+  // dual-cab low-end coherence with zero allocations or transforms.
+  {
+    double energySum = 0.0;
+    for (size_t b = 0; b < LowBandSignature::kBins; ++b) {
+      const double t = static_cast<double>(b) /
+                       static_cast<double>(LowBandSignature::kBins - 1);
+      const double hz = LowBandSignature::kMinHz +
+                        t * (LowBandSignature::kMaxHz - LowBandSignature::kMinHz);
+      const double radians = -2.0 * kPi * hz / std::max(8000.0, sampleRate);
+      const double stepRe = std::cos(radians);
+      const double stepIm = std::sin(radians);
+      double phRe = 1.0, phIm = 0.0;
+      double re = 0.0, im = 0.0;
+      for (float tap : taps) {
+        re += tap * phRe;
+        im += tap * phIm;
+        const double nextRe = phRe * stepRe - phIm * stepIm;
+        phIm = phRe * stepIm + phIm * stepRe;
+        phRe = nextRe;
+      }
+      lowBand.re[b] = static_cast<float>(re);
+      lowBand.im[b] = static_cast<float>(im);
+      energySum += re * re + im * im;
+    }
+    lowBand.energy = static_cast<float>(energySum);
+  }
   if (response.peak > 1.0e-12)
     peakScale = static_cast<float>(1.0 / response.peak);
   if (response.rms > 1.0e-12)
@@ -545,6 +572,127 @@ void WavIR::process(float* samples, uint32_t count, int normalizationMode) noexc
       }
     }
     done += t;
+  }
+}
+
+float WavIR::nominalLowBandDelayCoherence(float alignmentMs) noexcept {
+  if (alignmentMs == 0.0f) return 1.0f;
+  const double tau = static_cast<double>(alignmentMs) * 0.001;
+  double sum = 0.0;
+  for (size_t b = 0; b < LowBandSignature::kBins; ++b) {
+    const double t = static_cast<double>(b) /
+                     static_cast<double>(LowBandSignature::kBins - 1);
+    const double hz = LowBandSignature::kMinHz +
+                      t * (LowBandSignature::kMaxHz - LowBandSignature::kMinHz);
+    sum += std::cos(2.0 * kPi * hz * tau);
+  }
+  return std::max(-1.0f, std::min(1.0f,
+      static_cast<float>(sum / static_cast<double>(LowBandSignature::kBins))));
+}
+
+float WavIR::lowBandCoherence(const WavIR* irA, const WavIR* irB,
+                              float alignmentMs) noexcept {
+  if (!irA || !irB) return nominalLowBandDelayCoherence(alignmentMs);
+  const auto& sigA = irA->lowBandSignature();
+  const auto& sigB = irB->lowBandSignature();
+  const double denom = std::sqrt(static_cast<double>(sigA.energy) *
+                                 static_cast<double>(sigB.energy));
+  if (denom <= 1.0e-18) return nominalLowBandDelayCoherence(alignmentMs);
+
+  const double tau = static_cast<double>(alignmentMs) * 0.001;
+  double realSum = 0.0;
+  for (size_t b = 0; b < LowBandSignature::kBins; ++b) {
+    const double t = static_cast<double>(b) /
+                     static_cast<double>(LowBandSignature::kBins - 1);
+    const double hz = LowBandSignature::kMinHz +
+                      t * (LowBandSignature::kMaxHz - LowBandSignature::kMinHz);
+    const double phase = 2.0 * kPi * hz * tau;
+    const double c = std::cos(phase);
+    const double s = std::sin(phase);
+    const double aRe = sigA.re[b];
+    const double aIm = sigA.im[b];
+    const double bRe = sigB.re[b];
+    const double bIm = sigB.im[b];
+    // Re((A * conj(B)) * exp(+j * 2*pi*f*tau)):
+    // tau > 0 delays B -> phase shift exp(-j*w*tau) on B -> exp(+j*w*tau) on conj(B).
+    // tau < 0 delays A -> phase shift exp(+j*w*tau) on A (since tau < 0).
+    const double prodRe = aRe * bRe + aIm * bIm;
+    const double prodIm = aIm * bRe - aRe * bIm;
+    realSum += prodRe * c - prodIm * s;
+  }
+  const double rho = realSum / denom;
+  return std::max(-1.0f, std::min(1.0f, static_cast<float>(rho)));
+}
+
+WavIR::AlignmentResult WavIR::findBestAlignment(const char* pathA, const char* pathB,
+                                                double sampleRate) {
+  AlignmentResult result;
+  if (!pathA || !pathA[0] || !pathB || !pathB[0]) return result;
+  const double rate = std::max(8000.0, sampleRate);
+  try {
+    auto tapsA = loadTaps(pathA, rate, -1);
+    auto tapsB = loadTaps(pathB, rate, -1);
+    const size_t maxWindow = static_cast<size_t>(std::llround(rate * 0.060));
+    const size_t lenA = std::min(tapsA.size(), maxWindow);
+    const size_t lenB = std::min(tapsB.size(), maxWindow);
+    if (lenA == 0 || lenB == 0) return result;
+
+    double energyA = 0.0, energyB = 0.0;
+    for (size_t i = 0; i < lenA; ++i) energyA += static_cast<double>(tapsA[i]) * tapsA[i];
+    for (size_t i = 0; i < lenB; ++i) energyB += static_cast<double>(tapsB[i]) * tapsB[i];
+    const double denom = std::sqrt(energyA * energyB);
+    if (denom <= 1.0e-18) return result;
+
+    const long maxLag = std::max<long>(1, std::lround(rate * 0.010));
+    std::vector<double> corr(static_cast<size_t>(2 * maxLag + 1), 0.0);
+    size_t bestIdx = static_cast<size_t>(maxLag);
+    double bestAbs = -1.0;
+
+    for (long lag = -maxLag; lag <= maxLag; ++lag) {
+      // Positive lag delays B: sum tapsA[n] * tapsB[n - lag]
+      const size_t nStart = lag > 0 ? static_cast<size_t>(lag) : 0;
+      const size_t nEnd = std::min(lenA, static_cast<size_t>(
+          std::max<long>(0, static_cast<long>(lenB) + lag)));
+      double sum = 0.0;
+      for (size_t n = nStart; n < nEnd; ++n) {
+        sum += static_cast<double>(tapsA[n]) *
+               static_cast<double>(tapsB[static_cast<size_t>(static_cast<long>(n) - lag)]);
+      }
+      const double c = sum / denom;
+      const size_t idx = static_cast<size_t>(lag + maxLag);
+      corr[idx] = c;
+      const double absC = std::fabs(c);
+      const long bestLag = static_cast<long>(bestIdx) - maxLag;
+      if (absC > bestAbs + 1.0e-9 ||
+          (std::fabs(absC - bestAbs) <= 1.0e-9 && std::abs(lag) < std::abs(bestLag))) {
+        bestAbs = absC;
+        bestIdx = idx;
+      }
+    }
+
+    const long bestLag = static_cast<long>(bestIdx) - maxLag;
+    const double peakCorr = corr[bestIdx];
+    double exactLag = static_cast<double>(bestLag);
+    if (bestIdx > 0 && bestIdx + 1 < corr.size()) {
+      const double sgn = peakCorr >= 0.0 ? 1.0 : -1.0;
+      const double y0 = corr[bestIdx - 1] * sgn;
+      const double y1 = peakCorr * sgn;
+      const double y2 = corr[bestIdx + 1] * sgn;
+      const double quad = y0 - 2.0 * y1 + y2;
+      if (quad < -1.0e-12) {
+        const double delta = std::max(-0.5, std::min(0.5, 0.5 * (y0 - y2) / quad));
+        exactLag += delta;
+      }
+    }
+
+    const double delayMs = std::max(-10.0, std::min(10.0, exactLag * 1000.0 / rate));
+    result.valid = true;
+    result.delayMs = static_cast<float>(delayMs);
+    result.invertPolarity = peakCorr < 0.0;
+    result.correlation = static_cast<float>(peakCorr);
+    return result;
+  } catch (...) {
+    return AlignmentResult{};
   }
 }
 }
