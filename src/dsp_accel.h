@@ -71,6 +71,8 @@ class RealFFT {
 #if defined(__APPLE__)
   FFTSetup setup_ = nullptr;
   uint32_t log2n_ = 0;
+  float* workRe_ = nullptr;
+  float* workIm_ = nullptr;
 #else
   void* pffftSetup_ = nullptr;
   void* work_ = nullptr;

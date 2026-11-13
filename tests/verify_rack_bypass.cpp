@@ -26,7 +26,7 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 234 &&
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 235 &&
                   kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
@@ -48,10 +48,41 @@ constexpr size_t port(Rack rack) { return kRackControlFirstPort + static_cast<si
 // The rig's RBJ low shelf (nam_rig_plugin.cpp setLowShelf): the dual-cab blend
 // applies it at 200 Hz with -20*log10(cos(pi/4) + sin(pi/4)) dB while both
 // cabinets are active, so the coherent low-frequency sum stays at unity.
-void dualCabShelf(Biquad& f, double sampleRate) {
+float fixtureLowBandCoherence(double sampleRate, int channel) {
+  constexpr size_t kBins = 24;
+  constexpr double kMinHz = 45.0, kMaxHz = 210.0, kPi = 3.14159265358979323846;
+  const auto sample = [channel](size_t cab, size_t frame) -> double {
+    if (frame == 0) return channel == 0 ? (cab ? 4096.0 : 16384.0) : (cab ? 12288.0 : 8192.0);
+    if (frame == 7 + cab * 4) return channel == 0 ? 2048.0 : -1024.0;
+    return 0.0;
+  };
+  double eA = 0.0, eB = 0.0, realSum = 0.0;
+  for (size_t b = 0; b < kBins; ++b) {
+    const double t = static_cast<double>(b) / static_cast<double>(kBins - 1);
+    const double w = -2.0 * kPi * (kMinHz + t * (kMaxHz - kMinHz)) / sampleRate;
+    double aRe = 0.0, aIm = 0.0, bRe = 0.0, bIm = 0.0;
+    for (size_t frame : {size_t{0}, size_t{7}, size_t{11}}) {
+      const double c = std::cos(w * static_cast<double>(frame));
+      const double s = std::sin(w * static_cast<double>(frame));
+      const double sa = sample(0, frame);
+      const double sb = sample(1, frame);
+      aRe += sa * c; aIm += sa * s;
+      bRe += sb * c; bIm += sb * s;
+    }
+    eA += aRe * aRe + aIm * aIm;
+    eB += bRe * bRe + bIm * bIm;
+    realSum += aRe * bRe + aIm * bIm;
+  }
+  const double denom = std::sqrt(eA * eB);
+  return denom > 1e-18 ? static_cast<float>(realSum / denom) : 1.0f;
+}
+
+void dualCabShelf(Biquad& f, double sampleRate, float rho = 1.0f) {
   const float theta = 3.14159265358979323846f * 0.25f;
-  const float coherent = std::max(1.0f, std::cos(theta) + std::sin(theta));
-  const float gainDb = -20.0f * std::log10(coherent);
+  const float u = std::cos(theta), v = std::sin(theta);
+  const float powerSum = u * u + v * v;
+  const float ratio = std::sqrt(1.0f + (2.0f * u * v * std::max(0.0f, rho)) / powerSum);
+  const float gainDb = -20.0f * std::log10(ratio);
   const float kEqQ = 0.7071067811865476f;
   const double A = std::pow(10.0, gainDb / 40.0);
   const double w0 = 2.0 * 3.14159265358979323846 * 200.0f / sampleRate;
@@ -808,8 +839,8 @@ void verify(const LV2_Descriptor* d) {
   bool stereoMix = true;
   double stereo = 0, shelfError = 0, shelfEnergy = 0;
   Biquad shelfL, shelfR;
-  dualCabShelf(shelfL, 48000);
-  dualCabShelf(shelfR, 48000);
+  dualCabShelf(shelfL, 48000, fixtureLowBandCoherence(48000, 0));
+  dualCabShelf(shelfR, 48000, fixtureLowBandCoherence(48000, 1));
   for (int block = 0; block < 400; ++block) {
     a.run(); b.run(); pair.run(); widthIgnored.run();
     stereoMix &= pair.difference(widthIgnored) == 0;

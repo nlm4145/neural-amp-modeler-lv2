@@ -212,6 +212,24 @@ else
   status=1
 fi
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "== tests/verify_spatial_stereo.cpp (Dome 90-deg spatial stereo, alignment, dual-cab shelf) =="
+  if clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -framework Accelerate \
+      -Isrc -Ideps/pffft -Ideps/lv2/include -Ideps/NeuralAudio \
+      -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+      src/dsp_accel.cpp src/wav_ir.cpp tests/verify_spatial_stereo.cpp \
+      -o /tmp/verify_spatial_stereo; then
+    if [ -f "$RIG_SO" ]; then
+      /tmp/verify_spatial_stereo "$RIG_SO" || status=1
+    else
+      /tmp/verify_spatial_stereo || status=1
+    fi
+  else
+    echo "  (failed: spatial stereo harness build failed)"
+    status=1
+  fi
+fi
+
 # Opt in to AppKit runtime checks with a freshly built UI and WindowServer.
 if [ -n "${RIG_UI_SO:-}" ]; then
   echo "== tests/verify_transformer_ui.mm (editable controls and presets) =="

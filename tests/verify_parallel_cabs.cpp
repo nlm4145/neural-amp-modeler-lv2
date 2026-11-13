@@ -431,7 +431,20 @@ struct Host {
     plugin.ports.output_ceiling = &controls[NAMRig::kOutputCeilingPort];
     plugin.ports.output_balance = &controls[NAMRig::kOutputBalancePort];
     plugin.ports.output_reduction = &controls[NAMRig::kOutputReductionPort];
-    static_assert(Plugin::kPortCount == 227, "update connections if ports change");
+    plugin.ports.pedal2_enabled = &controls[NAMRig::kPedal2EnabledPort];
+    plugin.ports.pedal3_enabled = &controls[NAMRig::kPedal3EnabledPort];
+    plugin.ports.pedal_order = &controls[NAMRig::kPedalOrderPort];
+    for (size_t i = 0; i < NAMRig::kToneEqControlCount; ++i)
+      plugin.ports.tone_eq[i] = &controls[NAMRig::kToneEqModePort + i];
+    plugin.ports.drop_pitch = &controls[NAMRig::kDropPitchPort];
+    plugin.ports.model_band_limit = &controls[NAMRig::kModelBandLimitPort];
+    plugin.ports.drop_pitch_attack = &controls[NAMRig::kDropPitchAttackPort];
+    plugin.ports.drop_pitch_sustain = &controls[NAMRig::kDropPitchSustainPort];
+    plugin.ports.model_band_limit_cutoff = &controls[NAMRig::kModelBandLimitCutoffPort];
+    plugin.ports.model_band_limit_slope = &controls[NAMRig::kModelBandLimitSlopePort];
+    plugin.ports.model_band_limit_ripple = &controls[NAMRig::kModelBandLimitRipplePort];
+    plugin.ports.spatial_center_blend = &controls[NAMRig::kSpatialCenterBlendPort];
+    static_assert(Plugin::kPortCount == 235, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),

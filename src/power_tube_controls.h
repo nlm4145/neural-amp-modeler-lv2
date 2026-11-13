@@ -80,7 +80,11 @@ inline constexpr uint32_t kModelBandLimitRipplePort = 233;
 inline constexpr float kModelBandLimitCutoffDefault = 20500.0f;
 inline constexpr float kModelBandLimitSlopeDefault = 3.0f;
 inline constexpr float kModelBandLimitRippleDefault = 0.05f;
-inline constexpr uint32_t kRigControlPortCount = 234;
+// Dual-cabinet Spatial Acoustics stereo mode (append-only):
+// 0 = A/B Split pan (default), 1 = Centered Blend (balanced A+B tone on L & R).
+inline constexpr uint32_t kSpatialCenterBlendPort = 234;
+inline constexpr float kSpatialCenterBlendDefault = 0.0f;
+inline constexpr uint32_t kRigControlPortCount = 235;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

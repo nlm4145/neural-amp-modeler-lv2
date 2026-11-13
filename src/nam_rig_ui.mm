@@ -88,6 +88,7 @@ static double copilotParseClock(NSString* text) {
 #include "overdrive.h"
 #include "rig_knobs.h"
 #include "oversample_modes.h"
+#include "wav_ir.h"
 #include "rig_ui_state.h"
 #import "rig_workspace.h"
 #import "rig_graph_controls.h"
@@ -223,6 +224,7 @@ static double copilotParseClock(NSString* text) {
 - (void)sculptPageClicked:(NSButton*)sender;
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
+- (void)autoAlignCabs:(id)sender;
 - (void)applyTransformerPreset:(NSButton*)sender;
 - (void)slotPresetPopupChanged:(NSPopUpButton*)sender;
 - (void)saveSlotPreset:(NSMenuItem*)sender;
@@ -1372,6 +1374,8 @@ static double copilotParseClock(NSString* text) {
   _state->updateControl(NAMRig::kDropPitchPort, NAMRig::kDropPitchDefault);
   _state->sendControl(NAMRig::kModelBandLimitSlopePort, NAMRig::kModelBandLimitSlopeDefault);
   _state->updateControl(NAMRig::kModelBandLimitSlopePort, NAMRig::kModelBandLimitSlopeDefault);
+  _state->sendControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
+  _state->updateControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
   _state->syncingToneEq = false;
   _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
@@ -1649,6 +1653,55 @@ static double copilotParseClock(NSString* text) {
   }
 }
 
+- (void)autoAlignCabs:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  auto flashButtonTitle = ^(NSString* tempTitle, NSTimeInterval seconds) {
+    RigButton* btn = _state->cabAutoAlignButton;
+    if (!btn) return;
+    btn.title = tempTitle;
+    btn.needsDisplay = YES;
+    std::weak_ptr<bool> weakAlive(_state->isAlive);
+    __weak RigButton* weakBtn = btn;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                     auto alive = weakAlive.lock();
+                     RigButton* b = weakBtn;
+                     if (!alive || !*alive || !b) return;
+                     if (![b.title isEqualToString:tempTitle]) return;
+                     b.title = @"AUTO ALIGN";
+                     b.needsDisplay = YES;
+                   });
+  };
+  const std::string& pathA = _state->selectedPaths[2];
+  const std::string& pathB = _state->selectedPaths[3];
+  if (pathA.empty() || pathB.empty()) {
+    NSBeep();
+    flashButtonTitle(@"NEED 2 IRs", 1.5);
+    return;
+  }
+  const NAMRig::WavIR::AlignmentResult res =
+      NAMRig::WavIR::findBestAlignment(pathA.c_str(), pathB.c_str(), 48000.0);
+  if (!res.valid) {
+    NSBeep();
+    flashButtonTitle(@"WAV ONLY", 1.5);
+    return;
+  }
+  const float delayMs = std::clamp(res.delayMs, -10.0f, 10.0f);
+  const float polarity = res.invertPolarity ? 1.0f : 0.0f;
+  _state->sendControl(49, delayMs);
+  _state->updateControl(49, delayMs);
+  _state->sendControl(59, polarity);
+  _state->updateControl(59, polarity);
+  if (_state->cabAutoAlignButton) {
+    _state->cabAutoAlignButton.toolTip = [NSString stringWithFormat:
+        @"Auto-aligned Cab B: %+.2f ms, polarity %@ (r=%+.3f).",
+        delayMs, res.invertPolarity ? @"Inverted" : @"Normal", res.correlation];
+  }
+  [self markPresetModified];
+  flashButtonTitle(res.invertPolarity ? @"ALIGN + INV" : @"ALIGNED", 1.5);
+}
+
 - (void)applyTransformerPreset:(NSButton*)sender {
   if (!_state) return;
   if (sender.tag >= 0 && sender.tag < NAMRig::OutputTransformer::kProfileCount) {
@@ -1705,6 +1758,11 @@ static double copilotParseClock(NSString* text) {
       if ([spec[@"key"] isEqualToString:@"sculpt"] && !values[midPushKey]) {
         _state->sendControl(NAMRig::kMidPushPort, 0.0f);
         _state->updateControl(NAMRig::kMidPushPort, 0.0f);
+      }
+      NSString* centerBlendKey = [NSString stringWithFormat:@"%u", NAMRig::kSpatialCenterBlendPort];
+      if ([spec[@"key"] isEqualToString:@"spatial"] && !values[centerBlendKey]) {
+        _state->sendControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
+        _state->updateControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
       }
       // Slot presets saved before graph pins existed recall with no pins.
       for (NSNumber* pNum in spec[@"ports"]) {
@@ -5903,7 +5961,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSStackView* chips = [[NSStackView alloc] initWithFrame:NSZeroRect];
     chips.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    chips.distribution = NSStackViewDistributionFillEqually;
+    chips.distribution = NSStackViewDistributionFill;
     chips.spacing = 6.0;
     chips.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:chips];
@@ -5914,7 +5972,18 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* spatialPresetTitles = @[@"MONO CENTER", @"STUDIO SPREAD", @"WIDE 3D", @"DEEP ROOM"];
     addSlotPresetDropdown(chips, state, @"spatial", @"Spatial Acoustics",
-                          @[@32, @33], spatialPresetTitles, @selector(applySpatialPreset:));
+                          @[@32, @33, @(NAMRig::kSpatialCenterBlendPort)],
+                          spatialPresetTitles, @selector(applySpatialPreset:));
+    RigButton* centerBlend = rigChip(chips, @"CENTER BLEND", state->uiController,
+                                     @selector(controlChanged:), NAMRig::kSpatialCenterBlendPort);
+    centerBlend.buttonType = NSButtonTypeToggle;
+    centerBlend.check = YES;
+    centerBlend.state = NSControlStateValueOff;
+    centerBlend.toolTip = @"Keep Cab A & B balanced across L and R while Width creates mono-safe phase-quadrature stereo spread.";
+    state->spatialCenterBlendButton = centerBlend;
+    [chips addArrangedSubview:centerBlend];
+    [[centerBlend.widthAnchor constraintEqualToConstant:96] setActive:YES];
+    [[centerBlend.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NAMSpatialAcousticVisualizer* spkVis = [[NAMSpatialAcousticVisualizer alloc] initWithFrame:NSZeroRect];
     spkVis.translatesAutoresizingMaskIntoConstraints = NO;
@@ -6472,6 +6541,15 @@ static void addLowerStudioDeck(RigUIState* state,
     [chips addArrangedSubview:invertB];
     [[invertB.widthAnchor constraintEqualToConstant:78] setActive:YES];
     [[invertB.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    RigButton* autoAlign = rigChip(chips, @"AUTO ALIGN", state->uiController,
+                                   @selector(autoAlignCabs:), 0);
+    autoAlign.buttonType = NSButtonTypeMomentaryPushIn;
+    autoAlign.toolTip = @"Auto-align Cab B to Cab A by cross-correlating both loaded WAV IRs, setting B ALIGN (ms) and B POL INV.";
+    state->cabAutoAlignButton = autoAlign;
+    [chips addArrangedSubview:autoAlign];
+    [[autoAlign.widthAnchor constraintEqualToConstant:76] setActive:YES];
+    [[autoAlign.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NAMCabConsoleVisualizer* cabVis = [[NAMCabConsoleVisualizer alloc] initWithFrame:NSZeroRect];
     cabVis.translatesAutoresizingMaskIntoConstraints = NO;

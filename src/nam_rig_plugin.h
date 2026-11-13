@@ -35,6 +35,7 @@
 #include "speaker_dynamics.h"
 #include "rack_controls.h"
 #include "rig_dsp_cache.h"
+#include "spatial_stereo.h"
 #include <lv2/worker/worker.h>
 
 #include <NeuralAudio/NeuralModel.h>
@@ -168,7 +169,7 @@ public:
     float* latency;            // out: port 29, lv2:latency (frames, for host PDC)
     float* transformer_type;   // in: port 30, output-transformer profile (0..12)
     float* audio_out_r;        // out: port 31, right channel (dual-mono foundation)
-    float* stereo_width;       // in: port 32, right-channel short delay amount (0..100%)
+    float* stereo_width;       // in: port 32, stereo width (0..100%)
     float* room;               // in: port 33, stereo early-reflection amount (0..100%)
     float* presence;           // in: port 34, post-amp high-frequency feedback voicing (dB)
     float* depth;              // in: port 35, post-amp low-frequency feedback voicing (dB)
@@ -229,6 +230,7 @@ public:
     float* model_band_limit_cutoff;
     float* model_band_limit_slope;
     float* model_band_limit_ripple;
+    float* spatial_center_blend;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -297,7 +299,9 @@ public:
   static_assert(kModelBandLimitSlopePort == kModelBandLimitCutoffPort + 1);
   static_assert(offsetof(Ports, model_band_limit_ripple) == kModelBandLimitRipplePort * sizeof(void*));
   static_assert(kModelBandLimitRipplePort == kModelBandLimitSlopePort + 1);
-  static_assert(kPortCount == kModelBandLimitRipplePort + 1);
+  static_assert(offsetof(Ports, spatial_center_blend) == kSpatialCenterBlendPort * sizeof(void*));
+  static_assert(kSpatialCenterBlendPort == kModelBandLimitRipplePort + 1);
+  static_assert(kPortCount == kSpatialCenterBlendPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -580,6 +584,11 @@ private:
   // blend; this shelf takes that back while both are active.
   Biquad dualCabShelf, dualCabShelfR;
   float smoothedDualCabShelfDb = 0.0f, appliedDualCabShelfDb = 0.0f;
+  float smoothedDualCabShelfDbR = 0.0f, appliedDualCabShelfDbR = 0.0f;
+  DomeHilbertStereoizer centerStereoizer;
+  bool centerBlendRequested = false;
+  bool centerBlendApplied = false;
+  bool centerBlendLatched = false;
 
   struct PendingSwitch {
     NeuralAudio::NeuralModel* model = nullptr;

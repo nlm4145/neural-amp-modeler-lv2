@@ -272,6 +272,7 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
   dropPitch.prepare(rate);
+  centerStereoizer.prepare(rate);
   postCompressor.initialize(rate);
   masterOutput.initialize(rate);
 
@@ -308,6 +309,7 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   delayFx.initialize(rate);
   reverbFx.initialize(rate);
   dropPitch.prepare(rate);
+  centerStereoizer.prepare(rate);
   postCompressor.initialize(rate);
   masterOutput.initialize(rate);
   appliedBass = -999.0f;
@@ -1317,6 +1319,24 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     startTransitionFadeOut();
   }
 
+  const bool desiredCenterBlend =
+      portValue(ports.spatial_center_blend, kSpatialCenterBlendDefault) >= 0.5f;
+  if (!centerBlendLatched) {
+    centerBlendRequested = centerBlendApplied = desiredCenterBlend;
+    centerBlendLatched = true;
+  } else if (desiredCenterBlend != centerBlendRequested &&
+             transitionPhase == TransitionPhase::Steady) {
+    centerBlendRequested = desiredCenterBlend;
+    if (rackOn(Rack::Spatial) && appliedEnabled[2] && appliedEnabled[3] &&
+        (models[2] || irs[2]) && (models[3] || irs[3])) {
+      rackTransitionActive = true;
+      startTransitionFadeOut();
+    } else {
+      centerBlendApplied = centerBlendRequested;
+      centerStereoizer.reset();
+    }
+  }
+
   // ---- Oversample mode change detection (per stage) ----
   // Models carry their rate domain baked in at load time (dilation factor
   // and/or created at Nx * sessionRate), so any mode change re-sends the
@@ -1810,6 +1830,50 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       ? -1.0f : 1.0f;
   const uint32_t fadeSamples = std::max<uint32_t>(1,
       static_cast<uint32_t>(std::lround(sampleRate * 0.005)));
+  const auto computeDualCabShelfTargets = [&](
+      bool activeConsole, bool activeSpatial, bool activeCenterBlend,
+      bool activeParallel, bool activeHaveA, bool activeHaveB,
+      float gainA, float gainB, float effPolarity, float widthNorm,
+      float& outL, float& outR) noexcept {
+    if (!(activeParallel && activeHaveA && activeHaveB)) {
+      outL = outR = 0.0f;
+      return;
+    }
+    const float activeAlignMs = activeConsole
+        ? std::max(-10.0f, std::min(10.0f, portValue(ports.cab2_delay, 0.0f))) : 0.0f;
+    const WavIR* irAL = irs[2];
+    const WavIR* irAR = irsRight[2] ? irsRight[2] : irs[2];
+    const WavIR* irBL = irs[3];
+    const WavIR* irBR = irsRight[3] ? irsRight[3] : irs[3];
+    const float rawRhoL = WavIR::lowBandCoherence(irAL, irBL, activeAlignMs);
+    const float rawRhoR = (irAR == irAL && irBR == irBL)
+        ? rawRhoL : WavIR::lowBandCoherence(irAR, irBR, activeAlignMs);
+    const float rhoPosL = std::max(0.0f, effPolarity * rawRhoL);
+    const float rhoPosR = std::max(0.0f, effPolarity * rawRhoR);
+
+    float uL = 0.0f, vL = 0.0f, uR = 0.0f, vR = 0.0f;
+    if (activeSpatial && activeCenterBlend) {
+      constexpr float kBlend = 0.7071067811865475f;  // sqrt(0.5)
+      uL = uR = gainA * kBlend;
+      vL = vR = gainB * kBlend;
+    } else {
+      widthGainCache.configure(activeSpatial ? widthNorm : 0.0f, blockRounding);
+      uL = gainA * widthGainCache.near;
+      vL = gainB * widthGainCache.far;
+      uR = gainA * widthGainCache.far;
+      vR = gainB * widthGainCache.near;
+    }
+    const auto coherentShelfDb = [](float u, float v, float rhoPos) noexcept {
+      const float powerSum = u * u + v * v;
+      if (powerSum <= 1.0e-12f || u <= 1.0e-6f || v <= 1.0e-6f || rhoPos <= 1.0e-6f)
+        return 0.0f;
+      const float ratio = std::sqrt(1.0f + (2.0f * u * v * rhoPos) / powerSum);
+      return -20.0f * std::log10(ratio);
+    };
+    outL = coherentShelfDb(uL, vL, rhoPosL);
+    outR = (uR == uL && vR == vL && rhoPosR == rhoPosL)
+        ? outL : coherentShelfDb(uR, vR, rhoPosR);
+  };
   bool commitRequested = false;
   bool cabProcessedAny = cabInChain;
 
@@ -1930,9 +1994,28 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       cabProcessed = true;
     }
 
-    // Width: the equal-power spread between cabinet A (left) and cabinet B
-    // (right). Each cabinet keeps its own stereo image at every setting; zero
-    // sums both cabinets to the same dual-mono blend Spatial OFF uses.
+    const bool stereoB = parallelCabs && irs[3] && irsRight[3];
+    const auto applySingleStereoWidth = [&](bool isStereo) noexcept {
+      if (isStereo) {
+        if (smoothedWidth == widthTarget && smoothedWidth <= 0.0f) return;
+        for (uint32_t i = 0; i < n; ++i) {
+          smoothedWidth += (widthTarget - smoothedWidth) * glide10;
+          if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
+          applySingleStereoWidthSample(L[i], R[i], smoothedWidth);
+        }
+      } else {
+        for (uint32_t i = 0; i < n; ++i) {
+          smoothedWidth += (widthTarget - smoothedWidth) * glide10;
+          if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
+        }
+      }
+    };
+
+    // Width: in A/B Split mode, equal-power spread between cabinet A (left) and
+    // cabinet B (right). In Centered Blend mode, both L and R preserve the full
+    // A + B tonal blend while Dome 90-degree phase dispersion adds mono-safe
+    // stereo width. For single stereo IRs, M/S width scales Side cleanly with
+    // exact mono-sum invariance and bit-exact 0% passthrough.
     if (!spatialOn) {
       // Cabinet routing remains active, without mono collapse or width panning.
       if (haveA && haveB) {
@@ -1944,6 +2027,17 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       } else if (haveB) {
         std::memcpy(L, cabBL.data(), n * sizeof(float));
         std::memcpy(R, cabBR.data(), n * sizeof(float));
+      }
+    } else if (haveA && haveB && centerBlendApplied) {
+      const float* BL = cabBL.data();
+      const float* BR = cabBR.data();
+      const float blendGain = std::sqrt(0.5f);
+      for (uint32_t i = 0; i < n; ++i) {
+        smoothedWidth += (widthTarget - smoothedWidth) * glide10;
+        if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
+        const float mixL = (L[i] + BL[i]) * blendGain;
+        const float mixR = (R[i] + BR[i]) * blendGain;
+        centerStereoizer.processSample(mixL, mixR, smoothedWidth, L[i], R[i]);
       }
     } else if (haveA && haveB && smoothedWidth == widthTarget) {
       // Once settled, the original smoother is a no-op. Use one exact gain
@@ -1957,63 +2051,82 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         L[i] = outL;
         R[i] = outR;
       }
-    } else {
+    } else if (haveA && haveB) {
       const float* BL = cabBL.data();
       const float* BR = cabBR.data();
       for (uint32_t i = 0; i < n; ++i) {
         smoothedWidth += (widthTarget - smoothedWidth) * glide10;
         if (std::fabs(widthTarget - smoothedWidth) < 1.0e-4f) smoothedWidth = widthTarget;
-        if (haveA && haveB) {
-          widthGainCache.configure(smoothedWidth, blockRounding);
-          const float gainNear = widthGainCache.near;
-          const float gainFar = widthGainCache.far;
-          const float outL = L[i] * gainNear + BL[i] * gainFar;
-          const float outR = R[i] * gainFar + BR[i] * gainNear;
-          L[i] = outL;
-          R[i] = outR;
-        } else if (haveB) {
-          L[i] = BL[i];
-          R[i] = BR[i];
-        }
+        widthGainCache.configure(smoothedWidth, blockRounding);
+        const float gainNear = widthGainCache.near;
+        const float gainFar = widthGainCache.far;
+        const float outL = L[i] * gainNear + BL[i] * gainFar;
+        const float outR = R[i] * gainFar + BR[i] * gainNear;
+        L[i] = outL;
+        R[i] = outR;
       }
+    } else if (haveB) {
+      const float* BL = cabBL.data();
+      const float* BR = cabBR.data();
+      for (uint32_t i = 0; i < n; ++i) {
+        L[i] = BL[i];
+        R[i] = BR[i];
+      }
+      applySingleStereoWidth(stereoB);
+    } else {
+      applySingleStereoWidth(haveA && stereoA);
     }
 
-    // Two cabinets are coherent in the lows, so the equal-power blend adds
-    // 20*log10(cos + sin) dB there (+3 dB at zero Width, 0 dB hard-panned).
-    // Take it back with a low shelf scaled by the level balance; a muted or
-    // polarity-inverted Cab B has no coherent sum to compensate.
+    // Two cabinets add low-end buildup proportional to their actual < 210 Hz
+    // phase correlation (accounting for IR phase/polarity, signed alignment
+    // delay, polarity switch, and pan/blend weights). Decorrelated or opposite-
+    // polarity pairs have zero coherent buildup to compensate.
     if (haveA && haveB) {
-      widthGainCache.configure(spatialOn ? smoothedWidth : 0.0f, blockRounding);
-      const float coherent = widthGainCache.coherent;
       const float gainA = consoleOn ? smoothedCabLevel : 1.0f;
-      const float gainB = consoleOn
-          ? smoothedCab2Level * std::max(0.0f, smoothedCab2Polarity) : 1.0f;
-      const float balance = gainA + gainB > 1.0e-6f
-          ? 2.0f * std::min(gainA, gainB) / (gainA + gainB) : 0.0f;
-      const float shelfTarget = -20.0f * std::log10(coherent) * balance;
+      const float gainB = consoleOn ? smoothedCab2Level : 1.0f;
+      const float effPolarity = consoleOn ? smoothedCab2Polarity : 1.0f;
+      float shelfTargetL = 0.0f, shelfTargetR = 0.0f;
+      computeDualCabShelfTargets(consoleOn, spatialOn, centerBlendApplied,
+                                 parallelCabs, haveA, haveB, gainA, gainB,
+                                 effPolarity, smoothedWidth,
+                                 shelfTargetL, shelfTargetR);
       for (uint32_t start = 0; start < n; start += kEqChunk) {
         const uint32_t m = std::min<uint32_t>(kEqChunk, n - start);
-        glideValue(smoothedDualCabShelfDb, shelfTarget, chunkGlide, 0.005f);
+        glideValue(smoothedDualCabShelfDb, shelfTargetL, chunkGlide, 0.005f);
+        glideValue(smoothedDualCabShelfDbR, shelfTargetR, chunkGlide, 0.005f);
         if (smoothedDualCabShelfDb != appliedDualCabShelfDb) {
           if (smoothedDualCabShelfDb != 0.0f) {
             setLowShelf(dualCabShelf, smoothedDualCabShelfDb, kDualCabShelfHz, sampleRate);
-            copyCoefficients(dualCabShelfR, dualCabShelf);
           } else {
             dualCabShelf.reset();
-            dualCabShelfR.reset();
           }
           appliedDualCabShelfDb = smoothedDualCabShelfDb;
         }
-        if (smoothedDualCabShelfDb == 0.0f) continue;
-        for (uint32_t i = start; i < start + m; ++i) {
-          L[i] = dualCabShelf.process(L[i]);
-          R[i] = dualCabShelfR.process(R[i]);
+        if (smoothedDualCabShelfDbR != appliedDualCabShelfDbR) {
+          if (smoothedDualCabShelfDbR != 0.0f) {
+            if (smoothedDualCabShelfDbR == appliedDualCabShelfDb)
+              copyCoefficients(dualCabShelfR, dualCabShelf);
+            else
+              setLowShelf(dualCabShelfR, smoothedDualCabShelfDbR, kDualCabShelfHz, sampleRate);
+          } else {
+            dualCabShelfR.reset();
+          }
+          appliedDualCabShelfDbR = smoothedDualCabShelfDbR;
+        }
+        if (smoothedDualCabShelfDb != 0.0f) {
+          for (uint32_t i = start; i < start + m; ++i)
+            L[i] = dualCabShelf.process(L[i]);
+        }
+        if (smoothedDualCabShelfDbR != 0.0f) {
+          for (uint32_t i = start; i < start + m; ++i)
+            R[i] = dualCabShelfR.process(R[i]);
         }
       }
     } else {
       dualCabShelf.reset();
       dualCabShelfR.reset();
       smoothedDualCabShelfDb = appliedDualCabShelfDb = 0.0f;
+      smoothedDualCabShelfDbR = appliedDualCabShelfDbR = 0.0f;
     }
 
     if (cabProcessed && consoleOn) {
@@ -2256,6 +2369,13 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   }
 
   if (commitRequested) {
+    const bool preParallel = appliedEnabled[3] && (models[3] || irs[3]);
+    const bool preHaveA = appliedEnabled[2] && (models[2] || irs[2]);
+    const WavIR* preIr2 = irs[2];
+    const WavIR* preIrR2 = irsRight[2];
+    const WavIR* preIr3 = irs[3];
+    const WavIR* preIrR3 = irsRight[3];
+    bool shelfSnapNeeded = (centerBlendApplied != centerBlendRequested);
     commitPendingSwitches();
     appliedPedalOrder = desiredPedalOrder;
     // The output is silent at the commit, so the blend shelf restarts from a
@@ -2280,7 +2400,11 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       if (changed(Rack::Delay)) delayFx.reset();
       if (changed(Rack::Reverb)) reverbFx.resetPlate();
       if (changed(Rack::Spatial)) reverbFx.resetRoom();
-      if (changed(Rack::Spatial)) smoothedWidth = widthTarget;
+      if (changed(Rack::Spatial)) {
+        smoothedWidth = widthTarget;
+        centerStereoizer.reset();
+        shelfSnapNeeded = true;
+      }
       if (changed(Rack::CabConsole)) {
         // Alignment lines keep receiving audio while bypassed. Switch the
         // read delay at silence without discarding the already-filled history.
@@ -2294,6 +2418,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         smoothedLowCut = std::max(0.0f, *ports.cab_low_cut);
         smoothedHighCut = std::min(*ports.cab_high_cut, static_cast<float>(sampleRate * 0.45));
         appliedLowCut = appliedHighCut = -1.0f;
+        shelfSnapNeeded = true;
       }
       appliedRacks = requestedRacks;
     }
@@ -2308,6 +2433,28 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     // Tube type/bypass changes the curve at silence, not the shared Power state.
     // Its normalized supply envelope remains meaningful across tube curves.
     tubeApplied = tubeRequested;
+    if (centerBlendApplied != centerBlendRequested) {
+      centerBlendApplied = centerBlendRequested;
+      centerStereoizer.reset();
+    }
+    const bool postParallel = appliedEnabled[3] && (models[3] || irs[3]);
+    const bool postHaveA = appliedEnabled[2] && (models[2] || irs[2]);
+    if (shelfSnapNeeded || preParallel != postParallel || preHaveA != postHaveA ||
+        preIr2 != irs[2] || preIrR2 != irsRight[2] || preIr3 != irs[3] || preIrR3 != irsRight[3]) {
+      const bool postConsole = appliedRacks[static_cast<size_t>(Rack::CabConsole)];
+      const bool postSpatial = appliedRacks[static_cast<size_t>(Rack::Spatial)];
+      const float postGainA = postConsole ? smoothedCabLevel : 1.0f;
+      const float postGainB = postConsole ? smoothedCab2Level : 1.0f;
+      const float postPolarity = postConsole ? smoothedCab2Polarity : 1.0f;
+      float shelfL = 0.0f, shelfR = 0.0f;
+      computeDualCabShelfTargets(postConsole, postSpatial, centerBlendApplied,
+                                 postParallel, postHaveA, postParallel,
+                                 postGainA, postGainB, postPolarity, smoothedWidth,
+                                 shelfL, shelfR);
+      smoothedDualCabShelfDb = shelfL;
+      smoothedDualCabShelfDbR = shelfR;
+      appliedDualCabShelfDb = appliedDualCabShelfDbR = 1.0f;
+    }
     transitionPhase = TransitionPhase::FadeIn;
     transitionPosition = 0;
     transitionGain = 0.0f;
