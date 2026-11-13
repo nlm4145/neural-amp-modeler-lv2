@@ -55,10 +55,7 @@ class ModelBandLimit {
   }
 
   void reset() noexcept {
-    for (Section& s : sections_) {
-      s.z1 = 0.0;
-      s.z2 = 0.0;
-    }
+    clearState();
     mix_ = 0.0f;
   }
 
@@ -83,23 +80,14 @@ class ModelBandLimit {
     }
 
     const int targetSections = target.slope + 1;
-    if (mix_ <= 0.0f && wanted) {
+    if ((mix_ <= 0.0f && wanted) ||
+        domainRate != domainRate_ || modelRate != modelRate_) {
       smoothCutoffHz_ = target.cutoffHz;
       smoothRippleDb_ = target.rippleDb;
       design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
-      for (Section& s : sections_) {
-        s.z1 = 0.0;
-        s.z2 = 0.0;
-      }
-    } else if (domainRate != domainRate_ || modelRate != modelRate_) {
-      design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
-      for (Section& s : sections_) {
-        s.z1 = 0.0;
-        s.z2 = 0.0;
-      }
+      clearState();
     }
 
-    const float targetMix = wanted ? 1.0f : 0.0f;
     const float step = static_cast<float>(1.0 / (domainRate * 0.005));
     const double smoothTau = std::max(1.0, domainRate * 0.005);
     constexpr size_t kCtrlChunk = 32;
@@ -108,39 +96,66 @@ class ModelBandLimit {
       const size_t chunkEnd = std::min(count, offset + kCtrlChunk);
       const size_t chunkLen = chunkEnd - offset;
 
-      if (smoothCutoffHz_ != target.cutoffHz || smoothRippleDb_ != target.rippleDb) {
-        const double alpha = 1.0 - std::exp(-static_cast<double>(chunkLen) / smoothTau);
-        const auto glide = [alpha](double& cur, double tgt) noexcept {
-          if (std::fabs(tgt - cur) < 1.0e-3) cur = tgt;
-          else cur += (tgt - cur) * alpha;
-        };
-        glide(smoothCutoffHz_, target.cutoffHz);
-        glide(smoothRippleDb_, target.rippleDb);
-      }
+      if (targetSections == activeSections_) {
+        if (smoothCutoffHz_ != target.cutoffHz || smoothRippleDb_ != target.rippleDb) {
+          const double alpha = 1.0 - std::exp(-static_cast<double>(chunkLen) / smoothTau);
+          const auto glide = [alpha](double& cur, double tgt) noexcept {
+            if (std::fabs(tgt - cur) < 1.0e-3) cur = tgt;
+            else cur += (tgt - cur) * alpha;
+          };
+          glide(smoothCutoffHz_, target.cutoffHz);
+          glide(smoothRippleDb_, target.rippleDb);
+        }
 
-      if (targetSections != activeSections_ ||
-          smoothCutoffHz_ != designedCutoffHz_ ||
-          smoothRippleDb_ != designedRippleDb_) {
-        const int prevSections = activeSections_;
-        design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
-        for (int s = prevSections; s < activeSections_; ++s) {
-          sections_[static_cast<size_t>(s)].z1 = 0.0;
-          sections_[static_cast<size_t>(s)].z2 = 0.0;
+        if (smoothCutoffHz_ != designedCutoffHz_ || smoothRippleDb_ != designedRippleDb_) {
+          design(domainRate, modelRate, smoothCutoffHz_, activeSections_, smoothRippleDb_);
         }
       }
+
+      // Ramp down smoothly before switching section count (slope) or bypassing
+      // so order changes never inject a step discontinuity into high-gain stages.
+      const float targetMix =
+          (!wanted || targetSections != activeSections_) ? 0.0f : 1.0f;
 
       for (size_t i = offset; i < chunkEnd; ++i) {
         double y = samples[i];
         for (int s = 0; s < activeSections_; ++s) {
           Section& sec = sections_[static_cast<size_t>(s)];
-          const double out = sec.b0 * y + sec.z1;
-          sec.z1 = sec.b1 * y - sec.a1 * out + sec.z2;
-          sec.z2 = sec.b2 * y - sec.a2 * out;
+          const double out = sec.b0 * y + sec.b1 * sec.x1 + sec.b2 * sec.x2
+                           - sec.a1 * sec.y1 - sec.a2 * sec.y2;
+          sec.x2 = sec.x1;
+          sec.x1 = y;
+          sec.y2 = sec.y1;
+          sec.y1 = out;
           y = out;
         }
         if (mix_ < targetMix) mix_ = std::min(targetMix, mix_ + step);
         else if (mix_ > targetMix) mix_ = std::max(targetMix, mix_ - step);
-        samples[i] += mix_ * (static_cast<float>(y) - samples[i]);
+        if (mix_ > 0.0f) {
+          samples[i] += mix_ * (static_cast<float>(y) - samples[i]);
+        }
+      }
+
+      for (int s = 0; s < activeSections_; ++s) {
+        Section& sec = sections_[static_cast<size_t>(s)];
+        if (std::fabs(sec.x1) < 1.0e-24) sec.x1 = 0.0;
+        if (std::fabs(sec.x2) < 1.0e-24) sec.x2 = 0.0;
+        if (std::fabs(sec.y1) < 1.0e-24) sec.y1 = 0.0;
+        if (std::fabs(sec.y2) < 1.0e-24) sec.y2 = 0.0;
+      }
+
+      if (mix_ <= 0.0f) {
+        if (targetSections != activeSections_) {
+          smoothCutoffHz_ = target.cutoffHz;
+          smoothRippleDb_ = target.rippleDb;
+          design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
+          clearState();
+        }
+        if (!wanted) {
+          smoothCutoffHz_ = target.cutoffHz;
+          smoothRippleDb_ = target.rippleDb;
+          break;
+        }
       }
     }
 
@@ -171,10 +186,21 @@ class ModelBandLimit {
   }
 
  private:
+  // Direct Form I stores past signal samples (x1/x2/y1/y2) rather than
+  // coefficient-scaled DF2T energy so cutoff/ripple updates stay click-free.
   struct Section {
     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
-    double z1 = 0.0, z2 = 0.0;
+    double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0;
   };
+
+  void clearState() noexcept {
+    for (Section& s : sections_) {
+      s.x1 = 0.0;
+      s.x2 = 0.0;
+      s.y1 = 0.0;
+      s.y2 = 0.0;
+    }
+  }
 
   static Params sanitizeParams(const Params& p) noexcept {
     return Params{
@@ -197,13 +223,15 @@ class ModelBandLimit {
     const double k = std::tan(kPi * edge / domainRate);
     const double epsilon = std::sqrt(std::pow(10.0, rippleDb / 10.0) - 1.0);
     const double mu = std::asinh(1.0 / epsilon) / order;
-    for (int i = 0; i < activeSections_; ++i) {
-      const double theta = kPi * (2.0 * i + 1.0) / (2.0 * order);
+    // Order lowest-Q section first to avoid internal resonant peaking before damping.
+    for (int idx = 0; idx < activeSections_; ++idx) {
+      const int poleIdx = activeSections_ - 1 - idx;
+      const double theta = kPi * (2.0 * poleIdx + 1.0) / (2.0 * order);
       const double sigma = std::sinh(mu) * std::sin(theta);
       const double omega = std::cosh(mu) * std::cos(theta);
       const double w = k * k * (sigma * sigma + omega * omega);
       const double a0 = 1.0 + 2.0 * k * sigma + w;
-      Section& s = sections_[static_cast<size_t>(i)];
+      Section& s = sections_[static_cast<size_t>(idx)];
       s.b0 = w / a0;
       s.b1 = 2.0 * w / a0;
       s.b2 = w / a0;

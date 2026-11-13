@@ -82,6 +82,71 @@ int main() {
     tailIdentical &= (toggleBuf[i] == toggleDry[i]);
   check(tailIdentical, "disabling HF filter returns to bit-identical bypass after 5 ms fade");
 
+  // Sweeping cutoff/ripple and switching slope while playing must not inject step clicks.
+  {
+    const double rate = 384000.0;
+    const size_t blk = 64;
+    std::vector<float> buf(blk);
+    ModelBandLimit sweepFilter;
+    double phase = 0.0;
+    auto fillSignal = [&]() {
+      for (size_t i = 0; i < blk; ++i) {
+        buf[i] = static_cast<float>(
+            0.5 * std::sin(2.0 * 3.14159265358979323846 * 1200.0 * phase / rate) +
+            0.4 * std::sin(2.0 * 3.14159265358979323846 * 4500.0 * phase / rate));
+        phase += 1.0;
+      }
+    };
+    ModelBandLimit::Params p{20500.0f, 3, 0.05f};
+    for (int b = 0; b < 300; ++b) {
+      fillSignal();
+      sweepFilter.process(buf.data(), blk, rate, 48000.0, true, p);
+    }
+    float prev = buf.back();
+    float maxCutoffJump = 0.0f;
+    for (int b = 0; b < 80; ++b) {
+      p.cutoffHz = static_cast<float>(20500.0 - 16500.0 * b / 79.0);
+      fillSignal();
+      sweepFilter.process(buf.data(), blk, rate, 48000.0, true, p);
+      for (float s : buf) {
+        maxCutoffJump = std::max(maxCutoffJump, std::fabs(s - prev));
+        prev = s;
+      }
+    }
+    check(maxCutoffJump < 0.06f, "cutoff sweep stays continuous without step clicks");
+
+    float maxRippleJump = 0.0f;
+    for (int b = 0; b < 60; ++b) {
+      p.rippleDb = (b % 2 == 0) ? 1.00f : 0.01f;
+      fillSignal();
+      sweepFilter.process(buf.data(), blk, rate, 48000.0, true, p);
+      for (float s : buf) {
+        maxRippleJump = std::max(maxRippleJump, std::fabs(s - prev));
+        prev = s;
+      }
+    }
+    check(maxRippleJump < 0.06f, "ripple changes stay continuous without step clicks");
+
+    p = {5000.0f, 3, 0.50f};
+    for (int b = 0; b < 300; ++b) {
+      fillSignal();
+      sweepFilter.process(buf.data(), blk, rate, 48000.0, true, p);
+    }
+    prev = buf.back();
+    float maxSlopeJump = 0.0f;
+    for (int b = 0; b < 150; ++b) {
+      if (b == 0) p.slope = 0;
+      if (b == 80) p.slope = 3;
+      fillSignal();
+      sweepFilter.process(buf.data(), blk, rate, 48000.0, true, p);
+      for (float s : buf) {
+        maxSlopeJump = std::max(maxSlopeJump, std::fabs(s - prev));
+        prev = s;
+      }
+    }
+    check(maxSlopeJump < 0.06f, "slope switches fade without single-sample pops");
+  }
+
   std::printf("%s\n", failures ? "FAILED" : "verify_model_band_limit: all checks passed");
   return failures ? 1 : 0;
 }
