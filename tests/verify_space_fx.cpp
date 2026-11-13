@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -104,9 +105,18 @@ int main() {
     const float zero = line.readFrac(0.0);
     const float farSinc = line.readSinc8(1.0e9);
     const float zeroSinc = line.readSinc8(0.0);
+    const float farAlign = line.readAlign(1.0e9);
+    const float negAlign = line.readAlign(-5.0);
+    const float zeroAlign = line.readAlign(0.0);
     check(std::isfinite(far) && std::isfinite(farFrac) && std::isfinite(zero) &&
-              std::isfinite(farSinc) && std::isfinite(zeroSinc),
+              std::isfinite(farSinc) && std::isfinite(zeroSinc) &&
+              std::isfinite(farAlign) && std::isfinite(negAlign) && std::isfinite(zeroAlign),
           "DelayLine clamps out-of-range reads instead of reading past the end");
+    check(zeroAlign == line.read(0) &&
+              line.readAlign(3.0) == line.read(3) &&
+              line.readAlign(15.0) == line.read(15) &&
+              line.readAlign(20.0) == line.read(20),
+          "DelayLine::readAlign is exact at zero and integer delays");
     check(line.capacity() == 64,
           "DelayLine reports the usable capacity it was allocated for");
   }
@@ -156,6 +166,147 @@ int main() {
                   "AlignDelay 8-tap sinc preserves 20 kHz energy at f=0.5 (ratio: %+.3f dB)",
                   ratioDb);
     check(std::fabs(ratioDb) < 0.15, label);
+  }
+  {
+    // AlignDelay at 0 ms must remain strictly zero-latency bit-transparent,
+    // and non-finite delay requests must remain safe and finite.
+    NAMRig::AlignDelay align;
+    align.initialize(48000.0, 20.0);
+    auto origL = tone(512, 48000.0, 1234.0);
+    auto origR = tone(512, 48000.0, 2345.0);
+    auto left = origL;
+    auto right = origR;
+    align.process(left.data(), right.data(), left.size(), 0.0f);
+    bool bitExactZero = true;
+    for (size_t i = 0; i < left.size(); ++i) {
+      if (left[i] != origL[i] || right[i] != origR[i]) {
+        bitExactZero = false;
+        break;
+      }
+    }
+    check(bitExactZero, "AlignDelay at 0 ms is bit-transparent (zero latency)");
+
+    align.process(left.data(), right.data(), left.size(),
+                  std::numeric_limits<float>::quiet_NaN());
+    check(allFinite(left) && allFinite(right),
+          "AlignDelay guards non-finite delayMs safely");
+  }
+  {
+    // Step 2: Unified 32-tap causal LS-FIR (< 15 samples) + Kaiser-32 (>= 15 samples)
+    // eliminates the severe sub-3-sample treble roll-off of linear / Catmull-Rom
+    // interpolation at both 48 kHz and 96 kHz.
+    for (double sessionRate : {48000.0, 96000.0}) {
+      for (double samples : {0.5, 1.5, 2.5, 15.5}) {
+        NAMRig::AlignDelay align;
+        align.initialize(sessionRate, 10.0);
+        const float delayMs = static_cast<float>(samples / sessionRate * 1000.0);
+        const double testHz = (sessionRate <= 48000.0) ? 12000.0 : 20000.0;
+        auto left = tone(8192, sessionRate, testHz);
+        auto right = left;
+        const double inEnergy = energy(left, 2048, 8192);
+        align.process(left.data(), right.data(), left.size(), delayMs);
+        const double outEnergy = energy(left, 2048, 8192);
+        const double ratioDb = 10.0 * std::log10(outEnergy / inEnergy);
+        const double limitDb = (sessionRate <= 48000.0) ? 0.65 : 0.45;
+        char label[160];
+        std::snprintf(label, sizeof(label),
+                      "AlignDelay preserves %.0f Hz at %.0f Hz/%.1f smp (ratio: %+.3f dB)",
+                      testHz, sessionRate, samples, ratioDb);
+        check(allFinite(left) && std::fabs(ratioDb) < limitDb, label);
+      }
+    }
+  }
+  {
+    // Dual-cab comb-filtering accuracy at 48 kHz: summing a direct signal with an
+    // AlignDelay-shifted copy must match ideal fractional delay comb response and
+    // produce deep destructive cancellation at half-period frequencies.
+    constexpr double kRate48 = 48000.0;
+    for (double samples : {0.5, 1.5, 2.5, 15.5}) {
+      NAMRig::AlignDelay align;
+      align.initialize(kRate48, 10.0);
+      const float delayMs = static_cast<float>(samples / kRate48 * 1000.0);
+
+      // Complex comb accuracy across guitar & cab upper band (1 kHz, 4 kHz, 8 kHz)
+      double maxCombErrDb = -200.0;
+      for (double hz : {1000.0, 4000.0, 8000.0}) {
+        align.reset();
+        auto direct = tone(8192, kRate48, hz);
+        auto delayed = direct;
+        auto scratch = direct;
+        align.process(delayed.data(), scratch.data(), delayed.size(), delayMs);
+        double errE = 0.0, refE = 0.0;
+        const double w = 2.0 * kPi * hz / kRate48;
+        for (size_t i = 2048; i < 8192; ++i) {
+          const double idealDelayed = 0.25 * std::sin(w * (static_cast<double>(i) - samples));
+          const double idealComb = 0.5 * (static_cast<double>(direct[i]) + idealDelayed);
+          const double actualComb = 0.5 * (static_cast<double>(direct[i]) + delayed[i]);
+          const double diff = actualComb - idealComb;
+          errE += diff * diff;
+          refE += 0.25 * 0.25 * 0.5;
+        }
+        const double errDb = 10.0 * std::log10(std::max(errE, 1e-18) / refE);
+        if (errDb > maxCombErrDb) maxCombErrDb = errDb;
+      }
+      char combLabel[160];
+      std::snprintf(combLabel, sizeof(combLabel),
+                    "AlignDelay dual-cab comb matches ideal across 1-8 kHz @ %.1f smp (worst err: %.1f dB)",
+                    samples, maxCombErrDb);
+      check(maxCombErrDb < -24.0, combLabel);
+
+      // Destructive cancellation notch when samples >= 1.5 (notch within passband)
+      if (samples >= 1.5) {
+        align.reset();
+        const double notchHz = kRate48 / (2.0 * samples);
+        auto direct = tone(8192, kRate48, notchHz);
+        auto delayed = direct;
+        auto scratch = direct;
+        align.process(delayed.data(), scratch.data(), delayed.size(), delayMs);
+        double directE = 0.0, sumE = 0.0;
+        for (size_t i = 2048; i < 8192; ++i) {
+          const double s = 0.5 * (static_cast<double>(direct[i]) + delayed[i]);
+          directE += static_cast<double>(direct[i]) * direct[i];
+          sumE += s * s;
+        }
+        const double notchDb = 10.0 * std::log10(std::max(sumE, 1e-18) / directE);
+        char notchLabel[160];
+        std::snprintf(notchLabel, sizeof(notchLabel),
+                      "AlignDelay comb notch @ %.1f smp (%.0f Hz) attenuates deeply (%.1f dB)",
+                      samples, notchHz, notchDb);
+        check(notchDb < -24.0, notchLabel);
+      }
+    }
+  }
+  {
+    // DelayLine::readAlign must transition smoothly without step discontinuities
+    // across integer crossings (1.0, 3.0) and across the 15.0 causal->sinc handoff.
+    NAMRig::DelayLine line;
+    line.allocate(128);
+    constexpr double kRate48 = 48000.0;
+    const double w = 2.0 * kPi * 4000.0 / kRate48;
+    for (int i = 0; i < 200; ++i) {
+      line.write(static_cast<float>(std::sin(w * i)));
+    }
+    double maxStepLow = 0.0;
+    float prevLow = line.readAlign(0.5);
+    for (int s = 1; s <= 1500; ++s) {
+      const double d = 0.5 + 0.002 * s; // 0.5 -> 3.5 across 1.0, 2.0, 3.0
+      const float cur = line.readAlign(d);
+      maxStepLow = std::max(maxStepLow, static_cast<double>(std::fabs(cur - prevLow)));
+      prevLow = cur;
+    }
+    double maxStepHandoff = 0.0;
+    float prevHi = line.readAlign(14.5);
+    for (int s = 1; s <= 500; ++s) {
+      const double d = 14.5 + 0.002 * s; // 14.5 -> 15.5 across 15.0 handoff
+      const float cur = line.readAlign(d);
+      maxStepHandoff = std::max(maxStepHandoff, static_cast<double>(std::fabs(cur - prevHi)));
+      prevHi = cur;
+    }
+    char sweepLabel[160];
+    std::snprintf(sweepLabel, sizeof(sweepLabel),
+                  "DelayLine::readAlign sweep has no integer/handoff steps (max delta: %.4f, %.4f)",
+                  maxStepLow, maxStepHandoff);
+    check(maxStepLow < 0.006 && maxStepHandoff < 0.004, sweepLabel);
   }
   {
     // A request beyond the allocation must clamp to the maximum, not wrap.

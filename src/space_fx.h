@@ -1,5 +1,7 @@
 #pragma once
 
+#include "align_delay_table.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -94,10 +96,8 @@ class DelayLine {
     return ((c3 * frac + c2) * frac + c1) * frac + c0;
   }
 
-  // 8-tap windowed-sinc interpolation for high-precision cabinet alignment.
-  // Preserves the audio band (about 0.06 dB ripple up to 24 kHz at 96 kHz)
-  // with linear phase across fractional delays. Kernels come from
-  // kSinc8Table, blended linearly between its tabulated fractions.
+  // 8-tap windowed-sinc interpolation for echo/reverb taps, with causal LS-FIR
+  // below 3 samples so sub-3-sample reads never drop to linear/Catmull-Rom.
   float readSinc8(double delay) const {
     delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
     const size_t whole = static_cast<size_t>(delay);
@@ -109,23 +109,76 @@ class DelayLine {
       return read(whole + 1);
     }
     if (whole < 3) {
-      return readFrac(delay);
+      return readCausalAlign(delay);
     }
 
     const float position = frac * Sinc8Table::kSteps;
-    const int row = std::min(static_cast<int>(position), Sinc8Table::kSteps - 1);
-    const float blend = position - static_cast<float>(row);
-    const float* lower = kSinc8Table.weights[row];
-    const float* upper = kSinc8Table.weights[row + 1];
+    const int row = std::clamp(static_cast<int>(position), 0, Sinc8Table::kSteps - 1);
+    const float blend = std::clamp(position - static_cast<float>(row), 0.0f, 1.0f);
+    const size_t firstDelay = whole - static_cast<size_t>(-Sinc8Table::kFirstTap);
+    return readInterpolatedKernel(firstDelay, kSinc8Table.weights[row],
+                                  kSinc8Table.weights[row + 1], blend,
+                                  Sinc8Table::kTaps);
+  }
+
+  // High-precision cabinet alignment reader: 32-tap causal LS-FIR below 15
+  // samples (zero lookahead latency, continuous across sample boundaries) and
+  // symmetric 32-tap Kaiser-windowed sinc (beta = 7.0) at >= 15 samples.
+  float readAlign(double delay) const {
+    delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
+    const size_t whole = static_cast<size_t>(delay);
+    const float frac = static_cast<float>(delay - static_cast<double>(whole));
+    if (frac <= 1.0e-6f) {
+      return read(whole);
+    }
+    if (frac >= 1.0f - 1.0e-6f) {
+      return read(whole + 1);
+    }
+    if (whole < static_cast<size_t>(AlignDelayTables::kCausalMaxDelay)) {
+      return readCausalAlign(delay);
+    }
+
+    const float position = frac * AlignDelayTables::kSincSteps;
+    const int row = std::clamp(static_cast<int>(position), 0, AlignDelayTables::kSincRows - 2);
+    const float blend = std::clamp(position - static_cast<float>(row), 0.0f, 1.0f);
+    const size_t firstDelay = whole - static_cast<size_t>(-AlignDelayTables::kSincFirstTap);
+    return readInterpolatedKernel(firstDelay, kAlignSincWeights[row],
+                                  kAlignSincWeights[row + 1], blend,
+                                  AlignDelayTables::kTaps);
+  }
+
+ private:
+  float readCausalAlign(double delay) const {
+    const float position = static_cast<float>(delay) * AlignDelayTables::kCausalSteps;
+    const int row = std::clamp(static_cast<int>(position), 0, AlignDelayTables::kCausalRows - 2);
+    const float blend = std::clamp(position - static_cast<float>(row), 0.0f, 1.0f);
+    return readInterpolatedKernel(0, kAlignCausalWeights[row],
+                                  kAlignCausalWeights[row + 1], blend,
+                                  AlignDelayTables::kTaps);
+  }
+
+  float readInterpolatedKernel(size_t firstDelay, const float* lower,
+                               const float* upper, float blend,
+                               int taps) const {
     float sum = 0.0f;
-    for (int t = 0; t < Sinc8Table::kTaps; ++t) {
+    if (firstDelay + static_cast<size_t>(taps - 1) <= capacity_ &&
+        buffer_.size() >= static_cast<size_t>(taps)) {
+      const size_t n = buffer_.size();
+      size_t idx = (write_ + n - 1 - firstDelay) % n;
+      for (int t = 0; t < taps; ++t) {
+        const float weight = lower[t] + (upper[t] - lower[t]) * blend;
+        sum += weight * buffer_[idx];
+        idx = idx == 0 ? n - 1 : idx - 1;
+      }
+      return sum;
+    }
+    for (int t = 0; t < taps; ++t) {
       const float weight = lower[t] + (upper[t] - lower[t]) * blend;
-      sum += weight * read(whole + static_cast<size_t>(Sinc8Table::kFirstTap + t));
+      sum += weight * read(firstDelay + static_cast<size_t>(t));
     }
     return sum;
   }
 
- private:
   std::vector<float> buffer_;
   size_t capacity_ = 0;
   size_t write_ = 0;
@@ -137,8 +190,12 @@ class AlignDelay {
   void initialize(double rate, double maxMs) {
     rate_ = rate > 0.0 ? rate : 48000.0;
     maxSamples_ = rate_ * maxMs * 0.001;
-    left_.allocate(static_cast<size_t>(std::ceil(maxSamples_)) + 8);
-    right_.allocate(static_cast<size_t>(std::ceil(maxSamples_)) + 8);
+    // Extra headroom guarantees readAlign's 32-tap causal and Kaiser windows
+    // never clamp at the far boundary of [0, maxSamples_].
+    const size_t alloc = std::max<size_t>(
+        static_cast<size_t>(std::ceil(maxSamples_)) + 24, 64);
+    left_.allocate(alloc);
+    right_.allocate(alloc);
     smoothed_ = 0.0;
     primed_ = false;
   }
@@ -150,8 +207,8 @@ class AlignDelay {
   }
   void primeNextDelay() noexcept { primed_ = false; }
   void process(float* left, float* right, size_t count, float delayMs) {
-    const double target = std::max(0.0, std::min(maxSamples_,
-        static_cast<double>(delayMs) * 0.001 * rate_));
+    const double safeMs = std::isnan(delayMs) ? 0.0 : static_cast<double>(delayMs);
+    const double target = std::max(0.0, std::min(maxSamples_, safeMs * 0.001 * rate_));
     if (!primed_) {
       smoothed_ = target;
       primed_ = true;
@@ -169,8 +226,8 @@ class AlignDelay {
       if (std::fabs(target - smoothed_) < 1.0e-3) smoothed_ = target;
       left_.write(left[i]);
       right_.write(right[i]);
-      left[i] = left_.readSinc8(smoothed_);
-      right[i] = right_.readSinc8(smoothed_);
+      left[i] = left_.readAlign(smoothed_);
+      right[i] = right_.readAlign(smoothed_);
     }
   }
 
