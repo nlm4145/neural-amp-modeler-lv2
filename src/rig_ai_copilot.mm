@@ -1298,8 +1298,7 @@ static NSDictionary* rigAICLIEnvironment() {
 + (NSDictionary*)contextForPreset:(RigPreset*)preset compact:(BOOL)compact {
   NSMutableDictionary* controls = [NSMutableDictionary dictionary];
   for (const auto& kv : preset.allControls) {
-    if (kv.first == NAMRig::kDropPitchPort) continue;  // player's tuning, not tone
-    if (kv.first == NAMRig::kModelBandLimitPort) continue;  // rig-wide A/B switch
+    if (rigAIIsPlayerFixedControlPort(kv.first)) continue;
     const auto* c = NAMRig::rigControlContract(kv.first);
     const char* sym = NAMRig::rigControlSymbol(kv.first);
     if (sym && (!compact || !c || kv.second != c->defaultValue)) controls[@(sym)] = @(kv.second);
@@ -1350,8 +1349,7 @@ static NSDictionary* rigAICLIEnvironment() {
   }
   for (NSString* symbol in result.controls) {
     const uint32_t port = [symbols[symbol] unsignedIntValue];
-    if (port == NAMRig::kDropPitchPort) continue;  // keep the base preset's tuning
-    if (port == NAMRig::kModelBandLimitPort) continue;  // rig-wide A/B switch
+    if (rigAIIsPlayerFixedControlPort(port)) continue;
     [preset setControl:port value:[result.controls[symbol] floatValue]];
   }
   for (size_t s = 0; s < 4; ++s) {

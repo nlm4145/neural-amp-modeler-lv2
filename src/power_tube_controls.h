@@ -66,7 +66,13 @@ inline constexpr float kDropPitchDefault = 0.0f;
 // (0 = off, 1 = on). See model_band_limit.h.
 inline constexpr uint32_t kModelBandLimitPort = 228;
 inline constexpr float kModelBandLimitDefault = 0.0f;
-inline constexpr uint32_t kRigControlPortCount = 229;
+// Drop Pitch / Virtual Capo shaping controls (0..100%), append-only.
+// Neutrals (Attack 50%, Sustain 50%) preserve default behavior.
+inline constexpr uint32_t kDropPitchAttackPort = 229;
+inline constexpr uint32_t kDropPitchSustainPort = 230;
+inline constexpr float kDropPitchAttackDefault = 50.0f;
+inline constexpr float kDropPitchSustainDefault = 50.0f;
+inline constexpr uint32_t kRigControlPortCount = 231;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

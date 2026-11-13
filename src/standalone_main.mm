@@ -629,7 +629,8 @@ class StandaloneHost {
         {NAMRig::kOutputCeilingPort, masterOutputControls_},
         {NAMRig::kToneEqModePort, toneEqControls_},
         {NAMRig::kDropPitchPort, {&dropPitchControl_, 1}},
-        {NAMRig::kModelBandLimitPort, {&modelBandLimitControl_, 1}}});
+        {NAMRig::kModelBandLimitPort, {&modelBandLimitControl_, 1}},
+        {NAMRig::kDropPitchAttackPort, dropPitchShapingControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1009,6 +1010,12 @@ class StandaloneHost {
     }
     if (format == 0 && port == NAMRig::kModelBandLimitPort && size == sizeof(float)) {
       host->modelBandLimitControl_ = *static_cast<const float*>(buffer) >= 0.5f ? 1.0f : 0.0f;
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kDropPitchAttackPort &&
+        port <= NAMRig::kDropPitchSustainPort && size == sizeof(float)) {
+      host->dropPitchShapingControls_[port - NAMRig::kDropPitchAttackPort] =
+          std::clamp(*static_cast<const float*>(buffer), 0.0f, 100.0f);
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1881,6 +1888,10 @@ class StandaloneHost {
   std::array<float, NAMRig::kToneEqControlCount> toneEqControls_ = NAMRig::toneEqDefaults();
   float dropPitchControl_ = NAMRig::kDropPitchDefault;
   float modelBandLimitControl_ = NAMRig::kModelBandLimitDefault;
+  std::array<float, 2> dropPitchShapingControls_ = {
+      NAMRig::kDropPitchAttackDefault,
+      NAMRig::kDropPitchSustainDefault,
+  };
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

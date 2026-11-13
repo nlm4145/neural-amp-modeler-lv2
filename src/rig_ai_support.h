@@ -7,6 +7,7 @@
 #pragma clang diagnostic ignored "-Wnullability-completeness-on-arrays"
 
 // Foundation-only validation/catalog helpers, shared by the copilot and local API.
+BOOL rigAIIsPlayerFixedControlPort(uint32_t port);
 NSString* rigAIControlReference();
 BOOL rigAIValidateControls(NSDictionary* controls, NSError** error);
 RigAICopilotResult* rigAIParseResponse(NSString* content, NSError** error);

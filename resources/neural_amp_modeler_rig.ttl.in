@@ -1293,4 +1293,14 @@
  lv2:symbol "model_band_limit" ; lv2:name "Model Band-Limit" ;
  lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
  lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 229 ;
+ lv2:symbol "drop_pitch_attack" ; lv2:name "Drop Pitch Attack" ;
+ lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ;
+ lv2:portProperty lv2:connectionOptional
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 230 ;
+ lv2:symbol "drop_pitch_sustain" ; lv2:name "Drop Pitch Sustain" ;
+ lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ;
+ lv2:portProperty lv2:connectionOptional
 ] .

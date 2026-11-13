@@ -27,6 +27,11 @@ namespace NAMRig {
 //  - Zero heap allocations and bit-identical bypass when semitones == 0.
 class DropPitch {
  public:
+  struct Params {
+    float attack = 50.0f;   // 0..100 (50 = calibrated neutral)
+    float sustain = 50.0f;  // 0..100 (50 = calibrated neutral)
+  };
+
   static constexpr int kMinSemitones = -12;
   static constexpr int kMaxSemitones = 12;
   static constexpr int kRingSize = 65536;
@@ -73,6 +78,12 @@ class DropPitch {
     snapAttackCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.00005));
     snapDecayFactor_ = std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.0018));
     snapXoverCoeff_ = 1.0f - std::exp(-6.28318530717958647692f * 1600.0f / static_cast<float>(sampleRate_));
+    susAttackCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.0025));
+    susReleaseCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.14));
+    susTightReleaseCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.035));
+    susGainDownCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.002));
+    susGainUpCoeff_ = 1.0f - std::exp(-1.0f / static_cast<float>(sampleRate_ * 0.018));
+    paramSmoothTau_ = static_cast<float>(sampleRate_ * 0.008);
 
     detHpf_.setHighPass(sampleRate_, 850.0, 0.707);
     reset();
@@ -94,6 +105,20 @@ class DropPitch {
     lastTransientPos_ = -1;
     quietRun_ = kRingSize;
     appliedFilterSt_ = 0;
+    smoothAttack_ = 50.0f;
+    smoothSustain_ = 50.0f;
+    appliedAttack_ = 50.0f;
+    appliedSustain_ = 50.0f;
+    activeQuietHoldSamples_ = quietHoldSamples_;
+    activeSnapHoldSamples_ = snapHoldSamples_;
+    activeSnapDecayFactor_ = snapDecayFactor_;
+    trigRatio_ = 2.2f;
+    trigFloorRatio_ = 1.6f;
+    minTrigFast_ = 0.0020f;
+    rhoBias_ = 0.0f;
+    simBias_ = 0.0f;
+    susEnv_ = 0.0f;
+    susGain_ = 1.0f;
     subHpf_.reset();
     presenceShelf_.reset();
     detHpf_.reset();
@@ -120,10 +145,17 @@ class DropPitch {
   }
 
   void process(float* samples, uint32_t count, int semitones) noexcept {
+    process(samples, count, semitones, Params{});
+  }
+
+  void process(float* samples, uint32_t count, int semitones, const Params& rawParams) noexcept {
     if (!samples || count == 0) return;
+    const Params targetParams = sanitizeParams(rawParams);
     const int targetSt = clampSemitones(semitones);
 
     if (targetSt == 0 && !active_) {
+      snapSmoothParams(targetParams);
+      applyTrackingParams();
       for (uint32_t i = 0; i < count; ++i) {
         pushInputSample(samples[i]);
       }
@@ -145,6 +177,11 @@ class DropPitch {
       snapEnv_ = 0.0f;
       snapGateLeft_ = 0;
       snapDelay_ = kHeadMargin;
+      susEnv_ = 0.0f;
+      susGain_ = 1.0f;
+      snapSmoothParams(targetParams);
+      configureToneCompensation(currentSemitones_);
+      appliedFilterSt_ = currentSemitones_;
       startVoices();
     } else if (targetSt != 0 && targetSt != currentSemitones_) {
       currentSemitones_ = targetSt;
@@ -152,52 +189,66 @@ class DropPitch {
       lastAttemptDelay_ = leadDelay();
     }
 
-    if (currentSemitones_ != appliedFilterSt_) {
-      configureToneCompensation(currentSemitones_);
-      appliedFilterSt_ = currentSemitones_;
-    }
-
     const float fadeStep = 1.0f / static_cast<float>(fadeSamples_);
     const float targetWet = targetSt != 0 ? 1.0f : 0.0f;
 
-    for (uint32_t i = 0; i < count; ++i) {
-      const float dry = samples[i];
-      pushInputSample(dry);
-
-      if (transientPending_) {
-        transientPending_ = false;
-        handleTransient();
+    constexpr uint32_t kCtrlChunk = 32u;
+    for (uint32_t offset = 0; offset < count; offset += kCtrlChunk) {
+      const uint32_t chunkEnd = std::min(count, offset + kCtrlChunk);
+      const uint32_t chunkLen = chunkEnd - offset;
+      stepSmoothParams(targetParams, chunkLen);
+      if (currentSemitones_ != appliedFilterSt_ || shapingDirty()) {
+        configureToneCompensation(currentSemitones_);
+        appliedFilterSt_ = currentSemitones_;
       }
-      updateSplice();
 
-      float wet = renderVoices();
-      if (currentSemitones_ < 0) {
-        wet = subHpf_.process(wet);
-      }
-      wet = presenceShelf_.process(wet);
+      const float susNorm = (smoothSustain_ - 50.0f) * 0.02f;
+      const bool sustainActive =
+          std::fabs(susNorm) >= 1.0e-4f || std::fabs(susGain_ - 1.0f) >= 1.0e-5f;
 
-      if (currentSemitones_ < 0 && (snapEnv_ > 0.0f || snapGateLeft_ > 0)) {
-        if (snapGateLeft_ > 0) {
-          --snapGateLeft_;
-          snapEnv_ += (1.0f - snapEnv_) * snapAttackCoeff_;
-        } else {
-          snapEnv_ *= snapDecayFactor_;
-          if (snapEnv_ < 1.0e-5f) snapEnv_ = 0.0f;
+      for (uint32_t i = offset; i < chunkEnd; ++i) {
+        const float dry = samples[i];
+        pushInputSample(dry);
+
+        if (transientPending_) {
+          transientPending_ = false;
+          handleTransient();
         }
-        if (snapEnv_ > 0.0f) {
-          const size_t snapIdx = static_cast<size_t>(
-              (static_cast<int64_t>(writePos_) - snapDelay_) & kSnapRingMask);
-          wet += (snapEnv_ * snapMix_) * snapRing_[snapIdx];
+        updateSplice();
+
+        float wet = renderVoices();
+        if (currentSemitones_ < 0) {
+          wet = subHpf_.process(wet);
         }
-      }
+        wet = presenceShelf_.process(wet);
 
-      if (wetMix_ < targetWet) {
-        wetMix_ = std::min(targetWet, wetMix_ + fadeStep);
-      } else if (wetMix_ > targetWet) {
-        wetMix_ = std::max(targetWet, wetMix_ - fadeStep);
-      }
+        if (sustainActive) {
+          wet *= computeSustainGain(wet, susNorm);
+        }
 
-      samples[i] = dry + (wet - dry) * wetMix_;
+        if (currentSemitones_ < 0 && (snapEnv_ > 0.0f || snapGateLeft_ > 0)) {
+          if (snapGateLeft_ > 0) {
+            --snapGateLeft_;
+            snapEnv_ += (1.0f - snapEnv_) * snapAttackCoeff_;
+          } else {
+            snapEnv_ *= activeSnapDecayFactor_;
+            if (snapEnv_ < 1.0e-5f) snapEnv_ = 0.0f;
+          }
+          if (snapEnv_ > 0.0f) {
+            const size_t snapIdx = static_cast<size_t>(
+                (static_cast<int64_t>(writePos_) - snapDelay_) & kSnapRingMask);
+            wet += (snapEnv_ * snapMix_) * snapRing_[snapIdx];
+          }
+        }
+
+        if (wetMix_ < targetWet) {
+          wetMix_ = std::min(targetWet, wetMix_ + fadeStep);
+        } else if (wetMix_ > targetWet) {
+          wetMix_ = std::max(targetWet, wetMix_ - fadeStep);
+        }
+
+        samples[i] = dry + (wet - dry) * wetMix_;
+      }
     }
 
     if (targetSt == 0 && wetMix_ <= 0.0f) {
@@ -209,6 +260,8 @@ class DropPitch {
       snapMix_ = 0.0f;
       snapEnv_ = 0.0f;
       snapGateLeft_ = 0;
+      susEnv_ = 0.0f;
+      susGain_ = 1.0f;
     }
   }
 
@@ -281,14 +334,139 @@ class DropPitch {
     }
   };
 
+  static Params sanitizeParams(const Params& p) noexcept {
+    const auto clampPct = [](float v, float fallback) noexcept {
+      if (!std::isfinite(v)) return fallback;
+      return std::clamp(v, 0.0f, 100.0f);
+    };
+    return Params{
+        clampPct(p.attack, 50.0f),
+        clampPct(p.sustain, 50.0f),
+    };
+  }
+
+  void snapSmoothParams(const Params& p) noexcept {
+    smoothAttack_ = p.attack;
+    smoothSustain_ = p.sustain;
+  }
+
+  void stepSmoothParams(const Params& target, uint32_t chunkLen) noexcept {
+    if (smoothAttack_ == target.attack && smoothSustain_ == target.sustain) {
+      return;
+    }
+    const float alpha =
+        1.0f - std::exp(-static_cast<float>(chunkLen) / std::max(1.0f, paramSmoothTau_));
+    const auto glide = [alpha](float& cur, float tgt) noexcept {
+      if (std::fabs(tgt - cur) < 1.0e-3f) {
+        cur = tgt;
+      } else {
+        cur += (tgt - cur) * alpha;
+      }
+    };
+    glide(smoothAttack_, target.attack);
+    glide(smoothSustain_, target.sustain);
+  }
+
+  bool shapingDirty() const noexcept {
+    return smoothAttack_ != appliedAttack_ || smoothSustain_ != appliedSustain_;
+  }
+
+  void applyTrackingParams() noexcept {
+    const float atkNorm = (smoothAttack_ - 50.0f) * 0.02f;
+    if (atkNorm == 0.0f) {
+      activeSnapHoldSamples_ = snapHoldSamples_;
+      activeSnapDecayFactor_ = snapDecayFactor_;
+      trigRatio_ = 2.2f;
+      trigFloorRatio_ = 1.6f;
+      minTrigFast_ = 0.0020f;
+    } else if (atkNorm > 0.0f) {
+      activeSnapHoldSamples_ = std::max(6, static_cast<int>(std::lround(
+          static_cast<double>(snapHoldSamples_) * (1.0 + static_cast<double>(atkNorm)))));
+      const double decayMs = 1.8 + 1.4 * static_cast<double>(atkNorm);
+      activeSnapDecayFactor_ =
+          std::exp(-1.0f / static_cast<float>(sampleRate_ * (decayMs * 0.001)));
+      trigRatio_ = 2.2f - 0.55f * atkNorm;
+      trigFloorRatio_ = 1.6f - 0.25f * atkNorm;
+      minTrigFast_ = 0.0020f - 0.0008f * atkNorm;
+    } else {
+      activeSnapHoldSamples_ = std::max(4, static_cast<int>(std::lround(
+          static_cast<double>(snapHoldSamples_) * (1.0 + 0.5 * static_cast<double>(atkNorm)))));
+      const double decayMs = 1.8 + 0.9 * static_cast<double>(atkNorm);
+      activeSnapDecayFactor_ =
+          std::exp(-1.0f / static_cast<float>(sampleRate_ * (decayMs * 0.001)));
+      trigRatio_ = 2.2f - 0.80f * atkNorm;
+      trigFloorRatio_ = 1.6f - 0.50f * atkNorm;
+      minTrigFast_ = 0.0020f - 0.0012f * atkNorm;
+    }
+
+    const float susNorm = (smoothSustain_ - 50.0f) * 0.02f;
+    if (susNorm == 0.0f) {
+      activeQuietHoldSamples_ = quietHoldSamples_;
+      rhoBias_ = 0.0f;
+      simBias_ = 0.0f;
+    } else if (susNorm > 0.0f) {
+      activeQuietHoldSamples_ = std::min(kRingSize / 4, static_cast<int>(std::lround(
+          static_cast<double>(quietHoldSamples_) * (1.0 + 2.0 * static_cast<double>(susNorm)))));
+      rhoBias_ = -0.06f * susNorm;
+      simBias_ = -0.10f * susNorm;
+    } else {
+      activeQuietHoldSamples_ = std::max(16, static_cast<int>(std::lround(
+          static_cast<double>(quietHoldSamples_) * (1.0 + 0.5 * static_cast<double>(susNorm)))));
+      rhoBias_ = -0.03f * susNorm;
+      simBias_ = -0.08f * susNorm;
+    }
+  }
+
+  float computeSustainGain(float wetSample, float susNorm) noexcept {
+    const float absWet = std::fabs(wetSample);
+    const float relCoeff = susNorm < 0.0f ? susTightReleaseCoeff_ : susReleaseCoeff_;
+    const float envCoeff = absWet > susEnv_ ? susAttackCoeff_ : relCoeff;
+    susEnv_ += (absWet - susEnv_) * envCoeff;
+
+    float targetGain = 1.0f;
+    if (susNorm > 0.0f) {
+      const float gate = std::clamp((susEnv_ - 0.0003f) / (0.0020f - 0.0003f), 0.0f, 1.0f);
+      if (gate > 0.0f && susEnv_ < 0.16f) {
+        const float ratio = 0.16f / std::max(susEnv_, 0.0020f);
+        const float rawBoost = std::pow(std::max(1.0f, ratio), 0.42f * susNorm);
+        const float maxBoost = 1.0f + 1.50f * susNorm;
+        targetGain = 1.0f + (std::min(maxBoost, rawBoost) - 1.0f) * gate;
+      }
+    } else if (susNorm < 0.0f) {
+      const float tighten = -susNorm;
+      const float thresh = 0.012f + 0.095f * tighten;
+      if (susEnv_ < thresh) {
+        const float decayRatio = std::clamp(susEnv_ / thresh, 0.0f, 1.0f);
+        const float minFloor = 1.0f - 0.80f * tighten;
+        targetGain = minFloor + (1.0f - minFloor) * (decayRatio * decayRatio);
+      }
+    }
+
+    const float coeff = targetGain < susGain_ ? susGainDownCoeff_ : susGainUpCoeff_;
+    susGain_ += (targetGain - susGain_) * coeff;
+    if (std::fabs(susNorm) < 1.0e-4f && std::fabs(susGain_ - 1.0f) < 1.0e-5f) {
+      susGain_ = 1.0f;
+    }
+    return susGain_;
+  }
+
   void configureToneCompensation(int semitones) noexcept {
+    applyTrackingParams();
+    appliedAttack_ = smoothAttack_;
+    appliedSustain_ = smoothSustain_;
+
+    const float atkNorm = (smoothAttack_ - 50.0f) * 0.02f;
+
     if (semitones < 0) {
       const double subHz = 20.0 + 0.25 * static_cast<double>(-semitones);
       subHpf_.setHighPass(sampleRate_, subHz, 0.707);
       const double boostDb = std::min(3.8, 0.42 * static_cast<double>(-semitones));
       presenceShelf_.setHighShelf(sampleRate_, 2400.0, boostDb, 0.707);
       const float depth = std::clamp(static_cast<float>(-semitones) / 12.0f, 0.0f, 1.0f);
-      snapMix_ = 0.32f + 0.32f * std::sqrt(depth);
+      const float baseSnap = 0.32f + 0.32f * std::sqrt(depth);
+      const float snapScale =
+          atkNorm >= 0.0f ? (1.0f + 1.15f * atkNorm) : std::max(0.0f, 1.0f + atkNorm);
+      snapMix_ = baseSnap * snapScale;
     } else if (semitones > 0) {
       subHpf_.reset();
       const double cutDb = -std::min(3.5, 0.40 * static_cast<double>(semitones));
@@ -307,7 +485,7 @@ class DropPitch {
     slowEnv_ += (impulse - slowEnv_) * slowCoeff_;
 
     if (transientCooldown_ > 0) --transientCooldown_;
-    if (transientCooldown_ == 0 && fastEnv_ > 0.0020f && fastEnv_ > slowEnv_ * 2.2f) {
+    if (transientCooldown_ == 0 && fastEnv_ > minTrigFast_ && fastEnv_ > slowEnv_ * trigRatio_) {
       transientPending_ = true;
     }
 
@@ -625,7 +803,7 @@ class DropPitch {
       } else {
         snapDelay_ = std::clamp(static_cast<int>(std::llround(delay)), 0, kSnapRingSize - 1);
       }
-      snapGateLeft_ = snapHoldSamples_;
+      snapGateLeft_ = activeSnapHoldSamples_;
       return;
     }
 
@@ -642,7 +820,7 @@ class DropPitch {
     if (ratio_ < 1.0) {
       const double drift = delay - static_cast<double>(kHeadMargin);
       if (drift < static_cast<double>(attemptStep_)) return;
-      if (quietRun_ >= quietHoldSamples_) {
+      if (quietRun_ >= activeQuietHoldSamples_) {
         if (fadePos_ < fadeLen_) return;
         if (delay >= static_cast<double>(quietRun_ - kHeadMargin) ||
             delay > static_cast<double>(kHeadMargin + minJump_)) {
@@ -666,7 +844,7 @@ class DropPitch {
         if (sinceTransient < static_cast<int64_t>(transientProtect_)) return;
         if (delay - lastAttemptDelay_ < static_cast<double>(attemptStep_)) return;
         // An attack that the detector did not confirm yet can be at the write head.
-        if (fastEnv_ > 0.0020f && fastEnv_ > slowEnv_ * 1.6f) return;
+        if (fastEnv_ > minTrigFast_ && fastEnv_ > slowEnv_ * trigFloorRatio_) return;
       }
       lastAttemptDelay_ = delay;
 
@@ -681,8 +859,10 @@ class DropPitch {
             x < 0.5f ? kEarlyAcceptSimilarity
                      : kEarlyAcceptSimilarity -
                            (x - 0.5f) * 2.0f * (kEarlyAcceptSimilarity - kForcedAcceptSimilarity);
-        const float rhoMin = x < 0.45f ? 0.945f : 0.945f - (x - 0.45f) * (0.045f / 0.55f);
-        const float simMin = x < 0.45f ? 0.82f : 0.76f;
+        const float rhoBase = x < 0.45f ? 0.945f : 0.945f - (x - 0.45f) * (0.045f / 0.55f);
+        const float simBase = x < 0.45f ? 0.82f : 0.76f;
+        const float rhoMin = std::clamp(rhoBase + rhoBias_, 0.80f, 0.99f);
+        const float simMin = std::clamp(simBase + simBias_, 0.60f, 0.92f);
         const bool decayPeriodOk = match.rho >= rhoMin && match.similarity >= simMin;
         if (match.similarity < threshold && !decayPeriodOk) return;
       }
@@ -694,7 +874,7 @@ class DropPitch {
 
     const int quietJump = minJump_ + kHeadMargin;
     if (static_cast<double>(quietRun_) >= std::max(delay + static_cast<double>(quietJump + 2),
-                                                   static_cast<double>(quietHoldSamples_))) {
+                                                   static_cast<double>(activeQuietHoldSamples_))) {
       splice(lead.pos - static_cast<double>(quietJump), spliceFadeLength(quietJump), 1.0f);
       return;
     }
@@ -750,6 +930,12 @@ class DropPitch {
   float snapAttackCoeff_ = 0.13f;
   float snapDecayFactor_ = 0.988f;
   float snapXoverCoeff_ = 0.27f;
+  float susAttackCoeff_ = 0.0083f;
+  float susReleaseCoeff_ = 0.00015f;
+  float susTightReleaseCoeff_ = 0.00060f;
+  float susGainDownCoeff_ = 0.010f;
+  float susGainUpCoeff_ = 0.00116f;
+  float paramSmoothTau_ = 384.0f;
 
   std::array<float, kRingSize> ring_{};
   std::array<float, kSnapRingSize> snapRing_{};
@@ -779,6 +965,21 @@ class DropPitch {
   float snapEnv_ = 0.0f;
   int snapGateLeft_ = 0;
   int snapDelay_ = kHeadMargin;
+
+  float smoothAttack_ = 50.0f;
+  float smoothSustain_ = 50.0f;
+  float appliedAttack_ = 50.0f;
+  float appliedSustain_ = 50.0f;
+  int activeQuietHoldSamples_ = 864;
+  int activeSnapHoldSamples_ = 86;
+  float activeSnapDecayFactor_ = 0.988f;
+  float trigRatio_ = 2.2f;
+  float trigFloorRatio_ = 1.6f;
+  float minTrigFast_ = 0.0020f;
+  float rhoBias_ = 0.0f;
+  float simBias_ = 0.0f;
+  float susEnv_ = 0.0f;
+  float susGain_ = 1.0f;
 
   int appliedFilterSt_ = 0;
   Biquad subHpf_;

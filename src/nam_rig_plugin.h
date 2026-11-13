@@ -224,6 +224,8 @@ public:
     std::array<float*, kToneEqControlCount> tone_eq;
     float* drop_pitch;
     float* model_band_limit;
+    float* drop_pitch_attack;
+    float* drop_pitch_sustain;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -282,7 +284,11 @@ public:
   static_assert(kDropPitchPort == kToneEqModePort + kToneEqControlCount);
   static_assert(offsetof(Ports, model_band_limit) == kModelBandLimitPort * sizeof(void*));
   static_assert(kModelBandLimitPort == kDropPitchPort + 1);
-  static_assert(kPortCount == kModelBandLimitPort + 1);
+  static_assert(offsetof(Ports, drop_pitch_attack) == kDropPitchAttackPort * sizeof(void*));
+  static_assert(kDropPitchAttackPort == kModelBandLimitPort + 1);
+  static_assert(offsetof(Ports, drop_pitch_sustain) == kDropPitchSustainPort * sizeof(void*));
+  static_assert(kDropPitchSustainPort == kDropPitchAttackPort + 1);
+  static_assert(kPortCount == kDropPitchSustainPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};

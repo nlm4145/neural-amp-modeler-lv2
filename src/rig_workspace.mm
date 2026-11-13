@@ -506,9 +506,9 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   // Compact level controls leave room for the live processing racks below.
   NSView* input = [self newPageWithKey:@"main:0"];
   RigPanel* inputConsole = [self panelAt:input x:0 y:0 w:1472 h:148];
-  [self label:@"Input & Gate" parent:inputConsole x:28 y:36 w:580 size:20 weight:NSFontWeightSemibold color:rigText()];
-  [self label:@"Set input gain and noise gate response before the preamp processors below."
-       parent:inputConsole x:28 y:68 w:580 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
+  [self label:@"Input & Gate" parent:inputConsole x:28 y:30 w:435 size:20 weight:NSFontWeightSemibold color:rigText()];
+  [self label:@"Set input gain, drop pitch shaping, and gate before the preamp."
+       parent:inputConsole x:28 y:62 w:435 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
 
   // Drop Pitch / Virtual Capo strip
   [self label:@"DROP PITCH" parent:inputConsole x:28 y:105 w:82 size:10.5 weight:NSFontWeightBold color:rigDimText()];
@@ -560,9 +560,17 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   bandLimitBtn.frame = [self topRect:inputConsole x:366 y:100 w:104 h:24];
   bandLimitBtn.toolTip = @"A/B switch. On: a 20.5 kHz low-pass in front of each oversampled NAM model removes ultrasonic content from the overdrive and pedal models, which the models were not trained on. Off: the models receive the full oversampled signal. Presets do not change this switch.";
   [self.state->modelBandLimitButtons addObject:bandLimitBtn];
+  RigPanel* dropShaperCard = [self panelAt:inputConsole x:498 y:8 w:260 h:132];
+  dropShaperCard.cornerRadius = 10;
+  [self label:@"DROP PITCH SHAPER" parent:dropShaperCard x:14 y:6 w:220 size:9.5 weight:NSFontWeightBold color:rigAccent()];
+  NSArray<NSView*>* dropShaperCells =
+      self.knobGroups.count > 3 ? [self knobCells:self.knobGroups[3]] : @[];
+  for (NSUInteger i = 0; i < dropShaperCells.count; ++i)
+    [self place:dropShaperCells[i] parent:dropShaperCard x:14 + i * 120 y:18 w:112 h:112];
+
   NSArray<NSView*>* inputCells = [self knobCells:self.knobGroups[0]];
   for (NSUInteger i = 0; i < inputCells.count; ++i)
-    [self place:inputCells[i] parent:inputConsole x:680 + i * 260 y:14 w:220 h:124];
+    [self place:inputCells[i] parent:inputConsole x:786 + i * 224 y:14 w:204 h:124];
 
   NSView* pedal = [self newPageWithKey:@"main:1"];
   [self buildPedalBoard:pedal];

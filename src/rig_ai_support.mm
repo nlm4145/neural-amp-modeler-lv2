@@ -12,13 +12,17 @@ static BOOL fail(NSError** error, NSString* message) {
   return NO;
 }
 
+BOOL rigAIIsPlayerFixedControlPort(uint32_t port) {
+  // Drop Pitch + its shaper controls are the player's tuning calibration;
+  // model_band_limit is a rig-wide listening switch.
+  return port == NAMRig::kDropPitchPort || port == NAMRig::kModelBandLimitPort ||
+         (port >= NAMRig::kDropPitchAttackPort && port <= NAMRig::kDropPitchSustainPort);
+}
+
 NSString* rigAIControlReference() {
   NSMutableString* text = [NSMutableString string];
   NAMRig::forEachRigControlSymbol([&](uint32_t port, const char*) {
-    // Drop Pitch is the player's tuning, not part of a tone; AI never sets it.
-    if (port == NAMRig::kDropPitchPort) return;
-    // The model band-limit switch is a listening choice for the whole rig.
-    if (port == NAMRig::kModelBandLimitPort) return;
+    if (rigAIIsPlayerFixedControlPort(port)) return;
     const auto* c = NAMRig::rigControlContract(port);
     if (!c) return;
     [text appendFormat:@"%s: %g..%g %s; default %g%s%s\n", c->symbol,

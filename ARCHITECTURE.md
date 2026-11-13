@@ -270,6 +270,7 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 199–226 | `tone_eq_pin{1..7}_{shape,freq,gain,q}` | in | Independent stereo tone EQ at the original post-stack position; fixed bell bands at 40, 80, 240, 750, 2200, 6600, 12000 Hz, ±18 dB; shape/frequency/Q ports fixed for compatibility; optional |
 | 227 | `drop_pitch` | in | -12..12 semitones; default 0 = exact bypass; pre-amp Drop Pitch / Virtual Capo (`src/drop_pitch.h`); integer; optional |
 | 228 | `model_band_limit` | in | 0 = off (default), 1 = on; A/B switch for the 20.5 kHz low-pass in front of each NAM model that runs above its training rate (`src/model_band_limit.h`), 5 ms fade; rig-wide, not stored in or recalled by presets, never set by the AI Copilot; optional |
+| 229–230 | `drop_pitch_attack`/`drop_pitch_sustain` | in | Drop Pitch shaper knobs in `Input & Gate`: Attack `0–100%` (default `50%`, pick snap & onset detector), Sustain `0–100%` (default `50%`, tracking hold & decay recovery); smoothed live, persisted in presets, excluded from AI Copilot; optional |
 
 The Tone & Voicing selector switches between linked knob and lever views without
 writing audio controls. Edits project the complete EQ response into the other

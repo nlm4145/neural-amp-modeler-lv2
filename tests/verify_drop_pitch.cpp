@@ -492,6 +492,95 @@ int main() {
       }
     }
   }
+  // Verify the 2 shaper controls: neutral parity, attack, sustain (+ mute silence), and live smoothing.
+  {
+    const double sr = 48000.0;
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const size_t start = static_cast<size_t>(sr * 0.04);
+    const size_t noteEnd = start + static_cast<size_t>(sr * 0.36);
+    const size_t total = noteEnd + static_cast<size_t>(sr * 0.12);
+    std::vector<float> palmMute(total, 0.0f);
+    double phase = 0.0;
+    for (size_t i = start; i < noteEnd; ++i) {
+      const double t = static_cast<double>(i - start) / sr;
+      phase += kTwoPi * 82.41 / sr;
+      const double click = std::exp(-t / 0.0020) * (0.40 * std::sin(kTwoPi * 2600.0 * t) +
+                                                    0.24 * std::sin(kTwoPi * 4000.0 * t));
+      const double body = std::exp(-t / 0.070) * (std::sin(phase) + 0.45 * std::sin(2.0 * phase));
+      palmMute[i] = static_cast<float>(0.22 * (click + body));
+    }
+
+    auto runWithParams = [&](std::vector<float> buf, int st, const NAMRig::DropPitch::Params& p) {
+      NAMRig::DropPitch dp;
+      dp.prepare(sr);
+      for (size_t off = 0; off < buf.size(); off += 128) {
+        const uint32_t n = static_cast<uint32_t>(std::min<size_t>(128, buf.size() - off));
+        dp.process(buf.data() + off, n, st, p);
+      }
+      return buf;
+    };
+
+    // 1. Neutral defaults {50, 50} must be bit-identical to 3-arg process().
+    std::vector<float> legacyOut = palmMute;
+    {
+      NAMRig::DropPitch dp;
+      dp.prepare(sr);
+      processInBlocks(dp, legacyOut, -5);
+    }
+    const std::vector<float> neutralOut =
+        runWithParams(palmMute, -5, NAMRig::DropPitch::Params{50.0f, 50.0f});
+    for (size_t i = 0; i < total; ++i) {
+      assert(neutralOut[i] == legacyOut[i]);
+    }
+
+    // 2. Attack scales high-frequency pick transient articulation monotonically (0 < 50 < 100).
+    const auto atkLow = runWithParams(palmMute, -5, {0.0f, 50.0f});
+    const auto atkHigh = runWithParams(palmMute, -5, {100.0f, 50.0f});
+    auto hfDiffRms = [&](const std::vector<float>& buf, size_t a, size_t b) {
+      double acc = 0.0;
+      for (size_t i = a + 1; i < b; ++i) {
+        const double d = static_cast<double>(buf[i]) - static_cast<double>(buf[i - 1]);
+        acc += d * d;
+      }
+      return std::sqrt(acc / static_cast<double>(b - a - 1));
+    };
+    const size_t atkEnd = start + static_cast<size_t>(sr * 0.010);
+    const double atkDiffLow = hfDiffRms(atkLow, start, atkEnd);
+    const double atkDiffMid = hfDiffRms(neutralOut, start, atkEnd);
+    const double atkDiffHigh = hfDiffRms(atkHigh, start, atkEnd);
+    assert(atkDiffHigh > atkDiffMid * 1.12);
+    assert(atkDiffMid > atkDiffLow * 1.04);
+
+    // 3. Sustain lifts decaying palm-mute tail without pumping silence.
+    const auto susLow = runWithParams(palmMute, -5, {50.0f, 0.0f});
+    const auto susHigh = runWithParams(palmMute, -5, {50.0f, 100.0f});
+    const size_t tailA = start + static_cast<size_t>(sr * 0.14);
+    const size_t tailB = start + static_cast<size_t>(sr * 0.30);
+    assert(rmsRange(susHigh, tailA, tailB) > rmsRange(neutralOut, tailA, tailB) * 1.15);
+    assert(rmsRange(susLow, tailA, tailB) < rmsRange(neutralOut, tailA, tailB) * 0.90);
+    assert(rmsRange(susHigh, noteEnd + static_cast<size_t>(sr * 0.06), total) < 1.0e-4);
+
+    // 4. Live parameter automation stays finite and click-free across sudden jumps.
+    std::vector<float> sweep(static_cast<size_t>(sr * 0.5), 0.0f);
+    for (size_t i = 0; i < sweep.size(); ++i) {
+      sweep[i] = static_cast<float>(0.25 * std::sin(kTwoPi * 110.0 * static_cast<double>(i) / sr));
+    }
+    NAMRig::DropPitch dpLive;
+    dpLive.prepare(sr);
+    for (size_t off = 0; off < sweep.size(); off += 128) {
+      const uint32_t n = static_cast<uint32_t>(std::min<size_t>(128, sweep.size() - off));
+      const NAMRig::DropPitch::Params p =
+          off < sweep.size() / 2 ? NAMRig::DropPitch::Params{0.0f, 0.0f}
+                                 : NAMRig::DropPitch::Params{100.0f, 100.0f};
+      dpLive.process(sweep.data() + off, n, -5, p);
+    }
+    double maxStep = 0.0;
+    for (size_t i = 1; i < sweep.size(); ++i) {
+      assert(std::isfinite(sweep[i]));
+      maxStep = std::max(maxStep, static_cast<double>(std::fabs(sweep[i] - sweep[i - 1])));
+    }
+    assert(maxStep < 0.15);
+  }
   std::puts("verify_drop_pitch: all checks passed");
   return 0;
 }

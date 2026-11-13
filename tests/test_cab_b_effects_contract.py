@@ -39,8 +39,8 @@ assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 229;" in (ROOT / "src/power_tube_controls.h").read_text()
-assert sorted(ports) == list(range(229)), "ports stay contiguous; model_band_limit appends at 228"
+assert "kRigControlPortCount = 231;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(231)), "ports stay contiguous; drop_pitch_* append after model_band_limit"
 
 
 def port_default(index: int) -> float:
@@ -159,7 +159,7 @@ assert fade < dsp.index("if (!rackTransitionActive) processEffects();"), (
 for port in range(48, 59):
     assert re.search(rf"\b{port}\b", knobs), f"port {port} missing from the UI knob map"
     assert re.search(rf"case {port}:", theme), f"port {port} has no value formatter"
-assert "kRigKnobCount = 50" in (ROOT / "src/rig_knobs.h").read_text()
+assert "kRigKnobCount = 52" in (ROOT / "src/rig_knobs.h").read_text()
 assert "WIDTH / DELAY / REVERB" in ui, "the cab tile needs the effects popover button"
 assert "effectsPopover" in ui and "effectsPopover" in state
 assert "B ON" in ui and "onB.tag = 47;" in ui, "Cab B needs its own enable toggle"

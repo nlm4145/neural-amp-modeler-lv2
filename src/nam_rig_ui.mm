@@ -7323,7 +7323,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"DLY DAMP", @"DLY MIX", @"RVB MIX", @"DECAY",
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
                                       @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
-                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE", @"OD TIGHT", @"CEILING", @"BALANCE"];
+                                      @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE", @"OD TIGHT", @"CEILING", @"BALANCE",
+                                      @"ATTACK", @"SUSTAIN"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -7331,7 +7332,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"OFF", @"OFF", @"OFF", @"OFF", @"25%", @"25%", @"50%", @"50%",
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
-                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms", @"720 Hz", @"OFF", @"CENTER"];
+                                       @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms", @"720 Hz", @"OFF", @"CENTER",
+                                       @"50%", @"50%"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -7382,19 +7384,23 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Post-cab compressor release (10 to 1000 ms). Short releases recover between notes; longer releases smooth sustained leads.",
       @"Overdrive tight high-pass cutoff (100 to 1500 Hz). Sweeps the pre-clip bass roll-off frequency: lower settings give warm, full-range drive; higher settings tighten flub and sharpen pick attack for modern rhythms.",
       @"Final stereo-linked peak limiter. 0 dB reads OFF and bypasses completely. Turn below 0 dB to set the sample-peak ceiling. No added latency or makeup gain.",
-      @"Final left/right balance, including effects. CENTER is exact bypass. Negative values attenuate right; positive values attenuate left. Neither side is boosted."
+      @"Final left/right balance, including effects. CENTER is exact bypass. Negative values attenuate right; positive values attenuate left. Neither side is boosted.",
+      @"Drop pitch transient attack & pick snap (0–100%). 50% is calibrated neutral. Raise to accentuate pick bite and sharpen onset resync on fast riffs and palm mutes; lower for softer attack.",
+      @"Drop pitch note & palm-mute sustain (0–100%). 50% is calibrated neutral. Above 50% holds pitch tracking longer and gently recovers decaying body while staying silent when muted; below 50% tightens tails."
     ];
 
     const std::array<double, kRigKnobCount> mins{
         -80.0, 20.0, -20.0, 0.0, -24.0, -12.0, -12.0, -12.0, -24.0, 0.0, 4000.0, -20.0, 0.0, 0.0,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0, 100.0, -24.0, -100.0};
+        0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0, 100.0, -24.0, -100.0,
+        0.0, 0.0};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
-        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0, 1500.0, 0.0, 100.0};
+        100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0, 1500.0, 0.0, 100.0,
+        100.0, 100.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -7419,6 +7425,56 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     const CGFloat groupPad = 4.0;
     const CGFloat knobSide = 64.0;
+
+    auto populateKnobCell = [&](NSView* cell, size_t k) {
+      state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k],
+                                mins[k], maxes[k],
+                                NSMakePoint(0, 0), state->uiController);
+      NSSlider* knob = state->knobs[k];
+      knob.toolTip = knobDescriptions[k];
+      knob.translatesAutoresizingMaskIntoConstraints = NO;
+
+      NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
+                                    [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium],
+                                    rigDimText(), NSTextAlignmentCenter);
+      rigApplyTracking(kname, 0.65);
+      kname.toolTip = knobDescriptions[k];
+      kname.translatesAutoresizingMaskIntoConstraints = NO;
+      centerX(kname, cell, 0);
+      [[kname.topAnchor constraintEqualToAnchor:cell.topAnchor constant:2] setActive:YES];
+
+      centerX(knob, cell, 0);
+      [[knob.topAnchor constraintEqualToAnchor:kname.bottomAnchor constant:4] setActive:YES];
+      [[knob.widthAnchor constraintEqualToConstant:knobSide] setActive:YES];
+      [[knob.heightAnchor constraintEqualToConstant:knobSide] setActive:YES];
+
+      state->valueLabels[k] = addLabel(cell, knobValues[k], NSZeroRect,
+        [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightSemibold], rigText(), NSTextAlignmentCenter);
+      // Turn the value display into an editable text box: type a number and
+      // press Return (or click away) to set the knob. Knob turns still update
+      // the box text while not editing.
+      NSTextField* kval = state->valueLabels[k];
+      kval.editable = YES;
+      kval.selectable = YES;   // editable alone is NOT enough on label-created fields
+      kval.bordered = NO;
+      kval.wantsLayer = YES;
+      kval.layer.cornerRadius = 4.0;
+      kval.layer.masksToBounds = YES;
+      kval.drawsBackground = YES;
+      kval.backgroundColor = rigRaised();
+      kval.textColor = rigText();
+      kval.focusRingType = NSFocusRingTypeNone;
+      kval.tag = (NSInteger)kRigKnobPorts[k];
+      kval.delegate = state->uiController;
+      kval.target = state->uiController;
+      kval.action = @selector(knobFieldCommitted:);
+      kval.toolTip = knobDescriptions[k];
+      kval.translatesAutoresizingMaskIntoConstraints = NO;
+      centerX(kval, cell, 0);
+      [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];
+      [[kval.heightAnchor constraintEqualToConstant:19] setActive:YES];
+      [[kval.topAnchor constraintEqualToAnchor:knob.bottomAnchor constant:4] setActive:YES];
+    };
 
     for (size_t g = 0; g < 3; ++g) {
       NSView* group = nil;
@@ -7474,54 +7530,15 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
             [[cell.trailingAnchor constraintEqualToAnchor:group.trailingAnchor constant:-groupPad] setActive:YES];
         }
 
-        state->knobs[k] = addKnob(cell, (NSInteger)kRigKnobPorts[k], kRigKnobDefaults[k],
-                                  mins[k], maxes[k],
-                                  NSMakePoint(0, 0), state->uiController);
-        NSSlider* knob = state->knobs[k];
-        knob.toolTip = knobDescriptions[k];
-        knob.translatesAutoresizingMaskIntoConstraints = NO;
-
-        NSTextField* kname = addLabel(cell, knobNames[k], NSZeroRect,
-                                      [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium],
-                                      rigDimText(), NSTextAlignmentCenter);
-        rigApplyTracking(kname, 0.65);
-        kname.toolTip = knobDescriptions[k];
-        kname.translatesAutoresizingMaskIntoConstraints = NO;
-        centerX(kname, cell, 0);
-        [[kname.topAnchor constraintEqualToAnchor:cell.topAnchor constant:2] setActive:YES];
-
-        centerX(knob, cell, 0);
-        [[knob.topAnchor constraintEqualToAnchor:kname.bottomAnchor constant:4] setActive:YES];
-        [[knob.widthAnchor constraintEqualToConstant:knobSide] setActive:YES];
-        [[knob.heightAnchor constraintEqualToConstant:knobSide] setActive:YES];
-
-        state->valueLabels[k] = addLabel(cell, knobValues[k], NSZeroRect,
-          [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightSemibold], rigText(), NSTextAlignmentCenter);
-        // Turn the value display into an editable text box: type a number and
-        // press Return (or click away) to set the knob. Knob turns still update
-        // the box text while not editing.
-        NSTextField* kval = state->valueLabels[k];
-        kval.editable = YES;
-        kval.selectable = YES;   // editable alone is NOT enough on label-created fields
-        kval.bordered = NO;
-        kval.wantsLayer = YES;
-        kval.layer.cornerRadius = 4.0;
-        kval.layer.masksToBounds = YES;
-        kval.drawsBackground = YES;
-        kval.backgroundColor = rigRaised();
-        kval.textColor = rigText();
-        kval.focusRingType = NSFocusRingTypeNone;
-        kval.tag = (NSInteger)kRigKnobPorts[k];
-        kval.delegate = state->uiController;
-        kval.target = state->uiController;
-        kval.action = @selector(knobFieldCommitted:);
-        kval.toolTip = knobDescriptions[k];
-        kval.translatesAutoresizingMaskIntoConstraints = NO;
-        centerX(kval, cell, 0);
-        [[kval.widthAnchor constraintEqualToConstant:70] setActive:YES];
-        [[kval.heightAnchor constraintEqualToConstant:19] setActive:YES];
-        [[kval.topAnchor constraintEqualToAnchor:knob.bottomAnchor constant:4] setActive:YES];
+        populateKnobCell(cell, k);
       }
+    }
+
+    NSView* dropPitchKnobGroup = [[NSView alloc] initWithFrame:NSZeroRect];
+    for (size_t k = 50; k <= 51; ++k) {
+      NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
+      [dropPitchKnobGroup addSubview:cell];
+      populateKnobCell(cell, k);
     }
 
     // Empty space below the rig controls for future expansion modules.
@@ -7907,7 +7924,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     rigInstallGraphControls(state);
     state->workspace = rigCreateWorkspace(state, rigPane, boxRow, expansionSlot,
-        @[knobGroups[0], knobGroups[1], knobGroups[2]]);
+        @[knobGroups[0], knobGroups[1], knobGroups[2], dropPitchKnobGroup]);
     addToneBrowser(state, tonePane);
     addAIToneMatcherPage(state, aiPane);
     state->selectTab(0);

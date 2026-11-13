@@ -1105,7 +1105,11 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   // DI before compression, overdrive, pedal, and amp saturation.
   modelBandLimitOn = portValue(ports.model_band_limit, kModelBandLimitDefault) >= 0.5f;
   const int dropSemitones = clampDropPitch(portValue(ports.drop_pitch, kDropPitchDefault));
-  dropPitch.process(ports.audio_out, sampleCount, dropSemitones);
+  const DropPitch::Params dropPitchParams{
+      portValue(ports.drop_pitch_attack, kDropPitchAttackDefault),
+      portValue(ports.drop_pitch_sustain, kDropPitchSustainDefault),
+  };
+  dropPitch.process(ports.audio_out, sampleCount, dropSemitones, dropPitchParams);
 
   // Feed-forward guitar compressor before the pedal/amp chain.
   // Amount progressively lowers threshold (-12 -> -36 dB), raises ratio
