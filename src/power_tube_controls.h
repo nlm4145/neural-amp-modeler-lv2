@@ -72,7 +72,15 @@ inline constexpr uint32_t kDropPitchAttackPort = 229;
 inline constexpr uint32_t kDropPitchSustainPort = 230;
 inline constexpr float kDropPitchAttackDefault = 50.0f;
 inline constexpr float kDropPitchSustainDefault = 50.0f;
-inline constexpr uint32_t kRigControlPortCount = 231;
+// Configurable HF Filter (Model Band-Limit) parameters, append-only.
+// Bypassed bit-identically when model_band_limit (port 228) is 0.
+inline constexpr uint32_t kModelBandLimitCutoffPort = 231;
+inline constexpr uint32_t kModelBandLimitSlopePort = 232;
+inline constexpr uint32_t kModelBandLimitRipplePort = 233;
+inline constexpr float kModelBandLimitCutoffDefault = 20500.0f;
+inline constexpr float kModelBandLimitSlopeDefault = 3.0f;
+inline constexpr float kModelBandLimitRippleDefault = 0.05f;
+inline constexpr uint32_t kRigControlPortCount = 234;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

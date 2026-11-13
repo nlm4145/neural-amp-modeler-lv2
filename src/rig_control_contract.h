@@ -235,6 +235,9 @@ inline constexpr RigControlContract kRigControlContracts[] = {
     {228, "model_band_limit", 0.0f, 1.0f, 0.0f, "", true, 0u, ""},
     {229, "drop_pitch_attack", 0.0f, 100.0f, 50.0f, "", false, 0u, ""},
     {230, "drop_pitch_sustain", 0.0f, 100.0f, 50.0f, "", false, 0u, ""},
+    {231, "model_band_limit_cutoff", 4000.0f, 24000.0f, 20500.0f, "Hz", false, 0u, ""},
+    {232, "model_band_limit_slope", 0.0f, 3.0f, 3.0f, "", true, 15u, "0=12 dB/oct | 1=24 dB/oct | 2=36 dB/oct | 3=48 dB/oct"},
+    {233, "model_band_limit_ripple", 0.01f, 1.0f, 0.05f, "dB", false, 0u, ""},
 };
 inline const RigControlContract* rigControlContract(uint32_t port) {
   for (const auto& c : kRigControlContracts) if (c.port == port) return &c;

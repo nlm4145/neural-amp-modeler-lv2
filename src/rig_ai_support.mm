@@ -14,9 +14,9 @@ static BOOL fail(NSError** error, NSString* message) {
 
 BOOL rigAIIsPlayerFixedControlPort(uint32_t port) {
   // Drop Pitch + its shaper controls are the player's tuning calibration;
-  // model_band_limit is a rig-wide listening switch.
+  // model_band_limit* are rig-wide oversampling filter controls.
   return port == NAMRig::kDropPitchPort || port == NAMRig::kModelBandLimitPort ||
-         (port >= NAMRig::kDropPitchAttackPort && port <= NAMRig::kDropPitchSustainPort);
+         (port >= NAMRig::kDropPitchAttackPort && port <= NAMRig::kModelBandLimitRipplePort);
 }
 
 NSString* rigAIControlReference() {

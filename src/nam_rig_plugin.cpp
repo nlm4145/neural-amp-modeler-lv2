@@ -1104,6 +1104,11 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   // Pre-amp polyphonic Drop Pitch / Virtual Capo: shifts the gated, trimmed
   // DI before compression, overdrive, pedal, and amp saturation.
   modelBandLimitOn = portValue(ports.model_band_limit, kModelBandLimitDefault) >= 0.5f;
+  modelBandLimitParams = ModelBandLimit::Params{
+      ModelBandLimit::clampCutoffHz(portValue(ports.model_band_limit_cutoff, kModelBandLimitCutoffDefault)),
+      ModelBandLimit::clampSlope(portValue(ports.model_band_limit_slope, kModelBandLimitSlopeDefault)),
+      ModelBandLimit::clampRippleDb(portValue(ports.model_band_limit_ripple, kModelBandLimitRippleDefault)),
+  };
   const int dropSemitones = clampDropPitch(portValue(ports.drop_pitch, kDropPitchDefault));
   const DropPitch::Params dropPitchParams{
       portValue(ports.drop_pitch_attack, kDropPitchAttackDefault),
@@ -1688,7 +1693,8 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
                       float* samples, size_t count, double domainRate) noexcept {
   const double modelRate = model->GetSampleRate();
   modelBandLimit[stage].process(samples, count, domainRate,
-                                modelRate > 0.0 ? modelRate : 48000.0, modelBandLimitOn);
+                                modelRate > 0.0 ? modelRate : 48000.0,
+                                modelBandLimitOn, modelBandLimitParams);
   const float pre = modelInputGainCache[stage].get(
       model->GetRecommendedInputDBAdjustment(), blockRounding);
   if (pre != 1.0f)

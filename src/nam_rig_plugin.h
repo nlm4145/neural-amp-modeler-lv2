@@ -226,6 +226,9 @@ public:
     float* model_band_limit;
     float* drop_pitch_attack;
     float* drop_pitch_sustain;
+    float* model_band_limit_cutoff;
+    float* model_band_limit_slope;
+    float* model_band_limit_ripple;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -288,7 +291,13 @@ public:
   static_assert(kDropPitchAttackPort == kModelBandLimitPort + 1);
   static_assert(offsetof(Ports, drop_pitch_sustain) == kDropPitchSustainPort * sizeof(void*));
   static_assert(kDropPitchSustainPort == kDropPitchAttackPort + 1);
-  static_assert(kPortCount == kDropPitchSustainPort + 1);
+  static_assert(offsetof(Ports, model_band_limit_cutoff) == kModelBandLimitCutoffPort * sizeof(void*));
+  static_assert(kModelBandLimitCutoffPort == kDropPitchSustainPort + 1);
+  static_assert(offsetof(Ports, model_band_limit_slope) == kModelBandLimitSlopePort * sizeof(void*));
+  static_assert(kModelBandLimitSlopePort == kModelBandLimitCutoffPort + 1);
+  static_assert(offsetof(Ports, model_band_limit_ripple) == kModelBandLimitRipplePort * sizeof(void*));
+  static_assert(kModelBandLimitRipplePort == kModelBandLimitSlopePort + 1);
+  static_assert(kPortCount == kModelBandLimitRipplePort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -408,6 +417,7 @@ private:
   DropPitch dropPitch;
   std::array<ModelBandLimit, kStageCount> modelBandLimit;
   bool modelBandLimitOn = false;
+  ModelBandLimit::Params modelBandLimitParams{};
   StereoCompressor postCompressor;
   CompressorCore preCompressor;
   AmpAdvanced ampAdvanced;

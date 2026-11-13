@@ -1366,6 +1366,8 @@ static double copilotParseClock(NSString* text) {
   }
   _state->sendControl(NAMRig::kDropPitchPort, NAMRig::kDropPitchDefault);
   _state->updateControl(NAMRig::kDropPitchPort, NAMRig::kDropPitchDefault);
+  _state->sendControl(NAMRig::kModelBandLimitSlopePort, NAMRig::kModelBandLimitSlopeDefault);
+  _state->updateControl(NAMRig::kModelBandLimitSlopePort, NAMRig::kModelBandLimitSlopeDefault);
   _state->syncingToneEq = false;
   _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
@@ -1544,6 +1546,14 @@ static double copilotParseClock(NSString* text) {
   const float value = sender.state == NSControlStateValueOn ? 1.0f : 0.0f;
   _state->sendControl(NAMRig::kModelBandLimitPort, value);
   _state->updateControl(NAMRig::kModelBandLimitPort, value);
+}
+
+- (void)modelBandLimitSlopeChanged:(NSPopUpButton*)sender {
+  if (!_state || !sender.selectedItem) return;
+  const int slope = NAMRig::ModelBandLimit::clampSlope(static_cast<float>(sender.selectedItem.tag));
+  _state->sendControl(NAMRig::kModelBandLimitSlopePort, static_cast<float>(slope));
+  _state->updateControl(NAMRig::kModelBandLimitSlopePort, static_cast<float>(slope));
+  [self markPresetModified];
 }
 
 - (void)dropPitchChanged:(NSPopUpButton*)sender {
@@ -5565,7 +5575,7 @@ static void addLowerStudioDeck(RigUIState* state,
   bandLimitBtn.buttonType = NSButtonTypeToggle;
   bandLimitBtn.check = YES;
   bandLimitBtn.state = state->modelBandLimit ? NSControlStateValueOn : NSControlStateValueOff;
-  bandLimitBtn.toolTip = @"A/B switch. On: a 20.5 kHz low-pass in front of each oversampled NAM model removes ultrasonic content from the overdrive and pedal models, which the models were not trained on. Off: the models receive the full oversampled signal. Presets do not change this switch.";
+  bandLimitBtn.toolTip = @"Bypass switch for the oversampled NAM model low-pass (Cutoff, Slope, Ripple in Input & Gate). On: filters ultrasonic content above the model's training band. Off: exact bit-identical bypass. Presets do not change this switch.";
   bandLimitBtn.translatesAutoresizingMaskIntoConstraints = NO;
   [state->modelBandLimitButtons addObject:bandLimitBtn];
   [[bandLimitBtn.leadingAnchor constraintEqualToAnchor:dropGroup.trailingAnchor constant:12] setActive:YES];
@@ -7324,7 +7334,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                       @"SIZE", @"RVB DAMP", @"PRE-DLY", @"CHARACTER",
                                       @"MID PUSH", @"OD DRIVE", @"OD TONE", @"OD LEVEL",
                                       @"ATTACK", @"RELEASE", @"AMOUNT", @"ATTACK", @"RELEASE", @"OD TIGHT", @"CEILING", @"BALANCE",
-                                      @"ATTACK", @"SUSTAIN"];
+                                      @"ATTACK", @"SUSTAIN", @"CUTOFF", @"RIPPLE"];
     NSArray<NSString*>* knobValues = @[@"OFF", @"150 ms", @"+0.0 dB", @"OFF",
                                        @"+0.0 dB", @"+0.0 dB", @"+0.0 dB", @"+0.0 dB",
                                        @"+0.0 dB", @"OFF", @"OFF", @"+0.0 dB", @"OFF", @"OFF",
@@ -7333,7 +7343,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
                                        @"+0.0 dB", @"OFF", @"400 ms", @"35%", @"40%", @"OFF",
                                        @"OFF", @"50%", @"50%", @"50%", @"10 ms", @"50%", @"OFF",
                                        @"OFF", @"50%", @"+0.0 dB", @"8.0 ms", @"120 ms", @"OFF", @"8.0 ms", @"120 ms", @"720 Hz", @"OFF", @"CENTER",
-                                       @"50%", @"50%"];
+                                       @"50%", @"50%", @"20500 Hz", @"0.05 dB"];
     NSArray<NSString*>* knobDescriptions = @[
       @"Gate threshold. Mutes background hiss and pickup hum when not playing. Raising it clamps down on noise for tight, staccato chugs; setting it too high cuts off decaying note sustain. -80 dB bypasses the gate.",
       @"Gate release time. Controls how quickly the gate closes once your signal falls below the threshold. Shorter times give an immediate, sharp cutoff for aggressive metal rhythms; longer times let chords and sustain fade out naturally.",
@@ -7386,7 +7396,9 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
       @"Final stereo-linked peak limiter. 0 dB reads OFF and bypasses completely. Turn below 0 dB to set the sample-peak ceiling. No added latency or makeup gain.",
       @"Final left/right balance, including effects. CENTER is exact bypass. Negative values attenuate right; positive values attenuate left. Neither side is boosted.",
       @"Drop pitch transient attack & pick snap (0–100%). 50% is calibrated neutral. Raise to accentuate pick bite and sharpen onset resync on fast riffs and palm mutes; lower for softer attack.",
-      @"Drop pitch note & palm-mute sustain (0–100%). 50% is calibrated neutral. Above 50% holds pitch tracking longer and gently recovers decaying body while staying silent when muted; below 50% tightens tails."
+      @"Drop pitch note & palm-mute sustain (0–100%). 50% is calibrated neutral. Above 50% holds pitch tracking longer and gently recovers decaying body while staying silent when muted; below 50% tightens tails.",
+      @"HF Filter passband cutoff frequency (4000–24000 Hz, default 20500 Hz). Controls where the pre-NAM oversampled low-pass rolls off ultrasonic content. Toggle HF FILTER off for exact bit-identical bypass.",
+      @"HF Filter Chebyshev type I passband ripple (0.01–1.00 dB, default 0.05 dB). Higher ripple yields a steeper transition roll-off at the cutoff frequency."
     ];
 
     const std::array<double, kRigKnobCount> mins{
@@ -7394,13 +7406,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         -12.0, -12.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         -24.0, -10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, -12.0, 1.0, 10.0, 0.0, 1.0, 10.0, 100.0, -24.0, -100.0,
-        0.0, 0.0};
+        0.0, 0.0, 4000.0, 0.01};
     const std::array<double, kRigKnobCount> maxes{
         0.0, 1000.0, 20.0, 100.0, 24.0, 12.0, 12.0, 12.0, 24.0, 200.0, 20000.0, 20.0, 100.0, 100.0,
         12.0, 12.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         24.0, 10.0, 2000.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
         100.0, 100.0, 12.0, 100.0, 1000.0, 100.0, 100.0, 1000.0, 1500.0, 0.0, 100.0,
-        100.0, 100.0};
+        100.0, 100.0, 24000.0, 1.0};
 
     NSStackView* boxRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
     boxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -7538,6 +7550,13 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     for (size_t k = 50; k <= 51; ++k) {
       NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
       [dropPitchKnobGroup addSubview:cell];
+      populateKnobCell(cell, k);
+    }
+
+    NSView* hfFilterKnobGroup = [[NSView alloc] initWithFrame:NSZeroRect];
+    for (size_t k = 52; k <= 53; ++k) {
+      NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
+      [hfFilterKnobGroup addSubview:cell];
       populateKnobCell(cell, k);
     }
 
@@ -7924,7 +7943,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
 
     rigInstallGraphControls(state);
     state->workspace = rigCreateWorkspace(state, rigPane, boxRow, expansionSlot,
-        @[knobGroups[0], knobGroups[1], knobGroups[2], dropPitchKnobGroup]);
+        @[knobGroups[0], knobGroups[1], knobGroups[2], dropPitchKnobGroup, hfFilterKnobGroup]);
     addToneBrowser(state, tonePane);
     addAIToneMatcherPage(state, aiPane);
     state->selectTab(0);

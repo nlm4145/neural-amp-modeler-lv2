@@ -630,7 +630,8 @@ class StandaloneHost {
         {NAMRig::kToneEqModePort, toneEqControls_},
         {NAMRig::kDropPitchPort, {&dropPitchControl_, 1}},
         {NAMRig::kModelBandLimitPort, {&modelBandLimitControl_, 1}},
-        {NAMRig::kDropPitchAttackPort, dropPitchShapingControls_}});
+        {NAMRig::kDropPitchAttackPort, dropPitchShapingControls_},
+        {NAMRig::kModelBandLimitCutoffPort, modelBandLimitParamsControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1016,6 +1017,19 @@ class StandaloneHost {
         port <= NAMRig::kDropPitchSustainPort && size == sizeof(float)) {
       host->dropPitchShapingControls_[port - NAMRig::kDropPitchAttackPort] =
           std::clamp(*static_cast<const float*>(buffer), 0.0f, 100.0f);
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kModelBandLimitCutoffPort &&
+        port <= NAMRig::kModelBandLimitRipplePort && size == sizeof(float)) {
+      const float v = *static_cast<const float*>(buffer);
+      if (port == NAMRig::kModelBandLimitCutoffPort) {
+        host->modelBandLimitParamsControls_[0] = NAMRig::ModelBandLimit::clampCutoffHz(v);
+      } else if (port == NAMRig::kModelBandLimitSlopePort) {
+        host->modelBandLimitParamsControls_[1] =
+            static_cast<float>(NAMRig::ModelBandLimit::clampSlope(v));
+      } else {
+        host->modelBandLimitParamsControls_[2] = NAMRig::ModelBandLimit::clampRippleDb(v);
+      }
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1891,6 +1905,11 @@ class StandaloneHost {
   std::array<float, 2> dropPitchShapingControls_ = {
       NAMRig::kDropPitchAttackDefault,
       NAMRig::kDropPitchSustainDefault,
+  };
+  std::array<float, 3> modelBandLimitParamsControls_ = {
+      NAMRig::kModelBandLimitCutoffDefault,
+      NAMRig::kModelBandLimitSlopeDefault,
+      NAMRig::kModelBandLimitRippleDefault,
   };
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};

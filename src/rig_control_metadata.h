@@ -119,6 +119,9 @@ inline constexpr RigControlSymbol kRigStaticControlSymbols[] = {
     {kModelBandLimitPort, "model_band_limit"},
     {kDropPitchAttackPort, "drop_pitch_attack"},
     {kDropPitchSustainPort, "drop_pitch_sustain"},
+    {kModelBandLimitCutoffPort, "model_band_limit_cutoff"},
+    {kModelBandLimitSlopePort, "model_band_limit_slope"},
+    {kModelBandLimitRipplePort, "model_band_limit_ripple"},
 };
 
 // Non-null results have static lifetime, including generated pin names.

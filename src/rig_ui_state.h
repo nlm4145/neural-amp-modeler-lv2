@@ -33,6 +33,7 @@
 #include "power_tube_controls.h"
 #include "oversample_modes.h"
 #include "ir_normalization.h"
+#include "model_band_limit.h"
 #include "output_transformer.h"
 #include "speaker_dynamics.h"
 #import "rig_theme.h"
@@ -221,7 +222,11 @@ struct RigUIState {
   // A/B switch for the low-pass in front of oversampled NAM models. It is a
   // listening choice for the whole rig, so presets do not store or recall it.
   bool modelBandLimit = false;
+  int modelBandLimitSlope = NAMRig::ModelBandLimit::kDefaultSlope;
   __strong NSMutableArray<NSButton*>* modelBandLimitButtons = [NSMutableArray array];
+  __strong NSMutableArray<NSPopUpButton*>* modelBandLimitSlopePopups = [NSMutableArray array];
+  __strong NSMutableArray<NSView*>* modelBandLimitDetailViews = [NSMutableArray array];
+  __strong NSMutableArray<NSTextField*>* modelBandLimitStatusLabels = [NSMutableArray array];
   __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
@@ -1415,6 +1420,7 @@ struct RigUIState {
       return toneEqControls[port - NAMRig::kToneEqModePort];
     if (port == NAMRig::kDropPitchPort) return (float)dropPitch;
     if (port == NAMRig::kModelBandLimitPort) return modelBandLimit ? 1.0f : 0.0f;
+    if (port == NAMRig::kModelBandLimitSlopePort) return (float)modelBandLimitSlope;
     if (port == NAMRig::kPedalOrderPort) return pedalOrder;
     if (port == NAMRig::kPedal2EnabledPort || port == NAMRig::kPedal3EnabledPort)
       return extraPedalEnabled[port - NAMRig::kPedal2EnabledPort];
@@ -2616,9 +2622,28 @@ struct RigUIState {
         modelBandLimit = on;
         for (NSButton* button in modelBandLimitButtons)
           button.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+        for (NSView* v in modelBandLimitDetailViews)
+          v.alphaValue = on ? 1.0f : 0.55f;
+        for (NSTextField* lbl in modelBandLimitStatusLabels) {
+          lbl.stringValue = on ? @"ACTIVE" : @"BYPASSED";
+          lbl.textColor = on ? [NSColor colorWithSRGBRed:0.30 green:0.90 blue:0.60 alpha:1.0]
+                             : [NSColor colorWithWhite:0.55 alpha:1.0];
+        }
       };
       if ([NSThread isMainThread]) updateBandLimit();
       else dispatch_async(dispatch_get_main_queue(), updateBandLimit);
+      return;
+    }
+    if (port == NAMRig::kModelBandLimitSlopePort) {
+      const int slope = NAMRig::ModelBandLimit::clampSlope(value);
+      auto updateSlope = ^{
+        if (!alive || !*alive) return;
+        modelBandLimitSlope = slope;
+        for (NSPopUpButton* popup in modelBandLimitSlopePopups)
+          [popup selectItemWithTag:slope];
+      };
+      if ([NSThread isMainThread]) updateSlope();
+      else dispatch_async(dispatch_get_main_queue(), updateSlope);
       return;
     }
     if (port == NAMRig::kDropPitchPort) {

@@ -1303,4 +1303,23 @@
  lv2:symbol "drop_pitch_sustain" ; lv2:name "Drop Pitch Sustain" ;
  lv2:default 50 ; lv2:minimum 0 ; lv2:maximum 100 ;
  lv2:portProperty lv2:connectionOptional
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 231 ;
+ lv2:symbol "model_band_limit_cutoff" ; lv2:name "Model Band-Limit Cutoff" ;
+ lv2:default 20500.0 ; lv2:minimum 4000.0 ; lv2:maximum 24000.0 ; units:unit units:hz ;
+ lv2:portProperty lv2:connectionOptional
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 232 ;
+ lv2:symbol "model_band_limit_slope" ; lv2:name "Model Band-Limit Slope" ;
+ lv2:default 3 ; lv2:minimum 0 ; lv2:maximum 3 ;
+ lv2:portProperty lv2:integer, lv2:enumeration, lv2:connectionOptional ;
+ lv2:scalePoint [ rdfs:value 0 ; rdfs:label "12 dB/oct" ] ,
+  [ rdfs:value 1 ; rdfs:label "24 dB/oct" ] ,
+  [ rdfs:value 2 ; rdfs:label "36 dB/oct" ] ,
+  [ rdfs:value 3 ; rdfs:label "48 dB/oct" ]
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 233 ;
+ lv2:symbol "model_band_limit_ripple" ; lv2:name "Model Band-Limit Ripple" ;
+ lv2:default 0.05 ; lv2:minimum 0.01 ; lv2:maximum 1.0 ; units:unit units:db ;
+ lv2:portProperty lv2:connectionOptional
 ] .

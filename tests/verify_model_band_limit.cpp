@@ -44,6 +44,44 @@ int main() {
   for (size_t i = 20000; i < tone.size(); ++i) peak = std::max(peak, std::fabs(tone[i]));
   check(peak < 1.0e-4f, "on removes ultrasonic content after the 5 ms fade");
 
+  // Configurable cutoff, slope, and ripple behave as expected and bypass cleanly.
+  ModelBandLimit::Params lowCut{8000.0f, 3, 0.05f};
+  check(ModelBandLimit::responseDb(14000.0, 384000.0, 48000.0, lowCut) < -35.0,
+        "custom 8 kHz cutoff attenuates 14 kHz");
+  ModelBandLimit::Params slope12{12000.0f, 0, 0.05f};
+  ModelBandLimit::Params slope48{12000.0f, 3, 0.05f};
+  check(ModelBandLimit::responseDb(24000.0, 384000.0, 48000.0, slope48) <
+            ModelBandLimit::responseDb(24000.0, 384000.0, 48000.0, slope12) - 30.0,
+        "48 dB/oct slope attenuates stopband much more steeply than 12 dB/oct");
+  ModelBandLimit::Params highRipple{12000.0f, 2, 0.80f};
+  ModelBandLimit::Params lowRipple{12000.0f, 2, 0.02f};
+  check(ModelBandLimit::responseDb(18000.0, 384000.0, 48000.0, highRipple) <
+            ModelBandLimit::responseDb(18000.0, 384000.0, 48000.0, lowRipple) - 5.0,
+        "higher ripple produces steeper transition roll-off");
+
+  // Aggressive settings are still bit-identical when bypassed.
+  std::vector<float> bypassTest = ref;
+  ModelBandLimit customBypass;
+  customBypass.process(bypassTest.data(), bypassTest.size(), 768000.0, 48000.0, false,
+                       ModelBandLimit::Params{4000.0f, 3, 1.00f});
+  check(bypassTest == ref, "custom filter settings are bit-identical when bypassed");
+
+  // Engaging then bypassing fades cleanly back to bit-identical dry samples.
+  std::vector<float> toggleBuf(16384);
+  for (size_t i = 0; i < toggleBuf.size(); ++i)
+    toggleBuf[i] = std::sin(0.03f * static_cast<float>(i));
+  std::vector<float> toggleDry = toggleBuf;
+  ModelBandLimit toggleFilter;
+  toggleFilter.process(toggleBuf.data(), 8192, 768000.0, 48000.0, true,
+                       ModelBandLimit::Params{6000.0f, 2, 0.25f});
+  toggleFilter.process(toggleBuf.data() + 8192, 8192, 768000.0, 48000.0, false,
+                       ModelBandLimit::Params{6000.0f, 2, 0.25f});
+  // After the 5 ms fade (3840 samples at 768 kHz), remaining samples must be bit-identical.
+  bool tailIdentical = true;
+  for (size_t i = 8192 + 4096; i < toggleBuf.size(); ++i)
+    tailIdentical &= (toggleBuf[i] == toggleDry[i]);
+  check(tailIdentical, "disabling HF filter returns to bit-identical bypass after 5 ms fade");
+
   std::printf("%s\n", failures ? "FAILED" : "verify_model_band_limit: all checks passed");
   return failures ? 1 : 0;
 }

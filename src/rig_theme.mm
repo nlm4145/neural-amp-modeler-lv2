@@ -70,6 +70,8 @@ NSString* rigKnobValueText(uint32_t port, float value) {
     case 196: return value == 0.0f ? @"CENTER" : [NSString stringWithFormat:@"%+.0f%%", value];
     case 229:
     case 230: return [NSString stringWithFormat:@"%.0f%%", value];
+    case 231: return [NSString stringWithFormat:@"%.0f Hz", value];
+    case 233: return [NSString stringWithFormat:@"%.2f dB", value];
     default: return @"";
   }
 }

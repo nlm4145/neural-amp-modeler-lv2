@@ -506,18 +506,18 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
   // Compact level controls leave room for the live processing racks below.
   NSView* input = [self newPageWithKey:@"main:0"];
   RigPanel* inputConsole = [self panelAt:input x:0 y:0 w:1472 h:148];
-  [self label:@"Input & Gate" parent:inputConsole x:28 y:30 w:435 size:20 weight:NSFontWeightSemibold color:rigText()];
-  [self label:@"Set input gain, drop pitch shaping, and gate before the preamp."
-       parent:inputConsole x:28 y:62 w:435 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
+  [self label:@"Input & Gate" parent:inputConsole x:24 y:26 w:306 size:20 weight:NSFontWeightSemibold color:rigText()];
+  [self label:@"Set input gain, drop pitch, HF filter, and gate before the preamp."
+       parent:inputConsole x:24 y:58 w:306 size:11.5 weight:NSFontWeightRegular color:rigDimText()];
 
   // Drop Pitch / Virtual Capo strip
-  [self label:@"DROP PITCH" parent:inputConsole x:28 y:105 w:82 size:10.5 weight:NSFontWeightBold color:rigDimText()];
+  [self label:@"DROP PITCH" parent:inputConsole x:24 y:105 w:74 size:10.5 weight:NSFontWeightBold color:rigDimText()];
   RigButton* dropDownBtn = workspaceButton(inputConsole, @"−", self.state->uiController,
                                            @selector(dropPitchStepDown:));
-  dropDownBtn.frame = [self topRect:inputConsole x:114 y:100 w:26 h:24];
+  dropDownBtn.frame = [self topRect:inputConsole x:100 y:100 w:24 h:24];
   dropDownBtn.toolTip = @"Drop pitch down 1 semitone (e.g. D Standard → Db → C → B).";
 
-  NSPopUpButton* dropPop = [[NSPopUpButton alloc] initWithFrame:[self topRect:inputConsole x:144 y:100 w:176 h:24] pullsDown:NO];
+  NSPopUpButton* dropPop = [[NSPopUpButton alloc] initWithFrame:[self topRect:inputConsole x:128 y:100 w:170 h:24] pullsDown:NO];
   dropPop.controlSize = NSControlSizeSmall;
   dropPop.target = self.state->uiController;
   dropPop.action = @selector(dropPitchChanged:);
@@ -549,28 +549,74 @@ static NSString* const pedalDragType = @"com.axefx.pedal-slot";
 
   RigButton* dropUpBtn = workspaceButton(inputConsole, @"+", self.state->uiController,
                                          @selector(dropPitchStepUp:));
-  dropUpBtn.frame = [self topRect:inputConsole x:324 y:100 w:26 h:24];
+  dropUpBtn.frame = [self topRect:inputConsole x:302 y:100 w:24 h:24];
   dropUpBtn.toolTip = @"Raise pitch up 1 semitone.";
 
-  RigButton* bandLimitBtn = workspaceButton(inputConsole, @"HF FILTER", self.state->uiController,
+  RigPanel* dropShaperCard = [self panelAt:inputConsole x:342 y:8 w:242 h:132];
+  dropShaperCard.cornerRadius = 10;
+  [self label:@"DROP PITCH SHAPER" parent:dropShaperCard x:14 y:6 w:214 size:9.5 weight:NSFontWeightBold color:rigAccent()];
+  NSArray<NSView*>* dropShaperCells =
+      self.knobGroups.count > 3 ? [self knobCells:self.knobGroups[3]] : @[];
+  for (NSUInteger i = 0; i < dropShaperCells.count; ++i)
+    [self place:dropShaperCells[i] parent:dropShaperCard x:10 + i * 114 y:18 w:108 h:112];
+
+  RigPanel* hfFilterCard = [self panelAt:inputConsole x:598 y:8 w:382 h:132];
+  hfFilterCard.cornerRadius = 10;
+  [self label:@"HF FILTER" parent:hfFilterCard x:14 y:8 w:70 size:9.5 weight:NSFontWeightBold color:rigAccent()];
+  NSTextField* hfStatus = workspaceLabel(
+      hfFilterCard, self.state->modelBandLimit ? @"ACTIVE" : @"BYPASSED",
+      9.0, NSFontWeightBold,
+      self.state->modelBandLimit
+          ? [NSColor colorWithSRGBRed:0.30 green:0.90 blue:0.60 alpha:1.0]
+          : rigDimText());
+  hfStatus.alignment = NSTextAlignmentRight;
+  hfStatus.frame = [self topRect:hfFilterCard x:84 y:8 w:58 h:14];
+  [self.state->modelBandLimitStatusLabels addObject:hfStatus];
+
+  RigButton* bandLimitBtn = workspaceButton(hfFilterCard, @"HF FILTER", self.state->uiController,
                                             @selector(modelBandLimitToggled:));
   bandLimitBtn.buttonType = NSButtonTypeToggle;
   bandLimitBtn.check = YES;
   bandLimitBtn.state = self.state->modelBandLimit ? NSControlStateValueOn : NSControlStateValueOff;
-  bandLimitBtn.frame = [self topRect:inputConsole x:366 y:100 w:104 h:24];
-  bandLimitBtn.toolTip = @"A/B switch. On: a 20.5 kHz low-pass in front of each oversampled NAM model removes ultrasonic content from the overdrive and pedal models, which the models were not trained on. Off: the models receive the full oversampled signal. Presets do not change this switch.";
+  bandLimitBtn.frame = [self topRect:hfFilterCard x:14 y:34 w:124 h:26];
+  bandLimitBtn.toolTip = @"Bypass switch for the oversampled NAM model low-pass. On: filters ultrasonic content using the Cutoff, Slope, and Ripple controls. Off: exact bit-identical bypass. Presets do not change this switch.";
   [self.state->modelBandLimitButtons addObject:bandLimitBtn];
-  RigPanel* dropShaperCard = [self panelAt:inputConsole x:498 y:8 w:260 h:132];
-  dropShaperCard.cornerRadius = 10;
-  [self label:@"DROP PITCH SHAPER" parent:dropShaperCard x:14 y:6 w:220 size:9.5 weight:NSFontWeightBold color:rigAccent()];
-  NSArray<NSView*>* dropShaperCells =
-      self.knobGroups.count > 3 ? [self knobCells:self.knobGroups[3]] : @[];
-  for (NSUInteger i = 0; i < dropShaperCells.count; ++i)
-    [self place:dropShaperCells[i] parent:dropShaperCard x:14 + i * 120 y:18 w:112 h:112];
+
+  NSTextField* slopeLbl = workspaceLabel(hfFilterCard, @"SLOPE", 9.5, NSFontWeightBold, rigDimText());
+  slopeLbl.frame = [self topRect:hfFilterCard x:14 y:72 w:124 h:15];
+  [hfFilterCard addSubview:slopeLbl];
+  [self.state->modelBandLimitDetailViews addObject:slopeLbl];
+  NSPopUpButton* slopePop = [[NSPopUpButton alloc] initWithFrame:[self topRect:hfFilterCard x:14 y:92 w:124 h:24] pullsDown:NO];
+  slopePop.controlSize = NSControlSizeSmall;
+  slopePop.target = self.state->uiController;
+  slopePop.action = @selector(modelBandLimitSlopeChanged:);
+  slopePop.toolTip = @"HF Filter roll-off steepness (Chebyshev Type I order: 2nd / 4th / 6th / 8th order).";
+  auto addSlopeItem = [&](NSString* title, int tag) {
+    [slopePop addItemWithTitle:title];
+    slopePop.lastItem.tag = tag;
+  };
+  addSlopeItem(@"12 dB/oct (2nd)", 0);
+  addSlopeItem(@"24 dB/oct (4th)", 1);
+  addSlopeItem(@"36 dB/oct (6th)", 2);
+  addSlopeItem(@"48 dB/oct (8th)", 3);
+  [slopePop selectItemWithTag:self.state->modelBandLimitSlope];
+  slopePop.alphaValue = self.state->modelBandLimit ? 1.0f : 0.55f;
+  [self.state->modelBandLimitSlopePopups addObject:slopePop];
+  [self.state->modelBandLimitDetailViews addObject:slopePop];
+  [hfFilterCard addSubview:slopePop];
+  slopeLbl.alphaValue = self.state->modelBandLimit ? 1.0f : 0.55f;
+
+  NSArray<NSView*>* hfFilterCells =
+      self.knobGroups.count > 4 ? [self knobCells:self.knobGroups[4]] : @[];
+  for (NSUInteger i = 0; i < hfFilterCells.count; ++i) {
+    [self place:hfFilterCells[i] parent:hfFilterCard x:148 + i * 114 y:18 w:108 h:112];
+    hfFilterCells[i].alphaValue = self.state->modelBandLimit ? 1.0f : 0.55f;
+    [self.state->modelBandLimitDetailViews addObject:hfFilterCells[i]];
+  }
 
   NSArray<NSView*>* inputCells = [self knobCells:self.knobGroups[0]];
   for (NSUInteger i = 0; i < inputCells.count; ++i)
-    [self place:inputCells[i] parent:inputConsole x:786 + i * 224 y:14 w:204 h:124];
+    [self place:inputCells[i] parent:inputConsole x:998 + i * 156 y:14 w:142 h:124];
 
   NSView* pedal = [self newPageWithKey:@"main:1"];
   [self buildPedalBoard:pedal];

@@ -46,6 +46,12 @@ inline void forEachWin32ControlDefault(Set&& set) {
         value = NAMRig::kDropPitchAttackDefault; break;
       case NAMRig::kDropPitchSustainPort:
         value = NAMRig::kDropPitchSustainDefault; break;
+      case NAMRig::kModelBandLimitCutoffPort:
+        value = NAMRig::kModelBandLimitCutoffDefault; break;
+      case NAMRig::kModelBandLimitSlopePort:
+        value = NAMRig::kModelBandLimitSlopeDefault; break;
+      case NAMRig::kModelBandLimitRipplePort:
+        value = NAMRig::kModelBandLimitRippleDefault; break;
       default: break;
     }
     if (entry.port >= NAMRig::kToneEqModePort &&
