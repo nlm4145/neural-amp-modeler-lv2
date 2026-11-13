@@ -92,40 +92,235 @@ std::vector<float> readWav(const char* path, uint32_t& rate, int channel) {
   return mono;
 }
 
+// Cholesky solver for small symmetric positive-definite matrices (flat n x n).
+// Returns an empty vector if matrix conditioning fails so callers can safely
+// skip adjustments without emitting NaN/Inf.
+std::vector<double> solveSymmetricPositiveDefinite(const std::vector<double>& matrix,
+                                                 const std::vector<double>& rhs,
+                                                 size_t n) {
+  std::vector<double> L(n * n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j <= i; ++j) {
+      double s = matrix[i * n + j];
+      for (size_t k = 0; k < j; ++k) s -= L[i * n + k] * L[j * n + k];
+      if (i == j) {
+        if (!(s > 0.0) || !std::isfinite(s)) return {};
+        L[i * n + j] = std::sqrt(s);
+      } else {
+        L[i * n + j] = s / L[j * n + j];
+      }
+    }
+  }
+  std::vector<double> y(n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    double s = rhs[i];
+    for (size_t k = 0; k < i; ++k) s -= L[i * n + k] * y[k];
+    y[i] = s / L[i * n + i];
+  }
+  std::vector<double> x(n, 0.0);
+  for (size_t ii = n; ii-- > 0;) {
+    double s = y[ii];
+    for (size_t k = ii + 1; k < n; ++k) s -= L[k * n + ii] * x[k];
+    x[ii] = s / L[ii * n + ii];
+    if (!std::isfinite(x[ii])) return {};
+  }
+  return x;
+}
+
+// Fast |H(f)| magnitude estimate across normalized frequencies [0, 0.5] via
+// RealFFT, used to weight causal boundary repair proportionally across bands
+// (e.g., where cab IRs roll off by -40 dB at high frequencies).
+std::vector<double> estimateSpectrumEnvelope(const std::vector<double>& full,
+                                             const std::vector<double>& normFreqs,
+                                             double& peakMag) {
+  const size_t specLen = std::min<size_t>(full.size(), 32768);
+  double maxAbs = 0.0;
+  for (size_t i = 0; i < specLen; ++i)
+    maxAbs = std::max(maxAbs, std::fabs(full[i]));
+  peakMag = 1.0;
+  if (!(maxAbs > 0.0)) return std::vector<double>(normFreqs.size(), 1.0);
+
+  size_t nFft = 2048;
+  while (nFft < specLen) nFft <<= 1;
+  const size_t halfBins = nFft / 2;
+
+  std::vector<float> timeBuf(nFft, 0.0f);
+  const double invScale = 1.0 / maxAbs;
+  for (size_t i = 0; i < specLen; ++i)
+    timeBuf[i] = static_cast<float>(full[i] * invScale);
+
+  std::vector<float> re(halfBins, 0.0f);
+  std::vector<float> im(halfBins, 0.0f);
+  DSP::RealFFT fft(nFft);
+  fft.forward(timeBuf.data(), re.data(), im.data());
+
+  // Packed real-FFT format puts DC in re[0] and Nyquist in im[0].
+  auto binMag = [&](size_t b) -> double {
+    if (b == 0) return std::fabs(static_cast<double>(re[0]));
+    if (b >= halfBins) return std::fabs(static_cast<double>(im[0]));
+    return std::hypot(static_cast<double>(re[b]), static_cast<double>(im[b]));
+  };
+
+  std::vector<double> env(normFreqs.size(), 0.0);
+  double peak = 0.0;
+  const double maxBin = static_cast<double>(halfBins) - 1.0e-9;
+  for (size_t m = 0; m < normFreqs.size(); ++m) {
+    const double pos = std::max(0.0, std::min(maxBin, normFreqs[m] * static_cast<double>(nFft)));
+    const size_t b0 = static_cast<size_t>(pos);
+    const size_t b1 = std::min(halfBins, b0 + 1);
+    const double frac = pos - static_cast<double>(b0);
+    const double mag = binMag(b0) * (1.0 - frac) + binMag(b1) * frac;
+    env[m] = mag;
+    peak = std::max(peak, mag);
+  }
+  peakMag = std::max(peak, 1.0e-12);
+  return env;
+}
+
+// Reconstructs causal energy lost to t < 0 sinc pre-ringing without adding any
+// group delay or rig latency: solves for a short causal FIR adjustment
+// dh[0..L-1] on [0, L) that compensates the discarded pre-ringing full[0..preOut)
+// in complex frequency response across the passband, keeping both magnitude and
+// phase aligned for single and dual-cab summation.
+void repairCausalPreRinging(std::vector<double>& full, size_t preOut,
+                            size_t count, double from, double to) {
+  if (preOut == 0 || count == 0) return;
+  double maxPre = 0.0, maxBase = 0.0;
+  for (size_t i = 0; i < preOut; ++i)
+    maxPre = std::max(maxPre, std::fabs(full[i]));
+  for (size_t i = 0; i < count; ++i)
+    maxBase = std::max(maxBase, std::fabs(full[preOut + i]));
+  if (!(maxBase > 1.0e-30) || maxPre <= 1.0e-7 * maxBase) return;
+
+  constexpr size_t kLinBins = 384;
+  constexpr size_t kLogBins = 64;
+  constexpr size_t kMaxRepairTaps = 96;
+
+  std::vector<double> normFreqs;
+  normFreqs.reserve(kLinBins + kLogBins);
+  for (size_t i = 0; i < kLinBins; ++i)
+    normFreqs.push_back(0.5 * static_cast<double>(i) / static_cast<double>(kLinBins - 1));
+
+  const double lowMin = std::min(15.0 / to, 0.25);
+  const double lowMax = std::min(500.0 / to, 0.45);
+  if (lowMin > 0.0 && lowMin < lowMax) {
+    const double logRatio = std::log(lowMax / lowMin);
+    for (size_t i = 0; i < kLogBins; ++i) {
+      const double t = static_cast<double>(i) / static_cast<double>(kLogBins - 1);
+      normFreqs.push_back(lowMin * std::exp(logRatio * t));
+    }
+  }
+  std::sort(normFreqs.begin(), normFreqs.end());
+  normFreqs.erase(std::unique(normFreqs.begin(), normFreqs.end(),
+                              [](double a, double b) { return std::fabs(a - b) < 1.0e-12; }),
+                  normFreqs.end());
+
+  double peakMag = 1.0;
+  const std::vector<double> magEnv = estimateSpectrumEnvelope(full, normFreqs, peakMag);
+
+  const double minRate = std::min(from, to);
+  const double fPass = std::min(20000.0, 0.42 * minRate) / to;
+  const double fStop = (0.5 * minRate) / to;
+  const size_t L = std::min(kMaxRepairTaps, count);
+
+  std::vector<double> c(L, 0.0);
+  std::vector<double> rhs(L, 0.0);
+
+  for (size_t m = 0; m < normFreqs.size(); ++m) {
+    const double fn = normFreqs[m];
+    double w = 0.05;
+    if (fn <= fPass) {
+      w = 1.0 / std::max(magEnv[m] / peakMag, 0.02);
+    } else if (fn >= fStop) {
+      w = 0.20;
+    }
+    const double w2 = w * w;
+    const double angle = 2.0 * kPi * fn;
+    const double sr = std::cos(angle);
+    const double si = std::sin(angle);
+
+    // Target response of discarded pre-ringing: sum_{p=1..preOut} full[preOut-p] * exp(+j*angle*p).
+    double tr = 0.0, ti = 0.0;
+    double pr = sr, pi = si;
+    for (size_t p = 1; p <= preOut; ++p) {
+      const double pv = full[preOut - p];
+      tr += pv * pr;
+      ti += pv * pi;
+      const double npr = pr * sr - pi * si;
+      pi = pr * si + pi * sr;
+      pr = npr;
+    }
+
+    // Normal equations form a symmetric Toeplitz Gram matrix:
+    // G[j, k] = sum w^2 * cos(angle * (j - k)).
+    double dr = 1.0, di = 0.0;
+    for (size_t d = 0; d < L; ++d) {
+      c[d] += w2 * dr;
+      rhs[d] += w2 * (tr * dr - ti * di);
+      const double ndr = dr * sr - di * si;
+      di = dr * si + di * sr;
+      dr = ndr;
+    }
+  }
+
+  if (!(c[0] > 0.0)) return;
+  std::vector<double> G(L * L, 0.0);
+  for (size_t j = 0; j < L; ++j) {
+    for (size_t k = 0; k < L; ++k) {
+      const size_t diff = j >= k ? j - k : k - j;
+      G[j * L + k] = c[diff];
+    }
+    G[j * L + j] += 1.0e-6 * c[0];
+  }
+
+  const std::vector<double> dh = solveSymmetricPositiveDefinite(G, rhs, L);
+  if (dh.empty()) return;
+  for (size_t i = 0; i < L; ++i)
+    full[preOut + i] += dh[i];
+}
+
 // Bandlimited windowed-sinc resampling, evaluated directly at each output
 // position. An IR's spectrum IS its transfer function, so resampling errors
-// are tone errors: the previous linear interpolation attenuated the top of the
-// IR's band (~-3 dB at the old Nyquist) and left spectral images that fold
-// back in on any later downsampling. Windowed-sinc is near-transparent
-// (<0.1 dB passband ripple, >90 dB image rejection) and, because this only
-// runs once per IR load, the cost of evaluating the sinc per tap is irrelevant.
+// are tone errors: evaluating the full symmetric sinc (including zero-padded
+// support before t = 0) prevents boundary normalization distortion on peaks
+// near sample 0, and causal spectral repair recovers any energy clipped at t < 0
+// while keeping zero added latency.
 std::vector<float> resample(const std::vector<float>& input, double from, double to) {
   if (std::fabs(from - to) < 1.0 || input.size() < 2) return input;
   constexpr int kTaps = 64;                             // kernel half-width (input samples)
   const double ratio = from / to;                       // input samples per output sample
   const double beta = 0.9 * std::min(from, to) / from;  // 2*fc/from, fc = 0.45*min(rate)
   const size_t count = std::max<size_t>(2, std::llround(input.size() * to / from));
-  std::vector<float> output(count);
-  for (size_t i = 0; i < count; ++i) {
-    const double pos = i * ratio;
+  const size_t preOut = static_cast<size_t>(std::ceil(static_cast<double>(kTaps) * to / from));
+  const size_t total = preOut + count;
+
+  std::vector<double> full(total, 0.0);
+  for (size_t idx = 0; idx < total; ++idx) {
+    const long i = static_cast<long>(idx) - static_cast<long>(preOut);
+    const double pos = static_cast<double>(i) * ratio;
     const long center = std::lround(pos);
     double acc = 0.0, wsum = 0.0;
     for (long k = center - kTaps; k <= center + kTaps; ++k) {
-      if (k < 0 || k >= static_cast<long>(input.size())) continue;
-      const double r = pos - k;               // offset in input samples
+      const double r = pos - static_cast<double>(k);  // offset in input samples
+      const double v = r / kTaps;                     // window argument on [-1, 1]
+      if (std::fabs(v) > 1.0) continue;
       const double u = beta * r;
       const double s = std::fabs(u) < 1e-8 ? beta : beta * std::sin(kPi * u) / (kPi * u);
-      const double v = r / kTaps;             // window argument, clamped to [-1, 1]
       const double w = 0.35875 + 0.48829 * std::cos(kPi * v) + 0.14128 * std::cos(2.0 * kPi * v)
                      + 0.01168 * std::cos(3.0 * kPi * v);   // Blackman-Harris
-      acc += input[k] * s * w;
-      wsum += s * w;
+      const double sw = s * w;
+      if (k >= 0 && k < static_cast<long>(input.size()))
+        acc += static_cast<double>(input[static_cast<size_t>(k)]) * sw;
+      wsum += sw;
     }
-    // Normalizing by the windowed-sinc sum keeps the DC gain at exactly 1.0
-    // despite the finite window and edge truncation.
-    output[i] = wsum != 0.0 ? static_cast<float>(acc / wsum)
-                            : input[std::min<long>(center, static_cast<long>(input.size()) - 1)];
+    full[idx] = wsum != 0.0 ? (acc / wsum) : 0.0;
   }
+
+  repairCausalPreRinging(full, preOut, count, from, to);
+
+  std::vector<float> output(count);
+  for (size_t i = 0; i < count; ++i)
+    output[i] = static_cast<float>(full[preOut + i]);
   return output;
 }
 

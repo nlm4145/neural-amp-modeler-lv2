@@ -18,6 +18,80 @@ PI = math.pi
 K_TAPS = 64  # kernel half-width, input samples (must match wav_ir.cpp)
 
 
+def _repair_causal_pre_ringing(full, pre_out, count, from_rate, to_rate):
+    """Mirror of repairCausalPreRinging + estimateSpectrumEnvelope in src/wav_ir.cpp."""
+    if pre_out == 0 or count == 0:
+        return
+    max_pre = float(np.max(np.abs(full[:pre_out])))
+    max_base = float(np.max(np.abs(full[pre_out:pre_out + count])))
+    if not (max_base > 1e-30) or max_pre <= 1e-7 * max_base:
+        return
+
+    f_lin = np.linspace(0.0, 0.5, 384)
+    low_min = min(15.0 / to_rate, 0.25)
+    low_max = min(500.0 / to_rate, 0.45)
+    if 0.0 < low_min < low_max:
+        f_log = np.geomspace(low_min, low_max, 64)
+        f_norm = np.sort(np.concatenate([f_lin, f_log]))
+        dedup = [f_norm[0]]
+        for val in f_norm[1:]:
+            if abs(val - dedup[-1]) >= 1e-12:
+                dedup.append(val)
+        norm_freqs = np.asarray(dedup, dtype=np.float64)
+    else:
+        norm_freqs = f_lin
+
+    spec_len = min(full.size, 32768)
+    max_abs = float(np.max(np.abs(full[:spec_len])))
+    if max_abs > 0.0:
+        n_fft = 2048
+        while n_fft < spec_len:
+            n_fft <<= 1
+        mag_fft = np.abs(np.fft.rfft(full[:spec_len] / max_abs, n=n_fft))
+        half_bins = n_fft // 2
+        bins = np.clip(norm_freqs * n_fft, 0.0, half_bins - 1e-9)
+        b0 = np.floor(bins).astype(int)
+        b1 = np.minimum(b0 + 1, half_bins)
+        bf = bins - b0
+        mag_env = mag_fft[b0] * (1.0 - bf) + mag_fft[b1] * bf
+        peak_mag = max(float(np.max(mag_env)), 1e-12)
+    else:
+        mag_env = np.ones_like(norm_freqs)
+        peak_mag = 1.0
+
+    min_rate = min(from_rate, to_rate)
+    f_pass = min(20000.0, 0.42 * min_rate) / to_rate
+    f_stop = (0.5 * min_rate) / to_rate
+    L = min(96, count)
+
+    w = np.full_like(norm_freqs, 0.05)
+    pass_mask = norm_freqs <= f_pass
+    stop_mask = (~pass_mask) & (norm_freqs >= f_stop)
+    w[pass_mask] = 1.0 / np.maximum(mag_env[pass_mask] / peak_mag, 0.02)
+    w[stop_mask] = 0.20
+    w2 = w * w
+
+    p_idx = np.arange(1, pre_out + 1, dtype=np.float64)
+    pre_rev = full[pre_out - 1::-1]
+    target = np.exp(2j * PI * np.outer(norm_freqs, p_idx)) @ pre_rev
+
+    d_idx = np.arange(L, dtype=np.float64)
+    c = np.cos(2.0 * PI * np.outer(norm_freqs, d_idx)).T @ w2
+    rhs = np.real(np.exp(2j * PI * np.outer(d_idx, norm_freqs)) @ (w2 * target))
+    if not (c[0] > 0.0):
+        return
+
+    idx_grid = np.arange(L)
+    G = c[np.abs(idx_grid[:, None] - idx_grid[None, :])]
+    G[np.diag_indices(L)] += 1e-6 * c[0]
+    try:
+        dh = np.linalg.solve(G, rhs)
+    except np.linalg.LinAlgError:
+        return
+    if np.all(np.isfinite(dh)):
+        full[pre_out:pre_out + L] += dh
+
+
 def resample(input_sig, from_rate, to_rate):
     """Mirror of NAMRig::(anonymous)::resample in src/wav_ir.cpp."""
     input_sig = np.asarray(input_sig, dtype=np.float64)
@@ -26,32 +100,36 @@ def resample(input_sig, from_rate, to_rate):
     ratio = from_rate / to_rate
     beta = 0.9 * min(from_rate, to_rate) / from_rate
     count = max(2, round(input_sig.size * to_rate / from_rate))
+    pre_out = int(math.ceil(K_TAPS * to_rate / from_rate))
+    total = pre_out + count
     n = input_sig.size
-    output = np.zeros(count, dtype=np.float64)
-    for i in range(count):
+    full = np.zeros(total, dtype=np.float64)
+    for idx in range(total):
+        i = idx - pre_out
         pos = i * ratio
         center = round(pos)
         acc = 0.0
         wsum = 0.0
         for k in range(center - K_TAPS, center + K_TAPS + 1):
-            if k < 0 or k >= n:
-                continue
             r = pos - k
+            v = r / K_TAPS
+            if abs(v) > 1.0:
+                continue
             u = beta * r
             if abs(u) < 1e-8:
                 s = beta
             else:
                 s = beta * math.sin(PI * u) / (PI * u)
-            v = r / K_TAPS
             w = (0.35875 + 0.48829 * math.cos(PI * v) + 0.14128 * math.cos(2 * PI * v)
                  + 0.01168 * math.cos(3 * PI * v))  # Blackman-Harris
-            acc += input_sig[k] * s * w
-            wsum += s * w
-        if wsum != 0.0:
-            output[i] = acc / wsum
-        else:
-            output[i] = input_sig[min(center, n - 1)]
-    return output.astype(np.float32)
+            sw = s * w
+            if 0 <= k < n:
+                acc += input_sig[k] * sw
+            wsum += sw
+        full[idx] = acc / wsum if wsum != 0.0 else 0.0
+
+    _repair_causal_pre_ringing(full, pre_out, count, from_rate, to_rate)
+    return full[pre_out:].astype(np.float32)
 
 
 def wav_ir_load_taps(x, source_rate, host_rate):
@@ -266,6 +344,36 @@ def test_wav_decode_roundtrip_smoke():
         assert np.max(np.abs(y - x)) < 0.001
     finally:
         os.unlink(path)
+
+
+def test_minimum_phase_peak_at_zero_resampling():
+    """Minimum-phase / peak-at-0 IRs must preserve transfer magnitude and phase
+    coherence across sample-rate conversions without boundary clipping."""
+    idx = np.arange(512, dtype=np.float64)
+    ir0 = (np.exp(-idx / 30.0) * np.cos(0.15 * idx)).astype(np.float32)
+    ir2 = np.pad(ir0[:-2], (2, 0)).astype(np.float32)
+
+    def mag_at(taps, rate, freqs):
+        n = np.arange(taps.size)
+        return np.abs(np.exp(-2j * PI * np.outer(freqs / rate, n)) @ taps)
+
+    freqs = np.array([50.0, 100.0, 500.0, 1000.0, 5000.0, 10000.0, 18000.0])
+    for src_rate, dst_rate, limit_db in (
+        (48000, 96000, 0.10),
+        (96000, 48000, 0.15),
+        (192000, 48000, 0.25),
+        (44100, 48000, 0.05),
+        (48000, 44100, 0.08),
+    ):
+        conv = wav_ir_load_taps(ir0, src_rate, dst_rate)
+        delta_db = 20.0 * np.log10(mag_at(conv, dst_rate, freqs) / mag_at(ir0, src_rate, freqs))
+        worst = float(np.max(np.abs(delta_db)))
+        assert worst < limit_db, f"peak@0 {src_rate}->{dst_rate}: {worst:.3f} dB"
+
+    conv2 = wav_ir_load_taps(ir2, 192000, 48000)
+    worst2 = float(np.max(np.abs(20.0 * np.log10(
+        mag_at(conv2, 48000, freqs) / mag_at(ir2, 192000, freqs)))))
+    assert worst2 < 0.15, f"peak@2 192000->48000: {worst2:.3f} dB"
 
 
 if __name__ == "__main__":
