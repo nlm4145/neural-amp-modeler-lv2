@@ -1039,8 +1039,11 @@ class StandaloneHost {
       return;
     }
     if (format == 0 && port == NAMRig::kSpeakerProfileBPort && size == sizeof(float)) {
-      host->speakerBProfileControl_ = static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(
-          static_cast<int>(*static_cast<const float*>(buffer) + 0.5f)));
+      const float raw = *static_cast<const float*>(buffer);
+      host->speakerBProfileControl_ = std::isfinite(raw)
+          ? static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(static_cast<int>(
+                std::clamp(raw, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileBCount - 1)) + 0.5f)))
+          : NAMRig::kSpeakerProfileBDefault;
       return;
     }
     if (port == 0 && format == host->eventTransfer_)

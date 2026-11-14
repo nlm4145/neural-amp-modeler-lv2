@@ -1487,6 +1487,67 @@ void verifyDualCabSpeakerDynamics(double rate, const TempWavs& fixtures) {
   check(std::fabs(sharedRatioDb) < 0.05,
         "matching dual-cab SpeakerDynamics produces matched stereo L/R level");
 
+  // 4. Single-fade Auto speaker switch when swapping Cab A path.
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kAuto));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kMatchCabA));
+  pair.paths({{Stage::Cab, fixtures.greenback}, {Stage::Cab2, fixtures.v30}});
+  pair.run(17);
+  pair.sweep(3);
+  pair.paths({{Stage::Cab, fixtures.v30}});
+  std::array<bool, 2> seenOut{}, seenIn{}, seenSteadyAfter{}, reenteredOut{};
+  for (int step = 0; step < 128; ++step) {
+    pair.run(32);
+    const Host* hosts[2] = {&pair.serial, &pair.parallel};
+    for (size_t h = 0; h < 2; ++h) {
+      const auto ph = hosts[h]->plugin.currentTransitionPhase();
+      if (ph == Plugin::TransitionPhase::FadeOut) {
+        if (seenIn[h]) reenteredOut[h] = true;
+        seenOut[h] = true;
+      } else if (ph == Plugin::TransitionPhase::FadeIn) {
+        if (!seenIn[h]) {
+          check(hosts[h]->plugin.appliedSpeakerProfile() == NAMRig::SpeakerDynamics::kModern412 &&
+                    hosts[h]->plugin.appliedSpeakerBProfile() == NAMRig::SpeakerDynamics::kModern412,
+                "Auto Cab A swap commits matched speaker profiles at first FadeIn");
+        }
+        seenIn[h] = true;
+      } else if (seenIn[h]) {
+        seenSteadyAfter[h] = true;
+      }
+    }
+  }
+  check(seenOut[0] && seenOut[1] && seenIn[0] && seenIn[1] &&
+            seenSteadyAfter[0] && seenSteadyAfter[1] &&
+            !reenteredOut[0] && !reenteredOut[1],
+        "Auto Cab A path swap completes in a single fade without double FadeOut");
+
+  // 5. Bypassing Amp in split SpeakerDynamics mode leaves L/R matched (speaker chain bypassed).
+  pair.set(8, 0.0f);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kCaptured));
+  pair.paths({{Stage::Cab, fixtures.identity}, {Stage::Cab2, fixtures.identity}});
+  pair.sweep(3);
+  const double ampBypassRatioDb = measure118HzRatioDb();
+  check(std::fabs(ampBypassRatioDb) < 0.05,
+        "split SpeakerDynamics stays bypassed when Amp is bypassed");
+
+  // 6. NaN / +Inf speaker ports clamp safely and produce finite bit-identical audio.
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  pair.set(8, 1.0f);
+  pair.set(42, nan);
+  pair.set(NAMRig::kSpeakerProfileBPort, inf);
+  pair.set(43, nan);
+  pair.sweep(3);
+  for (Host* host : {&pair.serial, &pair.parallel}) {
+    check(host->plugin.appliedSpeakerProfile() == NAMRig::SpeakerDynamics::kCaptured &&
+              host->plugin.appliedSpeakerBProfile() == NAMRig::SpeakerDynamics::kCaptured,
+          "NaN/+Inf speaker profile ports clamp safely to Captured");
+  }
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kAuto));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kMatchCabA));
+  pair.set(43, 0.0f);
+  pair.sweep(2);
+
   std::printf("PASS: %.0f Hz dual-cab SpeakerDynamics (Auto %.2f dB, UK/Cap %.2f dB, shared %.2f dB)\n",
               rate, autoRatioDb, explicitRatioDb, sharedRatioDb);
 }

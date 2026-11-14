@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -350,6 +351,58 @@ int main() {
       }
     }
     check(maxStep < 0.03, "Drive 25% <-> 0% automation sweep stays click-free");
+  }
+
+  // ---- Regression: cold 0% -> 25% & post-decay 25% -> 0% -> 25% stay click-free. ----
+  // Exercises LR2 crossover engagement at both 220 Hz and 2400 Hz with no initial
+  // sample skip (prevents polarity-inversion click on sample 0 of Drive > 0%).
+  for (double testFreq : {220.0, 2400.0}) {
+    const double fs = 48000.0;
+    const double naturalStep = 0.5 * 2.0 * kPi * testFreq / fs;
+    Spk spk;
+    float prev = 0.0f;
+    double maxDiff = 0.0;
+    size_t idx = 0;
+    const int lengths[] = {512, 512, 16384, 512};
+    const float drives[] = {0.0f, 25.0f, 0.0f, 25.0f};
+    for (int seg = 0; seg < 4; ++seg) {
+      std::vector<float> blk(static_cast<size_t>(lengths[seg]));
+      for (size_t i = 0; i < blk.size(); ++i, ++idx)
+        blk[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * testFreq * idx / fs));
+      spk.process(blk.data(), blk.size(), fs, Spk::kUK412,
+                  drives[seg], 0.0f, 0.0f, 0.0f, 0.0f);
+      for (size_t i = 0; i < blk.size(); ++i) {
+        const size_t globalIdx = idx - blk.size() + i;
+        if (globalIdx > 0)
+          maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(blk[i] - prev)));
+        prev = blk[i];
+      }
+    }
+    char label[128];
+    std::snprintf(label, sizeof(label),
+                  "cold & decayed 0%% -> 25%% Drive transition is click-free at %.0f Hz",
+                  testFreq);
+    check(maxDiff < naturalStep + 0.025, label);
+  }
+
+  // ---- NaN / Inf parameter & sampleRate safety ----
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    Spk spk;
+    std::vector<float> blk(256);
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 220.0 * i / 48000.0));
+    spk.process(blk.data(), blk.size(), nan, -99, nan, inf, -nan, inf, nan);
+    bool allFinite = true;
+    for (float s : blk) allFinite = allFinite && std::isfinite(s);
+    // Recover on a normal valid block to confirm no internal state became NaN.
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 220.0 * i / 48000.0));
+    spk.process(blk.data(), blk.size(), 48000.0, Spk::kUK412,
+                50.0f, 50.0f, 50.0f, 50.0f, 0.5f);
+    for (float s : blk) allFinite = allFinite && std::isfinite(s);
+    check(allFinite, "NaN/Inf parameters and sampleRate stay finite and recoverable");
   }
 
   // ---- Profile names and descriptions. ----

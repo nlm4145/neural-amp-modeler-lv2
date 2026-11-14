@@ -341,6 +341,30 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
   drain();
   CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kCaptured);
 
+  // Auto visualizer Cab B fallback when Cab A is bypassed or cleared, plus NaN clamping.
+  const float cabBOn = 1.0f, cabBOff = 0.0f, cabAOn = 1.0f, cabAOff = 0.0f;
+  runtime.descriptor->port_event(state, 42, sizeof(autoProfile), 0, &autoProfile);
+  runtime.descriptor->port_event(state, 47, sizeof(cabBOn), 0, &cabBOn);
+  runtime.descriptor->port_event(state, 9, sizeof(cabAOff), 0, &cabAOff);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kUK412);
+  runtime.descriptor->port_event(state, 9, sizeof(cabAOn), 0, &cabAOn);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kModern412);
+  state->displayPath(2, "");
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kUK412);
+  const float nanVal = std::numeric_limits<float>::quiet_NaN();
+  runtime.descriptor->port_event(state, 42, sizeof(nanVal), 0, &nanVal);
+  runtime.descriptor->port_event(state, kSpeakerProfileBPort, sizeof(nanVal), 0, &nanVal);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kCaptured);
+  CHECK(state->deckSpeakerProfilePopup.indexOfSelectedItem == SpeakerDynamics::kCaptured);
+  CHECK(state->deckSpeakerBProfilePopup.indexOfSelectedItem == SpeakerDynamics::kMatchCabA);
+  state->displayPath(2, "/irs/Mesa Recto V30.wav");
+  runtime.descriptor->port_event(state, 47, sizeof(cabBOff), 0, &cabBOff);
+  drain();
+
   stage = "graph pin editors / double-click add writes a bell";
   [runtime.window layoutIfNeeded];
   NAMPinEQEditor* console = state->pinEditors[(size_t)PinEqPane::CabConsole];

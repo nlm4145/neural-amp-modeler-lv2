@@ -235,7 +235,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   RigPreset* preset = [[RigPreset alloc] init];
   preset.filePath = filePath;
   preset.name = root[@"name"] ?: [filePath.lastPathComponent stringByDeletingPathExtension];
-  preset.speakerProfile = [root[@"speaker_profile"] floatValue];
+  const float rawSpk = root[@"speaker_profile"] ? [root[@"speaker_profile"] floatValue] : 0.0f;
+  preset.speakerProfile = std::isfinite(rawSpk)
+      ? static_cast<float>(NAMRig::SpeakerDynamics::clampProfile(static_cast<int>(
+            std::clamp(rawSpk, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileCount - 1)) + 0.5f)))
+      : 0.0f;
   NSDictionary* spDict = root[@"slot_presets"];
   if ([spDict isKindOfClass:[NSDictionary class]]) {
     preset.slotPresets = [spDict mutableCopy];
@@ -329,6 +333,14 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
         preset->_controls[[portNum unsignedIntValue]] = [paramsDict[sym] floatValue];
       }
     }
+  }
+
+  if (!root[@"speaker_profile"] && preset->_controls.count(42)) {
+    const float rawCtrlSpk = preset->_controls[42];
+    preset.speakerProfile = std::isfinite(rawCtrlSpk)
+        ? static_cast<float>(NAMRig::SpeakerDynamics::clampProfile(static_cast<int>(
+              std::clamp(rawCtrlSpk, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileCount - 1)) + 0.5f)))
+        : 0.0f;
   }
 
   // Controls win over the stale stage field in older Windows captures.
@@ -633,8 +645,13 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     state->sendControl(port, value);
     state->updateControl(port, value);
   }
-  state->sendControl(42, self.speakerProfile);
-  state->updateControl(42, self.speakerProfile);
+  const float spkVal = std::isfinite(self.speakerProfile)
+      ? static_cast<float>(NAMRig::SpeakerDynamics::clampProfile(static_cast<int>(
+            std::clamp(self.speakerProfile, 0.0f,
+                       static_cast<float>(NAMRig::SpeakerDynamics::kProfileCount - 1)) + 0.5f)))
+      : 0.0f;
+  state->sendControl(42, spkVal);
+  state->updateControl(42, spkVal);
   // Sparse presets must clear previously selected tube character.
   auto tubeTypeIt = _controls.find(NAMRig::kPowerTubeTypePort);
   const float tubeType = tubeTypeIt != _controls.end() ? tubeTypeIt->second : 0.0f;
@@ -694,8 +711,10 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   state->sendControl(NAMRig::kSpatialCenterBlendPort, spatialCenterBlendVal);
   state->updateControl(NAMRig::kSpatialCenterBlendPort, spatialCenterBlendVal);
   auto spkBIt = _controls.find(NAMRig::kSpeakerProfileBPort);
-  const float spkBVal = static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(
-      static_cast<int>((spkBIt != _controls.end() ? spkBIt->second : NAMRig::kSpeakerProfileBDefault) + 0.5f)));
+  const float rawSpkB = (spkBIt != _controls.end() && std::isfinite(spkBIt->second))
+      ? spkBIt->second : NAMRig::kSpeakerProfileBDefault;
+  const float spkBVal = static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(static_cast<int>(
+      std::clamp(rawSpkB, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileBCount - 1)) + 0.5f)));
   state->sendControl(NAMRig::kSpeakerProfileBPort, spkBVal);
   state->updateControl(NAMRig::kSpeakerProfileBPort, spkBVal);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;

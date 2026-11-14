@@ -176,7 +176,7 @@ class SpeakerDynamics {
       if (profile_ != kCaptured) reset();
       return;
     }
-    sampleRate = std::max(8000.0, sampleRate);
+    sampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate) : 48000.0;
     if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5)
       configure(profile, sampleRate);
 
@@ -200,6 +200,7 @@ class SpeakerDynamics {
     const double coneA2 = coneG * coneA1;
     const double coneA3 = coneG * coneA2;
     const double dcR = std::exp(-2.0 * kPi * 5.0 / sampleRate);
+    const double mixStep = 1.0 / (sampleRate * 0.005);
     const double attack = 1.0 - std::exp(-1.0 / (sampleRate * p.attackSeconds));
     const double release = 1.0 - std::exp(-1.0 / (sampleRate * p.releaseSeconds));
 
@@ -228,8 +229,15 @@ class SpeakerDynamics {
       excursion_ += (level - excursion_) * (level > excursion_ ? attack : release);
       x *= 1.0 / (1.0 + p.compression * smoothedCompression_ * excursion_);
 
-      if (driveTarget > 1.0e-6 || smoothedDrive_ > 1.0e-6) crossoverEngaged_ = true;
-      if (crossoverEngaged_) {
+      const bool breakupNeeded = driveTarget > 1.0e-6 || smoothedDrive_ > 1.0e-6 ||
+                                 std::fabs(dcPrevIn_) > 1.0e-6 || std::fabs(dcPrevOut_) > 1.0e-6;
+      if (breakupNeeded) {
+        crossoverMix_ = std::min(1.0, crossoverMix_ + mixStep);
+      } else if (crossoverMix_ > 0.0) {
+        crossoverMix_ = std::max(0.0, crossoverMix_ - mixStep);
+        if (crossoverMix_ <= 0.0) resetBreakupStates();
+      }
+      if (crossoverMix_ > 0.0) {
         // LR2 split: lp2 and negHp2 (= ap1 - lp2 = -HP_LR2) sum to unity-gain allpass ap1.
         const double v1 = (x - lrState1_) * lrK;
         const double lp1 = v1 + lrState1_;
@@ -280,13 +288,7 @@ class SpeakerDynamics {
         const double dcBalanced = nonlinearResidual - dcPrevIn_ + dcR * dcPrevOut_;
         dcPrevIn_ = nonlinearResidual;
         dcPrevOut_ = dcBalanced;
-        x = (driveLow_ + negHp2) + dcBalanced;
-
-        if (driveTarget <= 1.0e-6 && smoothedDrive_ <= 1.0e-6 && std::fabs(x) < 1.0e-6 &&
-            std::fabs(lrState1_) < 1.0e-6 && std::fabs(lrState2_) < 1.0e-6 &&
-            std::fabs(dcPrevOut_) < 1.0e-6) {
-          resetBreakupStates();
-        }
+        x += crossoverMix_ * (((driveLow_ + negHp2) + dcBalanced) - x);
       }
       samples[i] = static_cast<float>(x);
     }
@@ -335,7 +337,9 @@ class SpeakerDynamics {
   };
 
   static constexpr double kPi = 3.14159265358979323846;
-  static double clamp01(double x) noexcept { return std::max(0.0, std::min(1.0, x)); }
+  static double clamp01(double x) noexcept {
+    return std::isfinite(x) ? std::max(0.0, std::min(1.0, x)) : 0.0;
+  }
   static double sigmoid(double x) noexcept { return x / std::sqrt(1.0 + x * x); }
   static double asymResidual(double x, double gain, double bias, double sig0,
                              double deriv0) noexcept {
@@ -397,7 +401,7 @@ class SpeakerDynamics {
     f.a2 = ((A + 1) - (A - 1) * c - sqA) / a0;
   }
   void resetBreakupStates() noexcept {
-    crossoverEngaged_ = false;
+    crossoverMix_ = 0.0;
     lrState1_ = lrState2_ = 0.0;
     driveLow_ = 0.0;
     prevDriveLow_ = prevLowResidual_ = 0.0;
@@ -429,7 +433,7 @@ class SpeakerDynamics {
   double coneIc1_ = 0.0, coneIc2_ = 0.0;
   double prevConeBand_ = 0.0, prevConeResidual_ = 0.0;
   double dcPrevIn_ = 0.0, dcPrevOut_ = 0.0;
-  bool crossoverEngaged_ = false;
+  double crossoverMix_ = 0.0;
   double smoothedDrive_ = 0.0, smoothedCompression_ = 0.0;
   double smoothedThump_ = 0.0, smoothedResonance_ = 0.0, smoothedDamping_ = 0.0;
 };
