@@ -633,7 +633,8 @@ class StandaloneHost {
         {NAMRig::kDropPitchAttackPort, dropPitchShapingControls_},
         {NAMRig::kModelBandLimitCutoffPort, modelBandLimitParamsControls_},
         {NAMRig::kSpatialCenterBlendPort, {&spatialCenterBlendControl_, 1}},
-        {NAMRig::kSpeakerProfileBPort, {&speakerBProfileControl_, 1}}});
+        {NAMRig::kSpeakerProfileBPort, {&speakerBProfileControl_, 1}},
+        {NAMRig::kCabLowCutSlopePort, cabCutSlopeControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1041,6 +1042,12 @@ class StandaloneHost {
     if (format == 0 && port == NAMRig::kSpeakerProfileBPort && size == sizeof(float)) {
       host->speakerBProfileControl_ = static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(
           static_cast<int>(*static_cast<const float*>(buffer) + 0.5f)));
+      return;
+    }
+    if (format == 0 && port >= NAMRig::kCabLowCutSlopePort &&
+        port <= NAMRig::kCabHighCutSlopePort && size == sizeof(float)) {
+      host->cabCutSlopeControls_[port - NAMRig::kCabLowCutSlopePort] =
+          static_cast<float>(NAMRig::clampCabCutSlope(*static_cast<const float*>(buffer)));
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1924,6 +1931,10 @@ class StandaloneHost {
   };
   float spatialCenterBlendControl_ = NAMRig::kSpatialCenterBlendDefault;
   float speakerBProfileControl_ = NAMRig::kSpeakerProfileBDefault;
+  std::array<float, 2> cabCutSlopeControls_ = {
+      NAMRig::kCabLowCutSlopeDefault,
+      NAMRig::kCabHighCutSlopeDefault,
+  };
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

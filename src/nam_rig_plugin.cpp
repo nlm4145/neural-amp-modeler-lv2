@@ -46,6 +46,11 @@ void copyCoefficients(Biquad& dst, const Biquad& src) {
   dst.a1 = src.a1; dst.a2 = src.a2;
 }
 
+void assignCoefficients(Biquad& dst, const PinCoeffs& src) {
+  dst.b0 = src.b0; dst.b1 = src.b1; dst.b2 = src.b2;
+  dst.a1 = src.a1; dst.a2 = src.a2;
+}
+
 constexpr uint32_t kEqChunk = 32;
 
 bool endsWithWav(const char* path) {
@@ -97,85 +102,17 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr float kDualCabShelfHz = 200.0f;
 constexpr float kEqQ = 0.7071067811865476f;  // Q = 1/sqrt(2)
 
-// RBJ Audio EQ Cookbook — normalized (by a0) biquad coefficient setters.
+// Matched double-precision biquad coefficient setters shared with PinEq/UI.
 static void setLowShelf(Biquad& f, float gainDb, float freq, double sampleRate) {
-  const double A = std::pow(10.0, gainDb / 40.0);
-  const double w0 = 2.0 * kPi * freq / sampleRate;
-  const double c = std::cos(w0), s = std::sin(w0);
-  const double alpha = s / (2.0 * kEqQ);
-  const double sqA = 2.0 * std::sqrt(A) * alpha;
-  const double b0 = A * ((A + 1) - (A - 1) * c + sqA);
-  const double b1 = 2.0 * A * ((A - 1) - (A + 1) * c);
-  const double b2 = A * ((A + 1) - (A - 1) * c - sqA);
-  const double a0 = (A + 1) + (A - 1) * c + sqA;
-  const double a1 = -2.0 * ((A - 1) + (A + 1) * c);
-  const double a2 = (A + 1) + (A - 1) * c - sqA;
-  f.b0 = static_cast<float>(b0 / a0);
-  f.b1 = static_cast<float>(b1 / a0);
-  f.b2 = static_cast<float>(b2 / a0);
-  f.a1 = static_cast<float>(a1 / a0);
-  f.a2 = static_cast<float>(a2 / a0);
+  assignCoefficients(f, pinCoefficients(kPinLowShelf, freq, gainDb, kEqQ, sampleRate));
 }
 
 static void setHighShelf(Biquad& f, float gainDb, float freq, double sampleRate) {
-  const double A = std::pow(10.0, gainDb / 40.0);
-  const double w0 = 2.0 * kPi * freq / sampleRate;
-  const double c = std::cos(w0), s = std::sin(w0);
-  const double alpha = s / (2.0 * kEqQ);
-  const double sqA = 2.0 * std::sqrt(A) * alpha;
-  const double b0 = A * ((A + 1) + (A - 1) * c + sqA);
-  const double b1 = -2.0 * A * ((A - 1) + (A + 1) * c);
-  const double b2 = A * ((A + 1) + (A - 1) * c - sqA);
-  const double a0 = (A + 1) - (A - 1) * c + sqA;
-  const double a1 = 2.0 * ((A - 1) - (A + 1) * c);
-  const double a2 = (A + 1) - (A - 1) * c - sqA;
-  f.b0 = static_cast<float>(b0 / a0);
-  f.b1 = static_cast<float>(b1 / a0);
-  f.b2 = static_cast<float>(b2 / a0);
-  f.a1 = static_cast<float>(a1 / a0);
-  f.a2 = static_cast<float>(a2 / a0);
+  assignCoefficients(f, pinCoefficients(kPinHighShelf, freq, gainDb, kEqQ, sampleRate));
 }
 
 static void setPeaking(Biquad& f, float gainDb, float freq, double sampleRate) {
-  const double A = std::pow(10.0, gainDb / 40.0);
-  const double w0 = 2.0 * kPi * freq / sampleRate;
-  const double c = std::cos(w0), s = std::sin(w0);
-  const double alpha = s / (2.0 * kEqQ);
-  const double b0 = 1.0 + alpha * A;
-  const double b1 = -2.0 * c;
-  const double b2 = 1.0 - alpha * A;
-  const double a0 = 1.0 + alpha / A;
-  const double a1 = -2.0 * c;
-  const double a2 = 1.0 - alpha / A;
-  f.b0 = static_cast<float>(b0 / a0);
-  f.b1 = static_cast<float>(b1 / a0);
-  f.b2 = static_cast<float>(b2 / a0);
-  f.a1 = static_cast<float>(a1 / a0);
-  f.a2 = static_cast<float>(a2 / a0);
-}
-
-static void setHighPass(Biquad& f, float freq, double sampleRate) {
-  const double w0 = 2.0 * kPi * freq / sampleRate;
-  const double c = std::cos(w0), s = std::sin(w0);
-  const double alpha = s / (2.0 * kEqQ);
-  const double a0 = 1.0 + alpha;
-  f.b0 = static_cast<float>((1.0 + c) * 0.5 / a0);
-  f.b1 = static_cast<float>(-(1.0 + c) / a0);
-  f.b2 = f.b0;
-  f.a1 = static_cast<float>(-2.0 * c / a0);
-  f.a2 = static_cast<float>((1.0 - alpha) / a0);
-}
-
-static void setLowPass(Biquad& f, float freq, double sampleRate) {
-  const double w0 = 2.0 * kPi * freq / sampleRate;
-  const double c = std::cos(w0), s = std::sin(w0);
-  const double alpha = s / (2.0 * kEqQ);
-  const double a0 = 1.0 + alpha;
-  f.b0 = static_cast<float>((1.0 - c) * 0.5 / a0);
-  f.b1 = static_cast<float>((1.0 - c) / a0);
-  f.b2 = f.b0;
-  f.a1 = static_cast<float>(-2.0 * c / a0);
-  f.a2 = static_cast<float>((1.0 - alpha) / a0);
+  assignCoefficients(f, pinCoefficients(kPinBell, freq, gainDb, kEqQ, sampleRate));
 }
 } // namespace
 
@@ -317,6 +254,8 @@ void Plugin::setSampleRateAndReload(double rate) noexcept {
   appliedTreble = -999.0f;
   appliedLowCut = -1.0f;
   appliedHighCut = -1.0f;
+  appliedLowCutSlope = -1;
+  appliedHighCutSlope = -1;
   osTopologySignature = ~uint64_t{0};
   setMaxBufferSize(static_cast<int>(hostMaxBufferSize));
   for (size_t i = 0; i < kStageCount; ++i) {
@@ -581,10 +520,12 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
     // reloadModelsForOversample() had an installed model to reschedule.
     // Reuse the completed response's path and load it for the latest domain.
     const size_t length = strnlen(message->path, MAX_FILE_NAME);
-    rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
-    LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir, message->irRight};
-    rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
-    return LV2_WORKER_SUCCESS;
+    if (length > 0 && length < MAX_FILE_NAME) {
+      rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
+      LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir, message->irRight};
+      rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
+      return LV2_WORKER_SUCCESS;
+    }
   }
   auto& pending = rig->pendingSwitches[index];
   if (pending.ready) {
@@ -1168,37 +1109,6 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   if (ports.cab_auto_bypassed)
     *ports.cab_auto_bypassed = 0.0f;
 
-  // A .nam Cab A shares the amp's True domain alone, but runs at the session
-  // rate next to Cab B. Engaging or dropping Cab B therefore reloads Cab A for
-  // the other domain; the swap lands through the usual fade.
-  {
-    const size_t cab = stageIndex(Stage::Cab);
-    const size_t cab2 = stageIndex(Stage::Cab2);
-    const bool parallelDesired = desiredEnabled[cab2] &&
-        (models[cab2] || irs[cab2] || pendingSwitches[cab2].ready);
-    if (!cabParallelLatched) {
-      cabParallelDesired = parallelDesired;
-      cabParallelLatched = true;
-    } else if (parallelDesired != cabParallelDesired) {
-      cabParallelDesired = parallelDesired;
-      const int mode = desiredStageMode(cab);
-      const auto& pending = pendingSwitches[cab];
-      if (pending.ready) {
-        // The pending switch is the newest request: re-domain a pending model,
-        // never revive a model that a pending unload or IR is replacing.
-        const size_t length = strnlen(pending.path, MAX_FILE_NAME);
-        if (pending.model && length > 0 && pending.oversampleMode != mode)
-          scheduleModelLoad(Stage::Cab, pending.path, length, mode);
-      } else if (loadGeneration[cab] == respondedGeneration[cab] && models[cab] &&
-                 !irs[cab] && osApplied[cab] != mode && !modelPaths[cab].empty() &&
-                 modelPaths[cab].size() < MAX_FILE_NAME) {
-        // No load is in flight (one in flight re-domains itself in
-        // workResponse), so re-create the installed model for the new domain.
-        scheduleModelLoad(Stage::Cab, modelPaths[cab].c_str(), modelPaths[cab].size(), mode);
-      }
-    }
-  }
-
   // An enable toggle switches a (possibly high-gain) stage in or out mid
   // waveform — a click. Latch the toggles through the same equal-power fade
   // as a model swap: fade out, apply at the zero crossing, fade back in.
@@ -1670,11 +1580,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     }
     std::memcpy(io, chain, sliceLen * sizeof(float));
   }
-  // Parallel cabinets normally share the session-rate domain and add nothing.
-  // While a Cab A reload for that domain is still in flight it keeps its own
-  // True cascade, and a native-rate cabinet model keeps its resampling
-  // domain; the longer branch is reported and the other branch is delayed to
-  // match it in processPostChain.
+  // Parallel cabinets run independently (True oversampling or native-rate
+  // resampling); report the longer branch and delay the other to match it in
+  // processPostChain.
   if (parallelCabs) {
     uint32_t extraA = 0, extraB = 0;
     parallelCabExtras(extraA, extraB);
@@ -1790,30 +1698,36 @@ uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
 void Plugin::processCabB(float* samples, uint32_t count) noexcept {
   constexpr size_t kCabB = stageIndex(Stage::Cab2);
   const int decimation = nativeDecimation(kCabB);
-  if (decimation > 1)
+  if (decimation > 1) {
     runNativeDomain(kCabB, samples, count, decimation,
                     [this](float* domain, uint32_t m, double rate) noexcept {
                       runModel(kCabB, models[kCabB], domain, m, rate);
                     });
+    return;
+  }
+  const int factor = decimation == 0
+      ? truePipelineFactor(osApplied[kCabB], sampleRate)
+      : 1;
+  if (factor > 1)
+    processTrueCab(kCabB, samples, count, factor);
   else
     runModel(kCabB, models[kCabB], samples, count, sampleRate);
 }
 
 void Plugin::parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcept {
   extraA = extraB = 0;
-  if (appliedEnabled[2] && models[2] && !irs[2]) {
-    const int decimation = nativeDecimation(2);
-    if (decimation > 1) {
-      extraA = nativeLatencyFrames(decimation);
-    } else {
-      const int factor = truePipelineFactor(osApplied[2], sampleRate);
-      if (factor > 1) extraA = cascadeLatencyFrames(factor);
+  auto stageExtra = [&](size_t stage) -> uint32_t {
+    if (!models[stage] || irs[stage]) return 0;
+    const int decimation = nativeDecimation(stage);
+    if (decimation > 1) return nativeLatencyFrames(decimation);
+    if (decimation == 0) {
+      const int factor = truePipelineFactor(osApplied[stage], sampleRate);
+      if (factor > 1) return cascadeLatencyFrames(factor);
     }
-  }
-  if (models[3] && !irs[3]) {
-    const int decimation = nativeDecimation(3);
-    if (decimation > 1) extraB = nativeLatencyFrames(decimation);
-  }
+    return 0;
+  };
+  if (appliedEnabled[2]) extraA = stageExtra(2);
+  extraB = stageExtra(3);
 }
 
 // Everything after the serial NAM chain: the parallel cabinet pair, the cab
@@ -1967,8 +1881,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         irs[2]->process(L, n, norm);
         cabProcessed = true;
       } else if (models[2] && parallelCabs) {
-        // Steady state is the session rate. A True domain only persists while
-        // the session-rate reload is in flight; native-rate models resample.
+        // Run Cab A in its True oversampled or native-rate domain.
         const int decimation = nativeDecimation(2);
         const int factor = truePipelineFactor(osApplied[2], sampleRate);
         if (decimation > 1)
@@ -2188,51 +2101,96 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       const float lowCutTarget = std::max(0.0f, *ports.cab_low_cut);
       const float highCutTarget = std::min(*ports.cab_high_cut,
                                            static_cast<float>(sampleRate * 0.45));
+      const int lowCutSlope = clampCabCutSlope(portValue(ports.cab_low_cut_slope, kCabLowCutSlopeDefault));
+      const int highCutSlope = clampCabCutSlope(portValue(ports.cab_high_cut_slope, kCabHighCutSlopeDefault));
       for (uint32_t start = 0; start < n; start += kEqChunk) {
         const uint32_t m = std::min<uint32_t>(kEqChunk, n - start);
         glideValue(smoothedLowCut, lowCutTarget, chunkGlide, 0.05f);
         glideValue(smoothedHighCut, highCutTarget, chunkGlide, 0.5f);
         const bool lowCutOn = smoothedLowCut >= 20.0f;
         const bool highCutOn = smoothedHighCut < 19990.0f;
-        if (smoothedLowCut != appliedLowCut) {
+        if (smoothedLowCut != appliedLowCut || lowCutSlope != appliedLowCutSlope) {
           if (lowCutOn) {
-            setHighPass(cabLowCutEq, smoothedLowCut, sampleRate);
+            const PinPassChain stages = pinPassStages(true, smoothedLowCut, lowCutSlope, sampleRate);
+            assignCoefficients(cabLowCutEq, stages.stages[0]);
             copyCoefficients(cabLowCutEqR, cabLowCutEq);
+            if (stages.count > 1) {
+              if (appliedLowCutSlope <= kCabCutSlope12) {
+                cabLowCutEq2.reset();
+                cabLowCutEq2R.reset();
+              }
+              assignCoefficients(cabLowCutEq2, stages.stages[1]);
+              copyCoefficients(cabLowCutEq2R, cabLowCutEq2);
+            } else {
+              cabLowCutEq2.reset();
+              cabLowCutEq2R.reset();
+            }
           } else {
-            cabLowCutEq.reset();
-            cabLowCutEqR.reset();
+            cabLowCutEq.reset(); cabLowCutEq2.reset();
+            cabLowCutEqR.reset(); cabLowCutEq2R.reset();
           }
           appliedLowCut = smoothedLowCut;
+          appliedLowCutSlope = lowCutSlope;
         }
-        if (smoothedHighCut != appliedHighCut) {
+        if (smoothedHighCut != appliedHighCut || highCutSlope != appliedHighCutSlope) {
           if (highCutOn) {
-            setLowPass(cabHighCutEq, std::max(1000.0f, smoothedHighCut), sampleRate);
+            const PinPassChain stages = pinPassStages(false, std::max(1000.0f, smoothedHighCut), highCutSlope, sampleRate);
+            assignCoefficients(cabHighCutEq, stages.stages[0]);
             copyCoefficients(cabHighCutEqR, cabHighCutEq);
+            if (stages.count > 1) {
+              if (appliedHighCutSlope <= kCabCutSlope12) {
+                cabHighCutEq2.reset();
+                cabHighCutEq2R.reset();
+              }
+              assignCoefficients(cabHighCutEq2, stages.stages[1]);
+              copyCoefficients(cabHighCutEq2R, cabHighCutEq2);
+            } else {
+              cabHighCutEq2.reset();
+              cabHighCutEq2R.reset();
+            }
           } else {
-            cabHighCutEq.reset();
-            cabHighCutEqR.reset();
+            cabHighCutEq.reset(); cabHighCutEq2.reset();
+            cabHighCutEqR.reset(); cabHighCutEq2R.reset();
           }
           appliedHighCut = smoothedHighCut;
+          appliedHighCutSlope = highCutSlope;
         }
         if (!lowCutOn && !highCutOn) continue;
+        const bool lowCut2 = lowCutOn && lowCutSlope != kCabCutSlope12;
+        const bool highCut2 = highCutOn && highCutSlope != kCabCutSlope12;
         for (uint32_t i = start; i < start + m; ++i) {
-          float l = L[i];
-          float r = R[i];
-          if (lowCutOn) { l = cabLowCutEq.process(l); r = cabLowCutEqR.process(r); }
-          if (highCutOn) { l = cabHighCutEq.process(l); r = cabHighCutEqR.process(r); }
-          L[i] = l;
-          R[i] = r;
+          double l = L[i];
+          double r = R[i];
+          if (lowCutOn) {
+            l = cabLowCutEq.processSample(l);
+            r = cabLowCutEqR.processSample(r);
+            if (lowCut2) {
+              l = cabLowCutEq2.processSample(l);
+              r = cabLowCutEq2R.processSample(r);
+            }
+          }
+          if (highCutOn) {
+            l = cabHighCutEq.processSample(l);
+            r = cabHighCutEqR.processSample(r);
+            if (highCut2) {
+              l = cabHighCutEq2.processSample(l);
+              r = cabHighCutEq2R.processSample(r);
+            }
+          }
+          L[i] = static_cast<float>(l);
+          R[i] = static_cast<float>(r);
         }
       }
       float* channels[2] = {L, R};
       consolePins.process(channels, 2, n, sampleRate, consolePinBands);
     } else {
       consolePins.reset();
-      cabLowCutEq.reset();
-      cabHighCutEq.reset();
-      cabLowCutEqR.reset();
-      cabHighCutEqR.reset();
+      cabLowCutEq.reset(); cabLowCutEq2.reset();
+      cabHighCutEq.reset(); cabHighCutEq2.reset();
+      cabLowCutEqR.reset(); cabLowCutEq2R.reset();
+      cabHighCutEqR.reset(); cabHighCutEq2R.reset();
       appliedLowCut = appliedHighCut = -1.0f;
+      appliedLowCutSlope = appliedHighCutSlope = -1;
     }
 
     if (modelProcessed) {
@@ -2276,12 +2234,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
       if (!bassOn && !midOn && !trebleOn) continue;
       for (uint32_t i = start; i < start + m; ++i) {
-        float l = L[i], r = R[i];
-        if (bassOn) { l = bassEq.process(l); r = bassEqR.process(r); }
-        if (midOn) { l = midEq.process(l); r = midEqR.process(r); }
-        if (trebleOn) { l = trebleEq.process(l); r = trebleEqR.process(r); }
-        L[i] = l;
-        R[i] = r;
+        double l = L[i], r = R[i];
+        if (bassOn) { l = bassEq.processSample(l); r = bassEqR.processSample(r); }
+        if (midOn) { l = midEq.processSample(l); r = midEqR.processSample(r); }
+        if (trebleOn) { l = trebleEq.processSample(l); r = trebleEqR.processSample(r); }
+        L[i] = static_cast<float>(l);
+        R[i] = static_cast<float>(r);
       }
     }
 
@@ -2473,11 +2431,14 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         smoothedCabLevel = targetCab;
         smoothedCab2Level = cab2LevelTarget;
         smoothedCab2Polarity = polarityTarget;
-        cabLowCutEq.reset(); cabLowCutEqR.reset();
-        cabHighCutEq.reset(); cabHighCutEqR.reset();
+        cabLowCutEq.reset(); cabLowCutEq2.reset();
+        cabLowCutEqR.reset(); cabLowCutEq2R.reset();
+        cabHighCutEq.reset(); cabHighCutEq2.reset();
+        cabHighCutEqR.reset(); cabHighCutEq2R.reset();
         smoothedLowCut = std::max(0.0f, *ports.cab_low_cut);
         smoothedHighCut = std::min(*ports.cab_high_cut, static_cast<float>(sampleRate * 0.45));
         appliedLowCut = appliedHighCut = -1.0f;
+        appliedLowCutSlope = appliedHighCutSlope = -1;
         shelfSnapNeeded = true;
       }
       appliedRacks = requestedRacks;
@@ -2575,7 +2536,6 @@ void Plugin::reloadModelsForOversample() {
   // Never clobber an in-flight load (workResponse re-domains it on completion)
   // or revive an old model path when a pending switch is already queued.
   for (size_t i = 0; i < kStageCount; ++i) {
-    if (i == stageIndex(Stage::Cab2)) continue;
     const Stage stage = static_cast<Stage>(i);
     const int mode = normalizeLoadMode(stage, desiredStageMode(i));
     const auto& pending = pendingSwitches[i];

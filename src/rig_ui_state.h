@@ -381,6 +381,10 @@ struct RigUIState {
   __strong NSPopUpButton* deckSpeakerProfilePopup = nil;
   __strong NSPopUpButton* deckSpeakerBProfilePopup = nil;
   int speakerBProfile = NAMRig::SpeakerDynamics::kMatchCabA;
+  __strong NSPopUpButton* cabLowCutSlopePopup = nil;
+  __strong NSPopUpButton* cabHighCutSlopePopup = nil;
+  int cabLowCutSlope = NAMRig::kCabCutSlope12;
+  int cabHighCutSlope = NAMRig::kCabCutSlope12;
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
   __strong NSPopover* aiCopilotPopover = nil;
@@ -1455,6 +1459,14 @@ struct RigUIState {
     if (port == NAMRig::kSpeakerProfileBPort) {
       return deckSpeakerBProfilePopup ? (float)deckSpeakerBProfilePopup.indexOfSelectedItem
                                       : (float)speakerBProfile;
+    }
+    if (port == NAMRig::kCabLowCutSlopePort) {
+      return cabLowCutSlopePopup ? (float)cabLowCutSlopePopup.indexOfSelectedItem
+                                 : (float)cabLowCutSlope;
+    }
+    if (port == NAMRig::kCabHighCutSlopePort) {
+      return cabHighCutSlopePopup ? (float)cabHighCutSlopePopup.indexOfSelectedItem
+                                  : (float)cabHighCutSlope;
     }
     if (port == 59) {
       return cab2PolarityInverted ? 1.0f : 0.0f;
@@ -2843,6 +2855,28 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateSpeakerB();
       else dispatch_async(dispatch_get_main_queue(), updateSpeakerB);
+      return;
+    }
+    if (port == NAMRig::kCabLowCutSlopePort || port == NAMRig::kCabHighCutSlopePort) {
+      const int slope = NAMRig::clampCabCutSlope(value);
+      const bool isLow = (port == NAMRig::kCabLowCutSlopePort);
+      auto updateSlope = ^{
+        if (!alive || !*alive) return;
+        NSPopUpButton* popup = isLow ? cabLowCutSlopePopup : cabHighCutSlopePopup;
+        if (isLow) cabLowCutSlope = slope;
+        else cabHighCutSlope = slope;
+        if (popup && slope < popup.numberOfItems) {
+          [popup selectItemAtIndex:slope];
+          popup.toolTip = popup.selectedItem.toolTip;
+        }
+        if (cabConsoleVisualizer) {
+          if (isLow) cabConsoleVisualizer.lowCutSlope = slope;
+          else cabConsoleVisualizer.highCutSlope = slope;
+          cabConsoleVisualizer.needsDisplay = YES;
+        }
+      };
+      if ([NSThread isMainThread]) updateSlope();
+      else dispatch_async(dispatch_get_main_queue(), updateSlope);
       return;
     }
     // Map the port to its knob index (ports 10/11 are auto-cab, no-ops in UI).

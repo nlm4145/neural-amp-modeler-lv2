@@ -1211,6 +1211,8 @@ static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) 
       const uint32_t controlPort = entry.unsignedIntValue;
       if (controlPort == 42) edited[controlPort] = SpeakerDynamics::kModern412;
       if (controlPort == 59) edited[controlPort] = 1;
+      if (controlPort == kCabLowCutSlopePort) edited[controlPort] = kCabCutSlope18;
+      if (controlPort == kCabHighCutSlopePort) edited[controlPort] = kCabCutSlope24;
       if (controlPort == kPowerTubeTypePort) edited[controlPort] = PowerTube::kEL34;
       for (size_t k = 0; k < kRigKnobCount; ++k) {
         if (kRigKnobPorts[k] != controlPort) continue;
@@ -1331,7 +1333,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 236 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 238 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -2551,6 +2553,78 @@ static void verifyCabSwap(Runtime& runtime) {
   verifyChoices(3, choicesA, choicesA[1]);
 }
 
+static void verifyCabCutSlopes(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  stage = "cab console cut slopes (12/18/24 dB/oct)";
+  auto echo = [&](uint32_t port, float value) {
+    runtime.descriptor->port_event(state, port, sizeof(value), 0, &value);
+  };
+  [state->workspace selectStage:3];
+  [state->workspace selectModule:@"cablab"];
+  drain();
+
+  REQUIRE(state->cabLowCutSlopePopup && state->cabHighCutSlopePopup && state->cabConsoleVisualizer);
+  CHECK(state->cabLowCutSlopePopup.numberOfItems == 3 && state->cabHighCutSlopePopup.numberOfItems == 3);
+  CHECK([state->cabLowCutSlopePopup.itemTitles isEqualToArray:@[@"12 dB/oct", @"18 dB/oct", @"24 dB/oct"]]);
+  CHECK([state->cabHighCutSlopePopup.itemTitles isEqualToArray:@[@"12 dB/oct", @"18 dB/oct", @"24 dB/oct"]]);
+  CHECK(state->cabLowCutSlopePopup.tag == kCabLowCutSlopePort &&
+        state->cabHighCutSlopePopup.tag == kCabHighCutSlopePort);
+
+  echo(26, 160.0f);
+  echo(27, 6000.0f);
+  drain();
+
+  const double expectedOctave[3] = {-12.0, -18.0, -24.0};
+  for (int slope = 0; slope <= 2; ++slope) {
+    host.writes.clear();
+    [state->cabLowCutSlopePopup selectItemAtIndex:slope];
+    action(state->cabLowCutSlopePopup);
+    [state->cabHighCutSlopePopup selectItemAtIndex:slope];
+    action(state->cabHighCutSlopePopup);
+    drain();
+    CHECK(state->cabLowCutSlope == slope && state->cabHighCutSlope == slope);
+    CHECK(state->cabConsoleVisualizer.lowCutSlope == slope &&
+          state->cabConsoleVisualizer.highCutSlope == slope);
+    CHECK(host.writes[kCabLowCutSlopePort].size() == 1 &&
+          near(host.writes[kCabLowCutSlopePort].back(), (float)slope));
+    CHECK(host.writes[kCabHighCutSlopePort].size() == 1 &&
+          near(host.writes[kCabHighCutSlopePort].back(), (float)slope));
+    const double lowOct = [state->cabConsoleVisualizer responseDbAtFrequency:80.0];
+    const double highOct = [state->cabConsoleVisualizer responseDbAtFrequency:12000.0];
+    CHECK(std::fabs(lowOct - expectedOctave[slope]) < 0.85);
+    CHECK(std::fabs(highOct - expectedOctave[slope]) < 0.85);
+  }
+
+  // Host echo updates both popups and visualizer curves cleanly, and clamps out-of-range values.
+  echo(kCabLowCutSlopePort, 1.0f);
+  echo(kCabHighCutSlopePort, 9.0f);
+  drain();
+  CHECK(state->cabLowCutSlopePopup.indexOfSelectedItem == 1 && state->cabLowCutSlope == 1 &&
+        state->cabConsoleVisualizer.lowCutSlope == 1);
+  CHECK(state->cabHighCutSlopePopup.indexOfSelectedItem == 2 && state->cabHighCutSlope == 2 &&
+        state->cabConsoleVisualizer.highCutSlope == 2);
+
+  RigPreset* captured = [presetClass captureFromState:state name:@"Cab Cut Slopes"];
+  CHECK(near([captured controlForPort:kCabLowCutSlopePort], 1.0f));
+  CHECK(near([captured controlForPort:kCabHighCutSlopePort], 2.0f));
+
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+  CHECK(state->cabLowCutSlope == 0 && state->cabHighCutSlope == 0 &&
+        state->cabLowCutSlopePopup.indexOfSelectedItem == 0 &&
+        state->cabHighCutSlopePopup.indexOfSelectedItem == 0);
+
+  [captured applyToState:state];
+  drain();
+  CHECK(state->cabLowCutSlope == 1 && state->cabHighCutSlope == 2 &&
+        state->cabLowCutSlopePopup.indexOfSelectedItem == 1 &&
+        state->cabHighCutSlopePopup.indexOfSelectedItem == 2);
+
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+}
+
 static void verify(const char* modulePath) {
   using Transformer = NAMRig::OutputTransformer;
   using namespace NAMRig;
@@ -3334,6 +3408,7 @@ static void verify(const char* modulePath) {
   verifyStageMeters(runtime);
   verifyGraphEditing(runtime, host, presetClass);
   verifyCombinedPinResponse(runtime, host);
+  verifyCabCutSlopes(runtime, host, presetClass);
   verifyEffectGraphGeometry(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.

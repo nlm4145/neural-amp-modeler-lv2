@@ -227,7 +227,7 @@ void verify(const LV2_Descriptor* current, const LV2_Descriptor* baseline, bool 
         h->install(Stage::Pedal, mode);
         h->install(Stage::Amp, mode);
         h->install(Stage::Cab, mode);
-        h->install(Stage::Cab2, kOversampleLegacy);
+        h->install(Stage::Cab2, mode);
       }
       constexpr std::array<uint32_t, 10> counts{32, 64, 1, 17, 31, 33, 65, 128, 513, 32};
       for (unsigned block = 0; block < 1000; ++block) {
@@ -261,7 +261,7 @@ void verify(const LV2_Descriptor* current, const LV2_Descriptor* baseline, bool 
   for (uint32_t count : {32u, 64u}) {
     Host a(current, 96000, 0), b(baseline, 96000, 0);
     for (Host* h : {&a, &b}) {
-      h->install(Stage::Amp, 0); h->install(Stage::Cab, 0); h->install(Stage::Cab2, kOversampleLegacy);
+      h->install(Stage::Amp, 0); h->install(Stage::Cab, 0); h->install(Stage::Cab2, 0);
       h->controls[4] = -3; h->controls[22] = 6; h->controls[32] = 35;
     }
     std::vector<double> before, after;

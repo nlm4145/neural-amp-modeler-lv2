@@ -213,6 +213,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
   p->_controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
   p->_controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
+  p->_controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
+  p->_controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
@@ -308,6 +310,8 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
   preset->_controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
   preset->_controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
+  preset->_controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
+  preset->_controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
@@ -488,6 +492,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kSpeakerProfileBPort] = static_cast<float>(
       state->deckSpeakerBProfilePopup ? state->deckSpeakerBProfilePopup.indexOfSelectedItem
                                       : state->speakerBProfile);
+  p->_controls[NAMRig::kCabLowCutSlopePort] = static_cast<float>(
+      state->cabLowCutSlopePopup ? state->cabLowCutSlopePopup.indexOfSelectedItem
+                                 : state->cabLowCutSlope);
+  p->_controls[NAMRig::kCabHighCutSlopePort] = static_cast<float>(
+      state->cabHighCutSlopePopup ? state->cabHighCutSlopePopup.indexOfSelectedItem
+                                  : state->cabHighCutSlope);
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -698,6 +708,15 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
       static_cast<int>((spkBIt != _controls.end() ? spkBIt->second : NAMRig::kSpeakerProfileBDefault) + 0.5f)));
   state->sendControl(NAMRig::kSpeakerProfileBPort, spkBVal);
   state->updateControl(NAMRig::kSpeakerProfileBPort, spkBVal);
+  for (uint32_t slopePort : {NAMRig::kCabLowCutSlopePort, NAMRig::kCabHighCutSlopePort}) {
+    auto slopeIt = _controls.find(slopePort);
+    const float fallback = slopePort == NAMRig::kCabLowCutSlopePort
+        ? NAMRig::kCabLowCutSlopeDefault : NAMRig::kCabHighCutSlopeDefault;
+    const float slopeVal = static_cast<float>(NAMRig::clampCabCutSlope(
+        slopeIt != _controls.end() ? slopeIt->second : fallback));
+    state->sendControl(slopePort, slopeVal);
+    state->updateControl(slopePort, slopeVal);
+  }
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);

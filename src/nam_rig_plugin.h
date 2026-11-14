@@ -99,32 +99,38 @@ struct LV2FreeModelMsg {
 // DC offset, and the oversampling converters pass DC at exactly unity gain,
 // so the offset survives to the output unless a stage removes it.
 struct DcBlocker {
-  float r = 0.9993f;  // exp(-2*pi*5/rate), set at initialize()
-  float x1 = 0.0f, y1 = 0.0f;
+  double r = 0.9993;  // exp(-2*pi*5/rate), set at initialize()
+  double x1 = 0.0, y1 = 0.0;
   float process(float x) {
-    const float y = x - x1 + r * y1;
+    return static_cast<float>(processSample(static_cast<double>(x)));
+  }
+  double processSample(double x) {
+    const double y = x - x1 + r * y1;
     x1 = x;
     y1 = y;
     return y;
   }
-  void reset() { x1 = 0.0f; y1 = 0.0f; }
+  void reset() { x1 = 0.0; y1 = 0.0; }
   void setRate(double rate) {
-    r = static_cast<float>(std::exp(-2.0 * 3.14159265358979323846 * 5.0 / rate));
+    r = std::exp(-2.0 * 3.14159265358979323846 * 5.0 / rate);
   }
 };
 
-// Second-order biquad (transposed direct form II). At zero gain the caller
-// bypasses the filter entirely, so neutral EQ stays bit-transparent.
+// Second-order biquad (transposed direct form II, double precision).
+// At zero gain the caller bypasses the filter entirely, so neutral EQ stays bit-transparent.
 struct Biquad {
-  float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f;
-  float z1 = 0.0f, z2 = 0.0f;
+  double b0 = 0.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+  double z1 = 0.0, z2 = 0.0;
   float process(float x) {
-    const float y = b0 * x + z1;
+    return static_cast<float>(processSample(static_cast<double>(x)));
+  }
+  double processSample(double x) {
+    const double y = b0 * x + z1;
     z1 = b1 * x - a1 * y + z2;
     z2 = b2 * x - a2 * y;
     return y;
   }
-  void reset() { z1 = 0.0f; z2 = 0.0f; }
+  void reset() { z1 = 0.0; z2 = 0.0; }
 };
 
 class Plugin {
@@ -232,6 +238,8 @@ public:
     float* model_band_limit_ripple;
     float* spatial_center_blend;
     float* speaker_profile_b;
+    float* cab_low_cut_slope;
+    float* cab_high_cut_slope;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -304,7 +312,11 @@ public:
   static_assert(kSpatialCenterBlendPort == kModelBandLimitRipplePort + 1);
   static_assert(offsetof(Ports, speaker_profile_b) == kSpeakerProfileBPort * sizeof(void*));
   static_assert(kSpeakerProfileBPort == kSpatialCenterBlendPort + 1);
-  static_assert(kPortCount == kSpeakerProfileBPort + 1);
+  static_assert(offsetof(Ports, cab_low_cut_slope) == kCabLowCutSlopePort * sizeof(void*));
+  static_assert(kCabLowCutSlopePort == kSpeakerProfileBPort + 1);
+  static_assert(offsetof(Ports, cab_high_cut_slope) == kCabHighCutSlopePort * sizeof(void*));
+  static_assert(kCabHighCutSlopePort == kCabLowCutSlopePort + 1);
+  static_assert(kPortCount == kCabHighCutSlopePort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -408,13 +420,14 @@ private:
   std::array<double, kStageCount> stageDcRate{};
   Biquad bassEq, midEq, trebleEq;
   Biquad bassEqR, midEqR, trebleEqR;
-  Biquad cabLowCutEq, cabHighCutEq;
-  Biquad cabLowCutEqR, cabHighCutEqR;
+  Biquad cabLowCutEq, cabLowCutEq2, cabHighCutEq, cabHighCutEq2;
+  Biquad cabLowCutEqR, cabLowCutEq2R, cabHighCutEqR, cabHighCutEq2R;
   // Smoothed post-EQ and cab-cut settings; coefficients update per chunk.
   float smoothedBass = 0.0f, smoothedMid = 0.0f, smoothedTreble = 0.0f;
   float appliedBass = 0.0f, appliedMid = 0.0f, appliedTreble = 0.0f;
   float smoothedLowCut = 0.0f, smoothedHighCut = 20000.0f;
   float appliedLowCut = -1.0f, appliedHighCut = -1.0f;
+  int appliedLowCutSlope = -1, appliedHighCutSlope = -1;
   float smoothedCab2Level = 1.0f;
   float smoothedCab2Polarity = 1.0f;
   float smoothedWidth = 0.0f;
@@ -564,9 +577,9 @@ private:
   std::array<std::array<Down2x, kMaxOsLevels>, kAnalogBanks> analogDown;
   std::array<std::array<std::vector<float>, 2>, kAnalogBanks> analogScratch;
 
-  // Last-applied mode per stage (models were loaded for this domain). Index 2
-  // (cab) tracks the amp's mode — the cab .nam pipeline rides the amp domain.
-  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsLegacy2, kOsTrue8, kOsTrue8};
+  // Last-applied mode per stage (models were loaded for this domain). Indices 2
+  // (cab) and 3 (cab2) track amp_oversample so both cabinets keep full True oversampling.
+  std::array<int, kStageCount> osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsTrue8, kOsTrue8, kOsTrue8};
   // Latest port modes requested by the host. osApplied changes only when the
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
@@ -584,10 +597,6 @@ private:
   std::array<size_t, kStageCount> nativeQueued{};
   std::array<uint32_t, kStageCount> nativePadding{};
   std::array<bool, kStageCount> nativePrimed{};
-  // Cab B engaged or about to be: a .nam Cab A then loads for the session
-  // rate so both cabinets share one base-rate domain with no extra cascade.
-  bool cabParallelDesired = false;
-  bool cabParallelLatched = false;
   // Two coherent cabinets add up to +3 dB in the lows under the equal-power
   // blend; this shelf takes that back while both are active.
   Biquad dualCabShelf, dualCabShelfR;
@@ -644,29 +653,20 @@ private:
   }
 
   int stageOversample(size_t stage) const {
-    // stage 0 = pedal, 1 = amp (2 = cab: follows amp in process()).
-    // Cab2 runs parallel to the cab at the base rate (Legacy dilation).
-    if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;
+    // stage 0, 4, 5 = pedal/stomp, 1, 2, 3 = amp / cab / cab2.
     const float* port = (stage == 0 || stage >= 4) ? ports.pedal_oversample
                                     : ports.amp_oversample;
     if (!port) return kOsTrue8;     // unconnected host port: the TTL default
     return decodeOversample(*port);
   }
 
-  // Load/response modes travel as raw ints. Ports never carry kOsLegacy2 (the
-  // decoder maps legacy values to True 2x), so that value is reserved for
-  // the internal "session rate" request of Cab B and of a parallel Cab A.
-  static int normalizeLoadMode(Stage stage, int mode) {
-    if (stage == Stage::Cab2) return kOsLegacy2;
-    if (stage == Stage::Cab && mode == kOsLegacy2) return kOsLegacy2;
+  static int normalizeLoadMode(Stage, int mode) {
     return decodeOversample(static_cast<float>(mode));
   }
 
-  // The mode a stage's model should be loaded for right now. A .nam Cab A
-  // leaves the amp's True domain and loads for the session rate while Cab B
-  // is engaged, so both cabinets run in the same domain.
+  // Both single and parallel .nam cabinets follow amp_oversample so stereo dual-cab
+  // blends retain full oversampled bandwidth and phase-locked latency.
   int desiredStageMode(size_t stage) const {
-    if (stage == stageIndex(Stage::Cab) && cabParallelDesired) return kOsLegacy2;
     return stageOversample(stage);
   }
 

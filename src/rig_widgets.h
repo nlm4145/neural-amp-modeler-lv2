@@ -183,6 +183,8 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 @property(nonatomic) float alignDelay;
 @property(nonatomic) float lowCut;
 @property(nonatomic) float highCut;
+@property(nonatomic) int lowCutSlope;
+@property(nonatomic) int highCutSlope;
 @end
 
 // Vertical inter-stage decibel meter (IN, PRE, POST, OUT).

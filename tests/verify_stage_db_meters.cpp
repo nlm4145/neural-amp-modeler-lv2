@@ -189,8 +189,7 @@ struct Host {
     auto* model = new Model(gain, kind);
     const size_t index = static_cast<size_t>(stage);
     require(!models[index], "each custom model is installed once");
-    const int mode = stage == Stage::Cab2 ? kOversampleLegacy
-        : static_cast<int>(controls[stage == Stage::Pedal ? 20 : 21]);
+    const int mode = static_cast<int>(controls[stage == Stage::Pedal ? 20 : 21]);
     LV2SwitchModelMsg message{kWorkTypeSwitch, stage, mode, 0, {}, model, nullptr, nullptr, false};
     require(worker->work_response(instance, sizeof(message), &message) == LV2_WORKER_SUCCESS,
             "install custom model through work_response");
@@ -321,7 +320,8 @@ void placement(const LV2_Descriptor* d, int mode, bool pedal, bool parallel) {
         label + ": nonneutral pre-sculpt and both post-amp pin panes are audible");
   check(amp->samples == kBlock * factor(mode) && cab->samples == kBlock * factor(mode) &&
             (!pedal || host.models[0]->samples == kBlock * factor(mode)) &&
-            (!cabB || cabB->samples == kBlock), label + ": actual model sample counts exercise requested domains");
+            (!cabB || cabB->samples == kBlock * factor(mode)),
+        label + ": actual model sample counts exercise requested domains");
   const unsigned latency = mode == 0 ? 0 : factor(mode) == 2 ? 23 : factor(mode) == 4 ? 35 :
       factor(mode) == 8 ? 41 : 44;
   check(host.controls[29] == static_cast<float>(latency * (parallel ? 2 : 1)),

@@ -19,6 +19,31 @@ int main() {
     if (std::fabs(measured - predicted) > .05) std::printf("%g Hz: measured %.3f predicted %.3f\n", hz, measured, predicted);
     assert(std::fabs(measured - predicted) < .05);
   }
+  for (int slope : {0, 1, 2}) {
+    PostEq sloped;
+    sloped.console = true;
+    sloped.lowCut = 160;
+    sloped.highCut = 6000;
+    sloped.lowCutSlope = slope;
+    sloped.highCutSlope = slope;
+    const double expectedOctave = slope == 0 ? -12.0 : slope == 1 ? -18.0 : -24.0;
+    for (double hz : {80.0, 160.0, 6000.0, 12000.0}) {
+      std::vector<float> x(48000);
+      for (size_t i = 0; i < x.size(); ++i) x[i] = float(.1 * std::sin(2 * pi * hz * i / rate));
+      std::vector<float> y = x;
+      applyPostEq(sloped, y.data(), y.size(), 1, rate);
+      double ex = 0, ey = 0;
+      for (size_t i = 24000; i < x.size(); ++i) {
+        ex += double(x[i]) * x[i];
+        ey += double(y[i]) * y[i];
+      }
+      const double measured = 10 * std::log10(ey / ex);
+      const double predicted = postEqMagnitudeDb(sloped, hz, rate);
+      assert(std::fabs(measured - predicted) < .05);
+      if (hz == 160.0 || hz == 6000.0) assert(std::fabs(measured + 3.0103) < .25);
+      else assert(std::fabs(measured - expectedOctave) < .85);
+    }
+  }
   // Console-gated parts disappear when no cab is processed.
   PostEq bypassed = eq; bypassed.console = false;
   assert(std::fabs(postEqMagnitudeDb(bypassed, 1500, rate) - postEqMagnitudeDb({4, -3, 5, 0, 20000, false, {}}, 1500, rate)) < 1e-9);

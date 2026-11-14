@@ -57,12 +57,13 @@ tight_symbols += ["tone_eq_mode"] + [f"tone_eq_pin{b}_{p}" for b in range(1, 8) 
     "drop_pitch", "model_band_limit", "drop_pitch_attack", "drop_pitch_sustain",
     "model_band_limit_cutoff", "model_band_limit_slope", "model_band_limit_ripple",
     "spatial_center_blend", "speaker_profile_b",
+    "cab_low_cut_slope", "cab_high_cut_slope",
 ]
 assert port_pairs == list(enumerate(legacy_symbols + new_symbols + pin_symbols + od_symbols + comp_symbols + boost_symbols + post_comp_symbols + tight_symbols)), (
     "ports 0..78 must stay unchanged; power-tube controls append at 79..81, Mid Push at 82"
 )
 for name, value in (("kPowerTubeTypePort", 80), ("kPowerTubeCharacterPort", 81),
-                    ("kRigControlPortCount", 236)):
+                    ("kRigControlPortCount", 238)):
     assert re.search(rf"\b{name}\s*=\s*{value}\s*;", controls), name
 assert "kPowerTubeCharacterDefault = 50.0f;" in controls
 assert "kCaptured = 0;" in controls and "kProfileCount = 3;" in controls

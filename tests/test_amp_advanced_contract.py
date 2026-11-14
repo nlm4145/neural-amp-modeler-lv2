@@ -64,9 +64,9 @@ assert "setHighShelf(trebleEq, smoothedTreble, 3000.0f, sampleRate);" in dsp
 for name in ("smoothedBass", "smoothedMid", "smoothedTreble"):
     assert re.search(rf"glideValue\({name}, (?:multibandTone \? 0\.0f : )?\*ports\.", dsp), f"{name} must glide from its port"
 assert re.search(
-    r"if \(bassOn\) \{ l = bassEq\.process\(l\); r = bassEqR\.process\(r\); \}\s*"
-    r"if \(midOn\) \{ l = midEq\.process\(l\); r = midEqR\.process\(r\); \}\s*"
-    r"if \(trebleOn\) \{ l = trebleEq\.process\(l\); r = trebleEqR\.process\(r\); \}", dsp
+    r"if \(bassOn\) \{ l = bassEq\.processSample\(l\); r = bassEqR\.processSample\(r\); \}\s*"
+    r"if \(midOn\) \{ l = midEq\.processSample\(l\); r = midEqR\.processSample\(r\); \}\s*"
+    r"if \(trebleOn\) \{ l = trebleEq\.processSample\(l\); r = trebleEqR\.processSample\(r\); \}", dsp
 ), "post EQ must stay in bass -> mid -> treble order on both channels"
 for port in range(34, 42):
     assert re.search(rf"\b{port}\b", knobs), f"advanced control port {port} missing from UI knob map"
