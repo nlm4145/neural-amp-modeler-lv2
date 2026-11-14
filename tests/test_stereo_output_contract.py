@@ -29,6 +29,7 @@ assert ports[31] == "output_r", "right output must be appended at port 31"
 assert ports[32] == "stereo_width", "width control must be append-only at port 32"
 assert ports[33] == "room", "room control must be append-only at port 33"
 assert ports[234] == "spatial_center_blend", "centered blend toggle must append at port 234"
+assert ports[235] == "speaker_profile_b", "Cab B speaker profile must append at port 235"
 assert "float* audio_out_r;" in header
 assert "offsetof(Ports, audio_out_r) == 31 * sizeof(void*)" in header
 assert "offsetof(Ports, spatial_center_blend) == kSpatialCenterBlendPort * sizeof(void*)" in header

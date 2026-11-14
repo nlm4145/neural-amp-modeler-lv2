@@ -54,6 +54,8 @@ inline void forEachWin32ControlDefault(Set&& set) {
         value = NAMRig::kModelBandLimitRippleDefault; break;
       case NAMRig::kSpatialCenterBlendPort:
         value = NAMRig::kSpatialCenterBlendDefault; break;
+      case NAMRig::kSpeakerProfileBPort:
+        value = NAMRig::kSpeakerProfileBDefault; break;
       default: break;
     }
     if (entry.port >= NAMRig::kToneEqModePort &&

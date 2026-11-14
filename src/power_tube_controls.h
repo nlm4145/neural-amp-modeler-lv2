@@ -84,7 +84,11 @@ inline constexpr float kModelBandLimitRippleDefault = 0.05f;
 // 0 = A/B Split pan (default), 1 = Centered Blend (balanced A+B tone on L & R).
 inline constexpr uint32_t kSpatialCenterBlendPort = 234;
 inline constexpr float kSpatialCenterBlendDefault = 0.0f;
-inline constexpr uint32_t kRigControlPortCount = 235;
+// Dual-cabinet Cab B Speaker Load Profile (append-only):
+// 0..7 match speaker_profile (0=Captured, 1=Auto, 2=Resistive..7=Bass); 8=Match Cab A.
+inline constexpr uint32_t kSpeakerProfileBPort = 235;
+inline constexpr float kSpeakerProfileBDefault = 8.0f;
+inline constexpr uint32_t kRigControlPortCount = 236;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

@@ -343,4 +343,6 @@
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "model_band_limit_ripple" ; ui:notifyType atom:Float
 	], [
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "spatial_center_blend" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "speaker_profile_b" ; ui:notifyType atom:Float
 	] .

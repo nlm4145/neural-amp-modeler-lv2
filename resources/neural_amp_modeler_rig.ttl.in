@@ -1328,4 +1328,19 @@
  lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
  lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional ;
  rdfs:comment "When enabled on dual cabinets, keeps both Left and Right balanced with the full A+B blend while Width adds mono-safe stereo spread instead of panning Cab A left and Cab B right."
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 235 ;
+ lv2:symbol "speaker_profile_b" ; lv2:name "Cab B Speaker Load Profile" ;
+ rdfs:comment "Independent speaker load profile for Cabinet B in Dual Cab mode (0..7 match speaker_profile; 8=Match Cab A follows Cab A, auto-detecting Cab B when Cab A is Auto)." ;
+ lv2:default 8.0 ; lv2:minimum 0.0 ; lv2:maximum 8.0 ;
+ lv2:portProperty lv2:integer, lv2:enumeration, lv2:connectionOptional ;
+ lv2:scalePoint [ rdfs:value 0 ; rdfs:label "Captured / Off" ] ,
+  [ rdfs:value 1 ; rdfs:label "Auto" ] ,
+  [ rdfs:value 2 ; rdfs:label "Resistive" ] ,
+  [ rdfs:value 3 ; rdfs:label "Open Back" ] ,
+  [ rdfs:value 4 ; rdfs:label "Vintage Alnico" ] ,
+  [ rdfs:value 5 ; rdfs:label "UK 4x12" ] ,
+  [ rdfs:value 6 ; rdfs:label "Modern 4x12" ] ,
+  [ rdfs:value 7 ; rdfs:label "Bass" ] ,
+  [ rdfs:value 8 ; rdfs:label "Match Cab A" ]
 ] .

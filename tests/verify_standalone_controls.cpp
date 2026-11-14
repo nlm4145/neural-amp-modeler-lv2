@@ -26,7 +26,7 @@ int main() {
   std::array<float, 3> pedalBoard{}, output{};
   std::array<float, kToneEqControlCount> tone{};
   float mid = 0, od_enabled = 0, od_tight = 0, od_voicing = 0, drop_pitch = 0, model_band_limit = 0;
-  float spatial_center_blend = 0;
+  float spatial_center_blend = 0, speaker_profile_b = 0;
   std::array<float, 2> dropShaping{};
   std::array<float, 3> bandLimitParams{};
   Plugin::Ports segmented{}, indexed{};
@@ -54,7 +54,8 @@ int main() {
       {kModelBandLimitPort, {&model_band_limit, 1}},
       {kDropPitchAttackPort, dropShaping},
       {kModelBandLimitCutoffPort, bandLimitParams},
-      {kSpatialCenterBlendPort, {&spatial_center_blend, 1}}});
+      {kSpatialCenterBlendPort, {&spatial_center_blend, 1}},
+      {kSpeakerProfileBPort, {&speaker_profile_b, 1}}});
   const std::span<float> values(flat);
   bindStandaloneControls(indexed, {{4, values.subspan(4, 27)}, {32, values.subspan(32)}});
   for (uint32_t p = 0; p < Plugin::kPortCount; ++p) {
@@ -78,7 +79,7 @@ int main() {
       tone.front() != flat[198] || tone.back() != flat[226] || drop_pitch != flat[227] ||
       model_band_limit != flat[228] || dropShaping.front() != flat[229] || dropShaping.back() != flat[230] ||
       bandLimitParams[0] != flat[231] || bandLimitParams[1] != flat[232] || bandLimitParams[2] != flat[233] ||
-      spatial_center_blend != flat[234]) std::abort();
+      spatial_center_blend != flat[234] || speaker_profile_b != flat[235]) std::abort();
   // Exercise the Windows pin override instead of its flat-array backing.
   bindStandaloneControls(indexed, {{kPinEqFirstPort, pins}});
   for (size_t i = 0; i < pins.size(); ++i)

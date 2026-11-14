@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     ++defaultCount;
   });
   const RigPreset defaultPreset = RigPreset::createDefault();
-  CHECK(defaultCount == 125 && defaultPreset.controls.size() == 125, "exact Windows default key coverage");
+  CHECK(defaultCount == 126 && defaultPreset.controls.size() == 126, "exact Windows default key coverage");
   const std::map<uint32_t, float> nonzeroStaticDefaults = {
       {7, 1.0f}, {8, 1.0f}, {9, 1.0f}, {15, -80.0f},
       {20, static_cast<float>(kOversampleTrue8)}, {21, static_cast<float>(kOversampleTrue8)},
@@ -61,7 +61,8 @@ int main(int argc, char** argv) {
       {kModelBandLimitCutoffPort, kModelBandLimitCutoffDefault},
       {kModelBandLimitSlopePort, kModelBandLimitSlopeDefault},
       {kModelBandLimitRipplePort, kModelBandLimitRippleDefault},
-      {kSpatialCenterBlendPort, kSpatialCenterBlendDefault}};
+      {kSpatialCenterBlendPort, kSpatialCenterBlendDefault},
+      {kSpeakerProfileBPort, kSpeakerProfileBDefault}};
   for (uint32_t port = 0; port < hostDefaults.size(); ++port) {
     const bool mapped = PresetManager::portToSymbol(port) != nullptr;
     CHECK(initialized[port] == mapped, "default enumeration matches Windows mapping at %u", port);
@@ -136,7 +137,7 @@ int main(int argc, char** argv) {
     CHECK(ttlSymbols.count(port) && ttlSymbols.at(port) == symbol, "TTL parity at %u", port);
     CHECK(rigControlSymbol(port) == symbol, "lookup/enumeration pointer identity at %u", port);
   });
-  CHECK(symbols.size() == 221, "exact macOS/shared preset coverage");
+  CHECK(symbols.size() == 222, "exact macOS/shared preset coverage");
 
   for (uint32_t port = 0; port <= kRigControlPortCount; ++port) {
     const char* symbol = rigControlSymbol(port);
@@ -186,7 +187,7 @@ int main(int argc, char** argv) {
     file >> saved;
   }
   CHECK(saved["ports"].size() == preset.controls.size(), "all numeric ports preserved, including unknowns");
-  CHECK(saved["params"].size() == 125, "Windows named coverage includes post compression, od, drop pitch, model band-limit, and spatial center blend controls");
+  CHECK(saved["params"].size() == 126, "Windows named coverage includes post compression, od, drop pitch, model band-limit, spatial center blend, and speaker profile B controls");
   for (const auto& control : preset.controls) {
     CHECK(saved["ports"][std::to_string(control.first)] == control.second, "numeric value at %u", control.first);
     const char* symbol = rigControlSymbol(control.first);

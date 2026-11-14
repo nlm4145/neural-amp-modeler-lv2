@@ -229,6 +229,129 @@ int main() {
   check(Spk::profileFromCabPath("/Users/bass/IRs/Marshall 1960.wav") == Spk::kUK412,
         "a parent directory name cannot override the cabinet file name");
 
+  // ---- LR2 crossover IMD & quiet allpass flatness ----
+  {
+    const double fs = 48000.0;
+    const size_t count = 48000;
+    std::vector<float> twoTone(count);
+    for (size_t i = 0; i < count; ++i) {
+      const double t = i / fs;
+      twoTone[i] = static_cast<float>(0.40 * std::sin(2.0 * kPi * 82.4 * t) +
+                                      0.20 * std::sin(2.0 * kPi * 2400.0 * t));
+    }
+    Spk spk;
+    spk.process(twoTone.data(), twoTone.size(), fs, Spk::kUK412, 100.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    const auto dftAmp = [&](double f) {
+      double re = 0.0, im = 0.0;
+      const size_t start = count / 2;
+      for (size_t i = start; i < count; ++i) {
+        const double ph = 2.0 * kPi * f * i / fs;
+        re += twoTone[i] * std::cos(ph);
+        im += twoTone[i] * std::sin(ph);
+      }
+      const double n = static_cast<double>(count - start);
+      return 2.0 * std::hypot(re, im) / n;
+    };
+    const double carrier = dftAmp(2400.0);
+    const double imd = std::max(dftAmp(2400.0 - 82.4), dftAmp(2400.0 + 82.4));
+    const double imdDb = 20.0 * std::log10(std::max(1.0e-12, imd) / std::max(1.0e-12, carrier));
+    std::printf("\n        LR2 two-tone IMD (82.4 Hz + 2.4 kHz @ 48 kHz): %.2f dBc\n", imdDb);
+    check(imdDb < -45.0, "LR2 crossover suppresses upper-band IMD below -45 dBc");
+  }
+
+  // ---- Asymmetric excursion H2 + DC balance ----
+  {
+    const double fs = 48000.0;
+    const size_t count = 48000;
+    std::vector<float> tone(count);
+    for (size_t i = 0; i < count; ++i)
+      tone[i] = 0.7f * std::sin(2.0 * kPi * 80.0 * i / fs);
+    Spk spk;
+    spk.process(tone.data(), tone.size(), fs, Spk::kVintageAlnico, 100.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    const size_t start = count / 2;
+    double dc = 0.0;
+    const auto harmAmp = [&](int k) {
+      double re = 0.0, im = 0.0;
+      for (size_t i = start; i < count; ++i) {
+        const double ph = 2.0 * kPi * (80.0 * k) * i / fs;
+        re += tone[i] * std::cos(ph);
+        im += tone[i] * std::sin(ph);
+      }
+      return 2.0 * std::hypot(re, im) / static_cast<double>(count - start);
+    };
+    for (size_t i = start; i < count; ++i) dc += tone[i];
+    dc /= static_cast<double>(count - start);
+    const double h1 = harmAmp(1), h2 = harmAmp(2), h3 = harmAmp(3);
+    const double h2Db = 20.0 * std::log10(std::max(1.0e-12, h2) / h1);
+    const double h3Db = 20.0 * std::log10(std::max(1.0e-12, h3) / h1);
+    std::printf("        Vintage Alnico 80 Hz harmonics: H2 %.1f dBc, H3 %.1f dBc, DC %.2e\n",
+                h2Db, h3Db, dc);
+    check(h2Db > -45.0 && h2Db < -20.0 && h3Db > -40.0,
+          "asymmetric excursion produces warm H2 even harmonics alongside H3");
+    check(std::fabs(dc) < 1.0e-5, "asymmetric saturation residual is DC-balanced");
+  }
+
+  // ---- Upper-mid cone modal breakup & 48 kHz alias suppression ----
+  {
+    const double coneGainDelta = gainDb(Spk::kUK412, 1600.0, 0.7f, 100, 0, 0, 0, 0, 48000.0) -
+                                 gainDb(Spk::kUK412, 1600.0, 0.7f, 0, 0, 0, 0, 0, 48000.0);
+    std::printf("        UK 4x12 cone breakup (1.6 kHz @ -3 dBFS): %+.2f dB\n", coneGainDelta);
+    check(coneGainDelta < -0.35, "upper-mid cone breakup softly compresses near 1.6 kHz");
+
+    const double fs = 48000.0;
+    const size_t count = 32768;
+    const double f0 = 1553.0;
+    std::vector<float> tone(count);
+    for (size_t i = 0; i < count; ++i)
+      tone[i] = static_cast<float>(0.9 * std::sin(2.0 * kPi * f0 * i / fs));
+    Spk spk;
+    spk.process(tone.data(), tone.size(), fs, Spk::kVintageAlnico, 100.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    const size_t start = count / 2;
+    const auto binAmp = [&](double f) {
+      double re = 0.0, im = 0.0;
+      for (size_t i = start; i < count; ++i) {
+        const double ph = 2.0 * kPi * f * i / fs;
+        re += tone[i] * std::cos(ph);
+        im += tone[i] * std::sin(ph);
+      }
+      return 2.0 * std::hypot(re, im) / static_cast<double>(count - start);
+    };
+    const double h1 = binAmp(f0);
+    double worstAlias = 0.0;
+    for (int k = 2; k <= 34; ++k) {
+      const double fa = std::fabs(k * f0 - std::round(k * f0 / fs) * fs);
+      if (fa < 50.0 || fa > 16000.0) continue;
+      bool isHarm = false;
+      for (int h = 1; h <= 10; ++h)
+        if (std::fabs(fa - h * f0) < 50.0) isHarm = true;
+      if (!isHarm) worstAlias = std::max(worstAlias, binAmp(fa));
+    }
+    const double aliasDb = 20.0 * std::log10(std::max(1.0e-12, worstAlias) / h1);
+    std::printf("        48 kHz 2x ADAA worst audible alias (1553 Hz): %.1f dBc\n", aliasDb);
+    check(aliasDb < -38.0, "2x ADAA keeps 48 kHz aliasing well controlled");
+  }
+
+  // ---- Click-free Drive sweep across 0% <-> 25% ----
+  {
+    const double fs = 48000.0;
+    Spk spk;
+    float prev = 0.0f;
+    double maxStep = 0.0;
+    size_t idx = 0;
+    for (int seg = 0; seg < 4; ++seg) {
+      const float drv = (seg == 0 || seg == 2) ? 25.0f : 0.0f;
+      std::vector<float> blk(512);
+      for (size_t i = 0; i < blk.size(); ++i, ++idx)
+        blk[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 220.0 * idx / fs));
+      spk.process(blk.data(), blk.size(), fs, Spk::kUK412, drv, 0.0f, 0.0f, 0.0f, 0.0f);
+      for (size_t i = 0; i < blk.size(); ++i) {
+        if (idx > 64) maxStep = std::max(maxStep, static_cast<double>(std::fabs(blk[i] - prev)));
+        prev = blk[i];
+      }
+    }
+    check(maxStep < 0.03, "Drive 25% <-> 0% automation sweep stays click-free");
+  }
+
   // ---- Profile names and descriptions. ----
   bool descriptionsValid = true;
   for (int p = 0; p < Spk::kProfileCount; ++p) {
@@ -237,7 +360,9 @@ int main() {
     descriptionsValid = descriptionsValid && name != nullptr && std::strlen(name) > 0 &&
                         desc != nullptr && std::strlen(desc) > 0;
   }
-  check(descriptionsValid, "every profile has a non-empty name and description");
+  check(descriptionsValid && Spk::clampProfileB(99) == Spk::kMatchCabA &&
+            std::strcmp(Spk::profileBName(Spk::kMatchCabA), "Match Cab A") == 0,
+        "every profile has a non-empty name/description and Cab B supports Match Cab A");
   check(std::strstr(Spk::profileDescription(Spk::kResistive), "Resistive") != nullptr &&
         std::strstr(Spk::profileDescription(Spk::kResistive), "dummy load") != nullptr,
         "Resistive description contains 'Resistive' and 'dummy load'");

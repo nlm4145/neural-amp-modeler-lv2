@@ -212,6 +212,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
   p->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
   p->_controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
+  p->_controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
@@ -306,6 +307,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset->_controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
   preset->_controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
   preset->_controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
+  preset->_controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
@@ -483,6 +485,9 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kModelBandLimitSlopePort] = static_cast<float>(state->modelBandLimitSlope);
   p->_controls[NAMRig::kModelBandLimitRipplePort] = state->currentPortValueForSlot(NAMRig::kModelBandLimitRipplePort);
   p->_controls[NAMRig::kSpatialCenterBlendPort] = state->spatialCenterBlend ? 1.0f : 0.0f;
+  p->_controls[NAMRig::kSpeakerProfileBPort] = static_cast<float>(
+      state->deckSpeakerBProfilePopup ? state->deckSpeakerBProfilePopup.indexOfSelectedItem
+                                      : state->speakerBProfile);
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -688,6 +693,11 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
           : 0.0f;
   state->sendControl(NAMRig::kSpatialCenterBlendPort, spatialCenterBlendVal);
   state->updateControl(NAMRig::kSpatialCenterBlendPort, spatialCenterBlendVal);
+  auto spkBIt = _controls.find(NAMRig::kSpeakerProfileBPort);
+  const float spkBVal = static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(
+      static_cast<int>((spkBIt != _controls.end() ? spkBIt->second : NAMRig::kSpeakerProfileBDefault) + 0.5f)));
+  state->sendControl(NAMRig::kSpeakerProfileBPort, spkBVal);
+  state->updateControl(NAMRig::kSpeakerProfileBPort, spkBVal);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);

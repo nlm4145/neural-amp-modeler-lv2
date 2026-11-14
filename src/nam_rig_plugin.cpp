@@ -1285,31 +1285,49 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     }
   }
 
-  // Generic speaker-load interaction is opt-in. Auto resolves from the
-  // committed cab path without changing the host-visible profile selection.
-  int desiredSpeaker = SpeakerDynamics::clampProfile(
+  // Generic speaker-load interaction is opt-in. Auto resolves from each
+  // active cabinet's committed path without changing the host-visible profile.
+  const int rawSpeakerA = SpeakerDynamics::clampProfile(
       static_cast<int>(*ports.speaker_profile + 0.5f));
+  const int rawSpeakerB = SpeakerDynamics::clampProfileB(
+      static_cast<int>(portValue(ports.speaker_profile_b, kSpeakerProfileBDefault) + 0.5f));
+  const bool cabAActive = appliedEnabled[2] && (models[2] || irs[2]);
+  const bool cabBActive = appliedEnabled[3] && (models[3] || irs[3]);
+  int desiredSpeaker = rawSpeakerA;
   if (desiredSpeaker == SpeakerDynamics::kAuto) {
-    // Cab A names the profile; Cab B takes over when Cab A is absent or when
-    // Cab A's file name matches no profile family.
-    const bool cabAActive = appliedEnabled[2] && (models[2] || irs[2]);
-    const bool cabBActive = appliedEnabled[3] && (models[3] || irs[3]) &&
-                            !modelPaths[3].empty();
     desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[2].c_str());
-    if (cabBActive && (!cabAActive || desiredSpeaker == SpeakerDynamics::kResistive))
+    if (cabBActive && !modelPaths[3].empty() && !cabAActive)
       desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
+  }
+  int desiredSpeakerB = desiredSpeaker;
+  if (cabBActive) {
+    if (rawSpeakerB == SpeakerDynamics::kAuto ||
+        (rawSpeakerB == SpeakerDynamics::kMatchCabA &&
+         rawSpeakerA == SpeakerDynamics::kAuto)) {
+      desiredSpeakerB = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
+    } else if (rawSpeakerB != SpeakerDynamics::kMatchCabA) {
+      desiredSpeakerB = rawSpeakerB;
+    }
   }
   if (!speakerLatched) {
     speakerRequested = speakerApplied = desiredSpeaker;
+    speakerBRequested = speakerBApplied = desiredSpeakerB;
     speakerLatched = true;
-  } else if (desiredSpeaker != speakerRequested) {
+  } else if (desiredSpeaker != speakerRequested || desiredSpeakerB != speakerBRequested) {
     speakerRequested = desiredSpeaker;
-    if (models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)] &&
-        rackOn(Rack::Speaker)) {
+    speakerBRequested = desiredSpeakerB;
+    const bool audibleSpeaker = rackOn(Rack::Speaker) &&
+        ((models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)]) ||
+         cabAActive || cabBActive);
+    if (audibleSpeaker) {
       startTransitionFadeOut();
     } else {
       speakerApplied = speakerRequested;
+      speakerBApplied = speakerBRequested;
       speakerDynamics.reset();
+      speakerDynamicsB.reset();
+      speakerPins.reset();
+      speakerPinsB.reset();
     }
   }
 
@@ -1450,7 +1468,10 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         float* channels[1] = {samples};
         transformerPins.process(channels, 1, count, domainRate, transformerPinBands);
       }
-      if (rackOn(Rack::Speaker)) {
+      const bool splitDualSpeaker =
+          (appliedEnabled[3] && (models[3] || irs[3])) &&
+          speakerApplied != speakerBApplied;
+      if (rackOn(Rack::Speaker) && !splitDualSpeaker) {
         speakerDynamics.process(samples, count, domainRate, speakerApplied,
                               *ports.speaker_drive, *ports.speaker_compression,
                               *ports.speaker_thump, *ports.speaker_resonance,
@@ -1813,6 +1834,14 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const bool spatialOn = rackOn(Rack::Spatial);
   const bool reverbOn = rackOn(Rack::Reverb);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const bool splitDualSpeaker = parallelCabs && (speakerApplied != speakerBApplied);
+  const bool splitSpeakerActive = splitDualSpeaker && rackOn(Rack::Speaker);
+  const PinBands spkPinBands = splitSpeakerActive ? pinBands(PinEqPane::Speaker) : PinBands{};
+  const float spkDrive = *ports.speaker_drive;
+  const float spkComp = *ports.speaker_compression;
+  const float spkThump = *ports.speaker_thump;
+  const float spkRes = *ports.speaker_resonance;
+  const float spkDamping = rackOn(Rack::Power) ? *ports.negative_feedback * 0.01f : 0.0f;
   const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
   const int norm = decodeIrNormalization(*ports.ir_normalization);
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
@@ -1897,13 +1926,24 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       Plugin* plugin;
       float* samples;
       uint32_t count;
-    } job{this, cabBL.data(), n};
+      bool applySpeakerB;
+      int speakerBProfile;
+      float drive, comp, thump, resonance, damping;
+      PinBands pinBands;
+    } job{this, cabBL.data(), n, splitSpeakerActive, speakerBApplied,
+          spkDrive, spkComp, spkThump, spkRes, spkDamping, spkPinBands};
     bool cabBDispatched = false;
     if (cabinetWorker && parallelCabs && enabled[2] && models[2] && !irs[2] &&
         models[3] && !irs[3]) {
       std::memcpy(job.samples, preCab.data(), n * sizeof(float));
       cabBDispatched = cabinetWorker->submit([](void* context) noexcept {
         auto& j = *static_cast<CabJob*>(context);
+        if (j.applySpeakerB) {
+          j.plugin->speakerDynamicsB.process(j.samples, j.count, j.plugin->sampleRate,
+              j.speakerBProfile, j.drive, j.comp, j.thump, j.resonance, j.damping);
+          float* ch[1] = {j.samples};
+          j.plugin->speakerPinsB.process(ch, 1, j.count, j.plugin->sampleRate, j.pinBands);
+        }
         j.plugin->processCabB(j.samples, j.count);
       }, &job, cabinetDeadlineTicks);
     }
@@ -1912,6 +1952,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     parallelCabExtras(extraA, extraB);
 
     if (enabled[2]) {
+      if (splitSpeakerActive) {
+        speakerDynamics.process(L, n, sampleRate, speakerApplied,
+                                spkDrive, spkComp, spkThump, spkRes, spkDamping);
+        float* ch[1] = {L};
+        speakerPins.process(ch, 1, n, sampleRate, spkPinBands);
+      }
       if (irs[2]) {
         if (irsRight[2]) {
           std::memcpy(R, L, n * sizeof(float));
@@ -1961,7 +2007,15 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     if (parallelCabs) {
       float* BL = cabBL.data();
       float* BR = cabBR.data();
-      if (!cabBDispatched) std::memcpy(BL, preCab.data(), n * sizeof(float));
+      if (!cabBDispatched) {
+        std::memcpy(BL, preCab.data(), n * sizeof(float));
+        if (splitSpeakerActive) {
+          speakerDynamicsB.process(BL, n, sampleRate, speakerBApplied,
+                                   spkDrive, spkComp, spkThump, spkRes, spkDamping);
+          float* ch[1] = {BL};
+          speakerPinsB.process(ch, 1, n, sampleRate, spkPinBands);
+        }
+      }
       if (irs[3]) {
         if (irsRight[3]) {
           std::memcpy(BR, BL, n * sizeof(float));
@@ -2393,10 +2447,16 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       if (changed(Rack::Power)) {
         // Power owns the loop reset, not the unchanged Tube amount smoother.
         ampAdvanced.resetPostAmp(true);
-        if (!requestedRacks[static_cast<size_t>(Rack::Power)]) speakerDynamics.bypassDamping();
+        if (!requestedRacks[static_cast<size_t>(Rack::Power)]) {
+          speakerDynamics.bypassDamping();
+          speakerDynamicsB.bypassDamping();
+        }
       }
       if (changed(Rack::Transformer)) { outputTransformer.reset(); transformerPins.reset(); }
-      if (changed(Rack::Speaker)) { speakerDynamics.reset(); speakerPins.reset(); }
+      if (changed(Rack::Speaker)) {
+        speakerDynamics.reset(); speakerPins.reset();
+        speakerDynamicsB.reset(); speakerPinsB.reset();
+      }
       if (changed(Rack::Delay)) delayFx.reset();
       if (changed(Rack::Reverb)) reverbFx.resetPlate();
       if (changed(Rack::Spatial)) reverbFx.resetRoom();
@@ -2426,9 +2486,13 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       transformerApplied = transformerRequested;
       outputTransformer.reset();
     }
-    if (speakerApplied != speakerRequested) {
+    if (speakerApplied != speakerRequested || speakerBApplied != speakerBRequested) {
       speakerApplied = speakerRequested;
+      speakerBApplied = speakerBRequested;
       speakerDynamics.reset();
+      speakerDynamicsB.reset();
+      speakerPins.reset();
+      speakerPinsB.reset();
     }
     // Tube type/bypass changes the curve at silence, not the shared Power state.
     // Its normalized supply envelope remains meaningful across tube curves.
