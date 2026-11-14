@@ -55,15 +55,36 @@ struct ResponseStats {
   double rms = 0.0;
 };
 
+static double perceptualWeight(double hz) {
+  const double ul = hz / 75.0;
+  const double ul2 = ul * ul;
+  const double ul4 = ul2 * ul2;
+  const double hp = ul4 / (1.0 + ul4);
+
+  const double uh = hz / 5400.0;
+  const double uh2 = uh * uh;
+  const double uh4 = uh2 * uh2;
+  const double lp = 1.0 / (1.0 + uh4);
+
+  const double f2 = hz * hz;
+  const double shelfRatio = f2 / (f2 + 1682.0 * 1682.0);
+  const double kHalfShelf = std::pow(10.0, 0.2 * shelfRatio);
+  return hp * lp * kHalfShelf;
+}
+
 static ResponseStats responseStats(const std::vector<float>& taps,
                                    double rate) {
   constexpr size_t bins = 512;
   constexpr double pi = 3.14159265358979323846;
-  const double low = 20.0;
-  const double high = std::max(low, std::min(20000.0, rate * 0.45));
-  double peak2 = 0.0, sum2 = 0.0;
+  constexpr double low = 20.0;
+  constexpr double maxHz = 20000.0;
+  const double high = std::max(low, std::min(maxHz, rate * 0.45));
+  const double spanRatio = maxHz / low;
+  double peak2 = 0.0, wSum2 = 0.0, wSum = 0.0;
   for (size_t b = 0; b < bins; ++b) {
-    const double f = low + (high - low) * b / (bins - 1);
+    const double t = static_cast<double>(b) / static_cast<double>(bins - 1);
+    const double f = low * std::pow(spanRatio, t);
+    if (f > high) break;
     const double radians = -2.0 * pi * f / rate;
     const double sr = std::cos(radians), si = std::sin(radians);
     double pr = 1.0, piPhase = 0.0, re = 0.0, im = 0.0;
@@ -75,10 +96,12 @@ static ResponseStats responseStats(const std::vector<float>& taps,
       pr = nr;
     }
     const double mag2 = re * re + im * im;
+    const double w = perceptualWeight(f);
     peak2 = std::max(peak2, mag2);
-    sum2 += mag2;
+    wSum2 += w * mag2;
+    wSum += w;
   }
-  return {std::sqrt(peak2), std::sqrt(sum2 / bins)};
+  return {std::sqrt(peak2), wSum > 0.0 ? std::sqrt(wSum2 / wSum) : 0.0};
 }
 
 static double magnitudeAt(const std::vector<float>& taps, double rate,
@@ -423,14 +446,181 @@ int main(int argc, char** argv) {
   // Switching modes should not step the output gain at a block boundary.
   {
     const std::string path = std::string(dir) + "/ir_smooth.wav";
-    writeWavF32(path, {0.1f, 0.1f}, 48000);
+    writeWavF32(path, std::vector<float>(12, 0.08f), 48000);
     auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
     std::vector<float> before(512, 1.0f), after(4096, 1.0f);
     ir->process(before.data(), static_cast<uint32_t>(before.size()), 1);
     ir->process(after.data(), static_cast<uint32_t>(after.size()), 2);
     CHECK(std::fabs(after.front() - before.back()) < 0.01f &&
-              after.back() > 1.1f && after[1000] > after.front(),
+              after.back() > 1.20f && after[1000] > after.front(),
           "Peak to Loudness glides without a gain step");
+  }
+
+  // Item 4: Perceptual log-spaced Loudness normalization tests.
+  {
+    constexpr double pi = 3.14159265358979323846;
+
+    // 1. Flat unit impulse preserves unity gain across sample rates.
+    const std::string flatPath = std::string(dir) + "/ir_flat_unit.wav";
+    writeWavF32(flatPath, {1.0f}, 48000);
+    bool flatUnity = true;
+    for (double hostRate : {44100.0, 48000.0, 96000.0, 192000.0}) {
+      auto ir = NAMRig::WavIR::load(flatPath.c_str(), hostRate, 512);
+      std::vector<float> impulse(256, 0.0f);
+      impulse[0] = 1.0f;
+      ir->process(impulse.data(), static_cast<uint32_t>(impulse.size()), 2);
+      const double gainAt1k = magnitudeAt(impulse, hostRate, 1000.0);
+      flatUnity &= std::fabs(gainAt1k - 1.0) < 0.02;
+    }
+    CHECK(flatUnity, "flat unit impulse Loudness normalizes to unity across rates");
+
+    // Helper: synthesize a causal minimum-phase-like damped bandpass IR by
+    // inverse-DFT / cosine-bank damped resonators so we can compare realistic
+    // Bright vs Dark vs Fizzy vs Boomy cab curves.
+    auto makeCabIR = [&](double lowCutHz, double midBumpHz, double midBumpDb,
+                         double presHz, double presDb, double hiCutHz,
+                         double fizzGain = 0.0, double subThumpGain = 0.0) {
+      const size_t n = 1024;
+      const double fs = 48000.0;
+      std::vector<float> taps(n, 0.0f);
+      auto lp = [&](double f, double fc) {
+        const double r = f / fc;
+        return 1.0 / std::sqrt(1.0 + r * r * r * r);
+      };
+      auto hp = [&](double f, double fc) {
+        const double r = f / fc;
+        const double r4 = r * r * r * r;
+        return r4 / std::sqrt(1.0 + r4 * r4 + 2.0 * r4);
+      };
+      auto peak = [&](double f, double f0, double q, double db) {
+        const double g = std::pow(10.0, db / 20.0);
+        const double d = (f - f0) / (f0 / q);
+        return 1.0 + (g - 1.0) / (1.0 + d * d);
+      };
+      // Build causal real impulse directly via IDFT of target magnitude * causal exponential phase
+      const size_t bins = 256;
+      for (size_t k = 1; k < bins; ++k) {
+        const double f = 20.0 + (20000.0 - 20.0) * k / bins;
+        const double mag = hp(f, lowCutHz) * lp(f, hiCutHz) *
+                           peak(f, midBumpHz, 1.5, midBumpDb) *
+                           peak(f, presHz, 1.3, presDb) *
+                           (1.0 + fizzGain * std::exp(-std::pow((f - 12000.0) / 3000.0, 2.0))) *
+                           (1.0 + subThumpGain * std::exp(-std::pow((f - 36.0) / 14.0, 2.0)));
+        const double decay = std::max(8.0, fs / (2.5 * f));
+        const double amp = mag * (20000.0 / bins) / fs;
+        for (size_t i = 0; i < n; ++i) {
+          const double env = std::exp(-static_cast<double>(i) / (40.0 + decay));
+          taps[i] += static_cast<float>(amp * env * std::cos(2.0 * pi * f * i / fs));
+        }
+      }
+      return taps;
+    };
+
+    auto kWeightedGuitarRms = [&](NAMRig::WavIR& ir, int mode) {
+      // Pink-weighted multi-tone across core electric guitar spectrum (82 Hz .. 5.2 kHz),
+      // rendered cleanly after settling and weighted by ITU BS.1770 K-shelf.
+      const double fs = 48000.0;
+      const size_t N = 4096;
+      std::vector<float> buf(N, 0.0f);
+      std::vector<double> testFreqs;
+      for (int i = 0; i < 24; ++i) {
+        testFreqs.push_back(82.0 * std::pow(5200.0 / 82.0, i / 23.0));
+      }
+      for (double f : testFreqs) {
+        // Equal amplitude per log-spaced bin corresponds to 1/f pink spectrum
+        // shaped by the guitar harmonic envelope (~80 Hz .. 4.8 kHz).
+        const double ul = f / 80.0;
+        const double uh = f / 4800.0;
+        const double env = (ul * ul / std::sqrt(1.0 + ul * ul * ul * ul)) *
+                           (1.0 / std::sqrt(1.0 + uh * uh * uh * uh));
+        const double amp = 0.05 * env;
+        for (size_t n = 0; n < N; ++n) {
+          buf[n] += static_cast<float>(amp * std::sin(2.0 * pi * f * n / fs + f));
+        }
+      }
+      ir.process(buf.data(), static_cast<uint32_t>(N), mode);
+      double sum2 = 0.0;
+      const size_t start = 1024;
+      for (double f : testFreqs) {
+        double re = 0.0, im = 0.0;
+        for (size_t n = start; n < N; ++n) {
+          const double ph = -2.0 * pi * f * n / fs;
+          re += buf[n] * std::cos(ph);
+          im += buf[n] * std::sin(ph);
+        }
+        const double kShelf = std::pow(10.0, 0.4 * (f * f / (f * f + 1682.0 * 1682.0)));
+        sum2 += kShelf * (re * re + im * im);
+      }
+      return std::sqrt(sum2);
+    };
+
+    const auto cabBase = makeCabIR(85.0, 130.0, 4.0, 2600.0, 4.0, 5200.0);
+    const auto cabFizzy = makeCabIR(85.0, 130.0, 4.0, 2600.0, 4.0, 5200.0, 4.0, 0.0);
+    const auto cabSub = makeCabIR(30.0, 130.0, 4.0, 2600.0, 4.0, 5200.0, 0.0, 4.5);
+    const auto cabBright57 = makeCabIR(95.0, 140.0, 2.0, 3400.0, 6.0, 8000.0);
+    const auto cabDark121 = makeCabIR(75.0, 180.0, 5.0, 2400.0, -2.5, 3200.0);
+
+    auto loadFromVec = [&](const std::string& tag, const std::vector<float>& t) {
+      const std::string p = std::string(dir) + "/" + tag + ".wav";
+      writeWavF32(p, t, 48000);
+      return NAMRig::WavIR::load(p.c_str(), 48000.0, 512);
+    };
+
+    auto irBase = loadFromVec("ir_base", cabBase);
+    auto irFizzy = loadFromVec("ir_fizzy", cabFizzy);
+    auto irSub = loadFromVec("ir_sub", cabSub);
+    auto irBright = loadFromVec("ir_bright", cabBright57);
+    auto irDark = loadFromVec("ir_dark", cabDark121);
+
+    // 2 & 3. High-frequency fizz & sub-36 Hz rumble barely shift Loudness level.
+    const double lBase = kWeightedGuitarRms(*irBase, 2);
+    const double lFizzy = kWeightedGuitarRms(*irFizzy, 2);
+    const double lSub = kWeightedGuitarRms(*irSub, 2);
+    const double fizzDriftDb = std::fabs(20.0 * std::log10(lFizzy / lBase));
+    const double subDriftDb = std::fabs(20.0 * std::log10(lSub / lBase));
+    char msgFizz[160], msgSub[160];
+    std::snprintf(msgFizz, sizeof(msgFizz),
+                  "Loudness resists 12 kHz HF fizz bias (drift %.2f dB < 0.80 dB)", fizzDriftDb);
+    std::snprintf(msgSub, sizeof(msgSub),
+                  "Loudness resists 36 Hz sub-rumble bias (drift %.2f dB < 0.80 dB)", subDriftDb);
+    CHECK(fizzDriftDb < 0.80, msgFizz);
+    CHECK(subDriftDb < 0.80, msgSub);
+
+    // 4. Bright SM57 vs Dark R121 cabs stay perceptually level-matched.
+    const double lBright = kWeightedGuitarRms(*irBright, 2);
+    const double lDark = kWeightedGuitarRms(*irDark, 2);
+    const double brightDarkDb = std::fabs(20.0 * std::log10(lBright / lDark));
+    char msgBD[160];
+    std::snprintf(msgBD, sizeof(msgBD),
+                  "Loudness matches bright vs dark cab IRs (delta %.2f dB < 1.00 dB)", brightDarkDb);
+    CHECK(brightDarkDb < 1.00, msgBD);
+
+    // 5. Log-spaced grid captures narrow Q=4 110 Hz resonance peak accurately in Peak mode.
+    const double f0 = 110.0, q = 4.0, fsPeak = 48000.0;
+    const double omega = 2.0 * pi * f0 / fsPeak;
+    const double r = std::exp(-pi * (f0 / q) / fsPeak);
+    std::vector<float> resTaps(4096, 0.0f);
+    double y1 = 0.0, y2 = 0.0;
+    for (size_t i = 0; i < resTaps.size(); ++i) {
+      const double x = (i == 0) ? 1.0 : 0.0;
+      const double y = x + 2.0 * r * std::cos(omega) * y1 - r * r * y2;
+      y2 = y1;
+      y1 = y;
+      resTaps[i] = static_cast<float>(y);
+    }
+    const std::string resPath = std::string(dir) + "/ir_res110.wav";
+    writeWavF32(resPath, resTaps, 48000);
+    auto irRes = NAMRig::WavIR::load(resPath.c_str(), fsPeak, 512);
+    const double exactPeakMag = magnitudeAt(resTaps, fsPeak, f0);
+    std::vector<float> resImpulse(4096, 0.0f);
+    resImpulse[0] = 1.0f;
+    irRes->process(resImpulse.data(), 4096, 1);
+    const double normPeakDb = std::fabs(20.0 * std::log10(magnitudeAt(resImpulse, fsPeak, f0)));
+    (void)exactPeakMag;
+    char msgRes[160];
+    std::snprintf(msgRes, sizeof(msgRes),
+                  "log grid captures Q=4 110 Hz resonance peak (err %.3f dB < 0.05 dB)", normPeakDb);
+    CHECK(normPeakDb < 0.05, msgRes);
   }
 
   std::printf(g_fail ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", g_fail);

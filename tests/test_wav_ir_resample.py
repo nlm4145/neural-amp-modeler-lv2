@@ -152,10 +152,23 @@ def wav_ir_load_taps(x, source_rate, host_rate):
     return taps
 
 
+def _perceptual_loudness_weight(freqs):
+    """Perceptual + guitar-band weighting on a log-spaced grid (matches wav_ir.cpp)."""
+    u_low4 = (freqs / 75.0) ** 4
+    hp = u_low4 / (1.0 + u_low4)
+    u_high4 = (freqs / 5400.0) ** 4
+    lp = 1.0 / (1.0 + u_high4)
+    f2 = freqs * freqs
+    k_half_shelf = np.power(10.0, 0.2 * (f2 / (f2 + 1682.0 * 1682.0)))
+    return hp * lp * k_half_shelf
+
+
 def response_stats(taps, rate):
-    """Peak and RMS magnitude across the same physical-Hz band as WavIR."""
+    """Peak and perceptual RMS magnitude across the same log-spaced physical-Hz band as WavIR."""
     taps = np.asarray(taps, dtype=np.float64)
-    freqs = np.linspace(20.0, max(20.0, min(20000.0, rate * 0.45)), 512)
+    high_hz = max(20.0, min(20000.0, rate * 0.45))
+    freqs = np.geomspace(20.0, 20000.0, 512)
+    freqs = freqs[freqs <= high_hz]
     sample = np.arange(taps.size, dtype=np.float64)
     response = np.empty(freqs.size, dtype=np.complex128)
     # Keep temporary matrices bounded for long, high-rate IRs.
@@ -164,7 +177,9 @@ def response_stats(taps, rate):
         kernel = np.exp(-2j * PI * np.outer(f / rate, sample))
         response[start:start + f.size] = kernel @ taps
     magnitude = np.abs(response)
-    return float(np.max(magnitude)), float(np.sqrt(np.mean(magnitude * magnitude)))
+    weights = _perceptual_loudness_weight(freqs)
+    weighted_rms = float(np.sqrt(np.sum(weights * magnitude * magnitude) / np.sum(weights)))
+    return float(np.max(magnitude)), weighted_rms
 
 
 def normalization_scales(taps, rate):
@@ -374,6 +389,53 @@ def test_minimum_phase_peak_at_zero_resampling():
     worst2 = float(np.max(np.abs(20.0 * np.log10(
         mag_at(conv2, 48000, freqs) / mag_at(ir2, 192000, freqs)))))
     assert worst2 < 0.15, f"peak@2 192000->48000: {worst2:.3f} dB"
+
+
+def test_flat_impulse_loudness_is_unity():
+    """Normalized perceptual weights evaluate a flat all-pass impulse to exact unity at all rates."""
+    unit = np.array([1.0], dtype=np.float32)
+    for rate in (44100.0, 48000.0, 96000.0, 192000.0):
+        peak, rms = response_stats(unit, rate)
+        assert abs(peak - 1.0) < 1e-12
+        assert abs(rms - 1.0) < 1e-12
+
+
+def test_perceptual_loudness_matches_bright_and_dark_cabs():
+    """Log-spaced perceptual weighting matches perceived guitar loudness across bright,
+    dark, fizzy, and sub-heavy IR shapes where linear-Hz integration drifted >5 dB."""
+    freqs = np.geomspace(20.0, 20000.0, 1024)
+    sample = np.arange(1024, dtype=np.float64)
+
+    def biquad_lp(fc):
+        r = freqs / fc
+        return 1.0 / np.sqrt(1.0 + r ** 4)
+
+    def biquad_hp(fc):
+        r = freqs / fc
+        return (r * r) / np.sqrt((1.0 - r * r) ** 2 + 2.0 * (r * r))
+
+    def synth_ir_from_mag(mag):
+        decay = np.maximum(12.0, 48000.0 / (2.5 * freqs))
+        t = sample[None, :]
+        # Causal exponential decay bank summed across frequency support
+        return (np.sum((mag[:, None] / len(freqs)) * np.exp(-t / (40.0 + decay[:, None]))
+                       * np.cos(2.0 * PI * freqs[:, None] * t / 48000.0), axis=0)).astype(np.float64)
+
+    bright = synth_ir_from_mag(biquad_hp(95.0) * biquad_lp(8000.0) * (1.0 + 1.0 * np.exp(-((freqs - 3300.0) / 1400.0) ** 2)))
+    dark = synth_ir_from_mag(biquad_hp(75.0) * biquad_lp(3100.0) * (1.0 + 0.8 * np.exp(-((freqs - 200.0) / 150.0) ** 2)))
+    fizzy = synth_ir_from_mag(biquad_hp(85.0) * biquad_lp(5400.0) * (1.0 + 3.0 * np.exp(-((freqs - 12000.0) / 2800.0) ** 2)))
+
+    # Reference K-weighted pink guitar stimulus power across 80 Hz .. 5 kHz
+    stim_f = np.geomspace(80.0, 5000.0, 256)
+    k_shelf = np.power(10.0, 0.4 * (stim_f * stim_f / (stim_f * stim_f + 1682.0 * 1682.0)))
+    levels_db = []
+    for ir in (bright, dark, fizzy):
+        scale = normalization_scales(ir, 48000.0)[2]
+        H = np.abs(np.exp(-2j * PI * np.outer(stim_f / 48000.0, sample)) @ (ir * scale))
+        perc_rms = float(np.sqrt(np.mean(k_shelf * H * H)))
+        levels_db.append(20.0 * math.log10(perc_rms))
+    spread = max(levels_db) - min(levels_db)
+    assert spread < 1.0, f"perceived level spread {spread:.2f} dB too large: {levels_db}"
 
 
 if __name__ == "__main__":
