@@ -39,8 +39,8 @@ assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 236;" in (ROOT / "src/power_tube_controls.h").read_text()
-assert sorted(ports) == list(range(236)), "ports stay contiguous; speaker_profile_b appends after spatial_center_blend"
+assert "kRigControlPortCount = 238;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(238)), "ports stay contiguous; cab cut slopes append after speaker_profile_b"
 
 
 def port_default(index: int) -> float:
@@ -73,28 +73,17 @@ assert "<@NAM_RIG_LV2_ID@-cab2-model>\n\ta lv2:Parameter" in ttl
 assert re.search(r"patch:writable(?:[^;]*?)-cab2-model>", ttl, re.S), (
     "Cab B's path must be patch:writable like the other stages"
 )
-assert "if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;" in header, (
-    "Cab B must stay at the session rate, out of any True domain"
+assert "if (stage == stageIndex(Stage::Cab2)) return kOsLegacy2;" not in header, (
+    "Cab B must not be forced down to session rate; it follows cabinet oversampling"
 )
-assert "if (i == stageIndex(Stage::Cab2)) continue;" in dsp, (
-    "the oversample reload must not try to re-create Cab B for a True domain"
+assert "if (i == stageIndex(Stage::Cab2)) continue;" not in dsp, (
+    "the oversample reload must re-create Cab B when oversampling changes"
 )
-
-# Both cabinets take the SAME post-amp tap. While Cab B is engaged a .nam Cab A
-# leaves the amp's shared True group and is reloaded for the session rate, so
-# both cabinets share one base-rate domain with no second converter cascade.
-assert "std::memcpy(preCab.data(), L, n * sizeof(float));" in dsp
-assert "const bool deferredCab = st == 2 && (irs[2] != nullptr || parallelCabs);" in dsp, (
-    "a .nam Cab A must defer out of the True chain when Cab B is active"
+assert "cabParallelDesired" not in header and "cabParallelDesired" not in dsp, (
+    "parallel dual-cab .nam no longer downgrades Cab A/Cab B oversampling"
 )
-assert "if (stage == stageIndex(Stage::Cab) && cabParallelDesired) return kOsLegacy2;" in header, (
-    "a parallel Cab A must load for the session rate, like Cab B"
-)
-assert "scheduleModelLoad(Stage::Cab, modelPaths[cab].c_str(), modelPaths[cab].size(), mode);" in dsp, (
-    "engaging or dropping Cab B must re-create the installed Cab A model for its new domain"
-)
-assert "processTrueCab(2, L, n, factor)" in dsp, (
-    "a parallel Cab A keeps its previous True domain only while its session-rate reload is in flight"
+assert "processTrueCab(kCabB, samples, count, factor)" in dsp, (
+    "Cab B must process through its True oversampling stage when active"
 )
 assert "parallelCabExtras(extraA, extraB);" in dsp and "latencyFrames += std::max(extraA, extraB);" in dsp, (
     "the longer parallel cabinet branch must be reported to the host"

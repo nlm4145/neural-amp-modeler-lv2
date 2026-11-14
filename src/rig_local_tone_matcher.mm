@@ -556,6 +556,7 @@ RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* cata
   // The linear post section is solved offline, so renders keep it neutral.
   [dry setControl:kBassPort value:0]; [dry setControl:kMidPort value:0]; [dry setControl:kTreblePort value:0];
   [dry setControl:kLowCutPort value:0]; [dry setControl:kHighCutPort value:20000];
+  [dry setControl:kLowCutSlopePort value:0]; [dry setControl:kHighCutSlopePort value:0];
   [dry setControl:kConsolePort value:1]; // Cab cuts need the console rack.
   for (size_t band = 0; band < kPinEqBandCount; ++band) [dry setControl:pinEqPort(PinEqPane::CabConsole, band, kPinGain) value:0];
   [dry setControl:47 value:0]; [dry stageAtIndex:3]->path.clear(); [dry stageAtIndex:3]->models.clear();
@@ -1131,6 +1132,8 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
             [p setControl:kTreblePort value:clampToContract(kTreblePort, eq.treble)];
             [p setControl:kLowCutPort value:clampToContract(kLowCutPort, eq.lowCut)];
             [p setControl:kHighCutPort value:clampToContract(kHighCutPort, eq.highCut)];
+            [p setControl:kLowCutSlopePort value:clampToContract(kLowCutSlopePort, eq.lowCutSlope)];
+            [p setControl:kHighCutSlopePort value:clampToContract(kHighCutSlopePort, eq.highCutSlope)];
             for (size_t band = 0; band < kPinEqBandCount; ++band) {
               const auto& pin = eq.pins[band];
               if (pin.shape == kPinOff) continue;

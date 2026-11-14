@@ -1343,4 +1343,22 @@
   [ rdfs:value 6 ; rdfs:label "Modern 4x12" ] ,
   [ rdfs:value 7 ; rdfs:label "Bass" ] ,
   [ rdfs:value 8 ; rdfs:label "Match Cab A" ]
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 236 ;
+ lv2:symbol "cab_low_cut_slope" ; lv2:name "Cab Low Cut Slope" ;
+ rdfs:comment "Filter slope for the Cab Low Cut high-pass filter (0=12 dB/oct, 1=18 dB/oct, 2=24 dB/oct Butterworth)." ;
+ lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 2.0 ;
+ lv2:portProperty lv2:integer, lv2:enumeration, lv2:connectionOptional ;
+ lv2:scalePoint [ rdfs:value 0 ; rdfs:label "12 dB/oct" ] ,
+  [ rdfs:value 1 ; rdfs:label "18 dB/oct" ] ,
+  [ rdfs:value 2 ; rdfs:label "24 dB/oct" ]
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 237 ;
+ lv2:symbol "cab_high_cut_slope" ; lv2:name "Cab High Cut Slope" ;
+ rdfs:comment "Filter slope for the Cab High Cut low-pass filter (0=12 dB/oct, 1=18 dB/oct, 2=24 dB/oct Butterworth)." ;
+ lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 2.0 ;
+ lv2:portProperty lv2:integer, lv2:enumeration, lv2:connectionOptional ;
+ lv2:scalePoint [ rdfs:value 0 ; rdfs:label "12 dB/oct" ] ,
+  [ rdfs:value 1 ; rdfs:label "18 dB/oct" ] ,
+  [ rdfs:value 2 ; rdfs:label "24 dB/oct" ]
 ] .

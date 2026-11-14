@@ -88,7 +88,13 @@ inline constexpr float kSpatialCenterBlendDefault = 0.0f;
 // 0..7 match speaker_profile (0=Captured, 1=Auto, 2=Resistive..7=Bass); 8=Match Cab A.
 inline constexpr uint32_t kSpeakerProfileBPort = 235;
 inline constexpr float kSpeakerProfileBDefault = 8.0f;
-inline constexpr uint32_t kRigControlPortCount = 236;
+// Dual-cabinet blend console cut filter slopes (append-only):
+// 0 = 12 dB/oct (2nd-order Butterworth, default), 1 = 18 dB/oct (3rd), 2 = 24 dB/oct (4th).
+inline constexpr uint32_t kCabLowCutSlopePort = 236;
+inline constexpr float kCabLowCutSlopeDefault = 0.0f;
+inline constexpr uint32_t kCabHighCutSlopePort = 237;
+inline constexpr float kCabHighCutSlopeDefault = 0.0f;
+inline constexpr uint32_t kRigControlPortCount = 238;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

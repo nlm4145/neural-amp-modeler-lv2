@@ -60,8 +60,7 @@ struct OfflineHost {
       const auto* s = [preset stageAtIndex:stage];
       if (!s || s->path.empty()) continue;
       if (s->path.size() >= NAMRig::MAX_FILE_NAME) throw std::runtime_error("Model path is too long.");
-      int mode = stage == 3 || (stage == 2 && controls[47] >= .5f) ? NAMRig::kOversampleLegacy :
-          static_cast<int>(controls[(stage == 0 || stage >= 4) ? 20 : 21]);
+      int mode = static_cast<int>(controls[(stage == 0 || stage >= 4) ? 20 : 21]);
       NAMRig::LV2LoadModelMsg message{NAMRig::kWorkTypeLoad, static_cast<NAMRig::Stage>(stage), mode, 0, {}};
       std::memcpy(message.path, s->path.c_str(), s->path.size() + 1);
       NAMRig::Plugin::work(&engine, respond, this, sizeof(message), &message);

@@ -225,6 +225,7 @@ static double copilotParseClock(NSString* text) {
 - (void)sculptPageClicked:(NSButton*)sender;
 - (void)applySpeakerPreset:(NSButton*)sender;
 - (void)applyCabConsolePreset:(NSButton*)sender;
+- (void)cabCutSlopeChanged:(NSPopUpButton*)sender;
 - (void)autoAlignCabs:(id)sender;
 - (void)applyTransformerPreset:(NSButton*)sender;
 - (void)slotPresetPopupChanged:(NSPopUpButton*)sender;
@@ -1391,6 +1392,10 @@ static double copilotParseClock(NSString* text) {
   _state->updateControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
   _state->sendControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
   _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
+  _state->sendControl(NAMRig::kCabLowCutSlopePort, NAMRig::kCabLowCutSlopeDefault);
+  _state->updateControl(NAMRig::kCabLowCutSlopePort, NAMRig::kCabLowCutSlopeDefault);
+  _state->sendControl(NAMRig::kCabHighCutSlopePort, NAMRig::kCabHighCutSlopeDefault);
+  _state->updateControl(NAMRig::kCabHighCutSlopePort, NAMRig::kCabHighCutSlopeDefault);
   _state->syncingToneEq = false;
   _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
@@ -1668,6 +1673,18 @@ static double copilotParseClock(NSString* text) {
   }
 }
 
+- (void)cabCutSlopeChanged:(NSPopUpButton*)sender {
+  sender.toolTip = sender.selectedItem.toolTip;
+  if (!_state) return;
+  const uint32_t port = static_cast<uint32_t>(sender.tag);
+  const int slope = NAMRig::clampCabCutSlope((float)sender.indexOfSelectedItem);
+  if (port == NAMRig::kCabLowCutSlopePort) _state->cabLowCutSlope = slope;
+  else _state->cabHighCutSlope = slope;
+  _state->sendControl(port, (float)slope);
+  _state->updateControl(port, (float)slope);
+  [self markPresetModified];
+}
+
 - (void)autoAlignCabs:(id)sender {
   (void)sender;
   if (!_state) return;
@@ -1783,6 +1800,17 @@ static double copilotParseClock(NSString* text) {
       if ([spec[@"key"] isEqualToString:@"speaker"] && !values[spkBKey]) {
         _state->sendControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
         _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
+      }
+      if ([spec[@"key"] isEqualToString:@"cab_console"]) {
+        for (uint32_t slopePort : {NAMRig::kCabLowCutSlopePort, NAMRig::kCabHighCutSlopePort}) {
+          NSString* slopeKey = [NSString stringWithFormat:@"%u", slopePort];
+          if (!values[slopeKey]) {
+            const float defVal = slopePort == NAMRig::kCabLowCutSlopePort
+                ? NAMRig::kCabLowCutSlopeDefault : NAMRig::kCabHighCutSlopeDefault;
+            _state->sendControl(slopePort, defVal);
+            _state->updateControl(slopePort, defVal);
+          }
+        }
       }
       // Slot presets saved before graph pins existed recall with no pins.
       for (NSNumber* pNum in spec[@"ports"]) {
@@ -6579,7 +6607,8 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
     addSlotPresetDropdown(chips, state, @"cab_console", @"Dual-Cabinet Blend Console",
-                          [@[@25, @48, @49, @26, @27, @59]
+                          [@[@25, @48, @49, @26, @27,
+                             @(NAMRig::kCabLowCutSlopePort), @(NAMRig::kCabHighCutSlopePort), @59]
                               arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::CabConsole)],
                           cabPresetTitles, @selector(applyCabConsolePreset:));
     RigButton* invertB = rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59);
@@ -6601,6 +6630,52 @@ static void addLowerStudioDeck(RigUIState* state,
     [[autoAlign.widthAnchor constraintEqualToConstant:76] setActive:YES];
     [[autoAlign.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
+    NSStackView* cutsRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    cutsRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    cutsRow.distribution = NSStackViewDistributionFill;
+    cutsRow.spacing = 6.0;
+    cutsRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:cutsRow];
+    [[cutsRow.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:6] setActive:YES];
+    [[cutsRow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
+    [[cutsRow.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
+    [[cutsRow.heightAnchor constraintEqualToConstant:20] setActive:YES];
+
+    auto addCutSlopeControl = [&](NSString* labelText, uint32_t port, NSString* prefix,
+                                  int currentSlope, NSPopUpButton* __strong& popupSlot) {
+      NSTextField* lbl = addLabel(cutsRow, labelText, NSZeroRect,
+                                  [NSFont systemFontOfSize:9.0 weight:NSFontWeightSemibold],
+                                  rigDimText(), NSTextAlignmentLeft);
+      lbl.translatesAutoresizingMaskIntoConstraints = NO;
+      [lbl setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [cutsRow addArrangedSubview:lbl];
+
+      NSPopUpButton* pop = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+      pop.controlSize = NSControlSizeMini;
+      [pop addItemsWithTitles:@[@"12 dB/oct", @"18 dB/oct", @"24 dB/oct"]];
+      NSArray<NSString*>* tips = @[
+        [prefix stringByAppendingString:@" — 12 dB/oct (2nd-order Butterworth): gentle, natural speaker-like taper."],
+        [prefix stringByAppendingString:@" — 18 dB/oct (3rd-order Butterworth): tighter cutoff while preserving midrange weight."],
+        [prefix stringByAppendingString:@" — 24 dB/oct (4th-order Butterworth): steep surgical roll-off for sub-rumble or top fizz."]
+      ];
+      for (NSUInteger i = 0; i < tips.count && i < (NSUInteger)pop.numberOfItems; ++i)
+        [pop itemAtIndex:i].toolTip = tips[i];
+      pop.tag = port;
+      pop.target = state->uiController;
+      pop.action = @selector(cabCutSlopeChanged:);
+      [pop selectItemAtIndex:NAMRig::clampCabCutSlope((float)currentSlope)];
+      pop.toolTip = pop.selectedItem.toolTip;
+      pop.translatesAutoresizingMaskIntoConstraints = NO;
+      [[pop.heightAnchor constraintEqualToConstant:20] setActive:YES];
+      [cutsRow addArrangedSubview:pop];
+      popupSlot = pop;
+    };
+    addCutSlopeControl(@"LOW SLOPE", NAMRig::kCabLowCutSlopePort, @"Cab Low Cut Slope",
+                       state->cabLowCutSlope, state->cabLowCutSlopePopup);
+    addCutSlopeControl(@"HI SLOPE", NAMRig::kCabHighCutSlopePort, @"Cab High Cut Slope",
+                       state->cabHighCutSlope, state->cabHighCutSlopePopup);
+    [[state->cabHighCutSlopePopup.widthAnchor constraintEqualToAnchor:state->cabLowCutSlopePopup.widthAnchor] setActive:YES];
+
     NAMCabConsoleVisualizer* cabVis = [[NAMCabConsoleVisualizer alloc] initWithFrame:NSZeroRect];
     cabVis.translatesAutoresizingMaskIntoConstraints = NO;
     cabVis.cabALevel = 0.0f;
@@ -6608,10 +6683,12 @@ static void addLowerStudioDeck(RigUIState* state,
     cabVis.alignDelay = 0.0f;
     cabVis.lowCut = 0.0f;
     cabVis.highCut = 20000.0f;
+    cabVis.lowCutSlope = state->cabLowCutSlope;
+    cabVis.highCutSlope = state->cabHighCutSlope;
     state->cabConsoleVisualizer = cabVis;
     installPinEditor(state, cabVis.pinEditor);
     [card addSubview:cabVis];
-    [[cabVis.topAnchor constraintEqualToAnchor:chips.bottomAnchor constant:8] setActive:YES];
+    [[cabVis.topAnchor constraintEqualToAnchor:cutsRow.bottomAnchor constant:6] setActive:YES];
     [[cabVis.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10] setActive:YES];
     [[cabVis.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10] setActive:YES];
     [[cabVis.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8] setActive:YES];

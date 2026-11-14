@@ -2,6 +2,7 @@
 // Build: clang++ -O2 -std=c++17 -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
 //   -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_rack_bypass.cpp -o <test>
 // Usage: <test> <freshly built neural_amp_modeler_rig.so>
+#include "local_tone_post_eq.h"
 #include "nam_rig_plugin.h"
 #include "rack_controls.h"
 
@@ -26,8 +27,9 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 236 &&
-                  kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82,
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 238 &&
+                  kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82 &&
+                  kCabLowCutSlopePort == 236 && kCabHighCutSlopePort == 237,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
                   static_cast<size_t>(Rack::Spatial) == 2 && static_cast<size_t>(Rack::Power) == 3 &&
@@ -165,6 +167,8 @@ Controls defaults(int mode) {
   std::copy(kRackControlDefaults.begin(), kRackControlDefaults.end(), c.begin() + kRackControlFirstPort);
   c[kPowerTubeCharacterPort] = kPowerTubeCharacterDefault;
   c[kSpeakerProfileBPort] = kSpeakerProfileBDefault;
+  c[kCabLowCutSlopePort] = kCabLowCutSlopeDefault;
+  c[kCabHighCutSlopePort] = kCabHighCutSlopeDefault;
   const auto pins = pinEqDefaults();
   std::copy(pins.begin(), pins.end(), c.begin() + kPinEqFirstPort);
   const auto tone = toneEqDefaults();
@@ -224,6 +228,7 @@ struct Host {
   size_t position = 0;
   unsigned loads = 0;
   bool finite = true;
+  bool allowNam = false;
 
   static LV2_URID mapUri(LV2_URID_Map_Handle handle, const char* uri) {
     auto& ids = static_cast<Host*>(handle)->uris;
@@ -244,7 +249,10 @@ struct Host {
                                   uint32_t size, const void* data) {
     auto& host = *static_cast<Host*>(handle);
     const auto& message = *static_cast<const LV2SwitchModelMsg*>(data);
-    require(message.ir && message.irRight && message.path[0], "real worker loaded stereo WAV");
+    require(message.path[0] &&
+                (host.allowNam ? (message.model != nullptr || (message.ir && message.irRight))
+                               : (message.ir && message.irRight)),
+            "real worker loaded stereo WAV");
     return host.worker->work_response(host.instance, size, data);
   }
   Host(const LV2_Descriptor* d, double sampleRate, Controls values,
@@ -271,8 +279,9 @@ struct Host {
     require(worker->work_response(instance, sizeof(amp), &amp) == LV2_WORKER_SUCCESS, "install identity amp");
     if (converterCabs) {
       for (Stage stage : {Stage::Cab, Stage::Cab2}) {
-        LV2SwitchModelMsg cab{kWorkTypeSwitch, stage, stage == Stage::Cab2 ? 1 : static_cast<int>(controls[21]),
+        LV2SwitchModelMsg cab{kWorkTypeSwitch, stage, static_cast<int>(controls[21]),
                              0, {}, new Identity, nullptr, nullptr, false};
+        std::strcpy(cab.path, stage == Stage::Cab ? "rack-test-cab-a.nam" : "rack-test-cab-b.nam");
         require(worker->work_response(instance, sizeof(cab), &cab) == LV2_WORKER_SUCCESS, "install identity cabinet");
       }
     } else if (fixtures) {
@@ -1008,6 +1017,182 @@ void verifyToneEQ(const LV2_Descriptor* d) {
   }
 }
 
+void verifyItem6EQAndDoubles(const LV2_Descriptor* d) {
+  constexpr double kPi = 3.14159265358979323846;
+
+  // 6A: double precision Biquad & DcBlocker stability at 20 Hz / 1.536 MHz (w0 ~ 8.18e-5).
+  {
+    constexpr double kOversampledRate = 1536000.0;
+    const PinCoeffs hpCoeffs = pinPassCoefficients(true, 20.0, kOversampledRate, kButterworthQ);
+    bool allFinite = true;
+    Biquad hp1k{};
+    hp1k.b0 = hpCoeffs.b0;
+    hp1k.b1 = hpCoeffs.b1;
+    hp1k.b2 = hpCoeffs.b2;
+    hp1k.a1 = hpCoeffs.a1;
+    hp1k.a2 = hpCoeffs.a2;
+    double ref1kIn = 0.0, ref1kOut = 0.0;
+    for (size_t i = 0; i < 80000; ++i) {
+      const double x1k = 0.25 * std::sin(2.0 * kPi * 1000.0 * static_cast<double>(i) / kOversampledRate);
+      const double y = hp1k.processSample(x1k);
+      allFinite &= std::isfinite(y);
+      if (i >= 40000) {
+        ref1kIn += x1k * x1k;
+        ref1kOut += y * y;
+      }
+    }
+    Biquad hp20{};
+    hp20.b0 = hpCoeffs.b0;
+    hp20.b1 = hpCoeffs.b1;
+    hp20.b2 = hpCoeffs.b2;
+    hp20.a1 = hpCoeffs.a1;
+    hp20.a2 = hpCoeffs.a2;
+    double ref20In = 0.0, ref20Out = 0.0;
+    for (size_t i = 0; i < 460800; ++i) {
+      const double x20 = 0.25 * std::sin(2.0 * kPi * 20.0 * static_cast<double>(i) / kOversampledRate);
+      const double y = hp20.processSample(x20);
+      allFinite &= std::isfinite(y);
+      if (i >= 307200) { // Exact 2 cycles of 20 Hz at 1.536 MHz = 153600 samples.
+        ref20In += x20 * x20;
+        ref20Out += y * y;
+      }
+    }
+    const double db1k = 10.0 * std::log10(ref1kOut / ref1kIn);
+    const double db20 = 10.0 * std::log10(ref20Out / ref20In);
+
+    DcBlocker dc{};
+    dc.r = 1.0 - (2.0 * kPi * 5.0 / kOversampledRate);
+    double dcStepOut = 0.0;
+    for (size_t i = 0; i < 60000; ++i) {
+      dcStepOut = dc.processSample(1.0);
+      allFinite &= std::isfinite(dcStepOut);
+    }
+    const double expectedDc = std::pow(dc.r, 59999.0);
+    check(allFinite && std::fabs(db1k) < 0.05 && std::fabs(db20 + 3.0103) < 0.15 &&
+              std::fabs(dcStepOut - expectedDc) < 1e-4,
+          "6A: double Biquad and DcBlocker stay finite and accurate at 20 Hz / 1.536 MHz");
+  }
+
+  // 6B unit: 48 kHz matched Bell/HighShelf/LowPass vs 192 kHz analog prototype (< 1.0 dB at 16 kHz).
+  {
+    const double bell48 = pinMagnitudeDb(pinCoefficients(kPinBell, 16000.0, 6.0, 1.0, 48000.0), 16000.0, 48000.0);
+    const double bell192 = pinMagnitudeDb(pinCoefficients(kPinBell, 16000.0, 6.0, 1.0, 192000.0), 16000.0, 192000.0);
+    const double shelf48 = pinMagnitudeDb(pinCoefficients(kPinHighShelf, 16000.0, 6.0, kButterworthQ, 48000.0), 16000.0, 48000.0);
+    const double shelf192 = pinMagnitudeDb(pinCoefficients(kPinHighShelf, 16000.0, 6.0, kButterworthQ, 192000.0), 16000.0, 192000.0);
+    const double lp48 = pinMagnitudeDb(pinPassCoefficients(false, 16000.0, 48000.0, kButterworthQ), 16000.0, 48000.0);
+    const double lp192 = pinMagnitudeDb(pinPassCoefficients(false, 16000.0, 192000.0, kButterworthQ), 16000.0, 192000.0);
+    check(std::fabs(bell48 - bell192) < 0.5 &&
+              std::fabs(shelf48 - shelf192) < 0.5 &&
+              std::fabs(lp48 - lp192) < 0.5,
+          "6B: 48 kHz matched Bell/HighShelf/LowPass stay within 0.5 dB of 192 kHz prototype at 16 kHz");
+  }
+
+  // 6B end-to-end LV2 DSP: 12/18/24 dB/oct cab cuts match pin_eq and LocalTone::PostEq (< 0.05 dB).
+  {
+    constexpr double kRate = 48000.0;
+    auto measurePluginSineDb = [&](int slope, bool consoleOn, double hz) {
+      Controls c = defaults(0);
+      for (size_t i = 0; i < kRackCount; ++i) c[port(static_cast<Rack>(i))] = 0.0f;
+      c[port(Rack::CabConsole)] = consoleOn ? 1.0f : 0.0f;
+      c[7] = c[8] = 0.0f; // Pedal/Amp off; Cab Console cuts remain active.
+      c[9] = 1.0f;
+      c[26] = 160.0f;
+      c[27] = 6000.0f;
+      c[kCabLowCutSlopePort] = static_cast<float>(slope);
+      c[kCabHighCutSlopePort] = static_cast<float>(slope);
+      Host h(d, kRate, c, nullptr, false, true);
+      double inSq = 0.0, outSq = 0.0;
+      const size_t totalFrames = 24000;
+      const size_t settleFrames = 14400; // Exact 0.2s (integer cycles of 80/160/1000/6000/12000 Hz).
+      size_t sampleIndex = 0;
+      for (size_t offset = 0; offset < totalFrames; offset += kBlock) {
+        auto* sequence = reinterpret_cast<LV2_Atom_Sequence*>(h.control.data());
+        sequence->atom.type = h.mapUri(&h, LV2_ATOM__Sequence);
+        sequence->atom.size = sizeof(LV2_Atom_Sequence_Body);
+        reinterpret_cast<LV2_Atom_Sequence*>(h.notify.data())->atom.size = kAtomBytes - sizeof(LV2_Atom);
+        for (size_t i = 0; i < kBlock; ++i) {
+          h.input[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * hz * static_cast<double>(sampleIndex + i) / kRate));
+        }
+        d->run(h.instance, kBlock);
+        if (offset >= settleFrames) {
+          for (size_t i = 0; i < kBlock; ++i) {
+            inSq += static_cast<double>(h.input[i]) * h.input[i];
+            outSq += static_cast<double>(h.left[i]) * h.left[i];
+          }
+        }
+        sampleIndex += kBlock;
+      }
+      return 10.0 * std::log10(std::max(1e-20, outSq / inSq));
+    };
+
+    bool slopesAccurate = true;
+    bool parityAccurate = true;
+    for (int slope : {0, 1, 2}) {
+      LocalTone::PostEq eq;
+      eq.console = true;
+      eq.lowCut = 160.0f;
+      eq.highCut = 6000.0f;
+      eq.lowCutSlope = slope;
+      eq.highCutSlope = slope;
+      const auto hpChain = pinPassStages(true, 160.0, slope, kRate);
+      const auto lpChain = pinPassStages(false, 6000.0, slope, kRate);
+      const double expectedOctave = slope == 0 ? -12.0 : slope == 1 ? -18.0 : -24.0;
+      for (double hz : {80.0, 160.0, 1000.0, 6000.0, 12000.0}) {
+        const double dspDb = measurePluginSineDb(slope, true, hz);
+        double pinDb = 0.0;
+        for (size_t s = 0; s < hpChain.count; ++s) pinDb += pinMagnitudeDb(hpChain.stages[s], hz, kRate);
+        for (size_t s = 0; s < lpChain.count; ++s) pinDb += pinMagnitudeDb(lpChain.stages[s], hz, kRate);
+        const double localToneDb = LocalTone::postEqMagnitudeDb(eq, hz, kRate);
+        parityAccurate &= std::fabs(dspDb - pinDb) < 0.05 && std::fabs(dspDb - localToneDb) < 0.05;
+        if (hz == 160.0 || hz == 6000.0) slopesAccurate &= std::fabs(dspDb + 3.0103) < 0.3;
+        else if (hz == 80.0 || hz == 12000.0) slopesAccurate &= std::fabs(dspDb - expectedOctave) < 0.85;
+      }
+    }
+    const double bypassedLowSlope2 = measurePluginSineDb(2, false, 80.0);
+    const double bypassedLowSlope0 = measurePluginSineDb(0, false, 80.0);
+    const double bypassedMidSlope2 = measurePluginSineDb(2, false, 1000.0);
+    check(parityAccurate, "6B: LV2 DSP, pinPassStages, and LocalTone::PostEq agree within 0.05 dB across 12/18/24 dB/oct");
+    check(slopesAccurate && std::fabs(bypassedLowSlope2 - bypassedLowSlope0) < 1e-6 &&
+              std::fabs(bypassedMidSlope2) < 0.02,
+          "6B: 12/18/24 dB/oct Butterworth cuts hit -3 dB at fc, expected octave attenuation, and clean bypass");
+  }
+
+  // 6C: Dual .nam Cab A & Cab B dynamically follow amp_oversample latency changes (True 8x <-> True 2x).
+  {
+    std::string pattern = (std::filesystem::temp_directory_path() / "rack-item6-nam-XXXXXX").string();
+    require(mkdtemp(pattern.data()) != nullptr, "create temp dir for 6C identity .nam");
+    const std::filesystem::path dir = pattern;
+    const std::filesystem::path namPath = dir / "identity.nam";
+    {
+      std::ofstream out(namPath);
+      out << R"({"version":"0.5.4","architecture":"WaveNet","config":{"layers":[{"input_size":1,"condition_size":1,"head_size":1,"channels":1,"kernel_size":1,"dilations":[1],"activation":"Hardtanh","gated":false,"head_bias":false}],"head":null,"head_scale":1.0},"weights":[1,1,0,0,0,0,1,1],"sample_rate":48000})";
+    }
+    Controls c = defaults(6);
+    c[47] = 1.0f;
+    c[port(Rack::Spatial)] = 0.0f;
+    Host dualHost(d, 96000.0, c);
+    dualHost.allowNam = true;
+    const std::string namStr = namPath.string();
+    for (Stage st : {Stage::Amp, Stage::Cab, Stage::Cab2}) {
+      LV2LoadModelMsg msg{kWorkTypeLoad, st, 6, 0, {}};
+      require(namStr.size() < sizeof(msg.path), "temp .nam path fits");
+      std::strcpy(msg.path, namStr.c_str());
+      require(dualHost.worker->work(dualHost.instance, Host::respond, &dualHost, sizeof(msg), &msg) ==
+                  LV2_WORKER_SUCCESS,
+              "load temp identity .nam");
+    }
+    for (int block = 0; block < 16; ++block) dualHost.run();
+    const bool true8Ok = dualHost.controls[29] == 82.0f;
+    dualHost.controls[21] = 4.0f; // Switch Amp & both parallel .nam Cabs to True 2x (factor 2 -> 23 + 23 = 46).
+    for (int block = 0; block < 16; ++block) dualHost.run();
+    const bool true2Ok = dualHost.controls[29] == 46.0f && dualHost.finite;
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    check(true8Ok && true2Ok,
+          "6C: parallel dual .nam Cab A & Cab B follow amp_oversample latency symmetrically (82 <-> 46 frames @ 96k)");
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc != 2) { std::puts("usage: verify_rack_bypass <fresh rig .so>"); return 2; }
   void* library = dlopen(argv[1], RTLD_NOW);
@@ -1018,6 +1203,7 @@ int main(int argc, char** argv) {
     verify(descriptor(0));
     verifyPins(descriptor(0));
     verifyToneEQ(descriptor(0));
+    verifyItem6EQAndDoubles(descriptor(0));
   } catch (const std::exception& error) {
     check(false, error.what());
   }

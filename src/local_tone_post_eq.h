@@ -9,6 +9,7 @@
 namespace NAMRig::LocalTone {
 inline constexpr uint32_t kBassPort = 12, kMidPort = 13, kTreblePort = 14;
 inline constexpr uint32_t kLowCutPort = 26, kHighCutPort = 27, kConsolePort = 78;
+inline constexpr uint32_t kLowCutSlopePort = 236, kHighCutSlopePort = 237;
 inline constexpr double kToneStackQ = 0.7071067811865476; // nam_rig_plugin.cpp kEqQ
 
 // nam_rig_plugin.cpp processPostChain: cab low/high cut and Cab Console pins
@@ -19,14 +20,22 @@ struct PostEq {
   double lowCut = 0, highCut = 20000;
   bool console = true; // cab processed && console rack on
   PinBands pins{};     // Cab Console pins
+  int lowCutSlope = 0;
+  int highCutSlope = 0;
 };
 
 inline std::vector<PinCoeffs> postEqSections(const PostEq& eq, double rate) {
   std::vector<PinCoeffs> sections;
   if (eq.console) {
-    if (eq.lowCut >= 20) sections.push_back(pinPassCoefficients(true, eq.lowCut, rate));
+    if (eq.lowCut >= 20) {
+      const PinPassChain stages = pinPassStages(true, eq.lowCut, eq.lowCutSlope, rate);
+      for (size_t i = 0; i < stages.count; ++i) sections.push_back(stages.stages[i]);
+    }
     const double highCut = std::min(eq.highCut, rate * .45);
-    if (highCut < 19990) sections.push_back(pinPassCoefficients(false, std::max(1000.0, highCut), rate));
+    if (highCut < 19990) {
+      const PinPassChain stages = pinPassStages(false, std::max(1000.0, highCut), eq.highCutSlope, rate);
+      for (size_t i = 0; i < stages.count; ++i) sections.push_back(stages.stages[i]);
+    }
     for (const auto& b : eq.pins)
       if (b.shape != kPinOff && b.gainDb != 0) sections.push_back(pinCoefficients(b.shape, b.freq, b.gainDb, b.q, rate));
   }

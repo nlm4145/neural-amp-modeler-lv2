@@ -2038,6 +2038,8 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
 - (void)setAlignDelay:(float)v { _alignDelay = v; self.needsDisplay = YES; }
 - (void)setLowCut:(float)v { _lowCut = v; self.needsDisplay = YES; }
 - (void)setHighCut:(float)v { _highCut = v; self.needsDisplay = YES; }
+- (void)setLowCutSlope:(int)v { _lowCutSlope = NAMRig::clampCabCutSlope((float)v); self.needsDisplay = YES; }
+- (void)setHighCutSlope:(int)v { _highCutSlope = NAMRig::clampCabCutSlope((float)v); self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
   NSRect r = self.bounds;
@@ -2056,7 +2058,9 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
   };
   [@"CAB A / B ALIGNMENT & DUAL CUT FILTERS" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
-  NSString* stat = [NSString stringWithFormat:@"ALIGN: %+.2f ms  •  LOW: %.0f Hz  •  HI: %.0f Hz", _alignDelay, _lowCut, _highCut];
+  auto slopeDb = [](int slope) { return 12 + 6 * NAMRig::clampCabCutSlope((float)slope); };
+  NSString* stat = [NSString stringWithFormat:@"ALIGN: %+.2f ms  •  LOW: %.0f Hz (%d dB)  •  HI: %.0f Hz (%d dB)",
+                    _alignDelay, _lowCut, slopeDb(_lowCutSlope), _highCut, slopeDb(_highCutSlope)];
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.9]
@@ -2064,7 +2068,7 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
   NSSize ssz = [stat sizeWithAttributes:statAttrs];
   [stat drawAtPoint:NSMakePoint(r.size.width - 14 - ssz.width, r.size.height - 18) withAttributes:statAttrs];
 
-  // The DSP's cut filters (2nd-order Butterworth) on the pin editor's axes:
+  // The DSP's cut filters (12/18/24 dB/oct Butterworth) on the pin editor's axes:
   // log frequency 20 Hz..20 kHz, +/-18 dB.
   const NSRect plot = [self plotRect];
   const CGFloat leftM = NSMinX(plot), pw = plot.size.width;
@@ -2079,9 +2083,14 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
 
 }
 - (double)responseDbAtFrequency:(double)hz {
-  double db = 0;
-  if (_lowCut >= 20) db += NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(true, _lowCut, kPinPlotRate), hz, kPinPlotRate);
-  if (_highCut < 19990) db += NAMRig::pinMagnitudeDb(NAMRig::pinPassCoefficients(false, std::max(1000.0f, _highCut), kPinPlotRate), hz, kPinPlotRate);
+  double db = 0.0;
+  auto addCutStages = [&](bool highPass, double freq, int slope) {
+    const NAMRig::PinPassChain chain = NAMRig::pinPassStages(highPass, freq, slope, kPinPlotRate);
+    for (size_t i = 0; i < chain.count; ++i)
+      db += NAMRig::pinMagnitudeDb(chain.stages[i], hz, kPinPlotRate);
+  };
+  if (_lowCut >= 20) addCutStages(true, _lowCut, _lowCutSlope);
+  if (_highCut < 19990) addCutStages(false, std::max(1000.0f, _highCut), _highCutSlope);
   return db;
 }
 
