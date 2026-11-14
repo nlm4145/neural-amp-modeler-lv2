@@ -329,20 +329,49 @@ struct ResponseStats {
   double rms = 0.0;
 };
 
+// Perceptual + guitar-band loudness weighting on a log-spaced frequency grid:
+//  - Log-frequency spacing itself contributes 1/f weighting (equal energy per
+//    octave, matching pink/musical spectra instead of weighting 5-20 kHz 75%).
+//  - 2nd-order Butterworth HPF (75 Hz) and LPF (5.4 kHz) attenuate subsonic
+//    proximity thump and high-frequency mic fizz outside the guitar cab passband.
+//  - A +2.0 dB ITU-R BS.1770 acoustic head-shelf contour (above ~1.68 kHz) keeps
+//    dark ribbon IRs and bright presence-heavy IRs matched in perceived level.
+inline double perceptualLoudnessWeight(double hz) noexcept {
+  const double uLow = hz / 75.0;
+  const double uLow2 = uLow * uLow;
+  const double uLow4 = uLow2 * uLow2;
+  const double hp = uLow4 / (1.0 + uLow4);
+
+  const double uHigh = hz / 5400.0;
+  const double uHigh2 = uHigh * uHigh;
+  const double uHigh4 = uHigh2 * uHigh2;
+  const double lp = 1.0 / (1.0 + uHigh4);
+
+  const double f2 = hz * hz;
+  const double shelfRatio = f2 / (f2 + 1682.0 * 1682.0);
+  const double kHalfShelf = std::pow(10.0, 0.2 * shelfRatio);
+  return hp * lp * kHalfShelf;
+}
+
 // Measure the filter rather than its individual time-domain coefficients.
-// Uniformly spaced physical-Hz samples keep both metrics stable when the same
-// IR is resampled for a different host rate. The 20 Hz--20 kHz window also
-// avoids ultrasonic bins (which a guitar cabinet does not meaningfully use)
-// skewing the average at high host rates.
+// Fixed physical-Hz log-spaced samples keep both metrics stable when the same
+// IR is resampled for a different host rate, improve low-frequency resonance
+// resolution, and measure perceived loudness across octaves rather than
+// letting linear 5-20 kHz bins dominate bright vs dark cabinet comparisons.
 ResponseStats measureResponse(const std::vector<float>& taps, double rate) {
   constexpr size_t kBins = 512;
-  const double lowHz = 20.0;
-  const double highHz = std::max(lowHz, std::min(20000.0, rate * 0.45));
+  constexpr double kLowHz = 20.0;
+  constexpr double kMaxHz = 20000.0;
+  const double highHz = std::max(kLowHz, std::min(kMaxHz, rate * 0.45));
+  const double spanRatio = kMaxHz / kLowHz;
   double peakSquared = 0.0;
-  double sumSquared = 0.0;
+  double weightedSumSquared = 0.0;
+  double weightSum = 0.0;
   for (size_t bin = 0; bin < kBins; ++bin) {
     const double t = static_cast<double>(bin) / static_cast<double>(kBins - 1);
-    const double radians = -2.0 * kPi * (lowHz + t * (highHz - lowHz)) / rate;
+    const double hz = kLowHz * std::pow(spanRatio, t);
+    if (hz > highHz) break;
+    const double radians = -2.0 * kPi * hz / rate;
     const double stepReal = std::cos(radians);
     const double stepImag = std::sin(radians);
     double phaseReal = 1.0;
@@ -357,10 +386,14 @@ ResponseStats measureResponse(const std::vector<float>& taps, double rate) {
       phaseReal = nextReal;
     }
     const double magnitudeSquared = real * real + imag * imag;
+    const double weight = perceptualLoudnessWeight(hz);
     peakSquared = std::max(peakSquared, magnitudeSquared);
-    sumSquared += magnitudeSquared;
+    weightedSumSquared += weight * magnitudeSquared;
+    weightSum += weight;
   }
-  return {std::sqrt(peakSquared), std::sqrt(sumSquared / kBins)};
+  const double rms =
+      weightSum > 0.0 ? std::sqrt(weightedSumSquared / weightSum) : 0.0;
+  return {std::sqrt(peakSquared), rms};
 }
 }
 

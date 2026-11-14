@@ -7776,7 +7776,7 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         [norm addItemsWithTitles:@[@"Peak", @"Loudness"]];
         NSArray<NSString*>* normalizationDescriptions = @[
           @"Peak - Scales the strongest audible-band response to unity for more headroom; this is not an output limiter.",
-          @"Loudness - Matches average audible-band response energy to unity for consistent cabinet levels."
+          @"Loudness - Matches perceptually weighted guitar-band energy across octaves for consistent cabinet levels."
         ];
         for (NSUInteger item = 0; item < normalizationDescriptions.count; ++item)
           [norm itemAtIndex:item].toolTip = normalizationDescriptions[item];
