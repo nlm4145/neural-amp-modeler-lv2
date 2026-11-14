@@ -1197,28 +1197,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
   // Generic speaker-load interaction is opt-in. Auto resolves from each
   // active cabinet's committed path without changing the host-visible profile.
-  const int rawSpeakerA = SpeakerDynamics::clampProfile(
-      static_cast<int>(*ports.speaker_profile + 0.5f));
-  const int rawSpeakerB = SpeakerDynamics::clampProfileB(
-      static_cast<int>(portValue(ports.speaker_profile_b, kSpeakerProfileBDefault) + 0.5f));
-  const bool cabAActive = appliedEnabled[2] && (models[2] || irs[2]);
-  const bool cabBActive = appliedEnabled[3] && (models[3] || irs[3]);
-  int desiredSpeaker = rawSpeakerA;
-  if (desiredSpeaker == SpeakerDynamics::kAuto) {
-    desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[2].c_str());
-    if (cabBActive && !modelPaths[3].empty() && !cabAActive)
-      desiredSpeaker = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
-  }
-  int desiredSpeakerB = desiredSpeaker;
-  if (cabBActive) {
-    if (rawSpeakerB == SpeakerDynamics::kAuto ||
-        (rawSpeakerB == SpeakerDynamics::kMatchCabA &&
-         rawSpeakerA == SpeakerDynamics::kAuto)) {
-      desiredSpeakerB = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
-    } else if (rawSpeakerB != SpeakerDynamics::kMatchCabA) {
-      desiredSpeakerB = rawSpeakerB;
-    }
-  }
+  int desiredSpeaker = SpeakerDynamics::kCaptured;
+  int desiredSpeakerB = SpeakerDynamics::kCaptured;
+  resolveSpeakerProfiles(desiredSpeaker, desiredSpeakerB);
   if (!speakerLatched) {
     speakerRequested = speakerApplied = desiredSpeaker;
     speakerBRequested = speakerBApplied = desiredSpeakerB;
@@ -1227,11 +1208,10 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     speakerRequested = desiredSpeaker;
     speakerBRequested = desiredSpeakerB;
     const bool audibleSpeaker = rackOn(Rack::Speaker) &&
-        ((models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)]) ||
-         cabAActive || cabBActive);
+        models[stageIndex(Stage::Amp)] && appliedEnabled[stageIndex(Stage::Amp)];
     if (audibleSpeaker) {
       startTransitionFadeOut();
-    } else {
+    } else if (transitionPhase != TransitionPhase::FadeOut) {
       speakerApplied = speakerRequested;
       speakerBApplied = speakerBRequested;
       speakerDynamics.reset();
@@ -1252,14 +1232,12 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   if (!centerBlendLatched) {
     centerBlendRequested = centerBlendApplied = desiredCenterBlend;
     centerBlendLatched = true;
-  } else if (desiredCenterBlend != centerBlendRequested &&
-             transitionPhase == TransitionPhase::Steady) {
+  } else if (desiredCenterBlend != centerBlendRequested) {
     centerBlendRequested = desiredCenterBlend;
     if (rackOn(Rack::Spatial) && appliedEnabled[2] && appliedEnabled[3] &&
         (models[2] || irs[2]) && (models[3] || irs[3])) {
-      rackTransitionActive = true;
       startTransitionFadeOut();
-    } else {
+    } else if (transitionPhase != TransitionPhase::FadeOut) {
       centerBlendApplied = centerBlendRequested;
       centerStereoizer.reset();
     }
@@ -1734,6 +1712,37 @@ void Plugin::parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcep
 // trim and cuts, DC removal, post EQ, output trim, the click-safe transition
 // fade, and the stereo effects. Runs in maxBufferSize slices on internal
 // stereo buffers, so the two output ports may alias.
+void Plugin::resolveSpeakerProfiles(int& desiredA, int& desiredB) const noexcept {
+  const float rawPortA = portValue(ports.speaker_profile, 0.0f);
+  const int rawSpeakerA = std::isfinite(rawPortA)
+      ? SpeakerDynamics::clampProfile(static_cast<int>(std::clamp(
+            rawPortA, 0.0f, static_cast<float>(SpeakerDynamics::kProfileCount - 1)) + 0.5f))
+      : SpeakerDynamics::kCaptured;
+  const float rawPortB = portValue(ports.speaker_profile_b, kSpeakerProfileBDefault);
+  const int rawSpeakerB = std::isfinite(rawPortB)
+      ? SpeakerDynamics::clampProfileB(static_cast<int>(std::clamp(
+            rawPortB, 0.0f, static_cast<float>(SpeakerDynamics::kProfileBCount - 1)) + 0.5f))
+      : SpeakerDynamics::kMatchCabA;
+  const bool cabAActive = appliedEnabled[2] && (models[2] || irs[2]);
+  const bool cabBActive = appliedEnabled[3] && (models[3] || irs[3]);
+  desiredA = rawSpeakerA;
+  if (desiredA == SpeakerDynamics::kAuto) {
+    desiredA = SpeakerDynamics::profileFromCabPath(modelPaths[2].c_str());
+    if (cabBActive && !modelPaths[3].empty() && !cabAActive)
+      desiredA = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
+  }
+  desiredB = desiredA;
+  if (cabBActive) {
+    if (rawSpeakerB == SpeakerDynamics::kAuto ||
+        (rawSpeakerB == SpeakerDynamics::kMatchCabA &&
+         rawSpeakerA == SpeakerDynamics::kAuto)) {
+      desiredB = SpeakerDynamics::profileFromCabPath(modelPaths[3].c_str());
+    } else if (rawSpeakerB != SpeakerDynamics::kMatchCabA) {
+      desiredB = rawSpeakerB;
+    }
+  }
+}
+
 PinBands Plugin::pinBands(PinEqPane pane) const noexcept {
   return readPinBands(pane, [&](uint32_t port) {
     return portValue(ports.pin_eq[port - kPinEqFirstPort], pinEqDefault(port));
@@ -1747,9 +1756,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const bool consoleOn = rackOn(Rack::CabConsole);
   const bool spatialOn = rackOn(Rack::Spatial);
   const bool reverbOn = rackOn(Rack::Reverb);
+  const bool ampActive = enabled[stageIndex(Stage::Amp)] && models[stageIndex(Stage::Amp)];
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
   const bool splitDualSpeaker = parallelCabs && (speakerApplied != speakerBApplied);
-  const bool splitSpeakerActive = splitDualSpeaker && rackOn(Rack::Speaker);
+  const bool splitSpeakerActive = ampActive && splitDualSpeaker && rackOn(Rack::Speaker);
   const PinBands spkPinBands = splitSpeakerActive ? pinBands(PinEqPane::Speaker) : PinBands{};
   const float spkDrive = *ports.speaker_drive;
   const float spkComp = *ports.speaker_compression;
@@ -1759,7 +1769,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
   const int norm = decodeIrNormalization(*ports.ir_normalization);
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
-  const float widthTarget = std::max(0.0f, std::min(1.0f, *ports.stereo_width * 0.01f));
+  const float rawWidth = portValue(ports.stereo_width, 0.0f);
+  const float widthTarget = std::isfinite(rawWidth)
+      ? std::max(0.0f, std::min(1.0f, rawWidth * 0.01f)) : 0.0f;
   const float rawCab2Db = portValue(ports.cab2_level, 0.0f);
   const float cab2LevelTarget = rawCab2Db <= -23.95f ? 0.0f : cab2GainCache.get(rawCab2Db, blockRounding);
   const float glide10 = rateCache.glide10;
@@ -1767,8 +1779,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const float desiredOutput = outputGainCache.get(*ports.output_level, blockRounding);
   const float rawCabDb = *ports.cab_level;
   const float targetCab = rawCabDb <= -23.95f ? 0.0f : cabGainCache.get(rawCabDb, blockRounding);
-  const float alignmentMs = consoleOn ? std::max(-10.0f, std::min(10.0f,
-      portValue(ports.cab2_delay, 0.0f))) : 0.0f;
+  const float rawDelayMs = portValue(ports.cab2_delay, 0.0f);
+  const float safeDelayMs = std::isfinite(rawDelayMs)
+      ? std::max(-10.0f, std::min(10.0f, rawDelayMs)) : 0.0f;
+  const float alignmentMs = consoleOn ? safeDelayMs : 0.0f;
   const float polarityTarget = portValue(ports.cab2_polarity, 0.0f) >= 0.5f
       ? -1.0f : 1.0f;
   const uint32_t fadeSamples = std::max<uint32_t>(1,
@@ -1782,8 +1796,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       outL = outR = 0.0f;
       return;
     }
-    const float activeAlignMs = activeConsole
-        ? std::max(-10.0f, std::min(10.0f, portValue(ports.cab2_delay, 0.0f))) : 0.0f;
+    const float activeAlignMs = activeConsole ? safeDelayMs : 0.0f;
     const WavIR* irAL = irs[2];
     const WavIR* irAR = irsRight[2] ? irsRight[2] : irs[2];
     const WavIR* irBL = irs[3];
@@ -1866,7 +1879,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     parallelCabExtras(extraA, extraB);
 
     if (enabled[2]) {
-      if (splitSpeakerActive) {
+      if (splitSpeakerActive && (models[2] || irs[2])) {
         speakerDynamics.process(L, n, sampleRate, speakerApplied,
                                 spkDrive, spkComp, spkThump, spkRes, spkDamping);
         float* ch[1] = {L};
@@ -2390,10 +2403,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     bool shelfSnapNeeded = (centerBlendApplied != centerBlendRequested);
     commitPendingSwitches();
     appliedPedalOrder = desiredPedalOrder;
-    // The output is silent at the commit, so the blend shelf restarts from a
-    // clean history regardless of what each branch carried into the fade.
+    // The output is silent at the commit, so the blend shelf and Dome
+    // stereoizer restart from a clean history regardless of what each branch
+    // carried into the fade.
     dualCabShelf.reset();
     dualCabShelfR.reset();
+    centerStereoizer.reset();
     for (size_t st = 0; st < kStageCount; ++st)
       appliedEnabled[st] = desiredEnabled[st];
     if (rackTransitionActive && appliedRacks != requestedRacks) {
@@ -2447,6 +2462,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       transformerApplied = transformerRequested;
       outputTransformer.reset();
     }
+    resolveSpeakerProfiles(speakerRequested, speakerBRequested);
     if (speakerApplied != speakerRequested || speakerBApplied != speakerBRequested) {
       speakerApplied = speakerRequested;
       speakerBApplied = speakerBRequested;

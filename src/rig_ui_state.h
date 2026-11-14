@@ -1416,12 +1416,22 @@ struct RigUIState {
 
   void refreshSpeakerVisualizer() {
     if (!speakerVisualizer) return;
-    int profile = NAMRig::SpeakerDynamics::clampProfile((int)(currentPortValueForSlot(42) + 0.5f));
-    if (profile == NAMRig::SpeakerDynamics::kAuto)
+    const float rawProfile = currentPortValueForSlot(42);
+    int profile = std::isfinite(rawProfile)
+        ? NAMRig::SpeakerDynamics::clampProfile((int)(std::clamp(
+              rawProfile, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileCount - 1)) + 0.5f))
+        : NAMRig::SpeakerDynamics::kCaptured;
+    if (profile == NAMRig::SpeakerDynamics::kAuto) {
+      const bool cabAOn = !powerButtons[2] || powerButtons[2].state == NSControlStateValueOn;
+      const bool cabBOn = powerButtons[3] && powerButtons[3].state == NSControlStateValueOn;
       profile = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabPath.c_str());
+      if (cabBOn && !speakerCabBPath.empty() && (!cabAOn || speakerCabPath.empty()))
+        profile = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabBPath.c_str());
+    }
     speakerVisualizer.profile = profile;
     const bool powerOn = rackControls[(size_t)NAMRig::Rack::Power] >= 0.5f;
-    speakerVisualizer.damping = powerOn ? currentPortValueForSlot(38) * 0.01f : 0.0f;
+    const float rawNfb = currentPortValueForSlot(38);
+    speakerVisualizer.damping = (powerOn && std::isfinite(rawNfb)) ? rawNfb * 0.01f : 0.0f;
   }
 
   float currentPortValueForSlot(uint32_t port) const {
@@ -2760,10 +2770,12 @@ struct RigUIState {
       const size_t slot = port == 47 ? 3 : port - 7;
       auto updatePower = ^{
         if (!alive || !*alive) return;
-        if (!powerButtons[slot]) return;
-        powerButtons[slot].state = value >= 0.5f;
-        if (slot == 0) powerButtons[slot].title = value >= 0.5f ? @"ON" : @"OFF";
-        powerButtons[slot].needsDisplay = YES;
+        if (powerButtons[slot]) {
+          powerButtons[slot].state = value >= 0.5f;
+          if (slot == 0) powerButtons[slot].title = value >= 0.5f ? @"ON" : @"OFF";
+          powerButtons[slot].needsDisplay = YES;
+        }
+        if (slot == 2 || slot == 3) refreshSpeakerVisualizer();
       };
       if ([NSThread isMainThread]) updatePower();
       else dispatch_async(dispatch_get_main_queue(), updatePower);
@@ -2825,7 +2837,10 @@ struct RigUIState {
       return;
     }
     if (port == 42) {
-      const int idx = NAMRig::SpeakerDynamics::clampProfile((int)(value + 0.5f));
+      const int idx = std::isfinite(value)
+          ? NAMRig::SpeakerDynamics::clampProfile((int)(std::clamp(
+                value, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileCount - 1)) + 0.5f))
+          : NAMRig::SpeakerDynamics::kCaptured;
       auto updateSpeaker = ^{
         if (!alive || !*alive) return;
         if (speakerProfilePopup) {
@@ -2843,7 +2858,10 @@ struct RigUIState {
       return;
     }
     if (port == NAMRig::kSpeakerProfileBPort) {
-      const int idx = NAMRig::SpeakerDynamics::clampProfileB((int)(value + 0.5f));
+      const int idx = std::isfinite(value)
+          ? NAMRig::SpeakerDynamics::clampProfileB((int)(std::clamp(
+                value, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileBCount - 1)) + 0.5f))
+          : NAMRig::SpeakerDynamics::kMatchCabA;
       auto updateSpeakerB = ^{
         if (!alive || !*alive) return;
         speakerBProfile = idx;
