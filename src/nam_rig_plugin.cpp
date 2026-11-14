@@ -1342,14 +1342,12 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   if (!centerBlendLatched) {
     centerBlendRequested = centerBlendApplied = desiredCenterBlend;
     centerBlendLatched = true;
-  } else if (desiredCenterBlend != centerBlendRequested &&
-             transitionPhase == TransitionPhase::Steady) {
+  } else if (desiredCenterBlend != centerBlendRequested) {
     centerBlendRequested = desiredCenterBlend;
     if (rackOn(Rack::Spatial) && appliedEnabled[2] && appliedEnabled[3] &&
         (models[2] || irs[2]) && (models[3] || irs[3])) {
-      rackTransitionActive = true;
       startTransitionFadeOut();
-    } else {
+    } else if (transitionPhase != TransitionPhase::FadeOut) {
       centerBlendApplied = centerBlendRequested;
       centerStereoizer.reset();
     }
@@ -1845,7 +1843,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
   const int norm = decodeIrNormalization(*ports.ir_normalization);
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
-  const float widthTarget = std::max(0.0f, std::min(1.0f, *ports.stereo_width * 0.01f));
+  const float rawWidth = portValue(ports.stereo_width, 0.0f);
+  const float widthTarget = std::isfinite(rawWidth)
+      ? std::max(0.0f, std::min(1.0f, rawWidth * 0.01f)) : 0.0f;
   const float rawCab2Db = portValue(ports.cab2_level, 0.0f);
   const float cab2LevelTarget = rawCab2Db <= -23.95f ? 0.0f : cab2GainCache.get(rawCab2Db, blockRounding);
   const float glide10 = rateCache.glide10;
@@ -1853,8 +1853,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const float desiredOutput = outputGainCache.get(*ports.output_level, blockRounding);
   const float rawCabDb = *ports.cab_level;
   const float targetCab = rawCabDb <= -23.95f ? 0.0f : cabGainCache.get(rawCabDb, blockRounding);
-  const float alignmentMs = consoleOn ? std::max(-10.0f, std::min(10.0f,
-      portValue(ports.cab2_delay, 0.0f))) : 0.0f;
+  const float rawDelayMs = portValue(ports.cab2_delay, 0.0f);
+  const float safeDelayMs = std::isfinite(rawDelayMs)
+      ? std::max(-10.0f, std::min(10.0f, rawDelayMs)) : 0.0f;
+  const float alignmentMs = consoleOn ? safeDelayMs : 0.0f;
   const float polarityTarget = portValue(ports.cab2_polarity, 0.0f) >= 0.5f
       ? -1.0f : 1.0f;
   const uint32_t fadeSamples = std::max<uint32_t>(1,
@@ -1868,8 +1870,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       outL = outR = 0.0f;
       return;
     }
-    const float activeAlignMs = activeConsole
-        ? std::max(-10.0f, std::min(10.0f, portValue(ports.cab2_delay, 0.0f))) : 0.0f;
+    const float activeAlignMs = activeConsole ? safeDelayMs : 0.0f;
     const WavIR* irAL = irs[2];
     const WavIR* irAR = irsRight[2] ? irsRight[2] : irs[2];
     const WavIR* irBL = irs[3];
@@ -2432,10 +2433,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     bool shelfSnapNeeded = (centerBlendApplied != centerBlendRequested);
     commitPendingSwitches();
     appliedPedalOrder = desiredPedalOrder;
-    // The output is silent at the commit, so the blend shelf restarts from a
-    // clean history regardless of what each branch carried into the fade.
+    // The output is silent at the commit, so the blend shelf and Dome
+    // stereoizer restart from a clean history regardless of what each branch
+    // carried into the fade.
     dualCabShelf.reset();
     dualCabShelfR.reset();
+    centerStereoizer.reset();
     for (size_t st = 0; st < kStageCount; ++st)
       appliedEnabled[st] = desiredEnabled[st];
     if (rackTransitionActive && appliedRacks != requestedRacks) {

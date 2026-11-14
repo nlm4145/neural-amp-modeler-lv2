@@ -13,6 +13,10 @@
 namespace NAMRig {
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+inline double sanitizeSampleRate(double rate) noexcept {
+  if (!std::isfinite(rate) || !(rate > 0.0)) return 48000.0;
+  return std::min(1536000.0, std::max(8000.0, rate));
+}
 uint16_t u16(const unsigned char* p) { return uint16_t(p[0]) | (uint16_t(p[1]) << 8); }
 uint32_t u32(const unsigned char* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
@@ -49,6 +53,8 @@ WavInfo parseWav(const std::vector<unsigned char>& bytes) {
   if (!info.audio || !info.channels || !info.rate || !info.bits ||
       (info.format != 1 && info.format != 3))
     throw std::runtime_error("unsupported WAV format");
+  if (info.rate < 1000 || info.rate > 1536000)
+    throw std::runtime_error("unsupported WAV sample rate");
   return info;
 }
 
@@ -64,9 +70,11 @@ std::vector<float> readWav(const char* path, uint32_t& rate, int channel) {
   rate = info.rate;
   const uint16_t format = info.format, channels = info.channels, bits = info.bits;
   if (channel >= channels) throw std::runtime_error("WAV channel out of range");
+  if (bits == 0 || (bits % 8) != 0)
+    throw std::runtime_error("unsupported WAV sample encoding");
   const size_t sampleBytes = bits / 8;
   const size_t frames = info.audioBytes / (sampleBytes * channels);
-  if (!sampleBytes || !frames) throw std::runtime_error("empty WAV");
+  if (!frames) throw std::runtime_error("empty WAV");
 
   const uint16_t first = channel < 0 ? 0 : static_cast<uint16_t>(channel);
   const uint16_t last = channel < 0 ? channels : static_cast<uint16_t>(channel + 1);
@@ -85,6 +93,7 @@ std::vector<float> readWav(const char* path, uint32_t& rate, int channel) {
         value = float(v) / 8388608.0f;
       } else if (format == 1 && bits == 32) value = float(int32_t(u32(p))) / 2147483648.0f;
       else throw std::runtime_error("unsupported WAV sample encoding");
+      if (!std::isfinite(value)) value = 0.0f;
       sum += value;
     }
     mono[frame] = float(sum / (last - first));
@@ -286,6 +295,7 @@ void repairCausalPreRinging(std::vector<double>& full, size_t preOut,
 // near sample 0, and causal spectral repair recovers any energy clipped at t < 0
 // while keeping zero added latency.
 std::vector<float> resample(const std::vector<float>& input, double from, double to) {
+  if (!std::isfinite(from) || !std::isfinite(to) || !(from > 0.0) || !(to > 0.0)) return input;
   if (std::fabs(from - to) < 1.0 || input.size() < 2) return input;
   constexpr int kTaps = 64;                             // kernel half-width (input samples)
   const double ratio = from / to;                       // input samples per output sample
@@ -399,9 +409,9 @@ ResponseStats measureResponse(const std::vector<float>& taps, double rate) {
 
 WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   (void)maxBlockSize;  // chunking is internal (kBlock); any call size works
-  const ResponseStats response = measureResponse(taps, sampleRate);
-  responsePeak = response.peak;
-  responseRms = response.rms;
+  const ResponseStats response = measureResponse(taps, sanitizeSampleRate(sampleRate));
+  responsePeak = (std::isfinite(response.peak) && response.peak > 0.0) ? response.peak : 0.0;
+  responseRms = (std::isfinite(response.rms) && response.rms > 0.0) ? response.rms : 0.0;
   // Precompute complex DFT across [45..210 Hz] so the audio thread can score
   // dual-cab low-end coherence with zero allocations or transforms.
   {
@@ -429,10 +439,16 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
     }
     lowBand.energy = static_cast<float>(energySum);
   }
-  if (response.peak > 1.0e-12)
-    peakScale = static_cast<float>(1.0 / response.peak);
-  if (response.rms > 1.0e-12)
-    loudnessScale = static_cast<float>(1.0 / response.rms);
+  if (responsePeak > 1.0e-12) {
+    const float invPeak = static_cast<float>(1.0 / responsePeak);
+    if (std::isfinite(invPeak) && invPeak > 0.0f) peakScale = invPeak;
+  }
+  if (responseRms > 1.0e-12) {
+    const float invRms = static_cast<float>(1.0 / responseRms);
+    if (std::isfinite(invRms) && invRms > 0.0f) loudnessScale = invRms;
+  }
+  if (!std::isfinite(peakScale) || !(peakScale > 0.0f)) peakScale = 1.0f;
+  if (!std::isfinite(loudnessScale) || !(loudnessScale > 0.0f)) loudnessScale = 1.0f;
   scaleSmoothCoeff = 1.0f - std::exp(-1.0f /
       static_cast<float>(0.010 * std::max(8000.0, sampleRate)));
 
@@ -472,13 +488,22 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
 WavIR::~WavIR() = default;
 
 void WavIR::linkStereoNormalization(WavIR& left, WavIR& right) noexcept {
-  const double peak = std::max(left.responsePeak, right.responsePeak);
-  const double rms = std::sqrt(0.5 * (left.responseRms * left.responseRms +
-                                      right.responseRms * right.responseRms));
-  const float peakScale = peak > 1.0e-12 ? static_cast<float>(1.0 / peak) : 1.0f;
-  const float loudnessScale = rms > 1.0e-12 ? static_cast<float>(1.0 / rms) : 1.0f;
-  left.peakScale = right.peakScale = peakScale;
-  left.loudnessScale = right.loudnessScale = loudnessScale;
+  const double lPeak = (std::isfinite(left.responsePeak) && left.responsePeak > 0.0)
+      ? left.responsePeak : 0.0;
+  const double rPeak = (std::isfinite(right.responsePeak) && right.responsePeak > 0.0)
+      ? right.responsePeak : 0.0;
+  const double lRms = (std::isfinite(left.responseRms) && left.responseRms > 0.0)
+      ? left.responseRms : 0.0;
+  const double rRms = (std::isfinite(right.responseRms) && right.responseRms > 0.0)
+      ? right.responseRms : 0.0;
+  const double peak = std::max(lPeak, rPeak);
+  const double rms = std::sqrt(0.5 * (lRms * lRms + rRms * rRms));
+  const float pScale = (std::isfinite(peak) && peak > 1.0e-12)
+      ? static_cast<float>(1.0 / peak) : 1.0f;
+  const float lScale = (std::isfinite(rms) && rms > 1.0e-12)
+      ? static_cast<float>(1.0 / rms) : 1.0f;
+  left.peakScale = right.peakScale = std::isfinite(pScale) ? pScale : 1.0f;
+  left.loudnessScale = right.loudnessScale = std::isfinite(lScale) ? lScale : 1.0f;
 }
 
 unsigned WavIR::channelCount(const char* path) {
@@ -491,38 +516,44 @@ unsigned WavIR::channelCount(const char* path) {
 
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
                                    int maxBlockSize, int channel) {
-  auto taps = loadTaps(path, hostRate, channel);
+  const double safeHostRate = sanitizeSampleRate(hostRate);
+  auto taps = loadTaps(path, safeHostRate, channel);
   // Store response-based scales so normalization can change without reloading
   // or destructively altering the corrected taps.
   return std::unique_ptr<WavIR>(
-      new WavIR(std::move(taps), hostRate, maxBlockSize));
+      new WavIR(std::move(taps), safeHostRate, maxBlockSize));
 }
 
 std::vector<float> WavIR::loadTaps(const char* path, double hostRate, int channel) {
+  const double safeHostRate = sanitizeSampleRate(hostRate);
   uint32_t sourceRate = 0;
   const auto sourceTaps = readWav(path, sourceRate, channel);
-  auto taps = resample(sourceTaps, sourceRate, hostRate);
+  auto taps = resample(sourceTaps, sourceRate, safeHostRate);
   // A resampled discrete impulse response needs the inverse sample-density
   // factor to retain its transfer function: interpolating 48 -> 96 kHz creates
   // roughly twice as many taps and would otherwise add about 6 dB of gain.
-  if (std::fabs(static_cast<double>(sourceRate) - hostRate) >= 1.0) {
-    const float transferScale = static_cast<float>(sourceRate / hostRate);
+  if (sourceTaps.size() >= 2 &&
+      std::fabs(static_cast<double>(sourceRate) - safeHostRate) >= 1.0) {
+    const float transferScale = static_cast<float>(sourceRate / safeHostRate);
     for (float& tap : taps) tap *= transferScale;
   }
   // Cabinet IR energy is concentrated near the start; 170 ms (8192 taps at
   // 48 kHz) keeps far-mic and room tails. A hard cut rings (truncation ripple
   // in the transfer function), so the last ~5 ms taper with a raised cosine.
-  const size_t maxTaps = static_cast<size_t>(hostRate * kMaxSeconds);
+  const size_t maxTaps = static_cast<size_t>(safeHostRate * kMaxSeconds);
   if (maxTaps > 0 && taps.size() > maxTaps) {
     taps.resize(maxTaps);
     const size_t fade = std::min(taps.size(),
-        static_cast<size_t>(std::llround(hostRate * 0.005)));
+        static_cast<size_t>(std::llround(safeHostRate * 0.005)));
     for (size_t i = 0; i < fade; ++i) {
       const double t = static_cast<double>(i + 1) / static_cast<double>(fade);
       taps[taps.size() - fade + i] *= static_cast<float>(0.5 * (1.0 + std::cos(kPi * t)));
     }
   }
   if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
+  for (float& tap : taps) {
+    if (!std::isfinite(tap)) tap = 0.0f;
+  }
   return taps;
 }
 
@@ -661,7 +692,7 @@ WavIR::AlignmentResult WavIR::findBestAlignment(const char* pathA, const char* p
                                                 double sampleRate) {
   AlignmentResult result;
   if (!pathA || !pathA[0] || !pathB || !pathB[0]) return result;
-  const double rate = std::max(8000.0, sampleRate);
+  const double rate = sanitizeSampleRate(sampleRate);
   try {
     auto tapsA = loadTaps(pathA, rate, -1);
     auto tapsB = loadTaps(pathB, rate, -1);

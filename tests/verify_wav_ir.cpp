@@ -611,16 +611,155 @@ int main(int argc, char** argv) {
     const std::string resPath = std::string(dir) + "/ir_res110.wav";
     writeWavF32(resPath, resTaps, 48000);
     auto irRes = NAMRig::WavIR::load(resPath.c_str(), fsPeak, 512);
-    const double exactPeakMag = magnitudeAt(resTaps, fsPeak, f0);
     std::vector<float> resImpulse(4096, 0.0f);
     resImpulse[0] = 1.0f;
     irRes->process(resImpulse.data(), 4096, 1);
     const double normPeakDb = std::fabs(20.0 * std::log10(magnitudeAt(resImpulse, fsPeak, f0)));
-    (void)exactPeakMag;
     char msgRes[160];
     std::snprintf(msgRes, sizeof(msgRes),
                   "log grid captures Q=4 110 Hz resonance peak (err %.3f dB < 0.05 dB)", normPeakDb);
     CHECK(normPeakDb < 0.05, msgRes);
+  }
+
+  // Review regression checks: edge cases & invalid/malformed inputs.
+  {
+    auto writeRawWav = [](const std::string& path, uint16_t format, uint16_t channels,
+                          uint32_t rate, uint16_t bits, const void* payload, uint32_t dataBytes) {
+      std::FILE* f = std::fopen(path.c_str(), "wb");
+      if (!f) return false;
+      auto u32le = [&](uint32_t v) {
+        uint8_t b[4] = {uint8_t(v & 0xff), uint8_t((v >> 8) & 0xff),
+                        uint8_t((v >> 16) & 0xff), uint8_t((v >> 24) & 0xff)};
+        std::fwrite(b, 1, 4, f);
+      };
+      auto u16le = [&](uint16_t v) {
+        uint8_t b[2] = {uint8_t(v & 0xff), uint8_t((v >> 8) & 0xff)};
+        std::fwrite(b, 1, 2, f);
+      };
+      std::fwrite("RIFF", 1, 4, f);
+      u32le(36u + dataBytes);
+      std::fwrite("WAVEfmt ", 1, 8, f);
+      u32le(16u);
+      u16le(format);
+      u16le(channels);
+      u32le(rate);
+      u32le(rate * channels * std::max<uint32_t>(1u, bits / 8u));
+      u16le(uint16_t(channels * std::max<uint32_t>(1u, bits / 8u)));
+      u16le(bits);
+      std::fwrite("data", 1, 4, f);
+      u32le(dataBytes);
+      if (dataBytes > 0) std::fwrite(payload, 1, dataBytes, f);
+      std::fclose(f);
+      return true;
+    };
+
+    // 1) 1-sample IR transfer gain invariance across sample rates (including tiny amplitude).
+    const std::string oneUnitPath = std::string(dir) + "/ir_one_unit.wav";
+    writeWavF32(oneUnitPath, {1.0f}, 48000);
+    const auto unitTaps192 = NAMRig::WavIR::loadTaps(oneUnitPath.c_str(), 192000.0);
+    CHECK(unitTaps192.size() == 1 && std::fabs(unitTaps192[0] - 1.0f) < 1e-6f,
+          "1-sample unit IR keeps unity gain in loadTaps across sample rates");
+
+    const std::string oneTinyPath = std::string(dir) + "/ir_one_tiny.wav";
+    writeWavF32(oneTinyPath, {2.0e-12f}, 48000);
+    const auto tinyTaps192 = NAMRig::WavIR::loadTaps(oneTinyPath.c_str(), 192000.0);
+    CHECK(tinyTaps192.size() == 1 && std::fabs(tinyTaps192[0] - 2.0e-12f) < 1e-16f,
+          "1-sample tiny IR retains amplitude in loadTaps at 192 kHz");
+    auto tinyIr192 = NAMRig::WavIR::load(oneTinyPath.c_str(), 192000.0, 512);
+    float tinyBuf[16] = {1.0f};
+    tinyIr192->process(tinyBuf, 16, 1);
+    CHECK(std::fabs(tinyBuf[0] - 1.0f) < 1e-4f,
+          "1-sample tiny IR normalizes to unity peak at 192 kHz");
+
+    // 2) Sub-byte bitsPerSample (4-bit) throws cleanly instead of dividing by zero.
+    const std::string badBitsPath = std::string(dir) + "/ir_4bit.wav";
+    const uint8_t fourBitData[4] = {0x12, 0x34, 0x56, 0x78};
+    CHECK(writeRawWav(badBitsPath, 1, 1, 48000, 4, fourBitData, sizeof(fourBitData)),
+          "write malformed 4-bit WAV fixture");
+    bool fourBitThrew = false;
+    try {
+      (void)NAMRig::WavIR::loadTaps(badBitsPath.c_str(), 48000.0);
+    } catch (...) {
+      fourBitThrew = true;
+    }
+    CHECK(fourBitThrew, "4-bit WAV throws cleanly instead of SIGFPE");
+
+    // 3) Absurd WAV sample rate (1 Hz) throws cleanly instead of exploding resampler work.
+    const std::string lowRatePath = std::string(dir) + "/ir_1hz.wav";
+    const float dummy16[16] = {1.0f};
+    CHECK(writeRawWav(lowRatePath, 3, 1, 1, 32, dummy16, sizeof(dummy16)),
+          "write absurd 1 Hz WAV fixture");
+    bool lowRateThrew = false;
+    try {
+      (void)NAMRig::WavIR::loadTaps(lowRatePath.c_str(), 48000.0);
+    } catch (...) {
+      lowRateThrew = true;
+    }
+    CHECK(lowRateThrew, "1 Hz WAV sample rate rejected cleanly");
+
+    // 4) Non-finite float32 WAV samples & downsampling float overflow produce finite outputs.
+    const std::string nanPath = std::string(dir) + "/ir_nan.wav";
+    writeWavF32(nanPath, {std::nanf(""), INFINITY, -INFINITY, 0.5f, 0.25f}, 48000);
+    const auto nanTaps = NAMRig::WavIR::loadTaps(nanPath.c_str(), 96000.0);
+    bool nanTapsFinite = !nanTaps.empty();
+    for (float v : nanTaps) nanTapsFinite = nanTapsFinite && std::isfinite(v);
+    CHECK(nanTapsFinite, "NaN/Inf WAV yields finite resampled taps");
+    auto nanIr = NAMRig::WavIR::load(nanPath.c_str(), 96000.0, 512);
+    for (int mode : {1, 2}) {
+      std::vector<float> buf(512, 0.0f);
+      buf[0] = 1.0f;
+      nanIr->process(buf.data(), static_cast<uint32_t>(buf.size()), mode);
+      bool finiteOut = true;
+      for (float v : buf) finiteOut = finiteOut && std::isfinite(v);
+      CHECK(finiteOut, mode == 1 ? "NaN/Inf WAV peak mode outputs finite samples"
+                                 : "NaN/Inf WAV loudness mode outputs finite samples");
+    }
+
+    const std::string ovfPath = std::string(dir) + "/ir_overflow.wav";
+    writeWavF32(ovfPath, {3.4e38f, 3.4e38f, 3.4e38f, 3.4e38f}, 96000);
+    const auto ovfTaps = NAMRig::WavIR::loadTaps(ovfPath.c_str(), 48000.0);
+    bool ovfTapsFinite = !ovfTaps.empty();
+    for (float v : ovfTaps) ovfTapsFinite = ovfTapsFinite && std::isfinite(v);
+    CHECK(ovfTapsFinite, "downsampling overflow WAV produces finite taps");
+    auto ovfIr = NAMRig::WavIR::load(ovfPath.c_str(), 48000.0, 512);
+    for (int mode : {1, 2}) {
+      std::vector<float> buf(512, 0.0f);
+      buf[0] = 1.0f;
+      ovfIr->process(buf.data(), static_cast<uint32_t>(buf.size()), mode);
+      bool finiteOut = true;
+      for (float v : buf) finiteOut = finiteOut && std::isfinite(v);
+      CHECK(finiteOut, mode == 1 ? "overflow WAV peak mode outputs finite samples"
+                                 : "overflow WAV loudness mode outputs finite samples");
+    }
+
+    // 5) Non-finite and extreme hostRate values sanitize safely without UB/OOM.
+    for (double badRate : {double(std::nan("")), 0.0, -48000.0, 1.0e100}) {
+      const auto safeTaps = NAMRig::WavIR::loadTaps(oneUnitPath.c_str(), badRate);
+      auto safeIr = NAMRig::WavIR::load(oneUnitPath.c_str(), badRate, 512);
+      float imp[8] = {1.0f};
+      safeIr->process(imp, 8, 2);
+      const auto align = NAMRig::WavIR::findBestAlignment(oneUnitPath.c_str(), oneUnitPath.c_str(), badRate);
+      CHECK(!safeTaps.empty() && std::isfinite(imp[0]) && align.valid && std::isfinite(align.correlation),
+            "bad hostRate safely clamped across loadTaps/load/findBestAlignment");
+    }
+
+    // 6) linkStereoNormalization with silent or NaN-sanitized channel keeps outputs finite.
+    const std::string silentPath = std::string(dir) + "/ir_silent.wav";
+    writeWavF32(silentPath, std::vector<float>(64, 0.0f), 48000);
+    auto leftSilent = NAMRig::WavIR::load(silentPath.c_str(), 48000.0, 512);
+    auto rightNan = NAMRig::WavIR::load(nanPath.c_str(), 48000.0, 512);
+    NAMRig::WavIR::linkStereoNormalization(*leftSilent, *rightNan);
+    for (int mode : {1, 2}) {
+      float lBuf[64] = {1.0f};
+      float rBuf[64] = {1.0f};
+      leftSilent->process(lBuf, 64, mode);
+      rightNan->process(rBuf, 64, mode);
+      bool finiteLR = true;
+      for (int i = 0; i < 64; ++i) {
+        finiteLR = finiteLR && std::isfinite(lBuf[i]) && std::isfinite(rBuf[i]);
+      }
+      CHECK(finiteLR, "linkStereoNormalization with silent/NaN channels produces finite output");
+    }
   }
 
   std::printf(g_fail ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", g_fail);
