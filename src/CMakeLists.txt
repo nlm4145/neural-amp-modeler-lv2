@@ -71,6 +71,7 @@ set(RIG_CORE_SOURCES
 	amp_advanced.h
 	output_transformer.h
 	speaker_dynamics.h
+	align_delay_table.h
 	space_fx.h)
 
 add_library(rig_dsp_core OBJECT ${RIG_CORE_SOURCES} ${NA_SOURCES})

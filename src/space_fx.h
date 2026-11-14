@@ -39,14 +39,14 @@ struct Sinc8Table {
 };
 inline const Sinc8Table kSinc8Table;
 
-// Circular delay line with integer, 4-point cubic, and 8-tap sinc interpolated reads.
-// Delay values are clamped to the allocated length so a stale control value can
-// never read outside the buffer.
+// Circular delay line with integer, 4-point cubic, and windowed-sinc / LS-FIR
+// interpolated reads. Delay values are clamped to the allocated length so a
+// stale or non-finite control value can never read outside the buffer or trigger UB.
 class DelayLine {
  public:
   void allocate(size_t samples) {
     capacity_ = samples;
-    buffer_.assign(std::max<size_t>(samples, 16) + 16, 0.0f);
+    buffer_.assign(std::max<size_t>(samples, 32) + 32, 0.0f);
     write_ = 0;
   }
   void clear() {
@@ -69,7 +69,7 @@ class DelayLine {
   // offset it is about -1 dB at a quarter of the sample rate, against -3 dB
   // for linear interpolation; good enough for reverb and echo taps.
   float readFrac(double delay) const {
-    delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
+    delay = clampDelay(delay);
     const size_t whole = static_cast<size_t>(delay);
     const float frac = static_cast<float>(delay - static_cast<double>(whole));
     if (frac <= 1.0e-6f) {
@@ -97,9 +97,9 @@ class DelayLine {
   }
 
   // 8-tap windowed-sinc interpolation for echo/reverb taps, with causal LS-FIR
-  // below 3 samples so sub-3-sample reads never drop to linear/Catmull-Rom.
+  // below 3 samples whenever the line can hold the full 32-tap causal window.
   float readSinc8(double delay) const {
-    delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
+    delay = clampDelay(delay);
     const size_t whole = static_cast<size_t>(delay);
     const float frac = static_cast<float>(delay - static_cast<double>(whole));
     if (frac <= 1.0e-6f) {
@@ -109,7 +109,10 @@ class DelayLine {
       return read(whole + 1);
     }
     if (whole < 3) {
-      return readCausalAlign(delay);
+      if (capacity_ >= static_cast<size_t>(AlignDelayTables::kTaps - 1)) {
+        return readCausalAlign(delay);
+      }
+      return readFrac(delay);
     }
 
     const float position = frac * Sinc8Table::kSteps;
@@ -125,7 +128,7 @@ class DelayLine {
   // samples (zero lookahead latency, continuous across sample boundaries) and
   // symmetric 32-tap Kaiser-windowed sinc (beta = 7.0) at >= 15 samples.
   float readAlign(double delay) const {
-    delay = std::min(std::max(delay, 0.0), static_cast<double>(capacity()));
+    delay = clampDelay(delay);
     const size_t whole = static_cast<size_t>(delay);
     const float frac = static_cast<float>(delay - static_cast<double>(whole));
     if (frac <= 1.0e-6f) {
@@ -133,6 +136,9 @@ class DelayLine {
     }
     if (frac >= 1.0f - 1.0e-6f) {
       return read(whole + 1);
+    }
+    if (capacity_ < static_cast<size_t>(AlignDelayTables::kTaps - 1)) {
+      return readFrac(delay);
     }
     if (whole < static_cast<size_t>(AlignDelayTables::kCausalMaxDelay)) {
       return readCausalAlign(delay);
@@ -148,7 +154,16 @@ class DelayLine {
   }
 
  private:
+  double clampDelay(double delay) const {
+    if (!(delay > 0.0)) {
+      return 0.0;
+    }
+    const double cap = static_cast<double>(capacity_);
+    return delay < cap ? delay : cap;
+  }
+
   float readCausalAlign(double delay) const {
+    delay = clampDelay(delay);
     const float position = static_cast<float>(delay) * AlignDelayTables::kCausalSteps;
     const int row = std::clamp(static_cast<int>(position), 0, AlignDelayTables::kCausalRows - 2);
     const float blend = std::clamp(position - static_cast<float>(row), 0.0f, 1.0f);
@@ -188,8 +203,9 @@ class DelayLine {
 class AlignDelay {
  public:
   void initialize(double rate, double maxMs) {
-    rate_ = rate > 0.0 ? rate : 48000.0;
-    maxSamples_ = rate_ * maxMs * 0.001;
+    rate_ = (std::isfinite(rate) && rate > 0.0) ? rate : 48000.0;
+    const double safeMaxMs = (std::isfinite(maxMs) && maxMs > 0.0) ? maxMs : 0.0;
+    maxSamples_ = rate_ * safeMaxMs * 0.001;
     // Extra headroom guarantees readAlign's 32-tap causal and Kaiser windows
     // never clamp at the far boundary of [0, maxSamples_].
     const size_t alloc = std::max<size_t>(

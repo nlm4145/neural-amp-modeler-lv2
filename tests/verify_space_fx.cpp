@@ -99,7 +99,7 @@ int main() {
     NAMRig::DelayLine line;
     line.allocate(64);
     for (int i = 0; i < 200; ++i) line.write(static_cast<float>(i));
-    // A stale control value must clamp, never read outside the buffer.
+    // A stale or non-finite control value must clamp cleanly without UB.
     const float far = line.read(1'000'000);
     const float farFrac = line.readFrac(1.0e9);
     const float zero = line.readFrac(0.0);
@@ -108,10 +108,15 @@ int main() {
     const float farAlign = line.readAlign(1.0e9);
     const float negAlign = line.readAlign(-5.0);
     const float zeroAlign = line.readAlign(0.0);
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
+    const float nanFrac = line.readFrac(nanVal);
+    const float nanSinc = line.readSinc8(nanVal);
+    const float nanAlign = line.readAlign(nanVal);
     check(std::isfinite(far) && std::isfinite(farFrac) && std::isfinite(zero) &&
               std::isfinite(farSinc) && std::isfinite(zeroSinc) &&
-              std::isfinite(farAlign) && std::isfinite(negAlign) && std::isfinite(zeroAlign),
-          "DelayLine clamps out-of-range reads instead of reading past the end");
+              std::isfinite(farAlign) && std::isfinite(negAlign) && std::isfinite(zeroAlign) &&
+              nanFrac == line.read(0) && nanSinc == line.read(0) && nanAlign == line.read(0),
+          "DelayLine clamps out-of-range and NaN reads instead of reading past the end or triggering UB");
     check(zeroAlign == line.read(0) &&
               line.readAlign(3.0) == line.read(3) &&
               line.readAlign(15.0) == line.read(15) &&
@@ -120,8 +125,28 @@ int main() {
     check(line.capacity() == 64,
           "DelayLine reports the usable capacity it was allocated for");
   }
+  {
+    // A small DelayLine (< 31 samples) must fall back cleanly instead of
+    // smearing trailing 32-tap causal FIR weights onto read(capacity()).
+    NAMRig::DelayLine tiny;
+    tiny.allocate(16);
+    tiny.write(1.0f);
+    for (int i = 0; i < 16; ++i) tiny.write(0.0f);
+    check(tiny.capacity() == 16 &&
+              std::fabs(tiny.readSinc8(1.5)) < 1.0e-6f &&
+              std::fabs(tiny.readAlign(1.5)) < 1.0e-6f,
+          "DelayLine sub-31 capacity reads do not clamp trailing FIR taps onto an impulse at capacity");
+  }
 
   // ---- AlignDelay --------------------------------------------------------
+  {
+    NAMRig::AlignDelay invalidInit;
+    invalidInit.initialize(std::numeric_limits<double>::quiet_NaN(), -5.0);
+    auto probeL = impulse(128), probeR = impulse(128);
+    invalidInit.process(probeL.data(), probeR.data(), probeL.size(), 1.0f);
+    check(allFinite(probeL) && allFinite(probeR),
+          "AlignDelay::initialize sanitizes non-finite rate and negative maxMs");
+  }
   {
     NAMRig::AlignDelay align;
     align.initialize(rate, 10.0);
@@ -149,7 +174,7 @@ int main() {
           "AlignDelay preserves the impulse amplitude");
   }
   {
-    // AlignDelay fractional sinc interpolation must preserve high-frequency energy.
+    // AlignDelay causal FIR interpolation must preserve high-frequency energy.
     // At 96 kHz, a 20 kHz tone delayed by 5.5 samples (fractional f=0.5) must
     // not suffer the ~2 dB treble roll-off of linear interpolation.
     NAMRig::AlignDelay align;
@@ -163,7 +188,7 @@ int main() {
     const double ratioDb = 10.0 * std::log10(outEnergy / inEnergy);
     char label[128];
     std::snprintf(label, sizeof(label),
-                  "AlignDelay 8-tap sinc preserves 20 kHz energy at f=0.5 (ratio: %+.3f dB)",
+                  "AlignDelay causal FIR preserves 20 kHz energy at 5.5 smp (ratio: %+.3f dB)",
                   ratioDb);
     check(std::fabs(ratioDb) < 0.15, label);
   }
@@ -192,7 +217,7 @@ int main() {
           "AlignDelay guards non-finite delayMs safely");
   }
   {
-    // Step 2: Unified 32-tap causal LS-FIR (< 15 samples) + Kaiser-32 (>= 15 samples)
+    // Unified 32-tap causal LS-FIR (< 15 samples) + Kaiser-32 (>= 15 samples)
     // eliminates the severe sub-3-sample treble roll-off of linear / Catmull-Rom
     // interpolation at both 48 kHz and 96 kHz.
     for (double sessionRate : {48000.0, 96000.0}) {
@@ -217,6 +242,74 @@ int main() {
     }
   }
   {
+    // Full-spectrum peak gain cap (<= +0.25 dB up to Nyquist), passband complex
+    // accuracy (u <= 0.45), and low-frequency phase delay positivity/accuracy
+    // across critical sub-sample, mid, and causal->sinc handoff delays.
+    double maxGainDb = -200.0;
+    double worstPbErrDb = -200.0;
+    double worst80HzDelayErr = 0.0;
+    double worst1kHzDelayErr = 0.0;
+    for (double d : {0.125, 0.25, 0.5, 0.609375, 0.68, 0.75, 1.5, 2.5, 5.5, 14.5, 14.99, 15.5}) {
+      NAMRig::DelayLine cosLine, sinLine;
+      cosLine.allocate(64);
+      sinLine.allocate(64);
+      for (int bin = 1; bin <= 256; ++bin) {
+        const double w = kPi * static_cast<double>(bin) / 256.0;
+        cosLine.clear();
+        sinLine.clear();
+        for (int n = 0; n < 64; ++n) {
+          cosLine.write(static_cast<float>(std::cos(w * n)));
+          sinLine.write(static_cast<float>(std::sin(w * n)));
+        }
+        const double outRe = cosLine.readAlign(d);
+        const double outIm = sinLine.readAlign(d);
+        // Normalize out phase by e^{j * w * 63} to obtain H(e^{jw}, d).
+        const double refRe = std::cos(w * 63.0);
+        const double refIm = std::sin(w * 63.0);
+        const double hRe = outRe * refRe + outIm * refIm;
+        const double hIm = outIm * refRe - outRe * refIm;
+        const double magDb = 20.0 * std::log10(std::max(1.0e-12, std::hypot(hRe, hIm)));
+        maxGainDb = std::max(maxGainDb, magDb);
+        if (bin <= 115) { // u <= 0.449
+          const double dRe = std::cos(w * d);
+          const double dIm = -std::sin(w * d);
+          const double errDb = 20.0 * std::log10(std::max(1.0e-12, std::hypot(hRe - dRe, hIm - dIm)));
+          worstPbErrDb = std::max(worstPbErrDb, errDb);
+        }
+      }
+
+      const auto measurePhaseDelay = [&](double hz) {
+        const double w = 2.0 * kPi * hz / 48000.0;
+        cosLine.clear();
+        sinLine.clear();
+        for (int n = 0; n < 64; ++n) {
+          cosLine.write(static_cast<float>(std::cos(w * n)));
+          sinLine.write(static_cast<float>(std::sin(w * n)));
+        }
+        const double outRe = cosLine.readAlign(d);
+        const double outIm = sinLine.readAlign(d);
+        const double refRe = std::cos(w * 63.0);
+        const double refIm = std::sin(w * 63.0);
+        const double hRe = outRe * refRe + outIm * refIm;
+        const double hIm = outIm * refRe - outRe * refIm;
+        const double phase = std::atan2(hIm, hRe); // expected ~ -w * d
+        return -phase / w;
+      };
+      const double pd80 = measurePhaseDelay(80.0);
+      const double pd1k = measurePhaseDelay(1000.0);
+      worst80HzDelayErr = std::max(worst80HzDelayErr, std::fabs(pd80 - d));
+      worst1kHzDelayErr = std::max(worst1kHzDelayErr, std::fabs(pd1k - d));
+    }
+    char specLabel[200];
+    std::snprintf(specLabel, sizeof(specLabel),
+                  "DelayLine::readAlign obeys peak cap and passband/low-freq delay accuracy "
+                  "(maxGain: %+.3f dB, pb45: %.1f dB, err80Hz: %.4f smp, err1kHz: %.4f smp)",
+                  maxGainDb, worstPbErrDb, worst80HzDelayErr, worst1kHzDelayErr);
+    check(maxGainDb < 0.25 && worstPbErrDb < -23.0 &&
+              worst80HzDelayErr < 0.03 && worst1kHzDelayErr < 0.15,
+          specLabel);
+  }
+  {
     // Dual-cab comb-filtering accuracy at 48 kHz: summing a direct signal with an
     // AlignDelay-shifted copy must match ideal fractional delay comb response and
     // produce deep destructive cancellation at half-period frequencies.
@@ -226,7 +319,7 @@ int main() {
       align.initialize(kRate48, 10.0);
       const float delayMs = static_cast<float>(samples / kRate48 * 1000.0);
 
-      // Complex comb accuracy across guitar & cab upper band (1 kHz, 4 kHz, 8 kHz)
+      // True unweighted transfer error across guitar & cab upper band (1, 4, 8 kHz)
       double maxCombErrDb = -200.0;
       for (double hz : {1000.0, 4000.0, 8000.0}) {
         align.reset();
@@ -242,7 +335,8 @@ int main() {
           const double actualComb = 0.5 * (static_cast<double>(direct[i]) + delayed[i]);
           const double diff = actualComb - idealComb;
           errE += diff * diff;
-          refE += 0.25 * 0.25 * 0.5;
+          // 0.5 * tone has amplitude 0.125, matching the 0.5 factor inside actualComb - idealComb.
+          refE += 0.125 * 0.125 * 0.5;
         }
         const double errDb = 10.0 * std::log10(std::max(errE, 1e-18) / refE);
         if (errDb > maxCombErrDb) maxCombErrDb = errDb;
@@ -277,36 +371,44 @@ int main() {
     }
   }
   {
-    // DelayLine::readAlign must transition smoothly without step discontinuities
-    // across integer crossings (1.0, 3.0) and across the 15.0 causal->sinc handoff.
-    NAMRig::DelayLine line;
-    line.allocate(128);
+    // DelayLine::readAlign quadrature sweeps from [0.0 -> 3.5] and [14.5 -> 15.5]
+    // at both 1 kHz and 4 kHz must glide smoothly with bounded phase-rate slew.
     constexpr double kRate48 = 48000.0;
-    const double w = 2.0 * kPi * 4000.0 / kRate48;
-    for (int i = 0; i < 200; ++i) {
-      line.write(static_cast<float>(std::sin(w * i)));
-    }
-    double maxStepLow = 0.0;
-    float prevLow = line.readAlign(0.5);
-    for (int s = 1; s <= 1500; ++s) {
-      const double d = 0.5 + 0.002 * s; // 0.5 -> 3.5 across 1.0, 2.0, 3.0
-      const float cur = line.readAlign(d);
-      maxStepLow = std::max(maxStepLow, static_cast<double>(std::fabs(cur - prevLow)));
-      prevLow = cur;
-    }
-    double maxStepHandoff = 0.0;
-    float prevHi = line.readAlign(14.5);
-    for (int s = 1; s <= 500; ++s) {
-      const double d = 14.5 + 0.002 * s; // 14.5 -> 15.5 across 15.0 handoff
-      const float cur = line.readAlign(d);
-      maxStepHandoff = std::max(maxStepHandoff, static_cast<double>(std::fabs(cur - prevHi)));
-      prevHi = cur;
-    }
-    char sweepLabel[160];
+    constexpr double kStepD = 0.002;
+    auto measureMaxSlewRatio = [&](double hz, double startD, int steps) {
+      const double w = 2.0 * kPi * hz / kRate48;
+      NAMRig::DelayLine cosLine, sinLine;
+      cosLine.allocate(128);
+      sinLine.allocate(128);
+      for (int i = 0; i < 200; ++i) {
+        cosLine.write(static_cast<float>(std::cos(w * i)));
+        sinLine.write(static_cast<float>(std::sin(w * i)));
+      }
+      double maxDelta = 0.0;
+      double prevRe = cosLine.readAlign(startD);
+      double prevIm = sinLine.readAlign(startD);
+      for (int s = 1; s <= steps; ++s) {
+        const double d = startD + kStepD * s;
+        const double curRe = cosLine.readAlign(d);
+        const double curIm = sinLine.readAlign(d);
+        maxDelta = std::max(maxDelta, std::hypot(curRe - prevRe, curIm - prevIm));
+        prevRe = curRe;
+        prevIm = curIm;
+      }
+      return maxDelta / (w * kStepD);
+    };
+    const double slewLow1k = measureMaxSlewRatio(1000.0, 0.0, 1750);
+    const double slewLow4k = measureMaxSlewRatio(4000.0, 0.0, 1750);
+    const double slewHandoff1k = measureMaxSlewRatio(1000.0, 14.5, 500);
+    const double slewHandoff4k = measureMaxSlewRatio(4000.0, 14.5, 500);
+    char sweepLabel[200];
     std::snprintf(sweepLabel, sizeof(sweepLabel),
-                  "DelayLine::readAlign sweep has no integer/handoff steps (max delta: %.4f, %.4f)",
-                  maxStepLow, maxStepHandoff);
-    check(maxStepLow < 0.006 && maxStepHandoff < 0.004, sweepLabel);
+                  "DelayLine::readAlign sweeps smoothly without integer/handoff spikes "
+                  "(slew ratio 1k: %.2fx/%.2fx, 4k: %.2fx/%.2fx)",
+                  slewLow1k, slewHandoff1k, slewLow4k, slewHandoff4k);
+    check(slewLow1k < 1.6 && slewLow4k < 1.6 &&
+              slewHandoff1k < 1.2 && slewHandoff4k < 1.2,
+          sweepLabel);
   }
   {
     // A request beyond the allocation must clamp to the maximum, not wrap.
