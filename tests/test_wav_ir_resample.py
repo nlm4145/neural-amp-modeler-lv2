@@ -141,8 +141,9 @@ def wav_ir_load_taps(x, source_rate, host_rate):
     The C++ loader also applies a 5 ms raised-cosine fade at the cut, which
     this mirror omits because nothing here reaches the limit. Truncation and
     the fade are covered end-to-end by tests/verify_wav_ir.cpp."""
-    taps = np.asarray(resample(x, source_rate, host_rate), dtype=np.float64)
-    if abs(source_rate - host_rate) >= 1.0:
+    src = np.asarray(x, dtype=np.float64)
+    taps = np.asarray(resample(src, source_rate, host_rate), dtype=np.float64)
+    if src.size >= 2 and abs(source_rate - host_rate) >= 1.0:
         taps *= source_rate / host_rate
     max_len = int(host_rate * 0.17)   # WavIR::kMaxSeconds
     if taps.size > max_len:
