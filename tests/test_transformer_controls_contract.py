@@ -65,7 +65,7 @@ appended_symbols += [
     "drop_pitch", "model_band_limit", "drop_pitch_attack", "drop_pitch_sustain",
     "model_band_limit_cutoff", "model_band_limit_slope", "model_band_limit_ripple",
     "spatial_center_blend", "speaker_profile_b",
-    "cab_low_cut_slope", "cab_high_cut_slope",
+    "cab_low_cut_slope", "cab_high_cut_slope", "cab_ir_auto_trim",
 ]
 assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + appended_symbols)), (
     "ports 0..78 must stay unchanged; Power/Tube appends at 79..81, Mid Push at 82"
@@ -73,7 +73,7 @@ assert port_pairs == list(enumerate(legacy_symbols + symbols + rack_symbols + ap
 assert "kTransformerControlFirstPort = 60;" in controls
 assert "kTransformerControlCount = 11;" in controls
 assert "kPortCount = kRigControlPortCount;" in header
-assert "kRigControlPortCount = 238;" in tube_controls
+assert "kRigControlPortCount = 239;" in tube_controls
 assert "std::array<float*, kTransformerControlCount> transformer_adjustments;" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "offsetof(Ports, transformer_adjustments) == kTransformerControlFirstPort * sizeof(void*)" in header
@@ -83,7 +83,7 @@ assert "kOverdriveDrivePort == kPinEqFirstPort + kPinEqPortCount" in header
 assert "kPostCompressorFirstPort == kOverdriveEnabledPort + 1" in header
 assert "kOverdriveTightPort == kPostCompressorEnabledPort + 1" in header
 assert "kOverdriveVoicingPort == kOverdriveTightPort + 1" in header
-assert "kPortCount == kCabHighCutSlopePort + 1" in header
+assert "kPortCount == kCabIrAutoTrimPort + 1" in header
 assert "sizeof(Ports) == kPortCount * sizeof(void*)" in header
 
 # The metadata table is the shared host/preset order, not absolute profile values.

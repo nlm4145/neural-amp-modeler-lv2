@@ -1213,6 +1213,7 @@ static void verifyRackSwitches(Runtime& runtime, Host& host, Class presetClass) 
       if (controlPort == 59) edited[controlPort] = 1;
       if (controlPort == kCabLowCutSlopePort) edited[controlPort] = kCabCutSlope18;
       if (controlPort == kCabHighCutSlopePort) edited[controlPort] = kCabCutSlope24;
+      if (controlPort == kCabIrAutoTrimPort) edited[controlPort] = 1;
       if (controlPort == kPowerTubeTypePort) edited[controlPort] = PowerTube::kEL34;
       for (size_t k = 0; k < kRigKnobCount; ++k) {
         if (kRigKnobPorts[k] != controlPort) continue;
@@ -1333,7 +1334,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 238 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 239 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:
@@ -1924,6 +1925,44 @@ static void verifyPedalInputVisibility(Runtime& runtime, Host& host, Class prese
   CHECK(near(state->currentPortValueForSlot(4), gain));
   [[presetClass defaultPreset] applyToState:state];
   drain();
+  host.writes.clear();
+}
+
+static void verifyCabIrAutoTrim(Runtime& runtime, Host& host, Class presetClass) {
+  using namespace NAMRig;
+  RigUIState* state = runtime.state;
+  stage = "cab IR auto-trim toggle, preset capture, and host echo";
+  REQUIRE(state->cabIrAutoTrimButton);
+  CHECK(state->cabIrAutoTrimButton.tag == (NSInteger)kCabIrAutoTrimPort);
+  CHECK([state->cabIrAutoTrimButton.title isEqualToString:@"IR TRIM"]);
+
+  auto echo = [&](uint32_t port, float value) {
+    testedPort = port;
+    runtime.descriptor->port_event(state, port, sizeof(float), 0, &value);
+    drain();
+  };
+
+  host.writes.clear();
+  state->cabIrAutoTrimButton.state = NSControlStateValueOn;
+  action(state->cabIrAutoTrimButton);
+  drain();
+  CHECK(state->cabIrAutoTrim);
+  CHECK(host.writes[kCabIrAutoTrimPort].size() == 1 &&
+        near(host.writes[kCabIrAutoTrimPort].back(), 1.0f));
+
+  RigPreset* captured = [presetClass captureFromState:state name:@"IR Trim On"];
+  CHECK(near([captured controlForPort:kCabIrAutoTrimPort], 1.0f));
+
+  echo(kCabIrAutoTrimPort, 0.0f);
+  CHECK(!state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOff);
+
+  [captured applyToState:state];
+  drain();
+  CHECK(state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOn);
+
+  [[presetClass defaultPreset] applyToState:state];
+  drain();
+  CHECK(!state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOff);
   host.writes.clear();
 }
 
@@ -3409,6 +3448,7 @@ static void verify(const char* modulePath) {
   verifyGraphEditing(runtime, host, presetClass);
   verifyCombinedPinResponse(runtime, host);
   verifyCabCutSlopes(runtime, host, presetClass);
+  verifyCabIrAutoTrim(runtime, host, presetClass);
   verifyEffectGraphGeometry(runtime);
   stage = "cleanup";
   // Do not dlclose: Objective-C classes remain registered until process exit.

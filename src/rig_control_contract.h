@@ -242,6 +242,7 @@ inline constexpr RigControlContract kRigControlContracts[] = {
     {235, "speaker_profile_b", 0.0f, 8.0f, 8.0f, "", true, 511u, "0=Captured / Off | 1=Auto | 2=Resistive | 3=Open Back | 4=Vintage Alnico | 5=UK 4x12 | 6=Modern 4x12 | 7=Bass | 8=Match Cab A"},
     {236, "cab_low_cut_slope", 0.0f, 2.0f, 0.0f, "", true, 7u, "0=12 dB/oct | 1=18 dB/oct | 2=24 dB/oct"},
     {237, "cab_high_cut_slope", 0.0f, 2.0f, 0.0f, "", true, 7u, "0=12 dB/oct | 1=18 dB/oct | 2=24 dB/oct"},
+    {238, "cab_ir_auto_trim", 0.0f, 1.0f, 0.0f, "", true, 0u, ""},
 };
 inline const RigControlContract* rigControlContract(uint32_t port) {
   for (const auto& c : kRigControlContracts) if (c.port == port) return &c;

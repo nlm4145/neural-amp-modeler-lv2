@@ -94,7 +94,11 @@ inline constexpr uint32_t kCabLowCutSlopePort = 236;
 inline constexpr float kCabLowCutSlopeDefault = 0.0f;
 inline constexpr uint32_t kCabHighCutSlopePort = 237;
 inline constexpr float kCabHighCutSlopeDefault = 0.0f;
-inline constexpr uint32_t kRigControlPortCount = 238;
+// Optional auto-trim of leading silence on WAV cab IRs (append-only):
+// 0 = Off (preserve raw IR offset, default), 1 = On (trim leading digital silence uniformly).
+inline constexpr uint32_t kCabIrAutoTrimPort = 238;
+inline constexpr float kCabIrAutoTrimDefault = 0.0f;
+inline constexpr uint32_t kRigControlPortCount = 239;
 
 inline int clampDropPitch(float value) noexcept {
   if (!std::isfinite(value)) return 0;

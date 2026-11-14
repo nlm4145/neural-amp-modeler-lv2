@@ -15,14 +15,14 @@ ports = {
         r'lv2:index\s+(\d+)\s*;\s*lv2:symbol\s+"([^"]+)"', ttl
     )
 }
-assert sorted(ports) == list(range(238)), "ports stay contiguous; cab cut slopes append after speaker_profile_b"
+assert sorted(ports) == list(range(239)), "ports stay contiguous; cab IR auto trim appends after cab_high_cut_slope"
 assert [ports[i] for i in range(71, 83)] == [
     "delay_enabled", "reverb_enabled", "spatial_enabled", "power_enabled",
     "sculpt_enabled", "transformer_enabled", "speaker_enabled", "cab_console_enabled",
     "power_tube_enabled", "power_tube_type", "power_tube_character", "mid_push",
 ]
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 238;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert "kRigControlPortCount = 239;" in (ROOT / "src/power_tube_controls.h").read_text()
 expected = ["speaker_profile", "speaker_drive", "speaker_compression",
             "speaker_thump", "speaker_resonance"]
 for index, symbol in enumerate(expected, 42):
@@ -30,6 +30,7 @@ for index, symbol in enumerate(expected, 42):
 assert ports[235] == "speaker_profile_b", "port 235 must append speaker_profile_b"
 assert ports[236] == "cab_low_cut_slope", "port 236 must append cab_low_cut_slope"
 assert ports[237] == "cab_high_cut_slope", "port 237 must append cab_high_cut_slope"
+assert ports[238] == "cab_ir_auto_trim", "port 238 must append cab_ir_auto_trim"
 assert re.search(r'lv2:index 42.*?lv2:symbol "speaker_profile".*?lv2:default 0\.0', ttl, re.S)
 assert "offsetof(Ports, speaker_resonance) == 46 * sizeof(void*)" in header
 assert "SpeakerDynamics speakerDynamics;" in header

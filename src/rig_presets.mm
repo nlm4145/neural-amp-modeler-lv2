@@ -215,6 +215,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
   p->_controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
   p->_controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
+  p->_controls[NAMRig::kCabIrAutoTrimPort] = NAMRig::kCabIrAutoTrimDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     p->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
 
@@ -312,6 +313,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   preset->_controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
   preset->_controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
   preset->_controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
+  preset->_controls[NAMRig::kCabIrAutoTrimPort] = NAMRig::kCabIrAutoTrimDefault;
   for (uint32_t i = 0; i < NAMRig::kPinEqPortCount; ++i)
     preset->_controls[NAMRig::kPinEqFirstPort + i] = NAMRig::pinEqDefault(NAMRig::kPinEqFirstPort + i);
   NSDictionary* portsDict = root[@"ports"];
@@ -498,6 +500,7 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
   p->_controls[NAMRig::kCabHighCutSlopePort] = static_cast<float>(
       state->cabHighCutSlopePopup ? state->cabHighCutSlopePopup.indexOfSelectedItem
                                   : state->cabHighCutSlope);
+  p->_controls[NAMRig::kCabIrAutoTrimPort] = state->cabIrAutoTrim ? 1.0f : 0.0f;
 
   // IR Normalization
   if (state->irNormPopup) {
@@ -717,6 +720,12 @@ std::vector<std::string> discoverModelsForStagePath(const std::string& modelPath
     state->sendControl(slopePort, slopeVal);
     state->updateControl(slopePort, slopeVal);
   }
+  auto irAutoTrimIt = _controls.find(NAMRig::kCabIrAutoTrimPort);
+  const float irAutoTrimVal =
+      (irAutoTrimIt != _controls.end() ? irAutoTrimIt->second : NAMRig::kCabIrAutoTrimDefault) >= 0.5f
+          ? 1.0f : 0.0f;
+  state->sendControl(NAMRig::kCabIrAutoTrimPort, irAutoTrimVal);
+  state->updateControl(NAMRig::kCabIrAutoTrimPort, irAutoTrimVal);
   const float polarity = [self controlForPort:59] >= 0.5f ? 1.0f : 0.0f;
   state->sendControl(59, polarity);
   state->updateControl(59, polarity);

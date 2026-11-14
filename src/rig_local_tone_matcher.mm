@@ -707,14 +707,21 @@ cacheDirectory:(NSString*)cacheDirectory progress:(void (^)(NSString*))progress
         };
 
         // ── Cab IRs at the render rate (the engine's exact taps) ──────────
+        const bool autoTrimCabIr = [base controlForPort:NAMRig::kCabIrAutoTrimPort] >= 0.5f;
         std::vector<Cab> cabs;
         for (NSString* path in cabPaths) {
           checkCancel();
           try {
             const char* file = path.fileSystemRepresentation;
-            const bool stereo = WavIR::channelCount(file) >= 2;
-            Cab cab{path, WavIR::loadTaps(file, rate, stereo ? 0 : -1), {}};
-            if (stereo) cab.right = WavIR::loadTaps(file, rate, 1);
+            const unsigned channels = WavIR::channelCount(file);
+            Cab cab{path, {}, {}};
+            if (channels >= 2) {
+              auto [tapsL, tapsR] = WavIR::loadTapsStereo(file, rate, autoTrimCabIr);
+              cab.left = std::move(tapsL);
+              cab.right = std::move(tapsR);
+            } else {
+              cab.left = WavIR::loadTaps(file, rate, -1, autoTrimCabIr);
+            }
             cabs.push_back(std::move(cab));
           } catch (const std::exception& e) {
             report([NSString stringWithFormat:@"Skipping cab %@: %s", path.lastPathComponent, e.what()]);

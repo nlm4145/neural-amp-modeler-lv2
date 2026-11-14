@@ -167,6 +167,171 @@ static double runCase(const char* dir, size_t irLen, uint32_t rate,
   return worst / std::max(peak, 1e-12);
 }
 
+static void writeWavCustomF32(const std::string& path,
+                              const std::vector<float>& interleaved,
+                              uint32_t rate,
+                              uint16_t channels,
+                              bool extensible = false) {
+  std::ofstream out(path, std::ios::binary);
+  auto w16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+  auto w32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+  const uint32_t fmtSize = extensible ? 40u : 16u;
+  const uint32_t dataSize = static_cast<uint32_t>(interleaved.size() * sizeof(float));
+  const uint16_t blockAlign = static_cast<uint16_t>(channels * 4u);
+  out.write("RIFF", 4);
+  w32(4u + 8u + fmtSize + 8u + dataSize);
+  out.write("WAVEfmt ", 8);
+  w32(fmtSize);
+  w16(extensible ? 0xFFFEu : 3u);
+  w16(channels);
+  w32(rate);
+  w32(rate * blockAlign);
+  w16(blockAlign);
+  w16(32);
+  if (extensible) {
+    w16(22);
+    w16(32);
+    w32(channels == 6 ? 0x3Fu : channels == 4 ? 0x33u : 0x7u);
+    static constexpr uint8_t kSubFloat[16] = {
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+        0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71};
+    out.write(reinterpret_cast<const char*>(kSubFloat), 16);
+  }
+  out.write("data", 4);
+  w32(dataSize);
+  if (!interleaved.empty()) {
+    out.write(reinterpret_cast<const char*>(interleaved.data()), dataSize);
+  }
+}
+
+static void verifyAutoTrimAndMultichannel(const char* dir) {
+  auto argmaxAbs = [](const std::vector<float>& v) -> size_t {
+    size_t idx = 0;
+    float best = -1.0f;
+    for (size_t i = 0; i < v.size(); ++i) {
+      const float a = std::fabs(v[i]);
+      if (a > best) { best = a; idx = i; }
+    }
+    return idx;
+  };
+
+  // 1. Optional leading-silence auto-trim preserves tail beyond kMaxSeconds.
+  {
+    const std::string p = std::string(dir) + "/padded_tail.wav";
+    std::vector<float> raw(12160, 0.0f);
+    for (size_t i = 0; i < 4000; ++i) raw[i] = (i % 2 ? 1.0f : -1.0f) * 3.0e-5f; // -90 dB noise floor
+    raw[4000] = 1.0f;
+    raw[10000] = 0.25f; // 6000 samples after main impulse
+    writeWavCustomF32(p, raw, 48000, 1);
+
+    const auto untrimmed = NAMRig::WavIR::loadTaps(p.c_str(), 48000.0, -1, false);
+    const auto trimmed = NAMRig::WavIR::loadTaps(p.c_str(), 48000.0, -1, true);
+    CHECK(untrimmed.size() == 8160, "untrimmed IR starts at offset 0 and truncates at 8160");
+    CHECK(argmaxAbs(untrimmed) == 4000, "untrimmed IR keeps 4000-sample leading latency");
+    CHECK(argmaxAbs(trimmed) == 0, "autoTrimSilence moves main impulse to sample 0");
+    CHECK(trimmed.size() == 8160 && std::fabs(trimmed[0]) > 0.0f &&
+              std::fabs(trimmed[6000] / trimmed[0] - 0.25f) < 1e-4f,
+          "autoTrimSilence recovers late tail after removing leading silence");
+  }
+
+  // 2. Stereo cross-channel trim preserves L/R inter-channel arrival delay across resample.
+  {
+    const std::string p = std::string(dir) + "/stereo_delay_44k.wav";
+    const size_t frames = 2000;
+    std::vector<float> interleaved(frames * 2, 0.0f);
+    interleaved[882 * 2 + 0] = 1.0f;            // L @ 20.0 ms
+    interleaved[(882 + 44) * 2 + 1] = 0.9f;     // R @ 21.0 ms (1 ms after L)
+    writeWavCustomF32(p, interleaved, 44100, 2);
+
+    const auto stereoTaps = NAMRig::WavIR::loadTapsStereo(p.c_str(), 48000.0, true);
+    const size_t peakL = argmaxAbs(stereoTaps.first);
+    const size_t peakR = argmaxAbs(stereoTaps.second);
+    const ptrdiff_t delta = static_cast<ptrdiff_t>(peakR) - static_cast<ptrdiff_t>(peakL);
+    CHECK(peakL <= 4 && delta >= 44 && delta <= 52,
+          "stereo autoTrimSilence trims uniformly across channels and keeps L/R delay across resample");
+
+    auto stereoIr = NAMRig::WavIR::loadStereo(p.c_str(), 48000.0, 512, true);
+    CHECK(NAMRig::WavIR::channelCount(p.c_str()) == 2 && stereoIr.left && stereoIr.right,
+          "loadStereo loads 2ch WavIR pair with autoTrimSilence");
+    std::vector<float> bufL(256, 0.0f), bufR(256, 0.0f);
+    bufL[0] = 1.0f;
+    bufR[0] = 1.0f;
+    stereoIr.left->process(bufL.data(), 256, 0);
+    stereoIr.right->process(bufR.data(), 256, 0);
+    const size_t outL = argmaxAbs(bufL);
+    const size_t outR = argmaxAbs(bufR);
+    CHECK(outL <= 4 && outR > outL + 40 && outR < outL + 56,
+          "live stereo WavIR convolution preserves L/R inter-channel arrival delay");
+  }
+
+  // 3. All-zero WAV with autoTrimSilence yields finite zero output.
+  {
+    const std::string p = std::string(dir) + "/all_zero.wav";
+    writeWavCustomF32(p, std::vector<float>(256, 0.0f), 48000, 1);
+    auto z = NAMRig::WavIR::load(p.c_str(), 48000.0, 64, 0, true);
+    CHECK(z != nullptr, "all-zero WAV loads safely with autoTrimSilence");
+    std::vector<float> buf(64, 0.0f);
+    buf[0] = 1.0f;
+    z->process(buf.data(), 64, 2);
+    bool finiteZero = true;
+    for (float s : buf) finiteZero &= std::isfinite(s) && s == 0.0f;
+    CHECK(finiteZero, "all-zero trimmed IR produces finite zeros");
+  }
+
+  // 4. findBestAlignment honors autoTrimSilence on silent-padded stereo pair.
+  {
+    const std::string aPath = std::string(dir) + "/align_a.wav";
+    const std::string bPath = std::string(dir) + "/align_b.wav";
+    std::vector<float> a(512, 0.0f), b(1024, 0.0f);
+    a[0] = 1.0f; a[1] = 0.5f;
+    b[480] = 1.0f; b[481] = 0.5f; // +10 ms leading silence
+    writeWavCustomF32(aPath, a, 48000, 1);
+    writeWavCustomF32(bPath, b, 48000, 1);
+    const auto alignUntrimmed = NAMRig::WavIR::findBestAlignment(aPath.c_str(), bPath.c_str(), 48000.0, false);
+    const auto alignTrimmed = NAMRig::WavIR::findBestAlignment(aPath.c_str(), bPath.c_str(), 48000.0, true);
+    CHECK(alignUntrimmed.valid && std::fabs(alignUntrimmed.delayMs + 10.0f) < 0.25f,
+          "untrimmed findBestAlignment sees 10 ms padding offset");
+    CHECK(alignTrimmed.valid && std::fabs(alignTrimmed.delayMs) < 0.1f && !alignTrimmed.invertPolarity,
+          "autoTrimSilence findBestAlignment aligns silent-padded IR near 0 ms");
+  }
+
+  // 5. Multichannel (> 2 ch) WAV IR stereo folddown (3ch, 4ch, 6ch, WAVE_FORMAT_EXTENSIBLE).
+  {
+    const std::string p3 = std::string(dir) + "/ir_3ch.wav";
+    std::vector<float> i3(128 * 3, 0.0f);
+    i3[40 * 3 + 2] = 1.0f; // Center only
+    writeWavCustomF32(p3, i3, 48000, 3);
+    const auto s3 = NAMRig::WavIR::loadTapsStereo(p3.c_str(), 48000.0, false);
+    CHECK(NAMRig::WavIR::channelCount(p3.c_str()) == 3 &&
+              s3.first.size() == 128 && s3.second.size() == 128 &&
+              s3.first[40] > 0.0f && std::fabs(s3.first[40] - s3.second[40]) <= 1e-6f * std::fabs(s3.first[40]),
+          "3ch L/R/C folds Center symmetrically into L and R");
+
+    const std::string p4 = std::string(dir) + "/ir_4ch_ext.wav";
+    std::vector<float> i4(128 * 4, 0.0f);
+    i4[30 * 4 + 2] = 1.0f;   // Ls
+    i4[60 * 4 + 3] = -1.0f;  // Rs
+    writeWavCustomF32(p4, i4, 48000, 4, true);
+    CHECK(NAMRig::WavIR::channelCount(p4.c_str()) == 4, "4ch WAVE_FORMAT_EXTENSIBLE reports 4 channels");
+    const auto s4 = NAMRig::WavIR::loadTapsStereo(p4.c_str(), 48000.0, false);
+    CHECK(s4.first.size() == 128 && s4.second.size() == 128 &&
+              s4.first[30] > 0.0f && s4.second[60] < 0.0f &&
+              std::fabs(s4.first[60]) < 1e-6f && std::fabs(s4.second[30]) < 1e-6f,
+          "4ch L/R/Ls/Rs folds Ls->L and Rs->R");
+
+    const std::string p6 = std::string(dir) + "/ir_6ch_ext.wav";
+    std::vector<float> i6(128 * 6, 0.0f);
+    i6[25 * 6 + 5] = 0.8f; // Rs
+    i6[50 * 6 + 2] = 1.0f; // C
+    writeWavCustomF32(p6, i6, 48000, 6, true);
+    const auto s6 = NAMRig::WavIR::loadTapsStereo(p6.c_str(), 48000.0, false);
+    CHECK(NAMRig::WavIR::channelCount(p6.c_str()) == 6 &&
+              s6.first.size() == 128 && s6.second.size() == 128 &&
+              s6.second[25] > 0.0f && s6.first[50] > 0.0f && s6.second[50] > 0.0f,
+          "6ch 5.1 WAVE_FORMAT_EXTENSIBLE folds C and Rs into stereo IR");
+  }
+}
+
 int main(int argc, char** argv) {
   const char* dir = argc > 1 ? argv[1] : "/tmp";
   std::mt19937 rng(20260830);
@@ -185,6 +350,7 @@ int main(int argc, char** argv) {
     std::snprintf(msg, sizeof(msg), "%s: rel err %.3e < 1e-4", c.what, rel);
     CHECK(rel < 1e-4, msg);
   }
+  verifyAutoTrimAndMultichannel(dir);
 
   // The 170 ms limit is the point of raising it: a tail that used to be cut
   // at 80 ms must now still be convolved.

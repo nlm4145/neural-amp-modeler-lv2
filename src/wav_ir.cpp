@@ -58,22 +58,28 @@ std::vector<unsigned char> readFile(const char* path) {
   return std::vector<unsigned char>((std::istreambuf_iterator<char>(file)), {});
 }
 
-std::vector<float> readWav(const char* path, uint32_t& rate, int channel) {
+struct DecodedWav {
+  uint32_t rate = 0;
+  uint16_t channels = 0;
+  size_t frames = 0;
+  std::vector<std::vector<float>> channelData;
+};
+
+DecodedWav decodeWav(const char* path) {
   const std::vector<unsigned char> bytes = readFile(path);
   const WavInfo info = parseWav(bytes);
-  rate = info.rate;
   const uint16_t format = info.format, channels = info.channels, bits = info.bits;
-  if (channel >= channels) throw std::runtime_error("WAV channel out of range");
   const size_t sampleBytes = bits / 8;
   const size_t frames = info.audioBytes / (sampleBytes * channels);
   if (!sampleBytes || !frames) throw std::runtime_error("empty WAV");
 
-  const uint16_t first = channel < 0 ? 0 : static_cast<uint16_t>(channel);
-  const uint16_t last = channel < 0 ? channels : static_cast<uint16_t>(channel + 1);
-  std::vector<float> mono(frames, 0.0f);
+  DecodedWav decoded;
+  decoded.rate = info.rate;
+  decoded.channels = channels;
+  decoded.frames = frames;
+  decoded.channelData.assign(channels, std::vector<float>(frames, 0.0f));
   for (size_t frame = 0; frame < frames; ++frame) {
-    double sum = 0.0;
-    for (uint16_t ch = first; ch < last; ++ch) {
+    for (uint16_t ch = 0; ch < channels; ++ch) {
       const unsigned char* p = info.audio + (frame * channels + ch) * sampleBytes;
       float value = 0.0f;
       if (format == 3 && bits == 32) std::memcpy(&value, p, 4);
@@ -85,11 +91,125 @@ std::vector<float> readWav(const char* path, uint32_t& rate, int channel) {
         value = float(v) / 8388608.0f;
       } else if (format == 1 && bits == 32) value = float(int32_t(u32(p))) / 2147483648.0f;
       else throw std::runtime_error("unsupported WAV sample encoding");
-      sum += value;
+      decoded.channelData[ch][frame] = std::isfinite(value) ? value : 0.0f;
     }
-    mono[frame] = float(sum / (last - first));
+  }
+  return decoded;
+}
+
+// Finds the earliest frame across all channels exceeding -80 dB of the file's
+// global peak. Trimming every channel by this shared offset removes dead leading
+// latency while preserving inter-channel arrival delays.
+size_t computeLeadingSilenceTrimFrames(const DecodedWav& wav) {
+  double globalPeak = 0.0;
+  for (const auto& ch : wav.channelData) {
+    for (float s : ch) {
+      const double a = std::fabs(static_cast<double>(s));
+      if (a > globalPeak) globalPeak = a;
+    }
+  }
+  if (!(globalPeak > 0.0)) return 0;
+  const double threshold = globalPeak * 1.0e-4;
+  for (size_t frame = 0; frame < wav.frames; ++frame) {
+    for (uint16_t ch = 0; ch < wav.channels; ++ch) {
+      if (std::fabs(static_cast<double>(wav.channelData[ch][frame])) > threshold)
+        return frame;
+    }
+  }
+  return 0;
+}
+
+std::vector<float> extractChannelOrMono(const DecodedWav& wav, int channel,
+                                        size_t trimFrames) {
+  if (channel >= wav.channels) throw std::runtime_error("WAV channel out of range");
+  const size_t start = std::min(trimFrames, wav.frames > 0 ? wav.frames - 1 : 0);
+  const size_t outFrames = wav.frames - start;
+  if (channel >= 0) {
+    const auto& src = wav.channelData[static_cast<size_t>(channel)];
+    return std::vector<float>(src.begin() + static_cast<std::ptrdiff_t>(start), src.end());
+  }
+  std::vector<float> mono(outFrames, 0.0f);
+  const double invChannels = 1.0 / static_cast<double>(wav.channels);
+  for (size_t i = 0; i < outFrames; ++i) {
+    double sum = 0.0;
+    for (uint16_t ch = 0; ch < wav.channels; ++ch) sum += wav.channelData[ch][start + i];
+    mono[i] = static_cast<float>(sum * invChannels);
   }
   return mono;
+}
+
+// Maps 2-ch and >2-ch multichannel WAV IRs into stereo L/R without dropping
+// channels beyond ch 1:
+//   - 2 ch: L=ch0, R=ch1
+//   - 3 ch (L, R, C): ch2 folded equally (-3 dB) to both L & R
+//   - 4 ch (L, R, Ls, Rs): ch2 -> L, ch3 -> R (-3 dB)
+//   - 5 ch (L, R, C, Ls, Rs): ch2 -> L&R, ch3 -> L, ch4 -> R (-3 dB)
+//   - 6+ ch (L, R, C, LFE, Ls, Rs, ...): ch2 -> L&R (-3 dB), ch3 -> L&R (-6 dB),
+//     ch>=4 even -> L (-3 dB), odd -> R (-3 dB).
+void foldMultichannelToStereo(const DecodedWav& wav, size_t trimFrames,
+                              std::vector<float>& outL,
+                              std::vector<float>& outR) {
+  const size_t start = std::min(trimFrames, wav.frames > 0 ? wav.frames - 1 : 0);
+  const size_t outFrames = wav.frames - start;
+  if (wav.channels == 1) {
+    const auto& c0 = wav.channelData[0];
+    outL.assign(c0.begin() + static_cast<std::ptrdiff_t>(start), c0.end());
+    outR.clear();
+    return;
+  }
+  if (wav.channels == 2) {
+    const auto& c0 = wav.channelData[0];
+    const auto& c1 = wav.channelData[1];
+    outL.assign(c0.begin() + static_cast<std::ptrdiff_t>(start), c0.end());
+    outR.assign(c1.begin() + static_cast<std::ptrdiff_t>(start), c1.end());
+    return;
+  }
+
+  constexpr float kHalfPower = 0.7071067811865475f;  // sqrt(0.5)
+  constexpr float kLfeWeight = 0.5f;
+  std::vector<float> weightL(wav.channels, 0.0f);
+  std::vector<float> weightR(wav.channels, 0.0f);
+  weightL[0] = 1.0f;
+  weightR[1] = 1.0f;
+  for (uint16_t ch = 2; ch < wav.channels; ++ch) {
+    if (ch == 2) {
+      if (wav.channels == 4) {
+        weightL[ch] = kHalfPower;
+      } else {
+        weightL[ch] = kHalfPower;
+        weightR[ch] = kHalfPower;
+      }
+    } else if (ch == 3) {
+      if (wav.channels == 4 || wav.channels == 5) {
+        if (wav.channels == 4) weightR[ch] = kHalfPower;
+        else weightL[ch] = kHalfPower;
+      } else {
+        weightL[ch] = kLfeWeight;
+        weightR[ch] = kLfeWeight;
+      }
+    } else if (wav.channels == 5 && ch == 4) {
+      weightR[ch] = kHalfPower;
+    } else if ((ch % 2) == 0) {
+      weightL[ch] = kHalfPower;
+    } else {
+      weightR[ch] = kHalfPower;
+    }
+  }
+
+  outL.assign(outFrames, 0.0f);
+  outR.assign(outFrames, 0.0f);
+  for (size_t i = 0; i < outFrames; ++i) {
+    double accL = 0.0;
+    double accR = 0.0;
+    const size_t f = start + i;
+    for (uint16_t ch = 0; ch < wav.channels; ++ch) {
+      const float s = wav.channelData[ch][f];
+      accL += static_cast<double>(s) * weightL[ch];
+      accR += static_cast<double>(s) * weightR[ch];
+    }
+    outL[i] = static_cast<float>(accL);
+    outR[i] = static_cast<float>(accR);
+  }
 }
 
 // Cholesky solver for small symmetric positive-definite matrices (flat n x n).
@@ -395,7 +515,34 @@ ResponseStats measureResponse(const std::vector<float>& taps, double rate) {
       weightSum > 0.0 ? std::sqrt(weightedSumSquared / weightSum) : 0.0;
   return {std::sqrt(peakSquared), rms};
 }
+
+std::vector<float> finalizeTaps(const std::vector<float>& sourceTaps,
+                                uint32_t sourceRate, double hostRate) {
+  auto taps = resample(sourceTaps, sourceRate, hostRate);
+  // A resampled discrete impulse response needs the inverse sample-density
+  // factor to retain its transfer function: interpolating 48 -> 96 kHz creates
+  // roughly twice as many taps and would otherwise add about 6 dB of gain.
+  if (std::fabs(static_cast<double>(sourceRate) - hostRate) >= 1.0) {
+    const float transferScale = static_cast<float>(sourceRate / hostRate);
+    for (float& tap : taps) tap *= transferScale;
+  }
+  // Cabinet IR energy is concentrated near the start; 170 ms (8192 taps at
+  // 48 kHz) keeps far-mic and room tails. A hard cut rings (truncation ripple
+  // in the transfer function), so the last ~5 ms taper with a raised cosine.
+  const size_t maxTaps = static_cast<size_t>(hostRate * WavIR::kMaxSeconds);
+  if (maxTaps > 0 && taps.size() > maxTaps) {
+    taps.resize(maxTaps);
+    const size_t fade = std::min(taps.size(),
+        static_cast<size_t>(std::llround(hostRate * 0.005)));
+    for (size_t i = 0; i < fade; ++i) {
+      const double t = static_cast<double>(i + 1) / static_cast<double>(fade);
+      taps[taps.size() - fade + i] *= static_cast<float>(0.5 * (1.0 + std::cos(kPi * t)));
+    }
+  }
+  if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
+  return taps;
 }
+} // namespace
 
 WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   (void)maxBlockSize;  // chunking is internal (kBlock); any call size works
@@ -490,40 +637,45 @@ unsigned WavIR::channelCount(const char* path) {
 }
 
 std::unique_ptr<WavIR> WavIR::load(const char* path, double hostRate,
-                                   int maxBlockSize, int channel) {
-  auto taps = loadTaps(path, hostRate, channel);
+                                   int maxBlockSize, int channel,
+                                   bool autoTrimSilence) {
+  auto taps = loadTaps(path, hostRate, channel, autoTrimSilence);
   // Store response-based scales so normalization can change without reloading
   // or destructively altering the corrected taps.
   return std::unique_ptr<WavIR>(
       new WavIR(std::move(taps), hostRate, maxBlockSize));
 }
 
-std::vector<float> WavIR::loadTaps(const char* path, double hostRate, int channel) {
-  uint32_t sourceRate = 0;
-  const auto sourceTaps = readWav(path, sourceRate, channel);
-  auto taps = resample(sourceTaps, sourceRate, hostRate);
-  // A resampled discrete impulse response needs the inverse sample-density
-  // factor to retain its transfer function: interpolating 48 -> 96 kHz creates
-  // roughly twice as many taps and would otherwise add about 6 dB of gain.
-  if (std::fabs(static_cast<double>(sourceRate) - hostRate) >= 1.0) {
-    const float transferScale = static_cast<float>(sourceRate / hostRate);
-    for (float& tap : taps) tap *= transferScale;
+WavIR::StereoIR WavIR::loadStereo(const char* path, double hostRate,
+                                  int maxBlockSize, bool autoTrimSilence) {
+  auto [tapsL, tapsR] = loadTapsStereo(path, hostRate, autoTrimSilence);
+  StereoIR out;
+  out.left.reset(new WavIR(std::move(tapsL), hostRate, maxBlockSize));
+  if (!tapsR.empty()) {
+    out.right.reset(new WavIR(std::move(tapsR), hostRate, maxBlockSize));
+    linkStereoNormalization(*out.left, *out.right);
   }
-  // Cabinet IR energy is concentrated near the start; 170 ms (8192 taps at
-  // 48 kHz) keeps far-mic and room tails. A hard cut rings (truncation ripple
-  // in the transfer function), so the last ~5 ms taper with a raised cosine.
-  const size_t maxTaps = static_cast<size_t>(hostRate * kMaxSeconds);
-  if (maxTaps > 0 && taps.size() > maxTaps) {
-    taps.resize(maxTaps);
-    const size_t fade = std::min(taps.size(),
-        static_cast<size_t>(std::llround(hostRate * 0.005)));
-    for (size_t i = 0; i < fade; ++i) {
-      const double t = static_cast<double>(i + 1) / static_cast<double>(fade);
-      taps[taps.size() - fade + i] *= static_cast<float>(0.5 * (1.0 + std::cos(kPi * t)));
-    }
-  }
-  if (taps.empty()) throw std::runtime_error("empty WAV impulse response");
-  return taps;
+  return out;
+}
+
+std::vector<float> WavIR::loadTaps(const char* path, double hostRate,
+                                   int channel, bool autoTrimSilence) {
+  const DecodedWav wav = decodeWav(path);
+  const size_t trimFrames = autoTrimSilence ? computeLeadingSilenceTrimFrames(wav) : 0;
+  const auto sourceTaps = extractChannelOrMono(wav, channel, trimFrames);
+  return finalizeTaps(sourceTaps, wav.rate, hostRate);
+}
+
+std::pair<std::vector<float>, std::vector<float>> WavIR::loadTapsStereo(
+    const char* path, double hostRate, bool autoTrimSilence) {
+  const DecodedWav wav = decodeWav(path);
+  const size_t trimFrames = autoTrimSilence ? computeLeadingSilenceTrimFrames(wav) : 0;
+  std::vector<float> srcL, srcR;
+  foldMultichannelToStereo(wav, trimFrames, srcL, srcR);
+  std::vector<float> outL = finalizeTaps(srcL, wav.rate, hostRate);
+  std::vector<float> outR;
+  if (!srcR.empty()) outR = finalizeTaps(srcR, wav.rate, hostRate);
+  return {std::move(outL), std::move(outR)};
 }
 
 // Completed kBlock input block: FFT it into the delay line, accumulate
@@ -658,13 +810,14 @@ float WavIR::lowBandCoherence(const WavIR* irA, const WavIR* irB,
 }
 
 WavIR::AlignmentResult WavIR::findBestAlignment(const char* pathA, const char* pathB,
-                                                double sampleRate) {
+                                                double sampleRate,
+                                                bool autoTrimSilence) {
   AlignmentResult result;
   if (!pathA || !pathA[0] || !pathB || !pathB[0]) return result;
   const double rate = std::max(8000.0, sampleRate);
   try {
-    auto tapsA = loadTaps(pathA, rate, -1);
-    auto tapsB = loadTaps(pathB, rate, -1);
+    auto tapsA = loadTaps(pathA, rate, -1, autoTrimSilence);
+    auto tapsB = loadTaps(pathB, rate, -1, autoTrimSilence);
     const size_t maxWindow = static_cast<size_t>(std::llround(rate * 0.060));
     const size_t lenA = std::min(tapsA.size(), maxWindow);
     const size_t lenB = std::min(tapsB.size(), maxWindow);

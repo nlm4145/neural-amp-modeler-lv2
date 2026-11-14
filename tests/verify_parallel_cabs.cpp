@@ -370,7 +370,7 @@ struct Host {
     } else if (std::filesystem::path(response.path).extension() == ".wav") {
       const unsigned channels = NAMRig::WavIR::channelCount(response.path);
       check(stage >= 2 && !response.model && response.ir &&
-                (response.irRight != nullptr) == (channels == 2),
+                (response.irRight != nullptr) == (channels >= 2),
             "WAV response owns left IR and stereo right IR, not a NAM graph");
       check(!response.irRight || response.irRight != response.ir,
             "stereo WAV response owns independent channel convolvers");
@@ -415,6 +415,7 @@ struct Host {
     controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
     controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
     controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
+    controls[NAMRig::kCabIrAutoTrimPort] = NAMRig::kCabIrAutoTrimDefault;
     // Connect the original fields explicitly; append arrays and tube controls below.
     plugin.ports = {
         sequence(control), sequence(notify), input.data(), left.data(),
@@ -471,7 +472,8 @@ struct Host {
     plugin.ports.speaker_profile_b = &controls[NAMRig::kSpeakerProfileBPort];
     plugin.ports.cab_low_cut_slope = &controls[NAMRig::kCabLowCutSlopePort];
     plugin.ports.cab_high_cut_slope = &controls[NAMRig::kCabHighCutSlopePort];
-    static_assert(Plugin::kPortCount == 238, "update connections if ports change");
+    plugin.ports.cab_ir_auto_trim = &controls[NAMRig::kCabIrAutoTrimPort];
+    static_assert(Plugin::kPortCount == 239, "update connections if ports change");
     if (!connectPolarity) plugin.ports.cab2_polarity = nullptr;
     LV2_Options_Option options[] = {
         {LV2_OPTIONS_INSTANCE, 0, mapUri(this, LV2_BUF_SIZE__maxBlockLength),
@@ -695,7 +697,7 @@ struct Pair {
       check((host->plugin.models[index] != nullptr) == (!path.empty() && !irChannels),
             "real NAM graph installed or cleared for WAV/unload");
       check((host->plugin.irs[index] != nullptr) == (irChannels != 0) &&
-                (host->plugin.irsRight[index] != nullptr) == (irChannels == 2),
+                (host->plugin.irsRight[index] != nullptr) == (irChannels >= 2),
             "committed mono/stereo IR pointers match requested fixture");
     }
     if (irChannels) {
@@ -1486,6 +1488,62 @@ void verifyDualCabSpeakerDynamics(double rate, const TempWavs& fixtures) {
               rate, autoRatioDb, explicitRatioDb, sharedRatioDb);
 }
 
+void verifyWavIrEdgeCases(double rate, const std::filesystem::path& dir) {
+  testSection = "wav IR edge cases (" + std::to_string(static_cast<int>(rate)) + " Hz)";
+  const std::string quadPath = (dir / "quad_surrounds.wav").string();
+  const std::string paddedPath = (dir / "padded_impulse.wav").string();
+
+  auto writeF32 = [&](const std::string& path, const std::vector<float>& interleaved, uint16_t ch) {
+    std::ofstream file(path, std::ios::binary);
+    auto little = [&](uint32_t v, unsigned bytes) {
+      for (unsigned i = 0; i < bytes; ++i) file.put(static_cast<char>((v >> (8 * i)) & 0xff));
+    };
+    const uint32_t dataBytes = static_cast<uint32_t>(interleaved.size() * sizeof(float));
+    file.write("RIFF", 4); little(36 + dataBytes, 4); file.write("WAVEfmt ", 8);
+    little(16, 4); little(3, 2); little(ch, 2);
+    little(static_cast<uint32_t>(rate), 4); little(static_cast<uint32_t>(rate) * ch * 4, 4);
+    little(ch * 4, 2); little(32, 2);
+    file.write("data", 4); little(dataBytes, 4);
+    file.write(reinterpret_cast<const char*>(interleaved.data()), dataBytes);
+    file.close();
+    check(static_cast<bool>(file), "write f32 wav fixture");
+  };
+
+  // 4-channel WAV where L/R are silent and Ls/Rs hold offset impulses.
+  std::vector<float> quad(64 * 4, 0.0f);
+  quad[6 * 4 + 2] = 1.0f;
+  quad[18 * 4 + 3] = -0.8f;
+  writeF32(quadPath, quad, 4);
+
+  // Mono WAV with 10 ms leading zeros before impulse at 480 (or scaled by rate).
+  const size_t padFrames = static_cast<size_t>(std::llround(rate * 0.01));
+  std::vector<float> padded(padFrames + 64, 0.0f);
+  padded[padFrames] = 1.0f;
+  padded[padFrames + 12] = 0.35f;
+  writeF32(paddedPath, padded, 1);
+
+  Pair pair(rate);
+  pair.set(7, 0); pair.set(8, 0); pair.set(47, 0); pair.set(32, 100);
+  pair.paths({{Stage::Cab, quadPath}});
+  pair.run(17);
+  pair.steady(true, false, false, pipelineFactor(6, rate), 0, 0);
+  pair.installed(Stage::Cab, quadPath, 4);
+
+  // Now load padded WAV and toggle cab_ir_auto_trim live between serial & parallel.
+  pair.paths({{Stage::Cab, paddedPath}});
+  pair.run(17);
+  pair.steady(true, false, false, pipelineFactor(6, rate), 0, 0);
+  const auto loadsBeforeTrim = pair.serial.loads[2];
+  pair.set(NAMRig::kCabIrAutoTrimPort, 1.0f);
+  pair.run(64);
+  pair.drain();
+  pair.steady(true, false, false, pipelineFactor(6, rate), 0, 0);
+  check(pair.serial.loads[2] == loadsBeforeTrim + 1 &&
+            pair.parallel.loads[2] == loadsBeforeTrim + 1,
+        "live cab_ir_auto_trim toggle reloads WAV cab deterministically");
+  std::printf("PASS: %.0f Hz 4ch folddown & live cab_ir_auto_trim parity\n", rate);
+}
+
 std::string defaultModel(const std::filesystem::path& relative) {
   const auto sourceRoot = std::filesystem::path(__FILE__).parent_path().parent_path();
   if (std::filesystem::is_regular_file(sourceRoot / relative))
@@ -1559,6 +1617,7 @@ int main(int argc, char** argv) {
       verifyPlugins(rate, wave, lstm);
       verifyWavFallback(rate, wave, lstm, fixtures);
       verifyDualCabSpeakerDynamics(rate, fixtures);
+      verifyWavIrEdgeCases(rate, fixtures.directory);
     }
     if (timing) benchmark(wave, lstm);
     check(std::fesetenv(&original) == 0, "restore original fenv");

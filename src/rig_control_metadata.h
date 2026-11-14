@@ -126,6 +126,7 @@ inline constexpr RigControlSymbol kRigStaticControlSymbols[] = {
     {kSpeakerProfileBPort, "speaker_profile_b"},
     {kCabLowCutSlopePort, "cab_low_cut_slope"},
     {kCabHighCutSlopePort, "cab_high_cut_slope"},
+    {kCabIrAutoTrimPort, "cab_ir_auto_trim"},
 };
 
 // Non-null results have static lifetime, including generated pin names.

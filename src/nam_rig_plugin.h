@@ -71,6 +71,7 @@ struct LV2LoadModelMsg {
   int32_t oversampleMode;
   uint64_t generation;
   char path[MAX_FILE_NAME];
+  bool trimIrSilence = false;
 };
 
 struct LV2SwitchModelMsg {
@@ -86,6 +87,7 @@ struct LV2SwitchModelMsg {
   // > 0: the model cannot be rate-adapted (not a WaveNet) and must run at
   // this sample rate through a DOWN -> model -> UP native-rate domain.
   float nativeRate;
+  bool trimIrSilence = false;
 };
 
 struct LV2FreeModelMsg {
@@ -240,6 +242,7 @@ public:
     float* speaker_profile_b;
     float* cab_low_cut_slope;
     float* cab_high_cut_slope;
+    float* cab_ir_auto_trim;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -316,7 +319,9 @@ public:
   static_assert(kCabLowCutSlopePort == kSpeakerProfileBPort + 1);
   static_assert(offsetof(Ports, cab_high_cut_slope) == kCabHighCutSlopePort * sizeof(void*));
   static_assert(kCabHighCutSlopePort == kCabLowCutSlopePort + 1);
-  static_assert(kPortCount == kCabHighCutSlopePort + 1);
+  static_assert(offsetof(Ports, cab_ir_auto_trim) == kCabIrAutoTrimPort * sizeof(void*));
+  static_assert(kCabIrAutoTrimPort == kCabHighCutSlopePort + 1);
+  static_assert(kPortCount == kCabIrAutoTrimPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -606,6 +611,8 @@ private:
   bool centerBlendRequested = false;
   bool centerBlendApplied = false;
   bool centerBlendLatched = false;
+  std::array<bool, kStageCount> irTrimApplied{};
+  bool cabIrAutoTrimRequested = false;
 
   struct PendingSwitch {
     NeuralAudio::NeuralModel* model = nullptr;
@@ -614,6 +621,7 @@ private:
     int oversampleMode = kOsTrue8;
     bool fullRig = false;
     float nativeRate = 0.0f;
+    bool trimIrSilence = false;
     bool ready = false;
     char path[MAX_FILE_NAME] = {};
   };
@@ -796,7 +804,14 @@ private:
   // Re-load all currently-loaded model paths at the new rate domain. Called
   // on the AUDIO thread when the toggle flips (schedules worker loads; the
   // old models keep processing until each swap lands).
+  bool desiredAutoTrim() const noexcept {
+    const float value = (ports.cab_ir_auto_trim && std::isfinite(*ports.cab_ir_auto_trim))
+                            ? *ports.cab_ir_auto_trim
+                            : kCabIrAutoTrimDefault;
+    return value >= 0.5f;
+  }
   void reloadModelsForOversample();
+  void reloadWavIrsForTrim();
   void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
   void commitPendingSwitches();
   // Enter FadeOut from Steady or mid-FadeIn (gain-continuous); no-op if a

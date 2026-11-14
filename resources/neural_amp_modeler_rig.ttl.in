@@ -1361,4 +1361,10 @@
  lv2:scalePoint [ rdfs:value 0 ; rdfs:label "12 dB/oct" ] ,
   [ rdfs:value 1 ; rdfs:label "18 dB/oct" ] ,
   [ rdfs:value 2 ; rdfs:label "24 dB/oct" ]
+], [
+ a lv2:ControlPort, lv2:InputPort ; lv2:index 238 ;
+ lv2:symbol "cab_ir_auto_trim" ; lv2:name "Cab IR Auto Trim Silence" ;
+ rdfs:comment "Automatically trim leading digital silence before the first impulse arrival in WAV cabinet IRs while preserving relative stereo inter-channel delay and recovering full 170 ms tail length." ;
+ lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ;
+ lv2:portProperty lv2:toggled, lv2:integer, lv2:connectionOptional
 ] .

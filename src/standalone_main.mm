@@ -634,7 +634,8 @@ class StandaloneHost {
         {NAMRig::kModelBandLimitCutoffPort, modelBandLimitParamsControls_},
         {NAMRig::kSpatialCenterBlendPort, {&spatialCenterBlendControl_, 1}},
         {NAMRig::kSpeakerProfileBPort, {&speakerBProfileControl_, 1}},
-        {NAMRig::kCabLowCutSlopePort, cabCutSlopeControls_}});
+        {NAMRig::kCabLowCutSlopePort, cabCutSlopeControls_},
+        {NAMRig::kCabIrAutoTrimPort, {&cabIrAutoTrimControl_, 1}}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1048,6 +1049,10 @@ class StandaloneHost {
         port <= NAMRig::kCabHighCutSlopePort && size == sizeof(float)) {
       host->cabCutSlopeControls_[port - NAMRig::kCabLowCutSlopePort] =
           static_cast<float>(NAMRig::clampCabCutSlope(*static_cast<const float*>(buffer)));
+      return;
+    }
+    if (format == 0 && port == NAMRig::kCabIrAutoTrimPort && size == sizeof(float)) {
+      host->cabIrAutoTrimControl_ = *static_cast<const float*>(buffer) >= 0.5f ? 1.0f : 0.0f;
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1935,6 +1940,7 @@ class StandaloneHost {
       NAMRig::kCabLowCutSlopeDefault,
       NAMRig::kCabHighCutSlopeDefault,
   };
+  float cabIrAutoTrimControl_ = NAMRig::kCabIrAutoTrimDefault;
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

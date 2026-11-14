@@ -363,7 +363,8 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
 
   LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
                              message->oversampleMode, message->generation,
-                             {}, nullptr, nullptr, nullptr, false, 0.0f};
+                             {}, nullptr, nullptr, nullptr, false, 0.0f,
+                             message->trimIrSilence};
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
   const int requestedMode = Plugin::normalizeLoadMode(message->stage,
                                                       message->oversampleMode);
@@ -373,17 +374,15 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       if ((message->stage == Stage::Cab || message->stage == Stage::Cab2) &&
           endsWithWav(message->path)) {
         const unsigned channels = WavIR::channelCount(message->path);
+        const bool trimIr = message->trimIrSilence;
         if (channels >= 2) {
-          auto left = WavIR::load(message->path, rig->sampleRate,
-                                  rig->maxBufferSize, 0);
-          auto right = WavIR::load(message->path, rig->sampleRate,
-                                   rig->maxBufferSize, 1);
-          WavIR::linkStereoNormalization(*left, *right);
-          response.ir = left.release();
-          response.irRight = right.release();
+          auto stereo = WavIR::loadStereo(message->path, rig->sampleRate,
+                                          rig->maxBufferSize, trimIr);
+          response.ir = stereo.left.release();
+          response.irRight = stereo.right.release();
         } else {
           response.ir = WavIR::load(message->path, rig->sampleRate,
-                                    rig->maxBufferSize).release();
+                                    rig->maxBufferSize, -1, trimIr).release();
         }
       } else {
         // The stage's oversample mode decides the loader external rate.
@@ -515,10 +514,11 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
       message->stage, rig->desiredStageMode(index));
   const int responseMode = Plugin::normalizeLoadMode(message->stage,
                                                      message->oversampleMode);
-  if (message->model && responseMode != desiredMode) {
-    // The mode changed while an initial/path load was in flight, before
-    // reloadModelsForOversample() had an installed model to reschedule.
-    // Reuse the completed response's path and load it for the latest domain.
+  const bool desiredTrim = rig->desiredAutoTrim();
+  if ((message->model && responseMode != desiredMode) ||
+      (message->ir && message->trimIrSilence != desiredTrim)) {
+    // The mode or IR auto-trim changed while a load was in flight. Reuse the
+    // completed response's path and load it for the latest settings.
     const size_t length = strnlen(message->path, MAX_FILE_NAME);
     if (length > 0 && length < MAX_FILE_NAME) {
       rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
@@ -539,6 +539,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   pending.oversampleMode = message->model ? responseMode : desiredMode;
   pending.fullRig = message->fullRig;
   pending.nativeRate = message->nativeRate;
+  pending.trimIrSilence = message->trimIrSilence;
   std::memcpy(pending.path, message->path, MAX_FILE_NAME);
   pending.ready = true;
 
@@ -1281,6 +1282,12 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   }
   if (oversampleChanged)
     reloadModelsForOversample();
+
+  const bool autoTrim = desiredAutoTrim();
+  if (autoTrim != cabIrAutoTrimRequested) {
+    cabIrAutoTrimRequested = autoTrim;
+    reloadWavIrsForTrim();
+  }
 
   // Converter histories belong to a particular grouping of active stages.
   // If bypass, model presence, cab type, or an applied factor changes, a
@@ -2519,6 +2526,7 @@ void Plugin::commitPendingSwitches() {
     modelPaths[index] = pending.path;
     osApplied[index] = pending.oversampleMode;
     stageNativeRate[index] = models[index] ? pending.nativeRate : 0.0f;
+    irTrimApplied[index] = irs[index] ? pending.trimIrSilence : false;
     assert(modelPaths[index].capacity() >= MAX_FILE_NAME + 1);
     notifyPending[index] = true;
     pending.ready = false;
@@ -2553,6 +2561,27 @@ void Plugin::reloadModelsForOversample() {
   }
 }
 
+void Plugin::reloadWavIrsForTrim() {
+  const bool autoTrim = desiredAutoTrim();
+  for (size_t i : {stageIndex(Stage::Cab), stageIndex(Stage::Cab2)}) {
+    const Stage stage = static_cast<Stage>(i);
+    const int mode = normalizeLoadMode(stage, desiredStageMode(i));
+    const auto& pending = pendingSwitches[i];
+    if (pending.ready) {
+      const size_t len = strnlen(pending.path, MAX_FILE_NAME);
+      if (pending.ir && len > 0 && len < MAX_FILE_NAME &&
+          pending.trimIrSilence != autoTrim) {
+        scheduleModelLoad(stage, pending.path, len, mode);
+      }
+    } else if (loadGeneration[i] == respondedGeneration[i] && irs[i] &&
+               irTrimApplied[i] != autoTrim && !modelPaths[i].empty() &&
+               modelPaths[i].size() < MAX_FILE_NAME &&
+               endsWithWav(modelPaths[i].c_str())) {
+      scheduleModelLoad(stage, modelPaths[i].c_str(), modelPaths[i].size(), mode);
+    }
+  }
+}
+
 void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
                                int mode) {
   if (!validStage(stage) || !path || length >= MAX_FILE_NAME)
@@ -2569,7 +2598,7 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
   }
   LV2LoadModelMsg message{kWorkTypeLoad, stage,
                           normalizeLoadMode(stage, mode),
-                          ++loadGeneration[index], {}};
+                          ++loadGeneration[index], {}, desiredAutoTrim()};
   std::memcpy(message.path, path, length);
   message.path[length] = '\0';
   schedule->schedule_work(schedule->handle, sizeof(message), &message);

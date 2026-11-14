@@ -60,6 +60,8 @@ inline void forEachWin32ControlDefault(Set&& set) {
         value = NAMRig::kCabLowCutSlopeDefault; break;
       case NAMRig::kCabHighCutSlopePort:
         value = NAMRig::kCabHighCutSlopeDefault; break;
+      case NAMRig::kCabIrAutoTrimPort:
+        value = NAMRig::kCabIrAutoTrimDefault; break;
       default: break;
     }
     if (entry.port >= NAMRig::kToneEqModePort &&

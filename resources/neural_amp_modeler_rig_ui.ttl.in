@@ -349,4 +349,6 @@
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_low_cut_slope" ; ui:notifyType atom:Float
 	], [
 		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_high_cut_slope" ; ui:notifyType atom:Float
+	], [
+		ui:plugin <@NAM_RIG_LV2_ID@> ; lv2:symbol "cab_ir_auto_trim" ; ui:notifyType atom:Float
 	] .

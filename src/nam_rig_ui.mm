@@ -1713,7 +1713,8 @@ static double copilotParseClock(NSString* text) {
     return;
   }
   const NAMRig::WavIR::AlignmentResult res =
-      NAMRig::WavIR::findBestAlignment(pathA.c_str(), pathB.c_str(), 48000.0);
+      NAMRig::WavIR::findBestAlignment(pathA.c_str(), pathB.c_str(), 48000.0,
+                                       _state->cabIrAutoTrim);
   if (!res.valid) {
     NSBeep();
     flashButtonTitle(@"WAV ONLY", 1.5);
@@ -1802,13 +1803,17 @@ static double copilotParseClock(NSString* text) {
         _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
       }
       if ([spec[@"key"] isEqualToString:@"cab_console"]) {
-        for (uint32_t slopePort : {NAMRig::kCabLowCutSlopePort, NAMRig::kCabHighCutSlopePort}) {
-          NSString* slopeKey = [NSString stringWithFormat:@"%u", slopePort];
-          if (!values[slopeKey]) {
-            const float defVal = slopePort == NAMRig::kCabLowCutSlopePort
-                ? NAMRig::kCabLowCutSlopeDefault : NAMRig::kCabHighCutSlopeDefault;
-            _state->sendControl(slopePort, defVal);
-            _state->updateControl(slopePort, defVal);
+        for (uint32_t consolePort : {NAMRig::kCabLowCutSlopePort, NAMRig::kCabHighCutSlopePort,
+                                     NAMRig::kCabIrAutoTrimPort}) {
+          NSString* consoleKey = [NSString stringWithFormat:@"%u", consolePort];
+          if (!values[consoleKey]) {
+            const float defVal = consolePort == NAMRig::kCabLowCutSlopePort
+                ? NAMRig::kCabLowCutSlopeDefault
+                : (consolePort == NAMRig::kCabHighCutSlopePort
+                       ? NAMRig::kCabHighCutSlopeDefault
+                       : NAMRig::kCabIrAutoTrimDefault);
+            _state->sendControl(consolePort, defVal);
+            _state->updateControl(consolePort, defVal);
           }
         }
       }
@@ -6608,7 +6613,8 @@ static void addLowerStudioDeck(RigUIState* state,
     NSArray<NSString*>* cabPresetTitles = @[@"50/50 STEREO", @"LEAD FOCUS", @"WIDE ROOM"];
     addSlotPresetDropdown(chips, state, @"cab_console", @"Dual-Cabinet Blend Console",
                           [@[@25, @48, @49, @26, @27,
-                             @(NAMRig::kCabLowCutSlopePort), @(NAMRig::kCabHighCutSlopePort), @59]
+                             @(NAMRig::kCabLowCutSlopePort), @(NAMRig::kCabHighCutSlopePort),
+                             @(NAMRig::kCabIrAutoTrimPort), @59]
                               arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::CabConsole)],
                           cabPresetTitles, @selector(applyCabConsolePreset:));
     RigButton* invertB = rigChip(chips, @"B POL INV", state->uiController, @selector(controlChanged:), 59);
@@ -6675,6 +6681,17 @@ static void addLowerStudioDeck(RigUIState* state,
     addCutSlopeControl(@"HI SLOPE", NAMRig::kCabHighCutSlopePort, @"Cab High Cut Slope",
                        state->cabHighCutSlope, state->cabHighCutSlopePopup);
     [[state->cabHighCutSlopePopup.widthAnchor constraintEqualToAnchor:state->cabLowCutSlopePopup.widthAnchor] setActive:YES];
+
+    RigButton* irTrim = rigChip(cutsRow, @"IR TRIM", state->uiController,
+                                @selector(controlChanged:), NAMRig::kCabIrAutoTrimPort);
+    irTrim.buttonType = NSButtonTypeToggle;
+    irTrim.check = YES;
+    irTrim.state = NSControlStateValueOff;
+    irTrim.toolTip = @"Auto-trim leading digital silence from loaded WAV cab IRs while keeping L/R arrival delay and full 170 ms tail.";
+    state->cabIrAutoTrimButton = irTrim;
+    [cutsRow addArrangedSubview:irTrim];
+    [[irTrim.widthAnchor constraintEqualToConstant:68] setActive:YES];
+    [[irTrim.heightAnchor constraintEqualToConstant:20] setActive:YES];
 
     NAMCabConsoleVisualizer* cabVis = [[NAMCabConsoleVisualizer alloc] initWithFrame:NSZeroRect];
     cabVis.translatesAutoresizingMaskIntoConstraints = NO;

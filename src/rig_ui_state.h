@@ -294,6 +294,8 @@ struct RigUIState {
   bool cab2PolarityInverted = false;
   __strong RigButton* spatialCenterBlendButton = nil;
   bool spatialCenterBlend = false;
+  __strong RigButton* cabIrAutoTrimButton = nil;
+  bool cabIrAutoTrim = false;
   __strong RigButton* cabAutoAlignButton = nil;
 
   void selectDeckTab(NSInteger index) {
@@ -1473,6 +1475,9 @@ struct RigUIState {
     }
     if (port == NAMRig::kSpatialCenterBlendPort) {
       return spatialCenterBlend ? 1.0f : 0.0f;
+    }
+    if (port == NAMRig::kCabIrAutoTrimPort) {
+      return cabIrAutoTrim ? 1.0f : 0.0f;
     }
     for (size_t k = 0; k < kRigKnobCount; ++k) {
       if (kRigKnobPorts[k] == port) {
@@ -2754,6 +2759,19 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateCenterBlend();
       else dispatch_async(dispatch_get_main_queue(), updateCenterBlend);
+      return;
+    }
+    if (port == NAMRig::kCabIrAutoTrimPort) {
+      const bool trimmed = value >= 0.5f;
+      auto updateIrAutoTrim = ^{
+        if (!alive || !*alive) return;
+        cabIrAutoTrim = trimmed;
+        if (!cabIrAutoTrimButton) return;
+        cabIrAutoTrimButton.state = trimmed ? NSControlStateValueOn : NSControlStateValueOff;
+        cabIrAutoTrimButton.needsDisplay = YES;
+      };
+      if ([NSThread isMainThread]) updateIrAutoTrim();
+      else dispatch_async(dispatch_get_main_queue(), updateIrAutoTrim);
       return;
     }
     if ((port >= 7 && port <= 9) || port == 47) {

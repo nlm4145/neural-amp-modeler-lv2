@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "dsp_accel.h"
@@ -20,16 +21,32 @@ namespace NAMRig {
 //     direct convolution with no lookahead.
 class WavIR {
 public:
+  struct StereoIR {
+    std::unique_ptr<WavIR> left;
+    std::unique_ptr<WavIR> right;
+  };
   // channel: -1 sums every channel to mono, otherwise selects one channel.
+  // When autoTrimSilence is true, trims leading digital silence (< -80 dB vs
+  // global peak across all channels) uniformly across channels before resampling.
   static std::unique_ptr<WavIR> load(const char* path, double hostRate,
-                                     int maxBlockSize, int channel = -1);
+                                     int maxBlockSize, int channel = -1,
+                                     bool autoTrimSilence = false);
+  // Loads 1-ch (left only), 2-ch (L/R), or >2-ch (balanced surround/multi-mic
+  // stereo folddown with linked normalization) WAV IRs.
+  static StereoIR loadStereo(const char* path, double hostRate, int maxBlockSize,
+                             bool autoTrimSilence = false);
   // Peak/Loudness normalization for a stereo IR must use one linked scale so
   // the source file's inter-channel balance is preserved.
   static void linkStereoNormalization(WavIR& left, WavIR& right) noexcept;
   static unsigned channelCount(const char* path);
   // The exact taps load() convolves with (resampled, transfer-scaled, 170 ms
   // tapered), before normalization. Used for offline cab screening.
-  static std::vector<float> loadTaps(const char* path, double hostRate, int channel = -1);
+  static std::vector<float> loadTaps(const char* path, double hostRate,
+                                     int channel = -1,
+                                     bool autoTrimSilence = false);
+  // Stereo taps for 2-ch and >2-ch multichannel WAV IRs before normalization.
+  static std::pair<std::vector<float>, std::vector<float>> loadTapsStereo(
+      const char* path, double hostRate, bool autoTrimSilence = false);
   static constexpr double kMaxSeconds = 0.17;
 
   // Compact worker-computed low-band complex response (45..210 Hz) used for
@@ -60,7 +77,8 @@ public:
     float correlation = 0.0f;   // signed normalized peak correlation [-1, +1]
   };
   static AlignmentResult findBestAlignment(const char* pathA, const char* pathB,
-                                           double sampleRate = 48000.0);
+                                           double sampleRate = 48000.0,
+                                           bool autoTrimSilence = false);
 
   ~WavIR();
   // normalizationMode: 1 peak, 2 loudness; all other values use loudness.

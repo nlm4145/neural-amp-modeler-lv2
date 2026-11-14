@@ -38,6 +38,7 @@ struct LoadMessage {
   int32_t oversampleMode;
   uint64_t generation;
   char path[kMaxFileName];
+  bool trimIrSilence = false;
 };
 
 struct SwitchMessage {
@@ -50,6 +51,8 @@ struct SwitchMessage {
   void* ir;
   void* irRight;   // stereo cabinet IRs load a second convolver
   bool fullRig;
+  float nativeRate = 0.0f;
+  bool trimIrSilence = false;
 };
 
 std::vector<std::string> uris;

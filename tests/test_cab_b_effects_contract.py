@@ -39,8 +39,8 @@ assert "offsetof(Ports, cab2_enabled) == 47 * sizeof(void*)" in header
 assert "offsetof(Ports, reverb_predelay) == 58 * sizeof(void*)" in header
 assert "offsetof(Ports, cab2_polarity) == 59 * sizeof(void*)" in header
 assert "kPortCount = kRigControlPortCount" in header
-assert "kRigControlPortCount = 238;" in (ROOT / "src/power_tube_controls.h").read_text()
-assert sorted(ports) == list(range(238)), "ports stay contiguous; cab cut slopes append after speaker_profile_b"
+assert "kRigControlPortCount = 239;" in (ROOT / "src/power_tube_controls.h").read_text()
+assert sorted(ports) == list(range(239)), "ports stay contiguous; cab IR auto trim appends after cab_high_cut_slope"
 
 
 def port_default(index: int) -> float:
@@ -126,10 +126,14 @@ assert "WavIR::lowBandCoherence" in dsp and "coherentShelfDb" in dsp, (
 assert "WavIR* irRight;" in header and "std::array<WavIR*, kStageCount> irsRight{};" in header
 assert "WavIR* irRight = nullptr;" in header, "the pending switch must carry the right-channel IR"
 assert re.search(r"const unsigned channels = WavIR::channelCount\(message->path\);", dsp)
-assert re.search(r"WavIR::load\(message->path, rig->sampleRate,\s*rig->maxBufferSize, 1\)", dsp), (
-    "channel 1 must load into the right-channel convolver"
+assert re.search(
+    r"WavIR::loadStereo\(message->path,\s*rig->sampleRate,\s*rig->maxBufferSize,\s*trimIr\)",
+    dsp,
+) and "response.irRight = stereo.right.release();" in dsp, (
+    "stereo/multichannel IRs must load into both left and right convolvers"
 )
-assert "WavIR::linkStereoNormalization(*left, *right);" in dsp, (
+wav_ir = (ROOT / "src/wav_ir.cpp").read_text()
+assert "linkStereoNormalization(*out.left, *out.right);" in wav_ir or "WavIR::linkStereoNormalization(*left, *right);" in dsp, (
     "stereo IR normalization must preserve the source channel balance"
 )
 assert "delete message->irRight;" in dsp, "the worker must free the right-channel IR"

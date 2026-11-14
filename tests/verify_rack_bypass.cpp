@@ -27,9 +27,10 @@ namespace {
 using namespace NAMRig;
 constexpr size_t kBlock = 128, kAtomBytes = 16384;
 using Controls = std::array<float, Plugin::kPortCount>;
-static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 238 &&
+static_assert(kRackCount == 9 && kRackControlFirstPort == 71 && Plugin::kPortCount == 239 &&
                   kPowerTubeTypePort == 80 && kPowerTubeCharacterPort == 81 && kMidPushPort == 82 &&
-                  kCabLowCutSlopePort == 236 && kCabHighCutSlopePort == 237,
+                  kCabLowCutSlopePort == 236 && kCabHighCutSlopePort == 237 &&
+                  kCabIrAutoTrimPort == 238,
                "rack integration requires the appended switch ABI");
 static_assert(static_cast<size_t>(Rack::Delay) == 0 && static_cast<size_t>(Rack::Reverb) == 1 &&
                   static_cast<size_t>(Rack::Spatial) == 2 && static_cast<size_t>(Rack::Power) == 3 &&
@@ -169,6 +170,7 @@ Controls defaults(int mode) {
   c[kSpeakerProfileBPort] = kSpeakerProfileBDefault;
   c[kCabLowCutSlopePort] = kCabLowCutSlopeDefault;
   c[kCabHighCutSlopePort] = kCabHighCutSlopeDefault;
+  c[kCabIrAutoTrimPort] = kCabIrAutoTrimDefault;
   const auto pins = pinEqDefaults();
   std::copy(pins.begin(), pins.end(), c.begin() + kPinEqFirstPort);
   const auto tone = toneEqDefaults();
@@ -229,6 +231,7 @@ struct Host {
   unsigned loads = 0;
   bool finite = true;
   bool allowNam = false;
+  bool allowMonoWav = false;
 
   static LV2_URID mapUri(LV2_URID_Map_Handle handle, const char* uri) {
     auto& ids = static_cast<Host*>(handle)->uris;
@@ -249,9 +252,8 @@ struct Host {
                                   uint32_t size, const void* data) {
     auto& host = *static_cast<Host*>(handle);
     const auto& message = *static_cast<const LV2SwitchModelMsg*>(data);
-    require(message.path[0] &&
-                (host.allowNam ? (message.model != nullptr || (message.ir && message.irRight))
-                               : (message.ir && message.irRight)),
+    const bool irOk = message.ir && (host.allowMonoWav || message.irRight);
+    require(message.path[0] && (host.allowNam ? (message.model != nullptr || irOk) : irOk),
             "real worker loaded stereo WAV");
     return host.worker->work_response(host.instance, size, data);
   }
@@ -1193,6 +1195,130 @@ void verifyItem6EQAndDoubles(const LV2_Descriptor* d) {
   }
 }
 
+void verifyItem7WavIrEdgeCases(const LV2_Descriptor* d) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "rack-item7-wav-XXXXXX").string();
+  require(mkdtemp(pattern.data()) != nullptr, "create temp dir for Item 7 WAVs");
+  const std::filesystem::path dir = pattern;
+
+  auto writeF32 = [&](const std::filesystem::path& path, const std::vector<float>& interleaved, uint16_t ch) {
+    std::ofstream out(path, std::ios::binary);
+    auto w16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    auto w32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const uint32_t rate = 48000;
+    const uint32_t dataSize = static_cast<uint32_t>(interleaved.size() * sizeof(float));
+    out.write("RIFF", 4); w32(36u + dataSize); out.write("WAVEfmt ", 8);
+    w32(16); w16(3); w16(ch); w32(rate); w32(rate * ch * 4u); w16(static_cast<uint16_t>(ch * 4u)); w16(32);
+    out.write("data", 4); w32(dataSize);
+    out.write(reinterpret_cast<const char*>(interleaved.data()), dataSize);
+    require(static_cast<bool>(out), "write Item 7 WAV fixture");
+  };
+
+  const std::filesystem::path paddedPath = dir / "padded.wav";
+  {
+    std::vector<float> v(600, 0.0f);
+    v[480] = 1.0f;
+    v[500] = 0.25f;
+    writeF32(paddedPath, v, 1);
+  }
+  const std::filesystem::path quadPath = dir / "quad.wav";
+  {
+    std::vector<float> q(64 * 4, 0.0f);
+    q[8 * 4 + 2] = 1.0f;   // Ls
+    q[24 * 4 + 3] = 0.9f;  // Rs
+    writeF32(quadPath, q, 4);
+  }
+
+  auto measureImpulsePeak = [](Host& h) -> ptrdiff_t {
+    for (int b = 0; b < 32; ++b) h.run(true); // flush state & drain worker
+    auto* seq = reinterpret_cast<LV2_Atom_Sequence*>(h.control.data());
+    seq->atom.type = Host::mapUri(&h, LV2_ATOM__Sequence);
+    seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
+    reinterpret_cast<LV2_Atom_Sequence*>(h.notify.data())->atom.size = kAtomBytes - sizeof(LV2_Atom);
+    ptrdiff_t bestIdx = -1;
+    float bestAbs = 0.0f;
+    for (int b = 0; b < 12; ++b) {
+      h.input.fill(0.0f);
+      if (b == 0) h.input[0] = 0.5f;
+      h.descriptor->run(h.instance, kBlock);
+      for (size_t i = 0; i < kBlock; ++i) {
+        h.finite &= std::isfinite(h.left[i]) && std::isfinite(h.right[i]);
+        const float a = std::fabs(h.left[i]);
+        if (a > bestAbs) {
+          bestAbs = a;
+          bestIdx = static_cast<ptrdiff_t>(b) * static_cast<ptrdiff_t>(kBlock) + static_cast<ptrdiff_t>(i);
+        }
+      }
+      while (!h.jobs.empty()) {
+        auto job = std::move(h.jobs.front());
+        h.jobs.pop_front();
+        h.worker->work(h.instance, Host::respond, &h, static_cast<uint32_t>(job.size()), job.data());
+      }
+    }
+    return bestAbs > 1e-4f ? bestIdx : -1;
+  };
+
+  // 7A: Toggle cab_ir_auto_trim (0 -> 1 -> 0) live on WAV cab IR with 480-sample padding.
+  Controls c = defaults(0);
+  c[47] = 0.0f;
+  c[port(Rack::Spatial)] = 0.0f;
+  c[kCabIrAutoTrimPort] = 0.0f;
+  Host h(d, 48000.0, c);
+  h.allowMonoWav = true;
+  {
+    LV2LoadModelMsg msg{};
+    msg.type = kWorkTypeLoad;
+    msg.stage = Stage::Cab;
+    msg.oversampleMode = 0;
+    msg.trimIrSilence = false;
+    std::strcpy(msg.path, paddedPath.string().c_str());
+    require(h.worker->work(h.instance, Host::respond, &h, sizeof(msg), &msg) == LV2_WORKER_SUCCESS,
+            "load padded WAV cab");
+  }
+  const ptrdiff_t untrimmedPeak = measureImpulsePeak(h);
+  h.controls[kCabIrAutoTrimPort] = 1.0f;
+  const ptrdiff_t trimmedPeak = measureImpulsePeak(h);
+  h.controls[kCabIrAutoTrimPort] = 0.0f;
+  const ptrdiff_t restoredPeak = measureImpulsePeak(h);
+  check(h.finite && untrimmedPeak >= 478 && untrimmedPeak <= 484 &&
+            trimmedPeak >= 0 && trimmedPeak <= 4 &&
+            restoredPeak >= 478 && restoredPeak <= 484,
+        "7A: live cab_ir_auto_trim toggle shifts WAV IR arrival delay (480 <-> 0 samples)");
+
+  // 7B: 4ch surround-only WAV IR folds Ls->L and Rs->R cleanly in LV2 worker.
+  {
+    Host hQuad(d, 48000.0, c);
+    LV2LoadModelMsg msg{};
+    msg.type = kWorkTypeLoad;
+    msg.stage = Stage::Cab;
+    msg.oversampleMode = 0;
+    msg.trimIrSilence = false;
+    std::strcpy(msg.path, quadPath.string().c_str());
+    require(hQuad.worker->work(hQuad.instance, Host::respond, &hQuad, sizeof(msg), &msg) ==
+                LV2_WORKER_SUCCESS,
+            "load 4ch WAV cab");
+    for (int b = 0; b < 16; ++b) hQuad.run(true);
+    hQuad.input.fill(0.0f);
+    hQuad.input[0] = 0.5f;
+    auto* seq = reinterpret_cast<LV2_Atom_Sequence*>(hQuad.control.data());
+    seq->atom.type = Host::mapUri(&hQuad, LV2_ATOM__Sequence);
+    seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
+    reinterpret_cast<LV2_Atom_Sequence*>(hQuad.notify.data())->atom.size =
+        kAtomBytes - sizeof(LV2_Atom);
+    hQuad.descriptor->run(hQuad.instance, kBlock);
+    float peakL = 0.0f, peakR = 0.0f;
+    size_t idxL = 0, idxR = 0;
+    for (size_t i = 0; i < kBlock; ++i) {
+      if (std::fabs(hQuad.left[i]) > peakL) { peakL = std::fabs(hQuad.left[i]); idxL = i; }
+      if (std::fabs(hQuad.right[i]) > peakR) { peakR = std::fabs(hQuad.right[i]); idxR = i; }
+    }
+    check(peakL > 0.05f && peakR > 0.05f && idxL <= 10 && idxR >= 20 && idxR <= 28,
+          "7B: 4ch WAV IR folds Ls->L (~frame 8) and Rs->R (~frame 24) through LV2 DSP");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 int main(int argc, char** argv) {
   if (argc != 2) { std::puts("usage: verify_rack_bypass <fresh rig .so>"); return 2; }
   void* library = dlopen(argv[1], RTLD_NOW);
@@ -1204,6 +1330,7 @@ int main(int argc, char** argv) {
     verifyPins(descriptor(0));
     verifyToneEQ(descriptor(0));
     verifyItem6EQAndDoubles(descriptor(0));
+    verifyItem7WavIrEdgeCases(descriptor(0));
   } catch (const std::exception& error) {
     check(false, error.what());
   }
