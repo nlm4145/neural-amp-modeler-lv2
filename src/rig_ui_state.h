@@ -379,6 +379,8 @@ struct RigUIState {
   __strong NSPopUpButton* speakerProfilePopup = nil;
   __strong NSPopUpButton* deckTransformerPopup = nil;
   __strong NSPopUpButton* deckSpeakerProfilePopup = nil;
+  __strong NSPopUpButton* deckSpeakerBProfilePopup = nil;
+  int speakerBProfile = NAMRig::SpeakerDynamics::kMatchCabA;
   __strong NSPopover* speakerPopover = nil;
   __strong NSPopover* effectsPopover = nil;
   __strong NSPopover* aiCopilotPopover = nil;
@@ -1389,8 +1391,9 @@ struct RigUIState {
     }
   }
 
-  // Cab A path last displayed; Auto speaker profiles resolve from it like the DSP.
+  // Cab A/B paths last displayed; Auto speaker profiles resolve from them like the DSP.
   std::string speakerCabPath;
+  std::string speakerCabBPath;
   void setSculptPage(bool overdrive) {
     sculptShowsOverdrive = overdrive;
     sculptEqKnobs.hidden = overdrive;
@@ -1448,6 +1451,10 @@ struct RigUIState {
     if (port == 42) {
       NSPopUpButton* p = deckSpeakerProfilePopup ?: speakerProfilePopup;
       return p ? (float)p.indexOfSelectedItem : 0.0f;
+    }
+    if (port == NAMRig::kSpeakerProfileBPort) {
+      return deckSpeakerBProfilePopup ? (float)deckSpeakerBProfilePopup.indexOfSelectedItem
+                                      : (float)speakerBProfile;
     }
     if (port == 59) {
       return cab2PolarityInverted ? 1.0f : 0.0f;
@@ -2109,8 +2116,9 @@ struct RigUIState {
       [savedPaths addObject:[NSString stringWithUTF8String:saved.c_str()]];
     auto alive = isAlive;
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (stage == 2 && alive && *alive) {
-        speakerCabPath = copy;
+      if ((stage == 2 || stage == 3) && alive && *alive) {
+        if (stage == 2) speakerCabPath = copy;
+        else speakerCabBPath = copy;
         refreshSpeakerVisualizer();
       }
       if (stage == 0 && alive && *alive) {
@@ -2820,6 +2828,21 @@ struct RigUIState {
       };
       if ([NSThread isMainThread]) updateSpeaker();
       else dispatch_async(dispatch_get_main_queue(), updateSpeaker);
+      return;
+    }
+    if (port == NAMRig::kSpeakerProfileBPort) {
+      const int idx = NAMRig::SpeakerDynamics::clampProfileB((int)(value + 0.5f));
+      auto updateSpeakerB = ^{
+        if (!alive || !*alive) return;
+        speakerBProfile = idx;
+        if (deckSpeakerBProfilePopup) {
+          [deckSpeakerBProfilePopup selectItemAtIndex:idx];
+          deckSpeakerBProfilePopup.toolTip = deckSpeakerBProfilePopup.selectedItem.toolTip;
+        }
+        refreshSpeakerVisualizer();
+      };
+      if ([NSThread isMainThread]) updateSpeakerB();
+      else dispatch_async(dispatch_get_main_queue(), updateSpeakerB);
       return;
     }
     // Map the port to its knob index (ports 10/11 are auto-cab, no-ops in UI).

@@ -298,19 +298,34 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
     if ([state->deckSlotSpecs[i][@"key"] isEqualToString:@"speaker"]) speakerSlot = (NSInteger)i;
   REQUIRE(speakerSlot >= 0);
   NSDictionary* speakerValues = state->captureSlotPortValues(speakerSlot);
+  CHECK(speakerValues[[NSString stringWithFormat:@"%u", kSpeakerProfileBPort]] != nil);
   for (size_t i = 0; i < kPinEqPanePorts; ++i) {
     const uint32_t port = pinEqPort(PinEqPane::Speaker, 0, 0) + (uint32_t)i;
     CHECK(speakerValues[[NSString stringWithFormat:@"%u", port]] != nil);
   }
+  REQUIRE(state->deckSpeakerBProfilePopup);
+  CHECK(state->deckSpeakerBProfilePopup.tag == (NSInteger)kSpeakerProfileBPort);
+  CHECK(state->deckSpeakerBProfilePopup.numberOfItems == SpeakerDynamics::kProfileBCount);
+  CHECK(state->deckSpeakerBProfilePopup.indexOfSelectedItem == SpeakerDynamics::kMatchCabA);
   // Auto resolves from the displayed Cab A path, as in the DSP; Power ON feeds damping.
   drain();
   state->displayPath(2, "/irs/Mesa Recto V30.wav");
+  state->displayPath(3, "/irs/Marshall Greenback G12M.wav");
   drain();
   CHECK(state->speakerCabPath == "/irs/Mesa Recto V30.wav");
+  CHECK(state->speakerCabBPath == "/irs/Marshall Greenback G12M.wav");
   const float autoProfile = SpeakerDynamics::kAuto;
   runtime.descriptor->port_event(state, 42, sizeof(autoProfile), 0, &autoProfile);
   drain();
   CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kModern412);
+  const float spkBCap = SpeakerDynamics::kCaptured;
+  const float spkBMatch = SpeakerDynamics::kMatchCabA;
+  runtime.descriptor->port_event(state, kSpeakerProfileBPort, sizeof(spkBCap), 0, &spkBCap);
+  drain();
+  CHECK(state->deckSpeakerBProfilePopup.indexOfSelectedItem == SpeakerDynamics::kCaptured);
+  runtime.descriptor->port_event(state, kSpeakerProfileBPort, sizeof(spkBMatch), 0, &spkBMatch);
+  drain();
+  CHECK(state->deckSpeakerBProfilePopup.indexOfSelectedItem == SpeakerDynamics::kMatchCabA);
   const float nfb = 50.0f, powerOn = 1.0f, powerOff = 0.0f;
   const uint32_t powerPort = kRackControlFirstPort + (uint32_t)Rack::Power;
   runtime.descriptor->port_event(state, powerPort, sizeof(powerOn), 0, &powerOn);
@@ -1316,7 +1331,7 @@ static void verifyPowerTube(Runtime& runtime, Host& host, Class presetClass) {
   NSSlider* knob = state->deckKnobs[37];
   NSTextField* field = state->deckValueLabels[37];
   REQUIRE(knob && field && state->rackButtons[powerIndex] && state->rackButtons[tubeIndex]);
-  CHECK(kRigControlPortCount == 235 && tubePort == 79 && kRigKnobPorts[37] == 81);
+  CHECK(kRigControlPortCount == 236 && tubePort == 79 && kRigKnobPorts[37] == 81);
   CHECK(state->powerTubePopup.tag == 80 && knob.tag == 81 && field.tag == 81);
   CHECK(state->powerTubePopup.numberOfItems == PowerTube::kProfileCount);
   CHECK([state->powerTubePopup.itemTitles isEqualToArray:

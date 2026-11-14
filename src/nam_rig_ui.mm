@@ -189,6 +189,7 @@ static double copilotParseClock(NSString* text) {
 - (void)resetTransformerControls:(id)sender;
 - (void)showAmpAdvanced:(NSButton*)sender;
 - (void)speakerProfileChanged:(NSPopUpButton*)sender;
+- (void)speakerBProfileChanged:(NSPopUpButton*)sender;
 - (void)showSpeakerLoad:(NSButton*)sender;
 - (void)showEffects:(NSButton*)sender;
 - (void)resetAllKnobs:(id)sender;
@@ -1330,6 +1331,18 @@ static double copilotParseClock(NSString* text) {
   sender.toolTip = sender.selectedItem.toolTip;
   if (_state) {
     _state->sendControl(42, (float)sender.indexOfSelectedItem);
+    _state->updateControl(42, (float)sender.indexOfSelectedItem);
+    [self markPresetModified];
+  }
+}
+
+- (void)speakerBProfileChanged:(NSPopUpButton*)sender {
+  sender.toolTip = sender.selectedItem.toolTip;
+  if (_state) {
+    const float val = (float)sender.indexOfSelectedItem;
+    _state->speakerBProfile = NAMRig::SpeakerDynamics::clampProfileB((int)sender.indexOfSelectedItem);
+    _state->sendControl(NAMRig::kSpeakerProfileBPort, val);
+    _state->updateControl(NAMRig::kSpeakerProfileBPort, val);
     [self markPresetModified];
   }
 }
@@ -1376,6 +1389,8 @@ static double copilotParseClock(NSString* text) {
   _state->updateControl(NAMRig::kModelBandLimitSlopePort, NAMRig::kModelBandLimitSlopeDefault);
   _state->sendControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
   _state->updateControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
+  _state->sendControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
+  _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
   _state->syncingToneEq = false;
   _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
@@ -1763,6 +1778,11 @@ static double copilotParseClock(NSString* text) {
       if ([spec[@"key"] isEqualToString:@"spatial"] && !values[centerBlendKey]) {
         _state->sendControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
         _state->updateControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
+      }
+      NSString* spkBKey = [NSString stringWithFormat:@"%u", NAMRig::kSpeakerProfileBPort];
+      if ([spec[@"key"] isEqualToString:@"speaker"] && !values[spkBKey]) {
+        _state->sendControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
+        _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
       }
       // Slot presets saved before graph pins existed recall with no pins.
       for (NSNumber* pNum in spec[@"ports"]) {
@@ -6407,10 +6427,40 @@ static void addLowerStudioDeck(RigUIState* state,
     [rack addSubview:deckSpkr];
     [[deckSpkr.topAnchor constraintEqualToAnchor:rack.topAnchor constant:40] setActive:YES];
     [[deckSpkr.leadingAnchor constraintEqualToAnchor:rack.leadingAnchor constant:14] setActive:YES];
-    [[deckSpkr.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
     [[deckSpkr.heightAnchor constraintEqualToConstant:26] setActive:YES];
     state->deckSpeakerProfilePopup = deckSpkr;
     state->speakerProfilePopup = deckSpkr;
+
+    NSTextField* cabBSpkLabel = addLabel(rack, @"Cab B:", NSZeroRect,
+        [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium], rigDimText(), NSTextAlignmentRight);
+    cabBSpkLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [[cabBSpkLabel.centerYAnchor constraintEqualToAnchor:deckSpkr.centerYAnchor] setActive:YES];
+    [[cabBSpkLabel.leadingAnchor constraintEqualToAnchor:deckSpkr.trailingAnchor constant:8] setActive:YES];
+    [[cabBSpkLabel.widthAnchor constraintEqualToConstant:40] setActive:YES];
+
+    NSPopUpButton* deckSpkrB = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [deckSpkrB addItemsWithTitles:@[@"Captured / Off", @"Auto", @"Resistive", @"Open Back",
+                                    @"Vintage Alnico", @"UK 4x12", @"Modern 4x12", @"Bass", @"Match Cab A"]];
+    for (NSUInteger item = 0; item < speakerDescriptions.count && item < (NSUInteger)deckSpkrB.numberOfItems; ++item)
+      [deckSpkrB itemAtIndex:item].toolTip = speakerDescriptions[item];
+    if (deckSpkrB.numberOfItems > NAMRig::SpeakerDynamics::kMatchCabA) {
+      [deckSpkrB itemAtIndex:NAMRig::SpeakerDynamics::kMatchCabA].toolTip =
+          @"Match Cab A — Follows Cabinet A's speaker profile (when Cab A is Auto, Cabinet B independently auto-detects from its own IR/model path).";
+    }
+    deckSpkrB.controlSize = NSControlSizeRegular;
+    deckSpkrB.tag = NAMRig::kSpeakerProfileBPort;
+    deckSpkrB.target = state->uiController;
+    deckSpkrB.action = @selector(speakerBProfileChanged:);
+    deckSpkrB.translatesAutoresizingMaskIntoConstraints = NO;
+    [deckSpkrB selectItemAtIndex:NAMRig::SpeakerDynamics::kMatchCabA];
+    deckSpkrB.toolTip = deckSpkrB.selectedItem.toolTip;
+    [rack addSubview:deckSpkrB];
+    [[deckSpkrB.centerYAnchor constraintEqualToAnchor:deckSpkr.centerYAnchor] setActive:YES];
+    [[deckSpkrB.leadingAnchor constraintEqualToAnchor:cabBSpkLabel.trailingAnchor constant:4] setActive:YES];
+    [[deckSpkrB.trailingAnchor constraintEqualToAnchor:rack.trailingAnchor constant:-14] setActive:YES];
+    [[deckSpkrB.widthAnchor constraintEqualToConstant:142] setActive:YES];
+    [[deckSpkrB.heightAnchor constraintEqualToConstant:26] setActive:YES];
+    state->deckSpeakerBProfilePopup = deckSpkrB;
 
     NSStackView* kr = [[NSStackView alloc] initWithFrame:NSZeroRect];
     kr.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -6458,7 +6508,7 @@ static void addLowerStudioDeck(RigUIState* state,
 
     NSArray<NSString*>* spkrPresetTitles = @[@"PUNCHY 4x12", @"VINTAGE OPEN", @"HEAVY THUMP", @"FLAT BYPASS"];
     addSlotPresetDropdown(chips, state, @"speaker", @"Physical Speaker Emulation",
-                          [@[@42, @43, @44, @45, @46]
+                          [@[@42, @43, @44, @45, @46, @(NAMRig::kSpeakerProfileBPort)]
                               arrayByAddingObjectsFromArray:pinEqPorts(NAMRig::PinEqPane::Speaker)],
                           spkrPresetTitles, @selector(applySpeakerPreset:));
 

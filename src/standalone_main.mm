@@ -632,7 +632,8 @@ class StandaloneHost {
         {NAMRig::kModelBandLimitPort, {&modelBandLimitControl_, 1}},
         {NAMRig::kDropPitchAttackPort, dropPitchShapingControls_},
         {NAMRig::kModelBandLimitCutoffPort, modelBandLimitParamsControls_},
-        {NAMRig::kSpatialCenterBlendPort, {&spatialCenterBlendControl_, 1}}});
+        {NAMRig::kSpatialCenterBlendPort, {&spatialCenterBlendControl_, 1}},
+        {NAMRig::kSpeakerProfileBPort, {&speakerBProfileControl_, 1}}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))
@@ -1035,6 +1036,11 @@ class StandaloneHost {
     }
     if (format == 0 && port == NAMRig::kSpatialCenterBlendPort && size == sizeof(float)) {
       host->spatialCenterBlendControl_ = *static_cast<const float*>(buffer) >= 0.5f ? 1.0f : 0.0f;
+      return;
+    }
+    if (format == 0 && port == NAMRig::kSpeakerProfileBPort && size == sizeof(float)) {
+      host->speakerBProfileControl_ = static_cast<float>(NAMRig::SpeakerDynamics::clampProfileB(
+          static_cast<int>(*static_cast<const float*>(buffer) + 0.5f)));
       return;
     }
     if (port == 0 && format == host->eventTransfer_)
@@ -1917,6 +1923,7 @@ class StandaloneHost {
       NAMRig::kModelBandLimitRippleDefault,
   };
   float spatialCenterBlendControl_ = NAMRig::kSpatialCenterBlendDefault;
+  float speakerBProfileControl_ = NAMRig::kSpeakerProfileBDefault;
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_ = NAMRig::pinEqDefaults();
   std::array<uint8_t, kAtomBufferSize> controlBuffer_{};
   std::array<uint8_t, kAtomBufferSize> notifyBuffer_{};

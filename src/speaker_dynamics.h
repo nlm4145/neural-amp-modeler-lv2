@@ -28,9 +28,15 @@ class SpeakerDynamics {
   static constexpr int kModern412 = 6;
   static constexpr int kBass = 7;
   static constexpr int kProfileCount = 8;
+  static constexpr int kMatchCabA = kProfileCount;
+  static constexpr int kProfileBCount = kProfileCount + 1;
 
   static int clampProfile(int profile) noexcept {
     return std::max(kCaptured, std::min(kBass, profile));
+  }
+
+  static int clampProfileB(int profile) noexcept {
+    return std::max(kCaptured, std::min(kMatchCabA, profile));
   }
 
   static const char* profileName(int profile) noexcept {
@@ -45,6 +51,12 @@ class SpeakerDynamics {
       case kBass: return "Bass";
       default: return "Unknown";
     }
+  }
+
+  static const char* profileBName(int profile) noexcept {
+    profile = clampProfileB(profile);
+    if (profile == kMatchCabA) return "Match Cab A";
+    return profileName(profile);
   }
 
   static const char* profileDescription(int profile) noexcept {
@@ -116,6 +128,7 @@ class SpeakerDynamics {
     thump_.reset();
     inductance_.reset();
     excursionLow_ = excursion_ = driveLow_ = 0.0;
+    resetBreakupStates();
     smoothedDrive_ = smoothedCompression_ = smoothedThump_ = 0.0;
     smoothedResonance_ = smoothedDamping_ = 0.0;
     profile_ = kCaptured;
@@ -175,7 +188,18 @@ class SpeakerDynamics {
     const double resonanceTarget = clamp01(resonanceAmount * 0.01f);
     const double dampingTarget = clamp01(dampingAmount);
     const double excursionCoeff = 1.0 - std::exp(-2.0 * kPi * p.excursionHz / sampleRate);
-    const double driveCoeff = 1.0 - std::exp(-2.0 * kPi * 4.0 * p.excursionHz / sampleRate);
+    // ZDF/TPT Linkwitz-Riley LR2 (-12 dB/oct) crossover for the excursion band.
+    const double driveFc = std::min(4.0 * p.excursionHz, sampleRate * 0.2);
+    const double driveTan = std::tan(kPi * driveFc / sampleRate);
+    const double lrK = driveTan / (1.0 + driveTan);
+    // ZDF SVF bandpass for upper-mid cone modal breakup.
+    const double coneFc = std::min(p.coneBreakupHz, sampleRate * 0.25);
+    const double coneG = std::tan(kPi * coneFc / sampleRate);
+    const double coneK = 1.0 / std::max(0.5, p.coneBreakupQ);
+    const double coneA1 = 1.0 / (1.0 + coneG * (coneG + coneK));
+    const double coneA2 = coneG * coneA1;
+    const double coneA3 = coneG * coneA2;
+    const double dcR = std::exp(-2.0 * kPi * 5.0 / sampleRate);
     const double attack = 1.0 - std::exp(-1.0 / (sampleRate * p.attackSeconds));
     const double release = 1.0 - std::exp(-1.0 / (sampleRate * p.releaseSeconds));
 
@@ -204,11 +228,65 @@ class SpeakerDynamics {
       excursion_ += (level - excursion_) * (level > excursion_ ? attack : release);
       x *= 1.0 / (1.0 + p.compression * smoothedCompression_ * excursion_);
 
-      driveLow_ += driveCoeff * (x - driveLow_);
-      if (smoothedDrive_ > 1.0e-6) {
-        const double gain = 1.0 + p.drive * smoothedDrive_;
-        const double saturated = sigmoid(driveLow_ * gain) / gain;
-        x += p.saturationMix * smoothedDrive_ * (saturated - driveLow_);
+      if (driveTarget > 1.0e-6 || smoothedDrive_ > 1.0e-6) crossoverEngaged_ = true;
+      if (crossoverEngaged_) {
+        // LR2 split: lp2 and negHp2 (= ap1 - lp2 = -HP_LR2) sum to unity-gain allpass ap1.
+        const double v1 = (x - lrState1_) * lrK;
+        const double lp1 = v1 + lrState1_;
+        lrState1_ = lp1 + v1;
+        const double v2 = (lp1 - lrState2_) * lrK;
+        driveLow_ = v2 + lrState2_;
+        lrState2_ = driveLow_ + v2;
+        const double negHp2 = (2.0 * lp1 - x) - driveLow_;
+
+        double nonlinearResidual = 0.0;
+        if (smoothedDrive_ > 1.0e-6) {
+          const double gain = 1.0 + p.drive * smoothedDrive_;
+          const double bias = p.asymmetry * smoothedDrive_;
+          double lowResStep = 0.0;
+          if (bias <= 1.0e-12 && std::fabs(driveLow_ - prevDriveLow_) < 1.0e-6) {
+            const double rdSteady = sigmoid(driveLow_ * gain) / gain - driveLow_;
+            lowResStep = 0.25 * prevLowResidual_ + 0.75 * rdSteady;
+            prevDriveLow_ = driveLow_;
+            prevLowResidual_ = rdSteady;
+          } else {
+            lowResStep = evalAdaa2xStep(driveLow_, prevDriveLow_, prevLowResidual_, gain, bias);
+          }
+          const double lowResidual = p.saturationMix * smoothedDrive_ * lowResStep;
+
+          // Keep the upper-mid cone breakup path phase-aligned with the LR2 allpass sum.
+          const double xAfterLow = (driveLow_ + negHp2) + lowResidual;
+          const double svfV3 = xAfterLow - coneIc2_;
+          const double svfV1 = coneA1 * coneIc1_ + coneA2 * svfV3;
+          const double svfV2 = coneIc2_ + coneA2 * coneIc1_ + coneA3 * svfV3;
+          coneIc1_ = 2.0 * svfV1 - coneIc1_;
+          coneIc2_ = 2.0 * svfV2 - coneIc2_;
+          const double coneBand = coneK * svfV1;
+
+          const double coneGain = 1.0 + p.coneBreakupDrive * smoothedDrive_;
+          const double coneBias = 0.4 * bias;
+          const double coneResidual = p.coneBreakupMix * smoothedDrive_ *
+              evalAdaa2xStep(coneBand, prevConeBand_, prevConeResidual_, coneGain, coneBias);
+
+          nonlinearResidual = lowResidual + coneResidual;
+        } else {
+          prevDriveLow_ = driveLow_;
+          prevLowResidual_ = 0.0;
+          prevConeBand_ = prevConeResidual_ = 0.0;
+          coneIc1_ = coneIc2_ = 0.0;
+        }
+
+        // Block DC only on the asymmetric nonlinear residual.
+        const double dcBalanced = nonlinearResidual - dcPrevIn_ + dcR * dcPrevOut_;
+        dcPrevIn_ = nonlinearResidual;
+        dcPrevOut_ = dcBalanced;
+        x = (driveLow_ + negHp2) + dcBalanced;
+
+        if (driveTarget <= 1.0e-6 && smoothedDrive_ <= 1.0e-6 && std::fabs(x) < 1.0e-6 &&
+            std::fabs(lrState1_) < 1.0e-6 && std::fabs(lrState2_) < 1.0e-6 &&
+            std::fabs(dcPrevOut_) < 1.0e-6) {
+          resetBreakupStates();
+        }
       }
       samples[i] = static_cast<float>(x);
     }
@@ -233,30 +311,66 @@ class SpeakerDynamics {
     double inductanceHz, inductanceDb;
     double excursionHz, drive, saturationMix, compression;
     double attackSeconds, releaseSeconds;
+    double asymmetry;
+    double coneBreakupHz, coneBreakupQ, coneBreakupMix, coneBreakupDrive;
   };
 
   static constexpr Profile kProfiles_[kProfileCount] = {
       // 0. Captured / Off: exact bypass, no added load or excursion response
-      {80, 0, .7, 90, 0, .7, 2000, 0, 90, 0, 0, 0, .004, .080},
+      {80, 0, .7, 90, 0, .7, 2000, 0, 90, 0, 0, 0, .004, .080, 0.0, 1600, 2.5, 0.0, 0.0},
       // 1. Auto: resolved dynamically from the cabinet IR path (defaults to Resistive)
-      {80, 0, .7, 90, 0, .7, 2000, 0, 90, 0, 0, 0, .004, .080},
+      {80, 0, .7, 90, 0, .7, 2000, 0, 90, 0, 0, 0, .004, .080, 0.0, 1600, 2.5, 0.0, 0.0},
       // 2. Resistive: flat attenuator dummy load; minimal 95 Hz resonance, 2.5 kHz inductance
-      {95, .35, .60, 82, .25, .55, 2500, 1.0, 90, 1.1, .10, .35, .003, .060},
+      {95, .35, .60, 82, .25, .55, 2500, 1.0, 90, 1.1, .10, .35, .003, .060, 0.04, 1700, 2.8, 0.05, 0.8},
       // 3. Open Back: 1x12/2x12 combo; 92 Hz resonance, loose bloom, 1.8 kHz open chime
-      {92, 2.0, .66, 72, 1.8, .58, 1800, 3.5, 76, 2.0, .22, .90, .006, .160},
+      {92, 2.0, .66, 72, 1.8, .58, 1800, 3.5, 76, 2.0, .22, .90, .006, .160, 0.24, 1650, 2.5, 0.22, 1.3},
       // 4. Vintage Alnico: Blue/Gold/Cream; 105 Hz resonance, warm cone breakup, 1.6 kHz rise
-      {105, 2.4, .78, 88, 1.5, .65, 1600, 4.5, 92, 2.8, .32, 1.25, .010, .220},
+      {105, 2.4, .78, 88, 1.5, .65, 1600, 4.5, 92, 2.8, .32, 1.25, .010, .220, 0.28, 1550, 2.5, 0.28, 1.5},
       // 5. UK 4x12: Greenback 1960 stack; strong 118 Hz bark, punchy thump, 2.0 kHz inductance
-      {118, 3.0, .95, 105, 1.8, .75, 2000, 3.5, 110, 2.5, .28, 1.05, .005, .110},
+      {118, 3.0, .95, 105, 1.8, .75, 2000, 3.5, 110, 2.5, .28, 1.05, .005, .110, 0.18, 1600, 2.5, 0.24, 1.4},
       // 6. Modern 4x12: Oversized Rectifier V30; deep 82 Hz resonance, tight thump, 2.2 kHz bite
-      {82, 2.5, .82, 68, 2.3, .72, 2200, 3.0, 82, 2.2, .24, .78, .003, .075},
+      {82, 2.5, .82, 68, 2.3, .72, 2200, 3.0, 82, 2.2, .24, .78, .003, .075, 0.10, 1700, 2.6, 0.16, 1.1},
       // 7. Bass: Multi-driver bass cab (8x10/4x10/1x15); 58 Hz sub resonance, 48 Hz thump
-      {58, 2.1, .72, 48, 2.5, .65, 1500, 2.0, 55, 1.5, .16, .62, .008, .240},
+      {58, 2.1, .72, 48, 2.5, .65, 1500, 2.0, 55, 1.5, .16, .62, .008, .240, 0.12, 1200, 2.4, 0.12, 1.0},
   };
 
   static constexpr double kPi = 3.14159265358979323846;
   static double clamp01(double x) noexcept { return std::max(0.0, std::min(1.0, x)); }
   static double sigmoid(double x) noexcept { return x / std::sqrt(1.0 + x * x); }
+  static double asymResidual(double x, double gain, double bias, double sig0,
+                             double deriv0) noexcept {
+    if (bias <= 1.0e-12) return sigmoid(x * gain) / gain - x;
+    return (sigmoid(x * gain + bias) - sig0) / (gain * deriv0) - x;
+  }
+  // Exact 1st-order antiderivative of asymResidual(x) for alias-suppressed waveshaping.
+  static double asymAntiderivativeResidual(double x, double gain, double bias, double sig0,
+                                           double deriv0) noexcept {
+    if (bias <= 1.0e-12) return std::sqrt(1.0 + (x * gain) * (x * gain)) / (gain * gain) - 0.5 * x * x;
+    const double u = x * gain + bias;
+    const double prim = std::sqrt(1.0 + u * u) / gain - sig0 * x;
+    return prim / (gain * deriv0) - 0.5 * x * x;
+  }
+  static double evalAdaaResidual(double xPrev, double xCur, double gain, double bias,
+                                 double sig0, double deriv0) noexcept {
+    const double dx = xCur - xPrev;
+    if (std::fabs(dx) < 1.0e-6)
+      return asymResidual(0.5 * (xPrev + xCur), gain, bias, sig0, deriv0);
+    return (asymAntiderivativeResidual(xCur, gain, bias, sig0, deriv0) -
+            asymAntiderivativeResidual(xPrev, gain, bias, sig0, deriv0)) / dx;
+  }
+  // 2x midpoint-oversampled ADAA1 step with [0.25, 0.5, 0.25] residual decimation.
+  static double evalAdaa2xStep(double xCur, double& prevX, double& prevResidual,
+                               double gain, double bias) noexcept {
+    const double sig0 = bias > 1.0e-12 ? sigmoid(bias) : 0.0;
+    const double deriv0 = bias > 1.0e-12 ? std::pow(1.0 + bias * bias, -1.5) : 1.0;
+    const double xMid = 0.5 * (prevX + xCur);
+    const double rMid = evalAdaaResidual(prevX, xMid, gain, bias, sig0, deriv0);
+    const double rCur = evalAdaaResidual(xMid, xCur, gain, bias, sig0, deriv0);
+    const double out = 0.25 * prevResidual + 0.5 * rMid + 0.25 * rCur;
+    prevX = xCur;
+    prevResidual = rCur;
+    return out;
+  }
   static void setPeaking(Biquad& f, double hz, double gainDb, double q,
                          double rate) noexcept {
     const double A = std::pow(10.0, gainDb / 40.0);
@@ -282,13 +396,24 @@ class SpeakerDynamics {
     f.a1 = 2.0 * ((A - 1) - (A + 1) * c) / a0;
     f.a2 = ((A + 1) - (A - 1) * c - sqA) / a0;
   }
+  void resetBreakupStates() noexcept {
+    crossoverEngaged_ = false;
+    lrState1_ = lrState2_ = 0.0;
+    driveLow_ = 0.0;
+    prevDriveLow_ = prevLowResidual_ = 0.0;
+    coneIc1_ = coneIc2_ = 0.0;
+    prevConeBand_ = prevConeResidual_ = 0.0;
+    dcPrevIn_ = dcPrevOut_ = 0.0;
+  }
+
   void configure(int profile, double rate) noexcept {
     profile_ = profile;
     sampleRate_ = rate;
     resonance_.reset();
     thump_.reset();
     inductance_.reset();
-    excursionLow_ = excursion_ = driveLow_ = 0.0;
+    excursionLow_ = excursion_ = 0.0;
+    resetBreakupStates();
     const Profile& p = kProfiles_[profile_];
     setPeaking(resonance_, p.resonanceHz, p.resonanceDb, p.resonanceQ, rate);
     setPeaking(thump_, p.thumpHz, p.thumpDb, p.thumpQ, rate);
@@ -299,6 +424,12 @@ class SpeakerDynamics {
   double sampleRate_ = 0.0;
   Biquad resonance_, thump_, inductance_;
   double excursionLow_ = 0.0, excursion_ = 0.0, driveLow_ = 0.0;
+  double lrState1_ = 0.0, lrState2_ = 0.0;
+  double prevDriveLow_ = 0.0, prevLowResidual_ = 0.0;
+  double coneIc1_ = 0.0, coneIc2_ = 0.0;
+  double prevConeBand_ = 0.0, prevConeResidual_ = 0.0;
+  double dcPrevIn_ = 0.0, dcPrevOut_ = 0.0;
+  bool crossoverEngaged_ = false;
   double smoothedDrive_ = 0.0, smoothedCompression_ = 0.0;
   double smoothedThump_ = 0.0, smoothedResonance_ = 0.0, smoothedDamping_ = 0.0;
 };

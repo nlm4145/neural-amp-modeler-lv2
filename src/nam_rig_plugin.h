@@ -231,6 +231,7 @@ public:
     float* model_band_limit_slope;
     float* model_band_limit_ripple;
     float* spatial_center_blend;
+    float* speaker_profile_b;
   };
   static_assert(std::is_standard_layout_v<Ports>);
   static_assert(offsetof(Ports, amp_drive) == 22 * sizeof(void*));
@@ -301,7 +302,9 @@ public:
   static_assert(kModelBandLimitRipplePort == kModelBandLimitSlopePort + 1);
   static_assert(offsetof(Ports, spatial_center_blend) == kSpatialCenterBlendPort * sizeof(void*));
   static_assert(kSpatialCenterBlendPort == kModelBandLimitRipplePort + 1);
-  static_assert(kPortCount == kSpatialCenterBlendPort + 1);
+  static_assert(offsetof(Ports, speaker_profile_b) == kSpeakerProfileBPort * sizeof(void*));
+  static_assert(kSpeakerProfileBPort == kSpatialCenterBlendPort + 1);
+  static_assert(kPortCount == kSpeakerProfileBPort + 1);
   static_assert(sizeof(Ports) == kPortCount * sizeof(void*));
 
   Ports ports = {};
@@ -328,6 +331,8 @@ public:
   void setMaxBufferSize(int size) noexcept;
   void process(uint32_t sampleCount, uint64_t cabinetDeadlineTicks = 0) noexcept;
   bool rateAdapted() const noexcept { return hostRateAdapted; }
+  int appliedSpeakerProfile() const noexcept { return speakerApplied; }
+  int appliedSpeakerBProfile() const noexcept { return speakerBApplied; }
   // The standalone host owns this executor; change it only with audio stopped.
   void setCabinetWorker(CabinetWorker* worker) noexcept { cabinetWorker = worker; }
   void setPolyphaseWorker(PolyphaseWorker* worker) noexcept { polyphaseWorker = worker; }
@@ -428,14 +433,17 @@ private:
   Overdrive overdrive;  // Sculpt's TS-style drive, ahead of Amp Drive
   OutputTransformer outputTransformer;
   // Graph pin EQs: Sculpt and Transformer run in the amp's domain, Console at base rate.
-  PinEq sculptPins, transformerPins, consolePins, speakerPins;
+  PinEq sculptPins, transformerPins, consolePins, speakerPins, speakerPinsB;
   ToneEq tonePins;
   SpeakerDynamics speakerDynamics;
+  SpeakerDynamics speakerDynamicsB;
   int transformerRequested = OutputTransformer::kCaptured;
   int transformerApplied = OutputTransformer::kCaptured;
   bool transformerLatched = false;
   int speakerRequested = SpeakerDynamics::kCaptured;
   int speakerApplied = SpeakerDynamics::kCaptured;
+  int speakerBRequested = SpeakerDynamics::kCaptured;
+  int speakerBApplied = SpeakerDynamics::kCaptured;
   bool speakerLatched = false;
   int tubeRequested = PowerTube::kCaptured;
   int tubeApplied = PowerTube::kCaptured;
