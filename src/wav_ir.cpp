@@ -339,6 +339,15 @@ struct ResponseStats {
   double rms = 0.0;
 };
 
+float calibratedLoudnessScale(double rms) noexcept {
+  if (!std::isfinite(rms) || !(rms > 1.0e-12)) return 1.0f;
+  // +7.3 dB target gain restores the prior median real-cab rig level while
+  // keeping log-spaced perceptual inter-IR loudness matching intact.
+  constexpr double kLoudnessTargetLinear = 2.3173946499899844;  // 10^(+7.3 / 20)
+  const float scale = static_cast<float>(kLoudnessTargetLinear / rms);
+  return (std::isfinite(scale) && scale > 0.0f) ? scale : 1.0f;
+}
+
 // Perceptual + guitar-band loudness weighting on a log-spaced frequency grid:
 //  - Log-frequency spacing itself contributes 1/f weighting (equal energy per
 //    octave, matching pink/musical spectra instead of weighting 5-20 kHz 75%).
@@ -443,12 +452,8 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
     const float invPeak = static_cast<float>(1.0 / responsePeak);
     if (std::isfinite(invPeak) && invPeak > 0.0f) peakScale = invPeak;
   }
-  if (responseRms > 1.0e-12) {
-    const float invRms = static_cast<float>(1.0 / responseRms);
-    if (std::isfinite(invRms) && invRms > 0.0f) loudnessScale = invRms;
-  }
+  loudnessScale = calibratedLoudnessScale(responseRms);
   if (!std::isfinite(peakScale) || !(peakScale > 0.0f)) peakScale = 1.0f;
-  if (!std::isfinite(loudnessScale) || !(loudnessScale > 0.0f)) loudnessScale = 1.0f;
   scaleSmoothCoeff = 1.0f - std::exp(-1.0f /
       static_cast<float>(0.010 * std::max(8000.0, sampleRate)));
 
@@ -487,6 +492,22 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
 
 WavIR::~WavIR() = default;
 
+void WavIR::reset() noexcept {
+  std::fill(historyAndInput.begin(), historyAndInput.end(), 0.0f);
+  std::fill(headOut.begin(), headOut.end(), 0.0f);
+  std::fill(fdl.begin(), fdl.end(), 0.0f);
+  std::fill(fdlNyq.begin(), fdlNyq.end(), 0.0f);
+  fdlNewest = 0;
+  std::fill(fillBuf.begin(), fillBuf.end(), 0.0f);
+  fillPos = 0;
+  std::fill(ring.begin(), ring.end(), 0.0f);
+  ringPos = 0;
+  std::fill(fftTime.begin(), fftTime.end(), 0.0f);
+  std::fill(accRe.begin(), accRe.end(), 0.0f);
+  std::fill(accIm.begin(), accIm.end(), 0.0f);
+  scaleInitialized = false;
+}
+
 void WavIR::linkStereoNormalization(WavIR& left, WavIR& right) noexcept {
   const double lPeak = (std::isfinite(left.responsePeak) && left.responsePeak > 0.0)
       ? left.responsePeak : 0.0;
@@ -500,10 +521,9 @@ void WavIR::linkStereoNormalization(WavIR& left, WavIR& right) noexcept {
   const double rms = std::sqrt(0.5 * (lRms * lRms + rRms * rRms));
   const float pScale = (std::isfinite(peak) && peak > 1.0e-12)
       ? static_cast<float>(1.0 / peak) : 1.0f;
-  const float lScale = (std::isfinite(rms) && rms > 1.0e-12)
-      ? static_cast<float>(1.0 / rms) : 1.0f;
+  const float lScale = calibratedLoudnessScale(rms);
   left.peakScale = right.peakScale = std::isfinite(pScale) ? pScale : 1.0f;
-  left.loudnessScale = right.loudnessScale = std::isfinite(lScale) ? lScale : 1.0f;
+  left.loudnessScale = right.loudnessScale = lScale;
 }
 
 unsigned WavIR::channelCount(const char* path) {

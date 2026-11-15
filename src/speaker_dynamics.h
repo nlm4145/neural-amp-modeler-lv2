@@ -217,6 +217,11 @@ class SpeakerDynamics {
       const double resonanceWet =
           loadScale / (1.0 + 2.0 * p.compression * smoothedCompression_ * excursion_);
       const double dry = samples[i];
+      if (!std::isfinite(dry)) {
+        clearAudioStates();
+        samples[i] = 0.0f;
+        continue;
+      }
       const double resonant = resonance_.process(dry);
       double x = dry + resonanceWet * (resonant - dry);
       const double inductive = inductance_.process(x);
@@ -231,6 +236,7 @@ class SpeakerDynamics {
 
       const bool breakupNeeded = driveTarget > 1.0e-6 || smoothedDrive_ > 1.0e-6 ||
                                  std::fabs(dcPrevIn_) > 1.0e-6 || std::fabs(dcPrevOut_) > 1.0e-6;
+      const bool wasIdle = crossoverMix_ <= 0.0;
       if (breakupNeeded) {
         crossoverMix_ = std::min(1.0, crossoverMix_ + mixStep);
       } else if (crossoverMix_ > 0.0) {
@@ -238,17 +244,20 @@ class SpeakerDynamics {
         if (crossoverMix_ <= 0.0) resetBreakupStates();
       }
       if (crossoverMix_ > 0.0) {
-        // LR2 split: lp2 and negHp2 (= ap1 - lp2 = -HP_LR2) sum to unity-gain allpass ap1.
+        // LR2 lowpass isolates the excursion band while leaving the linear path phase-neutral.
         const double v1 = (x - lrState1_) * lrK;
         const double lp1 = v1 + lrState1_;
         lrState1_ = lp1 + v1;
         const double v2 = (lp1 - lrState2_) * lrK;
         driveLow_ = v2 + lrState2_;
         lrState2_ = driveLow_ + v2;
-        const double negHp2 = (2.0 * lp1 - x) - driveLow_;
 
         double nonlinearResidual = 0.0;
         if (smoothedDrive_ > 1.0e-6) {
+          if (wasIdle) {
+            prevDriveLow_ = driveLow_;
+            prevLowResidual_ = 0.0;
+          }
           const double gain = 1.0 + p.drive * smoothedDrive_;
           const double bias = p.asymmetry * smoothedDrive_;
           double lowResStep = 0.0;
@@ -262,14 +271,18 @@ class SpeakerDynamics {
           }
           const double lowResidual = p.saturationMix * smoothedDrive_ * lowResStep;
 
-          // Keep the upper-mid cone breakup path phase-aligned with the LR2 allpass sum.
-          const double xAfterLow = (driveLow_ + negHp2) + lowResidual;
+          // Keep the upper-mid cone breakup path phase-aligned with the dry signal.
+          const double xAfterLow = x + lowResidual;
           const double svfV3 = xAfterLow - coneIc2_;
           const double svfV1 = coneA1 * coneIc1_ + coneA2 * svfV3;
           const double svfV2 = coneIc2_ + coneA2 * coneIc1_ + coneA3 * svfV3;
           coneIc1_ = 2.0 * svfV1 - coneIc1_;
           coneIc2_ = 2.0 * svfV2 - coneIc2_;
           const double coneBand = coneK * svfV1;
+          if (wasIdle) {
+            prevConeBand_ = coneBand;
+            prevConeResidual_ = 0.0;
+          }
 
           const double coneGain = 1.0 + p.coneBreakupDrive * smoothedDrive_;
           const double coneBias = 0.4 * bias;
@@ -284,13 +297,14 @@ class SpeakerDynamics {
           coneIc1_ = coneIc2_ = 0.0;
         }
 
-        // Block DC only on the asymmetric nonlinear residual.
+        // Block DC only on the asymmetric nonlinear residual while keeping the dry path
+        // phase-neutral across transitions so crossoverMix_ never creates a comb notch.
         const double dcBalanced = nonlinearResidual - dcPrevIn_ + dcR * dcPrevOut_;
         dcPrevIn_ = nonlinearResidual;
         dcPrevOut_ = dcBalanced;
-        x += crossoverMix_ * (((driveLow_ + negHp2) + dcBalanced) - x);
+        x += crossoverMix_ * dcBalanced;
       }
-      samples[i] = static_cast<float>(x);
+      samples[i] = std::isfinite(x) ? static_cast<float>(x) : 0.0f;
     }
   }
 
@@ -410,14 +424,18 @@ class SpeakerDynamics {
     dcPrevIn_ = dcPrevOut_ = 0.0;
   }
 
-  void configure(int profile, double rate) noexcept {
-    profile_ = profile;
-    sampleRate_ = rate;
+  void clearAudioStates() noexcept {
     resonance_.reset();
     thump_.reset();
     inductance_.reset();
-    excursionLow_ = excursion_ = 0.0;
+    excursionLow_ = excursion_ = driveLow_ = 0.0;
     resetBreakupStates();
+  }
+
+  void configure(int profile, double rate) noexcept {
+    profile_ = profile;
+    sampleRate_ = rate;
+    clearAudioStates();
     const Profile& p = kProfiles_[profile_];
     setPeaking(resonance_, p.resonanceHz, p.resonanceDb, p.resonanceQ, rate);
     setPeaking(thump_, p.thumpHz, p.thumpDb, p.thumpQ, rate);

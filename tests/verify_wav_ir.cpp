@@ -143,7 +143,7 @@ static double runCase(const char* dir, size_t irLen, uint32_t rate,
   writeWavF32(path, taps, rate);
   auto ir = NAMRig::WavIR::load(path.c_str(), rate, 512);
   const auto ref = truncateFade(taps, rate);
-  const float scale = static_cast<float>(1.0 / responseStats(ref, rate).rms);
+  const float scale = static_cast<float>(std::pow(10.0, 7.3 / 20.0) / responseStats(ref, rate).rms);
 
   const size_t n = 20000;
   std::vector<float> x(n), y(n);
@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
     writeWavF32(path, taps, 48000);
     auto ir = NAMRig::WavIR::load(path.c_str(), 48000, 512);
     const float scale = static_cast<float>(
-        1.0 / responseStats(truncateFade(taps, 48000), 48000).rms);
+        std::pow(10.0, 7.3 / 20.0) / responseStats(truncateFade(taps, 48000), 48000).rms);
     std::vector<float> rendered(14000, 0.0f);
     rendered[0] = 1.0f;
     ir->process(rendered.data(), static_cast<uint32_t>(rendered.size()), 2);
@@ -307,10 +307,11 @@ int main(int argc, char** argv) {
     CHECK(std::equal(rendered[0].begin(), rendered[0].end(), rendered[2].begin(),
                      [](float a, float b) { return std::fabs(a - b) < 1e-5f; }),
           "legacy mode 0 uses Loudness at the source rate");
+    const double expectedLoudnessTarget = std::pow(10.0, 7.3 / 20.0);
     CHECK(std::fabs(peak.peak - 1.0) < 2e-3,
           "Peak sets maximum audible response magnitude to unity");
-    CHECK(std::fabs(loudness.rms - 1.0) < 2e-3,
-          "Loudness sets average audible response energy to unity");
+    CHECK(std::fabs(loudness.rms - expectedLoudnessTarget) < 5e-3,
+          "Loudness sets average audible response energy to calibrated +7.3 dB target");
     CHECK(peak.rms < loudness.rms,
           "Peak leaves more headroom than Loudness on a shaped cab response");
   }
@@ -460,19 +461,20 @@ int main(int argc, char** argv) {
   {
     constexpr double pi = 3.14159265358979323846;
 
-    // 1. Flat unit impulse preserves unity gain across sample rates.
+    // 1. Flat unit impulse preserves calibrated +7.3 dB Loudness target across sample rates.
+    const double expectedLoudnessTarget = std::pow(10.0, 7.3 / 20.0);
     const std::string flatPath = std::string(dir) + "/ir_flat_unit.wav";
     writeWavF32(flatPath, {1.0f}, 48000);
-    bool flatUnity = true;
+    bool flatTarget = true;
     for (double hostRate : {44100.0, 48000.0, 96000.0, 192000.0}) {
       auto ir = NAMRig::WavIR::load(flatPath.c_str(), hostRate, 512);
       std::vector<float> impulse(256, 0.0f);
       impulse[0] = 1.0f;
       ir->process(impulse.data(), static_cast<uint32_t>(impulse.size()), 2);
       const double gainAt1k = magnitudeAt(impulse, hostRate, 1000.0);
-      flatUnity &= std::fabs(gainAt1k - 1.0) < 0.02;
+      flatTarget &= std::fabs(gainAt1k - expectedLoudnessTarget) < 0.05;
     }
-    CHECK(flatUnity, "flat unit impulse Loudness normalizes to unity across rates");
+    CHECK(flatTarget, "flat unit impulse Loudness normalizes to calibrated +7.3 dB target across rates");
 
     // Helper: synthesize a causal minimum-phase-like damped bandpass IR by
     // inverse-DFT / cosine-bank damped resonators so we can compare realistic

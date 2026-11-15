@@ -181,11 +181,17 @@ macOS-only; the control contract remains portable C++.
 
 ### DSP tests
 
-Pre-compile DSP validators (Python, numpy) — run before `./build.sh` when
-touching `src/wav_ir.cpp` or the tuner in `src/nam_rig_plugin.cpp`:
+By default `./tests/run_all.sh` detects changed modules and files (uncommitted
+working tree changes first, or branch commits ahead of upstream/`main`) via
+`tests/select_tests.py` and runs only the matching C++ harnesses and Python
+validators:
 
 ```bash
-./tests/run_all.sh
+./tests/run_all.sh                        # changed modules & files only
+./tests/run_all.sh --list                 # preview selection and reasons
+./tests/run_all.sh --base main            # compare against main + working tree
+./tests/run_all.sh --files src/wav_ir.cpp # explicit changed path(s)
+./tests/run_all.sh --all                  # full test suite
 ```
 
 - `tests/test_wav_ir_resample.py` — mirrors `WavIR` resampling/normalization

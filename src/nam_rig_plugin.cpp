@@ -28,10 +28,6 @@ bool validStage(Stage stage) {
   return stageIndex(stage) < kStageCount;
 }
 
-float dbToLinear(float db) {
-  return std::pow(10.0f, db * 0.05f);
-}
-
 float portValue(const float* port, float fallback) {
   return port ? *port : fallback;
 }
@@ -325,6 +321,12 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     for (auto& scratch : analogScratch[bank])
       scratch.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   }
+  for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
+    splitSpeakerDown[lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+    splitSpeakerDown[lvl].reset();
+  }
+  splitSpeakerScratch.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
+  splitSpeakerScratch2.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   osChain.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
   const size_t post = static_cast<size_t>(std::max(1, size));
   postL.assign(post, 0.0f);
@@ -332,6 +334,7 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   preCab.assign(post, 0.0f);
   cabBL.assign(post, 0.0f);
   cabBR.assign(post, 0.0f);
+  cabBChain.assign(post, 0.0f);
 }
 
 LV2_Worker_Status Plugin::work(LV2_Handle instance,
@@ -555,9 +558,9 @@ void Plugin::tunerSetRates(double rate) {
   const double dr = rate / tuner.decimFactor;
   tuner.decimRate = (float)dr;
   // Two cascaded RBJ lowpass sections (Q=0.707), cutoff at 0.45 x the
-  // decimated Nyquist — clean anti-alias for the decimator.
+  // decimated Nyquist — clean anti-alias for the decimator in the sampleRate domain.
   const double fc = 0.45 * dr / 2.0;
-  const double w0 = 2.0 * 3.14159265358979323846 * fc / dr;
+  const double w0 = 2.0 * 3.14159265358979323846 * fc / rate;
   const double cosw = std::cos(w0);
   const double alpha = std::sin(w0) / (2.0 * 0.7071);
   const double a0 = 1.0 + alpha;
@@ -1061,10 +1064,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
   // Feed-forward guitar compressor before the pedal/amp chain.
   // Amount progressively lowers threshold (-12 -> -36 dB), raises ratio
-  // (1:1 -> 6:1), and adds the makeup that keeps a -12 dBFS peak at its level
-  // (up to 20 dB). Attack (1..100 ms, default 8 ms)
-  // and release (10..1000 ms, default 120 ms) are the time constants of the
-  // gain reduction in dB, with a 6 dB soft knee (see CompressorCore).
+  // (1:1 -> 6:1), and adds up to 6 dB makeup. Attack (1..100 ms, default 8 ms)
+  // and release (10..1000 ms, default 120 ms) smooth gain reduction with a 6 dB
+  // soft knee to retain pick definition without pumping.
   // Port 184 (compressor_enabled) bypasses the compressor when toggled off.
   const bool compEnabled = !ports.compressor_enabled || *ports.compressor_enabled >= 0.5f;
   const float compAmount = compEnabled
@@ -1075,7 +1077,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   } else {
     const float thresholdDb = -12.0f - 24.0f * compAmount;
     const float ratio = 1.0f + 5.0f * compAmount;
-    const float makeupDb = compressorMakeupDb(thresholdDb, ratio);
+    const float makeupDb = 6.0f * compAmount;
     const float attackMs = std::max(0.1f, portValue(ports.compressor_attack, kCompressorAttackDefault));
     const float releaseMs = std::max(1.0f, portValue(ports.compressor_release, kCompressorReleaseDefault));
     compressorTimingCache.configure(sampleRate, attackMs, releaseMs, blockRounding);
@@ -1083,10 +1085,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     const float gainRelease = compressorTimingCache.gainRelease;
     preCompressor.prepare(sampleRate);
     for (uint32_t i = 0; i < sampleCount; ++i) {
-      const float reductionDb = preCompressor.process(
-          preCompressor.sidechainLevel(0, ports.audio_out[i]), thresholdDb, ratio,
+      ports.audio_out[i] *= preCompressor.process(
+          std::fabs(ports.audio_out[i]), thresholdDb, ratio, makeupDb,
           gainAttack, gainRelease);
-      ports.audio_out[i] *= dbToLinear(makeupDb - reductionDb);
     }
   }
 
@@ -1274,6 +1275,11 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     topology = (topology * 1099511628211ULL) ^ state;
   }
   topology = (topology * 1099511628211ULL) ^ static_cast<uint64_t>(appliedPedalOrder);
+  const bool splitDualActiveTopology = appliedRacks[static_cast<size_t>(Rack::Speaker)] &&
+      enabled[2] && (models[2] || irs[2]) &&
+      enabled[3] && (models[3] || irs[3]) &&
+      (speakerApplied != speakerBApplied);
+  topology = (topology * 1099511628211ULL) ^ (splitDualActiveTopology ? 1ULL : 0ULL);
   if (topology != osTopologySignature) {
     osTopologySignature = topology;
     for (auto& stageUp : osUp)
@@ -1284,6 +1290,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       for (auto& up : bank) up.reset();
     for (auto& bank : analogDown)
       for (auto& down : bank) down.reset();
+    for (auto& down : splitSpeakerDown) down.reset();
     for (size_t st = 0; st < kStageCount; ++st) resetNativeStream(st);
   }
 
@@ -1294,13 +1301,19 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   // domains; the cab WAV IR and EQ stay at base rate. A .nam cab follows the
   // AMP's TRUE factor. With a second cabinet engaged, Cab A uses an independent
   // True domain from the shared post-amp tap and Cab B is delayed to match it.
+  const bool cabAActive = enabled[2] && (models[2] || irs[2]);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
+  const bool splitDualSpeaker = cabAActive && parallelCabs && (speakerApplied != speakerBApplied);
   const PinBands sculptPinBands = pinBands(PinEqPane::Sculpt);
   const PinBands transformerPinBands = pinBands(PinEqPane::Transformer);
   const PinBands speakerPinBands = pinBands(PinEqPane::Speaker);
   float blockPreAmpPeak = 0.0f;
   float blockPostAmpPeak = 0.0f;
   bool ampMetersCapturedThisSlice = false;
+  uint32_t cabBPreparedFrames = 0;
+  bool sliceCanCacheCabB = false;
+  bool splitCabBPreparedThisSlice = false;
+  size_t splitCabBDomainCount = 0;
   // One stage. The amp stage has analog-modelled stages in front of its model
   // (overdrive, Amp Drive, Pre-Amp Tonal Sculpt) and behind it (power stage,
   // output transformer, speaker dynamics). `parts` selects them, so a
@@ -1356,14 +1369,29 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         float* channels[1] = {samples};
         transformerPins.process(channels, 1, count, domainRate, transformerPinBands);
       }
-      const bool splitDualSpeaker =
-          (appliedEnabled[3] && (models[3] || irs[3])) &&
-          speakerApplied != speakerBApplied;
-      if (rackOn(Rack::Speaker) && !splitDualSpeaker) {
-        speakerDynamics.process(samples, count, domainRate, speakerApplied,
-                              *ports.speaker_drive, *ports.speaker_compression,
-                              *ports.speaker_thump, *ports.speaker_resonance,
-                                rackOn(Rack::Power) ? *ports.negative_feedback * 0.01f : 0.0f);
+      if (rackOn(Rack::Speaker)) {
+        const float dampingArg = powerOn ? *ports.negative_feedback * 0.01f : 0.0f;
+        const bool splitHere = splitDualSpeaker && sliceCanCacheCabB &&
+                               domainRate >= sampleRate - 0.5 &&
+                               count <= splitSpeakerScratch.size();
+        if (splitHere) {
+          std::memcpy(splitSpeakerScratch.data(), samples, count * sizeof(float));
+          speakerDynamicsB.process(splitSpeakerScratch.data(), count, domainRate,
+                                   speakerBApplied,
+                                   *ports.speaker_drive, *ports.speaker_compression,
+                                   *ports.speaker_thump, *ports.speaker_resonance,
+                                   dampingArg);
+          float* channelsB[1] = {splitSpeakerScratch.data()};
+          speakerPinsB.process(channelsB, 1, count, domainRate, speakerPinBands);
+          splitCabBDomainCount = count;
+          splitCabBPreparedThisSlice = true;
+        }
+        const int singleProfile = (!cabAActive && parallelCabs)
+            ? speakerBApplied : speakerApplied;
+        speakerDynamics.process(samples, count, domainRate, singleProfile,
+                                *ports.speaker_drive, *ports.speaker_compression,
+                                *ports.speaker_thump, *ports.speaker_resonance,
+                                dampingArg);
         float* channels[1] = {samples};
         speakerPins.process(channels, 1, count, domainRate, speakerPinBands);
       }
@@ -1456,6 +1484,37 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
     ampMetersCapturedThisSlice = false;
+    sliceCanCacheCabB = splitDualSpeaker && (off + sliceLen <= cabBChain.size());
+    splitCabBPreparedThisSlice = false;
+    splitCabBDomainCount = 0;
+    auto finishSplitCabBSlice = [&](uint32_t outCount, int factor) noexcept {
+      if (!splitCabBPreparedThisSlice) return;
+      splitCabBPreparedThisSlice = false;
+      float* dst = cabBChain.data() + off;
+      if (factor <= 1) {
+        const uint32_t copyN = std::min<uint32_t>(outCount, static_cast<uint32_t>(splitCabBDomainCount));
+        if (copyN > 0) std::memcpy(dst, splitSpeakerScratch.data(), copyN * sizeof(float));
+        if (copyN < outCount) {
+          const float fill = copyN > 0 ? dst[copyN - 1] : 0.0f;
+          std::fill(dst + copyN, dst + outCount, fill);
+        }
+      } else {
+        const size_t levels = cascadeLevels(factor);
+        float* bufs[2] = {splitSpeakerScratch.data(), splitSpeakerScratch2.data()};
+        size_t back = splitCabBDomainCount;
+        const float* dnIn = bufs[0];
+        for (size_t c = levels; c-- > 0;) {
+          float* dnOut = (c == 0) ? dst : ((dnIn == bufs[0]) ? bufs[1] : bufs[0]);
+          back = splitSpeakerDown[c].process(dnIn, back, dnOut);
+          dnIn = dnOut;
+        }
+        if (back < outCount) {
+          const float fill = back > 0 ? dst[back - 1] : 0.0f;
+          for (size_t i = back; i < outCount; ++i) dst[i] = fill;
+        }
+      }
+      cabBPreparedFrames = off + outCount;
+    };
     for (size_t position = 0; position < serialCount;) {
       const size_t st = serial[position];
       if (st == 2 && !ampMetersCapturedThisSlice) {
@@ -1497,10 +1556,18 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         } else {
           applyModel(st, models[st], chain, n, sampleRate, kPartModel);
         }
+        const uint32_t nBeforeAnalog = n;
         n = runAnalogDomain(1, chain, n, analogFactor,
                             [&](float* domain, size_t m, double rate) {
                               applyModel(st, models[st], domain, m, rate, kPartPost);
                             });
+        if (splitCabBPreparedThisSlice) {
+          finishSplitCabBSlice(nBeforeAnalog, analogFactor);
+          if (n < requested) {
+            std::fill(cabBChain.data() + off + n, cabBChain.data() + off + requested, 0.0f);
+            cabBPreparedFrames = off + requested;
+          }
+        }
         if (n < requested) std::fill(chain + n, chain + requested, 0.0f);
         if (off == 0)
           latencyFrames += 2 * cascadeLatencyFrames(analogFactor) +
@@ -1528,6 +1595,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
         applyModel(st, models[st], chain, n, sampleRate);
+        finishSplitCabBSlice(n, 1);
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
         ++position;
@@ -1543,7 +1611,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
              truePipelineFactor(osApplied[serial[next]], sampleRate) == f) {
         group[groupCount++] = serial[next++];
       }
+      const uint32_t nBeforeGroup = n;
       n = processTrueGroup(st, group, groupCount, chain, n, f);
+      finishSplitCabBSlice(nBeforeGroup, f);
       modelProcessed = true;
       if (off == 0) latencyFrames += cascadeLatencyFrames(f);
       if (group[groupCount - 1] == 2) cabProcessed = true;
@@ -1571,7 +1641,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     *ports.latency = static_cast<float>(latencyFrames);
 
   processPostChain(ports.audio_out, sampleCount, cabProcessed, modelProcessed,
-                   desiredEnabled);
+                   desiredEnabled, cabBPreparedFrames);
 
   // ---- Pre-amp level meter (after pedal + pre-amp sculpt, before amp model) ----
   {
@@ -1750,17 +1820,19 @@ PinBands Plugin::pinBands(PinEqPane pane) const noexcept {
 }
 
 void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
-                              bool modelProcessed, const bool* desiredEnabled) noexcept {
+                              bool modelProcessed, const bool* desiredEnabled,
+                              uint32_t cabBPreparedFrames) noexcept {
   const auto& enabled = appliedEnabled;
   const auto rackOn = [&](Rack rack) { return appliedRacks[static_cast<size_t>(rack)]; };
   const bool consoleOn = rackOn(Rack::CabConsole);
   const bool spatialOn = rackOn(Rack::Spatial);
   const bool reverbOn = rackOn(Rack::Reverb);
   const bool ampActive = enabled[stageIndex(Stage::Amp)] && models[stageIndex(Stage::Amp)];
+  const bool cabAActive = enabled[2] && (models[2] || irs[2]);
   const bool parallelCabs = enabled[3] && (models[3] || irs[3]);
-  const bool splitDualSpeaker = parallelCabs && (speakerApplied != speakerBApplied);
-  const bool splitSpeakerActive = ampActive && splitDualSpeaker && rackOn(Rack::Speaker);
-  const PinBands spkPinBands = splitSpeakerActive ? pinBands(PinEqPane::Speaker) : PinBands{};
+  const bool splitDualSpeaker = cabAActive && parallelCabs && (speakerApplied != speakerBApplied);
+  const bool splitFallbackInPost = ampActive && splitDualSpeaker && rackOn(Rack::Speaker);
+  const PinBands spkPinBands = splitFallbackInPost ? pinBands(PinEqPane::Speaker) : PinBands{};
   const float spkDrive = *ports.speaker_drive;
   const float spkComp = *ports.speaker_compression;
   const float spkThump = *ports.speaker_thump;
@@ -1849,6 +1921,9 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     bool stereoA = false;
     if (parallelCabs) std::memcpy(preCab.data(), L, n * sizeof(float));
 
+    const bool cabBPreparedSlice =
+        splitDualSpeaker && rackOn(Rack::Speaker) && (off + n <= cabBPreparedFrames);
+    const float* cabBSource = cabBPreparedSlice ? (cabBChain.data() + off) : preCab.data();
     struct CabJob {
       Plugin* plugin;
       float* samples;
@@ -1857,12 +1932,12 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       int speakerBProfile;
       float drive, comp, thump, resonance, damping;
       PinBands pinBands;
-    } job{this, cabBL.data(), n, splitSpeakerActive, speakerBApplied,
+    } job{this, cabBL.data(), n, !cabBPreparedSlice && splitFallbackInPost, speakerBApplied,
           spkDrive, spkComp, spkThump, spkRes, spkDamping, spkPinBands};
     bool cabBDispatched = false;
     if (cabinetWorker && parallelCabs && enabled[2] && models[2] && !irs[2] &&
         models[3] && !irs[3]) {
-      std::memcpy(job.samples, preCab.data(), n * sizeof(float));
+      std::memcpy(job.samples, cabBSource, n * sizeof(float));
       cabBDispatched = cabinetWorker->submit([](void* context) noexcept {
         auto& j = *static_cast<CabJob*>(context);
         if (j.applySpeakerB) {
@@ -1879,12 +1954,6 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     parallelCabExtras(extraA, extraB);
 
     if (enabled[2]) {
-      if (splitSpeakerActive && (models[2] || irs[2])) {
-        speakerDynamics.process(L, n, sampleRate, speakerApplied,
-                                spkDrive, spkComp, spkThump, spkRes, spkDamping);
-        float* ch[1] = {L};
-        speakerPins.process(ch, 1, n, sampleRate, spkPinBands);
-      }
       if (irs[2]) {
         if (irsRight[2]) {
           std::memcpy(R, L, n * sizeof(float));
@@ -1922,6 +1991,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       // history for sign flips.
       const float cabADomainDelayMs = extraB > extraA
           ? static_cast<float>(1000.0 * (extraB - extraA) / sampleRate) : 0.0f;
+      if (!cabAlignActive) cabAlign.armFadeIn();
       cabAlign.process(L, R, n, std::max(-alignmentMs, 0.0f) + cabADomainDelayMs);
       cabAlignActive = true;
     } else if (cabAlignActive) {
@@ -1934,8 +2004,8 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       float* BL = cabBL.data();
       float* BR = cabBR.data();
       if (!cabBDispatched) {
-        std::memcpy(BL, preCab.data(), n * sizeof(float));
-        if (splitSpeakerActive) {
+        std::memcpy(BL, cabBSource, n * sizeof(float));
+        if (!cabBPreparedSlice && splitFallbackInPost) {
           speakerDynamicsB.process(BL, n, sampleRate, speakerBApplied,
                                    spkDrive, spkComp, spkThump, spkRes, spkDamping);
           float* ch[1] = {BL};
@@ -1958,6 +2028,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
       const float domainDelayMs = haveA && extraA > extraB
           ? static_cast<float>(1000.0 * (extraA - extraB) / sampleRate) : 0.0f;
+      if (!cab2AlignActive) cab2Align.armFadeIn();
       cab2Align.process(BL, BR, n,
                         std::max(alignmentMs, 0.0f) + domainDelayMs);
       cab2AlignActive = true;
@@ -2409,8 +2480,21 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     dualCabShelf.reset();
     dualCabShelfR.reset();
     centerStereoizer.reset();
-    for (size_t st = 0; st < kStageCount; ++st)
+    for (size_t st = 0; st < kStageCount; ++st) {
+      if (appliedEnabled[st] != desiredEnabled[st] && (st == 2 || st == 3)) {
+        if (irs[st]) irs[st]->reset();
+        if (irsRight[st]) irsRight[st]->reset();
+        if (st == 2 && !desiredEnabled[st] && cabAlignActive) {
+          cabAlign.reset();
+          cabAlignActive = false;
+        }
+        if (st == 3 && !desiredEnabled[st] && cab2AlignActive) {
+          cab2Align.reset();
+          cab2AlignActive = false;
+        }
+      }
       appliedEnabled[st] = desiredEnabled[st];
+    }
     if (rackTransitionActive && appliedRacks != requestedRacks) {
       const auto changed = [&](Rack rack) {
         const size_t i = static_cast<size_t>(rack);
@@ -2429,6 +2513,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       if (changed(Rack::Speaker)) {
         speakerDynamics.reset(); speakerPins.reset();
         speakerDynamicsB.reset(); speakerPinsB.reset();
+        for (auto& down : splitSpeakerDown) down.reset();
       }
       if (changed(Rack::Delay)) delayFx.reset();
       if (changed(Rack::Reverb)) reverbFx.resetPlate();
@@ -2470,6 +2555,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       speakerDynamicsB.reset();
       speakerPins.reset();
       speakerPinsB.reset();
+      for (auto& down : splitSpeakerDown) down.reset();
     }
     // Tube type/bypass changes the curve at silence, not the shared Power state.
     // Its normalized supply envelope remains meaningful across tube curves.
@@ -2541,6 +2627,13 @@ void Plugin::commitPendingSwitches() {
     for (auto& up : osUp[index]) up.reset();
     for (auto& down : osDown[index]) down.reset();
     resetNativeStream(index);
+    if (index == 2 && cabAlignActive) {
+      cabAlign.reset();
+      cabAlign.armFadeIn();
+    } else if (index == 3 && cab2AlignActive) {
+      cab2Align.reset();
+      cab2Align.armFadeIn();
+    }
     schedule->schedule_work(schedule->handle, sizeof(old), &old);
   }
   osTopologySignature = ~uint64_t{0};
@@ -2678,7 +2771,6 @@ LV2_State_Status Plugin::restore(LV2_Handle instance,
       const Stage stage = static_cast<Stage>(i);
       rig->scheduleModelLoad(stage, absolutePath, length,
                              rig->desiredStageMode(i));
-      rig->modelPaths[i] = absolutePath;
     }
     if (freePath) freePath->free_path(freePath->handle, absolutePath);
 #ifndef _WIN32

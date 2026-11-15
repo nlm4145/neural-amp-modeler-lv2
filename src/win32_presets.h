@@ -23,6 +23,7 @@ struct RigPreset {
   std::string name;
   std::string filePath;
   float speakerProfile = 0.0f; // port 42
+  float speakerProfileB = NAMRig::kSpeakerProfileBDefault; // port 235
   std::array<StagePreset, 4> stages;
   std::unordered_map<uint32_t, float> controls;
   std::unordered_map<std::string, std::string> slotPresets;

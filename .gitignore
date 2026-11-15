@@ -8,3 +8,7 @@ dist_temp/
 # SearXNG local configuration
 tools/searxng/.env
 tools/searxng/core-data/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]

@@ -183,10 +183,13 @@ def response_stats(taps, rate):
     return float(np.max(magnitude)), weighted_rms
 
 
+LOUDNESS_TARGET_GAIN = 10.0 ** (7.3 / 20.0)
+
+
 def normalization_scales(taps, rate):
     peak, rms = response_stats(taps, rate)
     return {1: 1.0 / peak if peak > 1e-12 else 1.0,
-            2: 1.0 / rms if rms > 1e-12 else 1.0}
+            2: LOUDNESS_TARGET_GAIN / rms if rms > 1e-12 else 1.0}
 
 
 def test_equal_rate_is_identity():
@@ -317,7 +320,7 @@ def test_selectable_normalization():
         peak, _ = response_stats(taps * peak_scale, 48000)
         _, rms = response_stats(taps * loudness_scale, 48000)
         assert abs(peak - 1.0) < 1e-6
-        assert abs(rms - 1.0) < 1e-6
+        assert abs(rms - LOUDNESS_TARGET_GAIN) < 1e-6
         assert response_stats(taps * peak_scale, 48000)[1] < rms
 
 
@@ -393,12 +396,13 @@ def test_minimum_phase_peak_at_zero_resampling():
 
 
 def test_flat_impulse_loudness_is_unity():
-    """Normalized perceptual weights evaluate a flat all-pass impulse to exact unity at all rates."""
+    """Normalized perceptual weights evaluate a flat all-pass impulse to exact unity before target gain calibration."""
     unit = np.array([1.0], dtype=np.float32)
     for rate in (44100.0, 48000.0, 96000.0, 192000.0):
         peak, rms = response_stats(unit, rate)
         assert abs(peak - 1.0) < 1e-12
         assert abs(rms - 1.0) < 1e-12
+        assert abs(normalization_scales(unit, rate)[2] - LOUDNESS_TARGET_GAIN) < 1e-12
 
 
 def test_perceptual_loudness_matches_bright_and_dark_cabs():

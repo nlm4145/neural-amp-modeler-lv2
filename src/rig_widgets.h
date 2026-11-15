@@ -169,6 +169,9 @@ static constexpr CGFloat kPinEditorInset = 6.0;
 // Resolved SpeakerDynamics profile (Auto already mapped) and power-amp
 // damping 0..1 (negative feedback while the Power rack is on).
 @property(nonatomic) int profile;
+@property(nonatomic) int profileB;
+@property(nonatomic) BOOL cabAActive;
+@property(nonatomic) BOOL cabBActive;
 @property(nonatomic) float damping;
 @property(nonatomic) float drive;
 @property(nonatomic) float comp;

@@ -215,14 +215,8 @@ class StandaloneApp {
     pinEqControls_.fill(0.0f);
     const std::span<float> controls(controls_);
     NAMRig::bindStandaloneControls(plugin_->ports, {
-        {4, controls.subspan(4, 27)}, {32, controls.subspan(32, 51)},
-        {NAMRig::kPinEqFirstPort, pinEqControls_},
-        {NAMRig::kOverdriveDrivePort, controls.subspan(NAMRig::kOverdriveDrivePort, 3)},
-        {NAMRig::kCompressorAttackPort, controls.subspan(NAMRig::kCompressorAttackPort, 3)},
-        {NAMRig::kOverdriveEnabledPort, controls.subspan(NAMRig::kOverdriveEnabledPort, 1)},
-        {NAMRig::kPostCompressorFirstPort, controls.subspan(NAMRig::kPostCompressorFirstPort, 4)},
-        {NAMRig::kOverdriveTightPort, controls.subspan(NAMRig::kOverdriveTightPort, 1)},
-        {NAMRig::kOverdriveVoicingPort, controls.subspan(NAMRig::kOverdriveVoicingPort, 1)}});
+        {4, controls.subspan(4, 27)}, {32, controls.subspan(32)},
+        {NAMRig::kPinEqFirstPort, pinEqControls_}});
 
     if (!worker_.start(plugin_.get(),
                        {NAMRig::Plugin::work, NAMRig::Plugin::workResponse, nullptr}))

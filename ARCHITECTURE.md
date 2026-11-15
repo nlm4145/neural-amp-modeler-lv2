@@ -21,10 +21,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/overdrive.h` | Built-in analog overdrive / boost voices (Mid Drive, Clean Boost, K-Style, Fuzz/Rectified, Tight Metal, etc.) before Pedal NAM |
 | `src/pin_eq.h` | 64-pin interactive graphic/custom EQ curve processor (Pre-Amp and Post-Amp Pin EQ slots) |
 | `src/oversample.{h,cpp}`, `src/oversample_modes.h`, `src/polyphase_worker.h` | Multi-rate polyphase FIR/IIR oversampling (Off, 2x, 4x, 8x, Eco/True cascades) and background worker state |
-<<<<<<< Updated upstream
-=======
 | `src/model_band_limit.h` | Bypassable, configurable Chebyshev Type I low-pass in front of each NAM model that runs above its training rate (ports 228, 231–233) |
->>>>>>> Stashed changes
 | `src/rate_adapter.h` | Rational polyphase sample-rate converter and the 44.1 kHz-family session adapter constants |
 | `src/cabinet_worker.{h,cpp}`, `src/ir_normalization.h` | Dual-slot cabinet blending, phase alignment, mic/room modeling, and IR loudness/peak normalization |
 | `src/dsp_accel.{h,cpp}`, `src/rig_dsp_cache.h` | SIMD/Accelerate helpers and thread-safe DSP model/IR cache |
@@ -240,7 +237,7 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 32 | `stereo_width` | in | 0–100%; equal-power pan spread between Cab A (left) and Cab B (right). Each cabinet keeps its own stereo image at every setting; 0 = both cabinets summed to the same dual-mono blend Spatial OFF uses |
 | 33 | `room` | in | 0–100%; diffused, damped early reflections from the plate reverb's input stage, 0 = off |
 | 34–41 | `presence`/`depth`/`sag`/`bias`/`negative_feedback`/`bright`/`input_eq`/`master` | in | Optional advanced amp shaping; all neutral by default and independent of ports 12–14 post EQ |
-| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto matches whole tokens of the Cab A file name and falls back to Cab B's name when Cab A is absent or matches no family. |
+| 42–46 | `speaker_profile`/`speaker_drive`/`speaker_compression`/`speaker_thump`/`speaker_resonance` | in | Optional amp-to-cab speaker-load interaction. Captured/Off is exact bypass; Auto matches whole tokens of the Cab A file name and falls back to Cab B's name when Cab A is absent or matches no family (see port 235 `speaker_profile_b` for independent Cab B selection). |
 | 47 | `cab2_enabled` | in | toggle; Cab B runs parallel to Cab A from the same post-amp tap (default off) |
 | 48 | `cab2_level` | in | dB trim on Cab B |
 | 49 | `cab2_delay` | in | -10 to +10 ms alignment; negative delays Cab A, positive delays Cab B, 0 adds no user delay (default 0) |
@@ -272,6 +269,8 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 228 | `model_band_limit` | in | 0 = off (default), 1 = on; A/B switch for the 20.5 kHz low-pass in front of each NAM model that runs above its training rate (`src/model_band_limit.h`), 5 ms fade; rig-wide, not stored in or recalled by presets, never set by the AI Copilot; optional |
 | 229–230 | `drop_pitch_attack`/`drop_pitch_sustain` | in | Drop Pitch shaper knobs in `Input & Gate`: Attack `0–100%` (default `50%`, pick snap & onset detector), Sustain `0–100%` (default `50%`, tracking hold & decay recovery); smoothed live, persisted in presets, excluded from AI Copilot; optional |
 | 231–233 | `model_band_limit_cutoff`/`model_band_limit_slope`/`model_band_limit_ripple` | in | Configurable HF Filter parameters in `Input & Gate`: Cutoff `4000–24000 Hz` (default `20500 Hz`), Slope `0..3` (`12/24/36/48 dB/oct`, default `3`), Ripple `0.01–1.00 dB` (default `0.05 dB`); bypassed bit-identically when `model_band_limit` (228) is `0`; excluded from AI Copilot; optional |
+| 234 | `spatial_center_blend` | in | Centered Stereo Blend toggle (`0` = full-width Dome stereo, `1` = center blend); optional |
+| 235 | `speaker_profile_b` | in | Cab B Speaker Load Profile (`0..7` explicit profiles or `8` = `Match Cab A` default). When matched (`8`), Cab B tracks `speaker_profile` (with independent `Auto` filename detection when `speaker_profile = 1`). |
 
 The Tone & Voicing selector switches between linked knob and lever views without
 writing audio controls. Edits project the complete EQ response into the other
@@ -288,7 +287,10 @@ Returning to OFF/CENTER clears their histories immediately. Existing output trim
 FX behavior and reported latency are unchanged; older presets initialize both new controls to zero.
 
 Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
-is never part of the serial chain or a True domain; it loads at the session rate.
+loads at the session rate. When Cab B uses an independent `speaker_profile_b`
+(port 235) or runs solo (`cab_enabled = 0, cab2_enabled = 1`), its speaker dynamics
+and Speaker Pin EQ execute per-sample in the amp's True domain before decimating
+into the Cab B chain.
 
 The pedalboard adds Pedal 2 and Pedal 3 at stage indices 4 and 5, with path
 parameters `…#rig-pedal2-model` and `…#rig-pedal3-model`. Ports 192/193

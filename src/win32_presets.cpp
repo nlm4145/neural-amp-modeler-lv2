@@ -90,6 +90,7 @@ RigPreset RigPreset::createDefault() {
   RigPreset p;
   p.name = "Default Rig";
   p.speakerProfile = 0.0f;
+  p.speakerProfileB = NAMRig::kSpeakerProfileBDefault;
 
   const char* roles[] = {"pedal", "amp", "cab", "cab2"};
   for (size_t s = 0; s < 4; ++s) {
@@ -237,8 +238,13 @@ bool RigPreset::loadFromFile(const std::string& path) {
     name = path.substr(lastSlash, lastDot - lastSlash);
   }
 
+  speakerProfile = 0.0f;
+  speakerProfileB = NAMRig::kSpeakerProfileBDefault;
   if (root.contains("speaker_profile") && root["speaker_profile"].is_number()) {
     speakerProfile = root["speaker_profile"].get<float>();
+  }
+  if (root.contains("speaker_profile_b") && root["speaker_profile_b"].is_number()) {
+    speakerProfileB = root["speaker_profile_b"].get<float>();
   }
 
   const char* roles[] = {"pedal", "amp", "cab", "cab2"};
@@ -265,6 +271,7 @@ bool RigPreset::loadFromFile(const std::string& path) {
   }
 
   controls[59] = 0.0f; // legacy normal polarity default
+  controls[NAMRig::kSpeakerProfileBPort] = speakerProfileB;
   for (uint32_t i = 0; i < NAMRig::kPostCompressorDefaults.size(); ++i)
     controls[NAMRig::kPostCompressorFirstPort + i] = NAMRig::kPostCompressorDefaults[i];
   if (root.contains("ports") && root["ports"].is_object()) {
@@ -286,6 +293,9 @@ bool RigPreset::loadFromFile(const std::string& path) {
       }
     }
   }
+  if (auto it = controls.find(NAMRig::kSpeakerProfileBPort); it != controls.end()) {
+    speakerProfileB = it->second;
+  }
 
   slotPresets.clear();
   if (root.contains("slot_presets") && root["slot_presets"].is_object()) {
@@ -305,6 +315,7 @@ bool RigPreset::saveToFile(const std::string& path) const {
   root["version"] = 2;
   root["created"] = getCurrentISOTime();
   root["speaker_profile"] = speakerProfile;
+  root["speaker_profile_b"] = speakerProfileB;
 
   json stagesArr = json::array();
   for (size_t s = 0; s < 4; ++s) {
@@ -475,6 +486,8 @@ std::vector<std::string> PresetManager::getSlotFactoryPresets(const std::string&
     return {"Flat Bypass", "TS Tight Boost", "Midrange Push", "Fat Lead"};
   } else if (slotKey == "boost") {
     return {"Clean Boost", "TS9 Drive", "Lead Push", "Tight Chug", "Warm Overdrive"};
+  } else if (slotKey == "speaker") {
+    return {"PUNCHY 4x12", "VINTAGE OPEN", "HEAVY THUMP", "FLAT BYPASS"};
   }
   return {"Default"};
 }

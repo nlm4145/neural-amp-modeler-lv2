@@ -228,6 +228,7 @@ static double copilotParseClock(NSString* text) {
 - (void)cabCutSlopeChanged:(NSPopUpButton*)sender;
 - (void)autoAlignCabs:(id)sender;
 - (void)applyTransformerPreset:(NSButton*)sender;
+- (void)applyHfFilterPreset:(NSButton*)sender;
 - (void)slotPresetPopupChanged:(NSPopUpButton*)sender;
 - (void)saveSlotPreset:(NSMenuItem*)sender;
 - (void)saveSlotPresetAs:(NSMenuItem*)sender;
@@ -424,6 +425,19 @@ static double copilotParseClock(NSString* text) {
   if (!imageA.empty() || toneA > 0) {
     _state->setStageThumb(3, nil, toneA, imageA.empty() ? nil : [NSString stringWithUTF8String:imageA.c_str()]);
   }
+  const float rawSpkA = _state->currentPortValueForSlot(42);
+  const float rawSpkB = _state->currentPortValueForSlot(NAMRig::kSpeakerProfileBPort);
+  const int spkA = NAMRig::SpeakerDynamics::clampProfile((int)(rawSpkA + 0.5f));
+  const int spkB = NAMRig::SpeakerDynamics::clampProfileB((int)(rawSpkB + 0.5f));
+  if (spkB != NAMRig::SpeakerDynamics::kMatchCabA && spkA != spkB) {
+    _state->sendControl(42, (float)spkB);
+    _state->updateControl(42, (float)spkB);
+    _state->sendControl(NAMRig::kSpeakerProfileBPort, (float)spkA);
+    _state->updateControl(NAMRig::kSpeakerProfileBPort, (float)spkA);
+  }
+  _state->speakerCabPath = pathB;
+  _state->speakerCabBPath = pathA;
+  _state->refreshSpeakerVisualizer();
   _state->persistSelectedPaths();
   [self markPresetModified];
 }
@@ -1390,6 +1404,8 @@ static double copilotParseClock(NSString* text) {
   _state->updateControl(NAMRig::kModelBandLimitSlopePort, NAMRig::kModelBandLimitSlopeDefault);
   _state->sendControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
   _state->updateControl(NAMRig::kSpatialCenterBlendPort, NAMRig::kSpatialCenterBlendDefault);
+  _state->sendControl(42, 0.0f);
+  _state->updateControl(42, 0.0f);
   _state->sendControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
   _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
   _state->sendControl(NAMRig::kCabLowCutSlopePort, NAMRig::kCabLowCutSlopeDefault);
@@ -1584,6 +1600,36 @@ static double copilotParseClock(NSString* text) {
   [self markPresetModified];
 }
 
+- (void)applyHfFilterPreset:(NSButton*)sender {
+  if (!_state) return;
+  struct HfPreset {
+    float enabled;
+    float cutoffHz;
+    float slope;
+    float rippleDb;
+  };
+  const HfPreset presets[] = {
+    {0.0f, NAMRig::kModelBandLimitCutoffDefault, NAMRig::kModelBandLimitSlopeDefault, NAMRig::kModelBandLimitRippleDefault}, // OFF / BYPASS
+    {1.0f, 20500.0f, 3.0f, 0.05f}, // Studio Transparent
+    {1.0f, 13500.0f, 2.0f, 0.15f}, // De-Fizz Modern Metal
+    {1.0f, 11000.0f, 1.0f, 0.60f}, // Lead Bite Focus
+    {1.0f,  8500.0f, 0.0f, 0.05f}, // Warm Vintage Amp
+    {1.0f,  6500.0f, 0.0f, 0.05f}, // Smooth Clean / Jazz
+    {1.0f,  4500.0f, 1.0f, 0.30f}, // Dark / Lo-Fi
+  };
+  if (sender.tag < 0 || sender.tag >= static_cast<NSInteger>(sizeof(presets) / sizeof(presets[0]))) return;
+  const HfPreset& p = presets[sender.tag];
+  _state->sendControl(NAMRig::kModelBandLimitCutoffPort, p.cutoffHz);
+  _state->updateControl(NAMRig::kModelBandLimitCutoffPort, p.cutoffHz);
+  _state->sendControl(NAMRig::kModelBandLimitSlopePort, p.slope);
+  _state->updateControl(NAMRig::kModelBandLimitSlopePort, p.slope);
+  _state->sendControl(NAMRig::kModelBandLimitRipplePort, p.rippleDb);
+  _state->updateControl(NAMRig::kModelBandLimitRipplePort, p.rippleDb);
+  _state->sendControl(NAMRig::kModelBandLimitPort, p.enabled);
+  _state->updateControl(NAMRig::kModelBandLimitPort, p.enabled);
+  [self markPresetModified];
+}
+
 - (void)dropPitchChanged:(NSPopUpButton*)sender {
   if (!sender.selectedItem) return;
   [self setDropPitchSemitones:(int)sender.selectedItem.tag];
@@ -1637,19 +1683,29 @@ static double copilotParseClock(NSString* text) {
 
 - (void)applySpeakerPreset:(NSButton*)sender {
   if (!_state) return;
-  struct SpeakerPreset { float drv, comp, thump, res; };
+  struct SpeakerPreset { int profile; float drv, comp, thump, res; };
   const SpeakerPreset presets[] = {
-    {30.0f, 25.0f, 60.0f, 50.0f}, // PUNCHY 4x12
-    {45.0f, 40.0f, 35.0f, 70.0f}, // VINTAGE OPEN
-    {50.0f, 50.0f, 85.0f, 40.0f}, // HEAVY THUMP
-    {0.0f, 0.0f, 0.0f, 0.0f}      // FLAT BYPASS
+    {NAMRig::SpeakerDynamics::kUK412, 30.0f, 25.0f, 60.0f, 50.0f},     // PUNCHY 4x12
+    {NAMRig::SpeakerDynamics::kOpenBack, 45.0f, 40.0f, 35.0f, 70.0f},  // VINTAGE OPEN
+    {NAMRig::SpeakerDynamics::kModern412, 50.0f, 50.0f, 85.0f, 40.0f}, // HEAVY THUMP
+    {NAMRig::SpeakerDynamics::kCaptured, 0.0f, 0.0f, 0.0f, 0.0f}        // FLAT BYPASS
   };
   if (sender.tag >= 0 && sender.tag < 4) {
     const auto& p = presets[sender.tag];
+    _state->sendControl(42, static_cast<float>(p.profile));
+    _state->updateControl(42, static_cast<float>(p.profile));
+    _state->sendControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
+    _state->updateControl(NAMRig::kSpeakerProfileBPort, NAMRig::kSpeakerProfileBDefault);
     _state->sendControl(43, p.drv); _state->updateControl(43, p.drv);
     _state->sendControl(44, p.comp); _state->updateControl(44, p.comp);
     _state->sendControl(45, p.thump); _state->updateControl(45, p.thump);
     _state->sendControl(46, p.res); _state->updateControl(46, p.res);
+    for (uint32_t i = 0; i < NAMRig::kPinEqPanePorts; ++i) {
+      const uint32_t port = NAMRig::pinEqPort(NAMRig::PinEqPane::Speaker, 0, 0) + i;
+      const float defVal = NAMRig::pinEqDefault(port);
+      _state->sendControl(port, defVal);
+      _state->updateControl(port, defVal);
+    }
     [self markPresetModified];
   }
 }
@@ -4191,9 +4247,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotTargetStatus.textColor = r.referenceIsFullMix ? [NSColor systemOrangeColor] : rigDimText();
   const BOOL hasTarget = r.referenceTotalDuration > 0;
   const BOOL sectionEditable = hasTarget && !busy && !self.copilotDemucsRunning;
-  for (NSControl* control in @[self.copilotTargetAutoButton, self.copilotTargetStartField,
-                               self.copilotTargetStartStepper, self.copilotTargetLengthPopup])
-    control.enabled = sectionEditable;
+  self.copilotTargetAutoButton.enabled = sectionEditable;
+  self.copilotTargetStartField.enabled = sectionEditable;
+  self.copilotTargetStartStepper.enabled = sectionEditable;
+  self.copilotTargetLengthPopup.enabled = sectionEditable;
   self.copilotTargetAutoButton.state = !hasTarget || r.referenceSelectionAuto ? NSControlStateValueOn : NSControlStateValueOff;
   // Do not overwrite a start time the user is typing.
   if (!self.copilotTargetStartField.currentEditor)
@@ -5565,16 +5622,23 @@ static NSPopUpButton* addSlotPresetDropdown(
     NSNumber* enabledPort = @(NAMRig::kPostCompressorEnabledPort);
     spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
     spec[@"enabledPort"] = enabledPort;
+  } else if ([slotKey isEqualToString:@"hf_filter"]) {
+    NSNumber* enabledPort = @(NAMRig::kModelBandLimitPort);
+    spec[@"ports"] = [(ports ?: @[]) arrayByAddingObject:enabledPort];
+    spec[@"enabledPort"] = enabledPort;
   }
   [state->deckSlotSpecs addObject:spec];
   state->rebuildSlotPresetMenu(slotIdx);
 
   if ([container isKindOfClass:[NSStackView class]]) {
     [(NSStackView*)container addArrangedSubview:popup];
-  } else {
+    [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
+  } else if (container) {
     [container addSubview:popup];
+    [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
+  } else {
+    popup.translatesAutoresizingMaskIntoConstraints = YES;
   }
-  [[popup.heightAnchor constraintEqualToConstant:20] setActive:YES];
   return popup;
 }
 
@@ -6471,6 +6535,10 @@ static void addLowerStudioDeck(RigUIState* state,
                                     @"Vintage Alnico", @"UK 4x12", @"Modern 4x12", @"Bass", @"Match Cab A"]];
     for (NSUInteger item = 0; item < speakerDescriptions.count && item < (NSUInteger)deckSpkrB.numberOfItems; ++item)
       [deckSpkrB itemAtIndex:item].toolTip = speakerDescriptions[item];
+    if (deckSpkrB.numberOfItems > NAMRig::SpeakerDynamics::kAuto) {
+      [deckSpkrB itemAtIndex:NAMRig::SpeakerDynamics::kAuto].toolTip =
+          @"Auto — Automatically detects and selects a matching reactive speaker load based on the loaded Cabinet B impulse response or model name. Defaults to Resistive if unrecognized.";
+    }
     if (deckSpkrB.numberOfItems > NAMRig::SpeakerDynamics::kMatchCabA) {
       [deckSpkrB itemAtIndex:NAMRig::SpeakerDynamics::kMatchCabA].toolTip =
           @"Match Cab A — Follows Cabinet A's speaker profile (when Cab A is Auto, Cabinet B independently auto-detects from its own IR/model path).";
@@ -8151,6 +8219,19 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
     }
 
     rigInstallGraphControls(state);
+    state->hfFilterPresetPopup = addSlotPresetDropdown(
+        nil, state, @"hf_filter", @"HF Filter",
+        @[@(NAMRig::kModelBandLimitCutoffPort),
+          @(NAMRig::kModelBandLimitSlopePort),
+          @(NAMRig::kModelBandLimitRipplePort)],
+        @[@"OFF / BYPASS", @"Studio Transparent", @"De-Fizz Modern Metal",
+          @"Lead Bite Focus", @"Warm Vintage Amp", @"Smooth Clean / Jazz",
+          @"Dark / Lo-Fi"],
+        @selector(applyHfFilterPreset:));
+    if (state->hfFilterPresetPopup) {
+      state->hfFilterPresetPopup.toolTip =
+          @"Quick tone presets for the HF Filter (picking one turns HF FILTER on; OFF / BYPASS turns it off). Also lets you Save, Rename, and Delete your own presets.";
+    }
     state->workspace = rigCreateWorkspace(state, rigPane, boxRow, expansionSlot,
         @[knobGroups[0], knobGroups[1], knobGroups[2], dropPitchKnobGroup, hfFilterKnobGroup]);
     addToneBrowser(state, tonePane);
