@@ -569,7 +569,8 @@ std::vector<float> finalizeTaps(const std::vector<float>& sourceTaps,
 
 WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   (void)maxBlockSize;  // chunking is internal (kBlock); any call size works
-  const ResponseStats response = measureResponse(taps, sanitizeSampleRate(sampleRate));
+  const double safeSampleRate = sanitizeSampleRate(sampleRate);
+  const ResponseStats response = measureResponse(taps, safeSampleRate);
   responsePeak = (std::isfinite(response.peak) && response.peak > 0.0) ? response.peak : 0.0;
   responseRms = (std::isfinite(response.rms) && response.rms > 0.0) ? response.rms : 0.0;
   // Precompute complex DFT across [45..210 Hz] so the audio thread can score
@@ -581,7 +582,7 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
                        static_cast<double>(LowBandSignature::kBins - 1);
       const double hz = LowBandSignature::kMinHz +
                         t * (LowBandSignature::kMaxHz - LowBandSignature::kMinHz);
-      const double radians = -2.0 * kPi * hz / std::max(8000.0, sampleRate);
+      const double radians = -2.0 * kPi * hz / safeSampleRate;
       const double stepRe = std::cos(radians);
       const double stepIm = std::sin(radians);
       double phRe = 1.0, phIm = 0.0;
@@ -606,7 +607,7 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
   loudnessScale = calibratedLoudnessScale(responseRms);
   if (!std::isfinite(peakScale) || !(peakScale > 0.0f)) peakScale = 1.0f;
   scaleSmoothCoeff = 1.0f - std::exp(-1.0f /
-      static_cast<float>(0.010 * std::max(8000.0, sampleRate)));
+      static_cast<float>(0.010 * safeSampleRate));
 
   const size_t headLen = std::min<size_t>(taps.size(), kBlock);
   reversedHead.assign(taps.rbegin() + (taps.size() - headLen), taps.rend());

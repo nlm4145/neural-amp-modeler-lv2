@@ -1412,6 +1412,8 @@ static double copilotParseClock(NSString* text) {
   _state->updateControl(NAMRig::kCabLowCutSlopePort, NAMRig::kCabLowCutSlopeDefault);
   _state->sendControl(NAMRig::kCabHighCutSlopePort, NAMRig::kCabHighCutSlopeDefault);
   _state->updateControl(NAMRig::kCabHighCutSlopePort, NAMRig::kCabHighCutSlopeDefault);
+  _state->sendControl(NAMRig::kCabIrAutoTrimPort, NAMRig::kCabIrAutoTrimDefault);
+  _state->updateControl(NAMRig::kCabIrAutoTrimPort, NAMRig::kCabIrAutoTrimDefault);
   _state->syncingToneEq = false;
   _state->synchronizeToneEq(false);
   [self resetTransformerControls:sender];
@@ -6754,7 +6756,7 @@ static void addLowerStudioDeck(RigUIState* state,
                                 @selector(controlChanged:), NAMRig::kCabIrAutoTrimPort);
     irTrim.buttonType = NSButtonTypeToggle;
     irTrim.check = YES;
-    irTrim.state = NSControlStateValueOff;
+    irTrim.state = state->cabIrAutoTrim ? NSControlStateValueOn : NSControlStateValueOff;
     irTrim.toolTip = @"Auto-trim leading digital silence from loaded WAV cab IRs while keeping L/R arrival delay and full 170 ms tail.";
     state->cabIrAutoTrimButton = irTrim;
     [cutsRow addArrangedSubview:irTrim];

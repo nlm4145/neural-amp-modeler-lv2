@@ -1984,6 +1984,18 @@ static void verifyCabIrAutoTrim(Runtime& runtime, Host& host, Class presetClass)
   drain();
   CHECK(state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOn);
 
+  host.writes.clear();
+  [(id<TransformerTestController>)state->uiController resetAllKnobs:nil];
+  drain();
+  CHECK(!state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOff);
+  const auto trimWrite = host.writes.find(NAMRig::kCabIrAutoTrimPort);
+  CHECK(trimWrite != host.writes.end() && !trimWrite->second.empty() &&
+        trimWrite->second.back() == NAMRig::kCabIrAutoTrimDefault);
+
+  [captured applyToState:state];
+  drain();
+  CHECK(state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOn);
+
   [[presetClass defaultPreset] applyToState:state];
   drain();
   CHECK(!state->cabIrAutoTrim && state->cabIrAutoTrimButton.state == NSControlStateValueOff);

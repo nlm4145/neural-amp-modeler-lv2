@@ -271,7 +271,11 @@ bool RigPreset::loadFromFile(const std::string& path) {
   }
 
   controls[59] = 0.0f; // legacy normal polarity default
+  controls[NAMRig::kSpatialCenterBlendPort] = NAMRig::kSpatialCenterBlendDefault;
   controls[NAMRig::kSpeakerProfileBPort] = speakerProfileB;
+  controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
+  controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
+  controls[NAMRig::kCabIrAutoTrimPort] = NAMRig::kCabIrAutoTrimDefault;
   for (uint32_t i = 0; i < NAMRig::kPostCompressorDefaults.size(); ++i)
     controls[NAMRig::kPostCompressorFirstPort + i] = NAMRig::kPostCompressorDefaults[i];
   if (root.contains("ports") && root["ports"].is_object()) {

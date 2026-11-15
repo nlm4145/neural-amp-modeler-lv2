@@ -96,8 +96,8 @@ amp model is linear and time-invariant (`processPostChain`): cab IR → cab low/
 → Console pins (both only when a cab was processed and the console rack is on) → DC
 blocker → Bass (150 Hz low shelf) / Mid (700 Hz bell) / Treble (3 kHz high shelf),
 all RBJ biquads at Q 0.707. Linear filters commute, so an amp rendered once with the
-cab off can be convolved with any IR (`WavIR::loadTaps`: the engine's exact resampled,
-170 ms-tapered taps; FFT overlap-add via `DSP::RealFFT`) and re-voiced with
+cab off can be convolved with any IR (`WavIR::loadTaps` / `WavIR::loadTapsStereo`: the
+engine's exact resampled, 170 ms-tapered, optionally auto-trimmed taps with L/R arrival delay preserved; FFT overlap-add via `DSP::RealFFT`) and re-voiced with
 `local_tone_post_eq.h` (`applyPostEq`, mirroring the engine via `pin_eq.h`
 coefficients). The real-engine smoke test checks offline vs. engine scores agree.
 
@@ -272,6 +272,7 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 234 | `spatial_center_blend` | in | Centered Stereo Blend toggle (`0` = full-width Dome stereo, `1` = center blend); optional |
 | 235 | `speaker_profile_b` | in | Cab B Speaker Load Profile (`0..7` explicit profiles or `8` = `Match Cab A` default). When matched (`8`), Cab B tracks `speaker_profile` (with independent `Auto` filename detection when `speaker_profile = 1`). |
 | 236–237 | `cab_low_cut_slope`/`cab_high_cut_slope` | in | Master Cab Low/High Cut filter slopes (`0 = 12 dB/oct` default, `1 = 18 dB/oct`, `2 = 24 dB/oct`); optional |
+| 238 | `cab_ir_auto_trim` | in | Auto-trim shared leading digital silence from loaded WAV cab IRs while keeping L/R relative arrival delay (`0` = off default, `1` = on); triggers async worker reload when toggled; optional |
 
 The Tone & Voicing selector switches between linked knob and lever views without
 writing audio controls. Edits project the complete EQ response into the other
@@ -292,7 +293,9 @@ use the amp oversampling mode (`amp_oversample`, port 21). When Cab B uses an
 independent `speaker_profile_b` (port 235) or runs solo
 (`cab_enabled = 0, cab2_enabled = 1`), its speaker dynamics and Speaker Pin EQ
 execute per-sample in the amp's True domain (or in `processPostChain` when no
-active True cascade covers them) before entering the Cab B chain.
+active True cascade covers them) before entering the Cab B chain. WAV cabinet
+IRs load via `WavIR::loadStereo` (folding >2 multichannel files down deterministically
+to stereo and optionally applying `cab_ir_auto_trim` before resampling).
 
 The pedalboard adds Pedal 2 and Pedal 3 at stage indices 4 and 5, with path
 parameters `…#rig-pedal2-model` and `…#rig-pedal3-model`. Ports 192/193
