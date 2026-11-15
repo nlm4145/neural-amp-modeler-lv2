@@ -553,6 +553,7 @@ RigLocalTonePlan* rigLocalTonePlan(RigPreset* base, NSArray<NSDictionary*>* cata
   // input, oversampling and any selected pedal/OD; do not normalize the DI.
   for (uint32_t port : {33u, 53u, 54u, 71u, 72u, 73u, 74u, 76u, 77u, 79u, 184u, 189u}) [dry setControl:port value:0];
   [dry setControl:15 value:-80]; [dry setControl:30 value:0]; [dry setControl:42 value:0]; [dry setControl:80 value:0];
+  [dry setControl:kSpeakerProfileBPort value:kSpeakerProfileBDefault];
   // The linear post section is solved offline, so renders keep it neutral.
   [dry setControl:kBassPort value:0]; [dry setControl:kMidPort value:0]; [dry setControl:kTreblePort value:0];
   [dry setControl:kLowCutPort value:0]; [dry setControl:kHighCutPort value:20000];

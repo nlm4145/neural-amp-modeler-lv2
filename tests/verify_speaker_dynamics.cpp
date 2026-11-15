@@ -9,11 +9,13 @@
 //
 // Build: clang++ -O2 -std=c++17 -Isrc tests/verify_speaker_dynamics.cpp
 #include "speaker_dynamics.h"
+#include "pin_eq.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -350,6 +352,131 @@ int main() {
       }
     }
     check(maxStep < 0.03, "Drive 25% <-> 0% automation sweep stays click-free");
+  }
+
+  // ---- Regression: cold 0% -> 25% & post-decay 25% -> 0% -> 25% stay click-free. ----
+  // Exercises LR2 crossover engagement at both 220 Hz and 2400 Hz with no initial
+  // sample skip (prevents polarity-inversion click on sample 0 of Drive > 0%).
+  for (double testFreq : {220.0, 2400.0}) {
+    const double fs = 48000.0;
+    const double naturalStep = 0.5 * 2.0 * kPi * testFreq / fs;
+    Spk spk;
+    float prev = 0.0f;
+    double maxDiff = 0.0;
+    size_t idx = 0;
+    const int lengths[] = {512, 512, 16384, 512};
+    const float drives[] = {0.0f, 25.0f, 0.0f, 25.0f};
+    for (int seg = 0; seg < 4; ++seg) {
+      std::vector<float> blk(static_cast<size_t>(lengths[seg]));
+      for (size_t i = 0; i < blk.size(); ++i, ++idx)
+        blk[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * testFreq * idx / fs));
+      spk.process(blk.data(), blk.size(), fs, Spk::kUK412,
+                  drives[seg], 0.0f, 0.0f, 0.0f, 0.0f);
+      for (size_t i = 0; i < blk.size(); ++i) {
+        const size_t globalIdx = idx - blk.size() + i;
+        if (globalIdx > 0)
+          maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(blk[i] - prev)));
+        prev = blk[i];
+      }
+    }
+    char label[128];
+    std::snprintf(label, sizeof(label),
+                  "cold & decayed 0%% -> 25%% Drive transition is click-free at %.0f Hz",
+                  testFreq);
+    check(maxDiff < naturalStep + 0.025, label);
+  }
+
+  // ---- Regression: high-frequency Turn-ON (0->25%) & delayed Turn-OFF (50->0%) have no comb notch. ----
+  {
+    const double fs = 48000.0;
+    const double freq = 5000.0;
+    const size_t window = 96; // 2 ms RMS window
+    const auto worstDipDb = [&](const std::vector<float>& y, size_t start, size_t end) {
+      const double refRms = 0.5 / std::sqrt(2.0);
+      double worstDb = 0.0;
+      for (size_t i = start; i + window <= end; i += 8) {
+        double sumSq = 0.0;
+        for (size_t j = 0; j < window; ++j)
+          sumSq += static_cast<double>(y[i + j]) * static_cast<double>(y[i + j]);
+        const double rms = std::sqrt(sumSq / window);
+        const double db = 20.0 * std::log10(std::max(1.0e-12, rms / refRms));
+        worstDb = std::min(worstDb, db);
+      }
+      return worstDb;
+    };
+    Spk spk;
+    std::vector<float> buf(24000);
+    size_t idx = 0;
+    const auto fill = [&](size_t n, float drv) {
+      std::vector<float> blk(n);
+      for (size_t i = 0; i < n; ++i, ++idx)
+        blk[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * freq * idx / fs));
+      spk.process(blk.data(), blk.size(), fs, Spk::kVintageAlnico,
+                  drv, 0.0f, 0.0f, 0.0f, 0.0f);
+      return blk;
+    };
+    (void)fill(4096, 0.0f);
+    auto turnOn = fill(4096, 25.0f);
+    const double onDipDb = worstDipDb(turnOn, 0, turnOn.size());
+    check(onDipDb > -0.25, "Drive 0% -> 25% transition produces no high-frequency comb notch");
+
+    (void)fill(4096, 50.0f);
+    auto turnOff = fill(19200, 0.0f); // 400 ms covers both smoother and 5 Hz DC-blocker tails
+    const double offDipDb = worstDipDb(turnOff, 0, turnOff.size());
+    check(offDipDb > -0.25, "delayed Drive 50% -> 0% turn-off produces no high-frequency comb notch");
+  }
+
+  // ---- NaN / Inf parameter & sampleRate safety ----
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    Spk spk;
+    std::vector<float> blk(256);
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 220.0 * i / 48000.0));
+    spk.process(blk.data(), blk.size(), nan, -99, nan, inf, -nan, inf, nan);
+    bool allFinite = true;
+    for (float s : blk) allFinite = allFinite && std::isfinite(s);
+    // Recover on a normal valid block to confirm no internal state became NaN.
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 220.0 * i / 48000.0));
+    spk.process(blk.data(), blk.size(), 48000.0, Spk::kUK412,
+                50.0f, 50.0f, 50.0f, 50.0f, 0.5f);
+    for (float s : blk) allFinite = allFinite && std::isfinite(s);
+    check(allFinite, "NaN/Inf parameters and sampleRate stay finite and recoverable");
+
+    // Audio NaN/Inf injection must not latch SpeakerDynamics or PinEq recursive state.
+    Spk spkAudio;
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 220.0 * i / 48000.0));
+    blk[10] = nan;
+    blk[20] = inf;
+    blk[30] = -inf;
+    spkAudio.process(blk.data(), blk.size(), 48000.0, Spk::kVintageAlnico,
+                     50.0f, 50.0f, 50.0f, 50.0f, 0.3f);
+    bool audioSafe = true;
+    for (float s : blk) audioSafe = audioSafe && std::isfinite(s);
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 220.0 * i / 48000.0));
+    spkAudio.process(blk.data(), blk.size(), 48000.0, Spk::kVintageAlnico,
+                     50.0f, 50.0f, 50.0f, 50.0f, 0.3f);
+    for (float s : blk) audioSafe = audioSafe && std::isfinite(s);
+    check(audioSafe, "NaN/Inf audio samples recover immediately in SpeakerDynamics");
+
+    NAMRig::PinEq eq;
+    NAMRig::PinBands bands{};
+    bands[0] = {NAMRig::kPinBell, 1000.0, 12.0, 0.7};
+    float* ch[1] = {blk.data()};
+    blk[10] = nan;
+    blk[40] = inf;
+    eq.process(ch, 1, blk.size(), 48000.0, bands);
+    bool eqSafe = true;
+    for (float s : blk) eqSafe = eqSafe && std::isfinite(s);
+    for (size_t i = 0; i < blk.size(); ++i)
+      blk[i] = static_cast<float>(0.25 * std::sin(2.0 * kPi * 1000.0 * i / 48000.0));
+    eq.process(ch, 1, blk.size(), 48000.0, bands);
+    for (float s : blk) eqSafe = eqSafe && std::isfinite(s);
+    check(eqSafe, "NaN/Inf audio samples recover immediately in PinEq");
   }
 
   // ---- Profile names and descriptions. ----

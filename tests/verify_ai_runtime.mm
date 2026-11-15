@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
                         @"speaker_profile": @6, @"amp_oversample": @7, @"ir_normalization": @2, @"cab_enabled": @1, @"input_level": @3};
     NSError* error = nil;
     CHECK([copilot applyResult:result toState:&state saveUndoState:YES error:&error]);
-    CHECK(copilot.canUndo && writes == 9);
+    CHECK(copilot.canUndo && writes == 17);
     RigPreset* captured = [presetClass captureFromState:&state name:@"test"];
     CHECK([captured controlForPort:12] == -2 && [captured controlForPort:180] == 62);
     CHECK([captured controlForPort:4] == 3);
@@ -277,14 +277,14 @@ int main(int argc, char** argv) {
     proposal.controls = @{@"bass": @-3}; proposal.presetName = @"AI Test"; proposal.explanation = @"test";
     [controller setValue:proposal forKey:@"copilotProposal"];
     [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
-    CHECK([state.presetManager.presetNames containsObject:@"AI Test"]);
+    CHECK([state.presetManager.presetNames containsObject:@"Genre/Custom Tones/AI Test"]);
     NSString* log = [[controller valueForKey:@"copilotOutputView"] string];
-    CHECK([log containsString:@"APPLY & SAVE started → target preset 'AI Test'"]);
-    CHECK([log containsString:@"✅ DONE — preset 'AI Test'"] && [log containsString:@"AI Test.json"]);
+    CHECK([log containsString:@"APPLY & SAVE started → target preset 'Genre/Custom Tones/AI Test'"]);
+    CHECK([log containsString:@"✅ DONE — preset 'Genre/Custom Tones/AI Test'"] && [log containsString:@"AI Test.json"]);
     [controller setValue:proposal forKey:@"copilotProposal"];
     [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
     CHECK(state.presetManager.presetNames.count >= 3);
-    CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"✅ DONE — preset 'AI Test Copy'"]);
+    CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"✅ DONE — preset 'Genre/Custom Tones/AI Test Copy'"]);
     // The Save as field names the preset exactly, and shows the final unique name after saving.
     NSTextField* nameField = [NSTextField new]; nameField.stringValue = @"  Mellencamp - Jack & Diane ";
     [controller setValue:nameField forKey:@"copilotPresetNameField"];
@@ -315,8 +315,8 @@ int main(int argc, char** argv) {
       CHECK(localProposal.controls[@"bass"].floatValue == -1);
       CHECK([[[controller valueForKey:@"copilotOutputView"] string] containsString:@"LOCAL PREVIEW READY"]);
       [controller performSelector:@selector(applyCopilotProposal:) withObject:nil];
-      CHECK([state.presetManager.presetNames containsObject:@"Local Match test tone"]);
-      RigPreset* localSaved = [state.presetManager loadPresetNamed:@"Local Match test tone"];
+      CHECK([state.presetManager.presetNames containsObject:@"Genre/Custom Tones/Local Match test tone"]);
+      RigPreset* localSaved = [state.presetManager loadPresetNamed:@"Genre/Custom Tones/Local Match test tone"];
       CHECK([localSaved.aiMetadata[@"provider"] isEqual:@"local"]);
       CHECK([localSaved.aiMetadata[@"run_id"] isEqual:@"fixture-run"]);
       CHECK([localSaved.aiMetadata[@"token_cost"] doubleValue] == 0);
@@ -531,7 +531,25 @@ int main(int argc, char** argv) {
       state.confirmedPaths[1] = state.selectedPaths[1];
       NSString* fixtureCab = [libraryRoot stringByAppendingPathComponent:@"Cab/Test/mic.wav"];
       [NSFileManager.defaultManager createDirectoryAtPath:fixtureCab.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-      [@"local fixture" writeToFile:fixtureCab atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      {
+        const uint32_t frames = 64;
+        const uint32_t dataBytes = frames * sizeof(int16_t);
+        const uint32_t riffSize = 36 + dataBytes;
+        const uint32_t fmtSize = 16;
+        const uint16_t audioFmt = 1, channels = 1, blockAlign = 2, bitsPerSample = 16;
+        const uint32_t sampleRate = 48000, byteRate = sampleRate * blockAlign;
+        NSMutableData* wav = [NSMutableData dataWithCapacity:44 + dataBytes];
+        [wav appendBytes:"RIFF" length:4]; [wav appendBytes:&riffSize length:4];
+        [wav appendBytes:"WAVEfmt " length:8]; [wav appendBytes:&fmtSize length:4];
+        [wav appendBytes:&audioFmt length:2]; [wav appendBytes:&channels length:2];
+        [wav appendBytes:&sampleRate length:4]; [wav appendBytes:&byteRate length:4];
+        [wav appendBytes:&blockAlign length:2]; [wav appendBytes:&bitsPerSample length:2];
+        [wav appendBytes:"data" length:4]; [wav appendBytes:&dataBytes length:4];
+        std::vector<int16_t> samples(frames, 0);
+        samples[0] = 32767;
+        [wav appendBytes:samples.data() length:dataBytes];
+        [wav writeToFile:fixtureCab atomically:YES];
+      }
       state.selectedPaths[2] = fixtureCab.fileSystemRepresentation;
       state.confirmedPaths[2] = state.selectedPaths[2];
       state.powerButtons[1].state = NSControlStateValueOn;
@@ -559,8 +577,8 @@ int main(int argc, char** argv) {
       [controller setValue:matchStatus forKey:@"copilotLocalMatchStatus"];
       [controller setValue:matchButton forKey:@"copilotLocalMatchBtn"];
       [controller performSelector:@selector(updateCopilotRiffUI)];
-      CHECK(matchButton.enabled && [matchStatus.stringValue containsString:@"Ready:"]);
-      CHECK([targetStatus.stringValue containsString:@"loaded locally, not uploaded"]);
+      CHECK(matchButton.enabled && [matchStatus.stringValue containsString:@"Step 3:"]);
+      CHECK([targetStatus.stringValue containsString:@"local, not uploaded"]);
       CHECK([recorder loadReferenceFromURL:targetFile fullMix:YES error:nil]);
       [controller performSelector:@selector(updateCopilotRiffUI)];
       CHECK(!matchButton.enabled && [matchStatus.stringValue containsString:@"guitar-only target"]);
@@ -571,9 +589,10 @@ int main(int argc, char** argv) {
       NSTextField* guitarStatus = [NSTextField labelWithString:@""];
       [controller setValue:guitarStatus forKey:@"copilotRiffStatusLabel"];
       [controller performSelector:@selector(updateCopilotRiffUI)];
-      CHECK([guitarStatus.stringValue containsString:@"no recording"] && ![guitarStatus.stringValue containsString:@"Output only"]);
+      CHECK([guitarStatus.stringValue containsString:@"Target loaded:"] && ![guitarStatus.stringValue containsString:@"Output only"]);
       [recorder clearRecording]; [recorder clearReference]; recorder.renderHandler = nil;
       [controller performSelector:@selector(updateCopilotRiffUI)];
+      CHECK([guitarStatus.stringValue containsString:@"no recording"] && ![guitarStatus.stringValue containsString:@"Output only"]);
       CHECK([matchStatus.stringValue containsString:@"standalone Axe FX"]);
       // Unsupported Claude audio is explained and disabled, not a mysterious checkbox.
       NSButton* upload = [NSButton checkboxWithTitle:@"upload" target:nil action:nil];

@@ -1,19 +1,121 @@
 #!/usr/bin/env bash
-# Run the DSP harnesses and Python validators (pre-compile validation discipline).
-# Usage: ./tests/run_all.sh
+# Run the DSP harnesses and Python validators impacted by changed modules & files.
+# Usage: ./tests/run_all.sh [--all | --changed | --base <ref> | --files <path>... | --list]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+MODE_ARGS=(--auto)
+LIST_ONLY=0
+RUN_ALL=0
+EXPLICIT_FILES=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --all)
+      RUN_ALL=1
+      MODE_ARGS=(--all)
+      shift
+      ;;
+    --changed|--auto|--working|--staged|--branch)
+      MODE_ARGS=("$1")
+      shift
+      ;;
+    --base)
+      if [ "$#" -lt 2 ]; then
+        echo "error: --base requires a git ref" >&2
+        exit 2
+      fi
+      MODE_ARGS=(--base "$2")
+      shift 2
+      ;;
+    --base=*)
+      MODE_ARGS=(--base "${1#--base=}")
+      shift
+      ;;
+    --files|--file)
+      shift
+      while [ "$#" -gt 0 ] && [[ "$1" != --* ]]; do
+        EXPLICIT_FILES+=("$1")
+        shift
+      done
+      if [ "${#EXPLICIT_FILES[@]}" -eq 0 ]; then
+        echo "error: --files requires at least one path" >&2
+        exit 2
+      fi
+      ;;
+    --list|--dry-run)
+      LIST_ONLY=1
+      shift
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: ./tests/run_all.sh [options]
+  (default)            Run tests impacted by changed modules & files
+  --all                Run all runnable tests in the suite
+  --changed, --auto    Auto-detect working tree or branch changes (default)
+  --working            Diff working tree (staged + unstaged + untracked) vs HEAD
+  --staged             Diff staged changes vs HEAD
+  --branch             Diff HEAD vs merge-base with upstream/main
+  --base <ref>         Diff <ref> (merge-base) vs working tree, or range A..B
+  --files <path>...    Run tests impacted by specific repo file paths
+  --list, --dry-run    Print selected tests and reasons without running them
+EOF
+      exit 0
+      ;;
+    *)
+      echo "error: unknown option: $1 (try --help)" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ "${#EXPLICIT_FILES[@]}" -gt 0 ]; then
+  MODE_ARGS=(--files "${EXPLICIT_FILES[@]}")
+fi
+
+RIG_SO="${RIG_SO:-$HOME/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2/neural_amp_modeler_rig.so}"
+SELECT_ARGS=("${MODE_ARGS[@]}" --rig-so "$RIG_SO" --rig-ui-so "${RIG_UI_SO:-}")
+
+python3 tests/select_tests.py "${SELECT_ARGS[@]}" --summary
+
+if [ "$LIST_ONLY" -eq 1 ]; then
+  exit 0
+fi
+
+SELECTED_IDS=""
+if [ "$RUN_ALL" -eq 0 ]; then
+  RAW_IDS="$(python3 tests/select_tests.py "${SELECT_ARGS[@]}" --ids)"
+  if [ -z "${RAW_IDS//[[:space:]]/}" ]; then
+    exit 0
+  fi
+  SELECTED_IDS=$'\n'"${RAW_IDS}"$'\n'
+fi
+
+should_run() {
+  [ "$RUN_ALL" -eq 1 ] && return 0
+  case "$SELECTED_IDS" in
+    *$'\n'"$1"$'\n'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+echo ""
 status=0
 
-echo "== tests/test_max_quality_defaults.py =="
-python3 tests/test_max_quality_defaults.py || status=1
+if should_run tests/test_max_quality_defaults.py; then
+  echo "== tests/test_max_quality_defaults.py =="
+  python3 tests/test_max_quality_defaults.py || status=1
+fi
 
-echo "== tests/test_stage_db_meters.py =="
-python3 tests/test_stage_db_meters.py || status=1
+if should_run tests/test_stage_db_meters.py; then
+  echo "== tests/test_stage_db_meters.py =="
+  python3 tests/test_stage_db_meters.py || status=1
+fi
 
-echo "== tests/test_a2_fast_ring_copy.py =="
-python3 tests/test_a2_fast_ring_copy.py || status=1
+if should_run tests/test_a2_fast_ring_copy.py; then
+  echo "== tests/test_a2_fast_ring_copy.py =="
+  python3 tests/test_a2_fast_ring_copy.py || status=1
+fi
 
 # Honor the caller's CXXFLAGS (e.g. the -nostdinc++ + SDK -isystem workaround
 # for broken Command Line Tools libc++ headers).
@@ -38,178 +140,210 @@ run_cpp() {
   fi
 }
 
-echo "== tests/verify_tuner_tools.cpp =="
-run_cpp c++17 /tmp/verify_tuner_tools -Isrc tests/verify_tuner_tools.cpp
+run_named_cpp() {
+  local test_id="$1" title="$2"
+  shift 2
+  if should_run "$test_id"; then
+    echo "== $title =="
+    run_cpp "$@"
+  fi
+}
 
-echo "== tests/verify_standalone_worker.cpp =="
-run_cpp c++17 /tmp/verify_standalone_worker -pthread -Isrc -Ideps/lv2/include \
+run_named_cpp tests/verify_tuner_tools.cpp tests/verify_tuner_tools.cpp \
+  c++17 /tmp/verify_tuner_tools -Isrc tests/verify_tuner_tools.cpp
+
+run_named_cpp tests/verify_standalone_worker.cpp tests/verify_standalone_worker.cpp \
+  c++17 /tmp/verify_standalone_worker -pthread -Isrc -Ideps/lv2/include \
   src/standalone_worker.cpp tests/verify_standalone_worker.cpp
-echo "== tests/verify_standalone_controls.cpp =="
-run_cpp c++20 /tmp/verify_standalone_controls -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+run_named_cpp tests/verify_standalone_controls.cpp tests/verify_standalone_controls.cpp \
+  c++20 /tmp/verify_standalone_controls -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
   -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_standalone_controls.cpp
-echo "== tests/verify_rig_control_metadata.cpp =="
-run_cpp c++17 /tmp/verify_rig_control_metadata -Isrc \
+run_named_cpp tests/verify_rig_control_metadata.cpp tests/verify_rig_control_metadata.cpp \
+  c++17 /tmp/verify_rig_control_metadata -Isrc \
   -Ideps/NeuralAudio/deps/NeuralAmpModelerCore/Dependencies \
   tests/verify_rig_control_metadata.cpp src/win32_presets.cpp -- resources/neural_amp_modeler_rig.ttl.in
 
-echo "== tests/verify_noise_gate.cpp =="
-run_cpp c++17 /tmp/verify_noise_gate -Isrc tests/verify_noise_gate.cpp
-echo "== tests/verify_master_output.cpp =="
-run_cpp c++17 /tmp/verify_master_output -Isrc tests/verify_master_output.cpp
-echo "== tests/verify_compressor.cpp =="
-run_cpp c++17 /tmp/verify_compressor -Isrc tests/verify_compressor.cpp
-echo "== tests/verify_output_transformer.cpp =="
-run_cpp c++17 /tmp/verify_output_transformer -Isrc tests/verify_output_transformer.cpp
-echo "== tests/verify_speaker_dynamics.cpp =="
-run_cpp c++17 /tmp/verify_speaker_dynamics -Isrc tests/verify_speaker_dynamics.cpp
-echo "== tests/verify_amp_advanced.cpp =="
-run_cpp c++17 /tmp/verify_amp_advanced -Isrc tests/verify_amp_advanced.cpp
-echo "== tests/verify_overdrive.cpp =="
-run_cpp c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
-echo "== tests/verify_drop_pitch.cpp =="
-run_cpp c++17 /tmp/verify_drop_pitch -Isrc tests/verify_drop_pitch.cpp
-echo "== tests/verify_model_band_limit.cpp =="
-run_cpp c++17 /tmp/verify_model_band_limit -Isrc tests/verify_model_band_limit.cpp
-echo "== tests/verify_rate_adapter.cpp =="
-run_cpp c++17 /tmp/verify_rate_adapter -Isrc tests/verify_rate_adapter.cpp
-echo "== tests/verify_pin_eq.cpp =="
-run_cpp c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
-echo "== tests/verify_tone_eq_link.cpp =="
-run_cpp c++17 /tmp/verify_tone_eq_link -Isrc tests/verify_tone_eq_link.cpp
-echo "== tests/verify_control_work.cpp (control caching / smoothing equivalence) =="
-run_cpp c++17 /tmp/verify_control_work -Isrc tests/verify_control_work.cpp
-echo "== tests/verify_rig_dsp_cache.cpp (gain / timing / stereo width caches) =="
-run_cpp c++17 /tmp/verify_rig_dsp_cache -Isrc tests/verify_rig_dsp_cache.cpp
-echo "== tests/verify_space_fx.cpp =="
-run_cpp c++17 /tmp/verify_space_fx -Isrc tests/verify_space_fx.cpp
-echo "== tests/verify_oversample_modes.cpp =="
-run_cpp c++17 /tmp/verify_os_modes -Isrc tests/verify_oversample_modes.cpp
+run_named_cpp tests/verify_noise_gate.cpp tests/verify_noise_gate.cpp \
+  c++17 /tmp/verify_noise_gate -Isrc tests/verify_noise_gate.cpp
+run_named_cpp tests/verify_master_output.cpp tests/verify_master_output.cpp \
+  c++17 /tmp/verify_master_output -Isrc tests/verify_master_output.cpp
+run_named_cpp tests/verify_compressor.cpp tests/verify_compressor.cpp \
+  c++17 /tmp/verify_compressor -Isrc tests/verify_compressor.cpp
+run_named_cpp tests/verify_output_transformer.cpp tests/verify_output_transformer.cpp \
+  c++17 /tmp/verify_output_transformer -Isrc tests/verify_output_transformer.cpp
+run_named_cpp tests/verify_speaker_dynamics.cpp tests/verify_speaker_dynamics.cpp \
+  c++17 /tmp/verify_speaker_dynamics -Isrc tests/verify_speaker_dynamics.cpp
+run_named_cpp tests/verify_amp_advanced.cpp tests/verify_amp_advanced.cpp \
+  c++17 /tmp/verify_amp_advanced -Isrc tests/verify_amp_advanced.cpp
+run_named_cpp tests/verify_overdrive.cpp tests/verify_overdrive.cpp \
+  c++17 /tmp/verify_overdrive -Isrc tests/verify_overdrive.cpp
+run_named_cpp tests/verify_drop_pitch.cpp tests/verify_drop_pitch.cpp \
+  c++17 /tmp/verify_drop_pitch -Isrc tests/verify_drop_pitch.cpp
+run_named_cpp tests/verify_model_band_limit.cpp tests/verify_model_band_limit.cpp \
+  c++17 /tmp/verify_model_band_limit -Isrc tests/verify_model_band_limit.cpp
+run_named_cpp tests/verify_rate_adapter.cpp tests/verify_rate_adapter.cpp \
+  c++17 /tmp/verify_rate_adapter -Isrc tests/verify_rate_adapter.cpp
+run_named_cpp tests/verify_pin_eq.cpp tests/verify_pin_eq.cpp \
+  c++17 /tmp/verify_pin_eq -Isrc tests/verify_pin_eq.cpp
+run_named_cpp tests/verify_tone_eq_link.cpp tests/verify_tone_eq_link.cpp \
+  c++17 /tmp/verify_tone_eq_link -Isrc tests/verify_tone_eq_link.cpp
+run_named_cpp tests/verify_control_work.cpp \
+  "tests/verify_control_work.cpp (control caching / smoothing equivalence)" \
+  c++17 /tmp/verify_control_work -Isrc tests/verify_control_work.cpp
+run_named_cpp tests/verify_rig_dsp_cache.cpp \
+  "tests/verify_rig_dsp_cache.cpp (gain / timing / stereo width caches)" \
+  c++17 /tmp/verify_rig_dsp_cache -Isrc tests/verify_rig_dsp_cache.cpp
+run_named_cpp tests/verify_space_fx.cpp tests/verify_space_fx.cpp \
+  c++17 /tmp/verify_space_fx -Isrc tests/verify_space_fx.cpp
+run_named_cpp tests/verify_oversample_modes.cpp tests/verify_oversample_modes.cpp \
+  c++17 /tmp/verify_os_modes -Isrc tests/verify_oversample_modes.cpp
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  echo "== tests/verify_oversample_shared.cpp =="
-  run_cpp c++17 /tmp/verify_os_shared -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+  run_named_cpp tests/verify_oversample_shared.cpp tests/verify_oversample_shared.cpp \
+    c++17 /tmp/verify_os_shared -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
     tests/verify_oversample_shared.cpp
-  echo "== tests/verify_oversample_cpp.cpp =="
-  run_cpp c++20 /tmp/verify_os -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+  run_named_cpp tests/verify_oversample_cpp.cpp tests/verify_oversample_cpp.cpp \
+    c++20 /tmp/verify_os -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
     tests/verify_oversample_cpp.cpp
-else
+elif [ "$RUN_ALL" -eq 1 ]; then
   echo "  (skipped: shared/C++ oversampling harnesses require macOS Accelerate)"
 fi
 
-echo "== tests/verify_transition_fade.cpp =="
-run_cpp c++17 /tmp/verify_transition_fade tests/verify_transition_fade.cpp
+run_named_cpp tests/verify_transition_fade.cpp tests/verify_transition_fade.cpp \
+  c++17 /tmp/verify_transition_fade tests/verify_transition_fade.cpp
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  echo "== tests/verify_oversample_batched.cpp (old vs batched vDSP_conv) =="
-  run_cpp c++17 /tmp/verify_osb -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+  run_named_cpp tests/verify_oversample_batched.cpp \
+    "tests/verify_oversample_batched.cpp (old vs batched vDSP_conv)" \
+    c++17 /tmp/verify_osb -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
     tests/verify_oversample_batched.cpp
-  echo "== tests/verify_oversample_cascade.cpp (True 4x/8x per-level chains) =="
-  run_cpp c++17 /tmp/verify_voc -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+  run_named_cpp tests/verify_oversample_cascade.cpp \
+    "tests/verify_oversample_cascade.cpp (True 4x/8x per-level chains)" \
+    c++17 /tmp/verify_voc -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
     tests/verify_oversample_cascade.cpp
-  echo "== tests/verify_oversample_latency.cpp (True cascade pipeline delay) =="
-  run_cpp c++17 /tmp/verify_os_latency -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
+  run_named_cpp tests/verify_oversample_latency.cpp \
+    "tests/verify_oversample_latency.cpp (True cascade pipeline delay)" \
+    c++17 /tmp/verify_os_latency -framework Accelerate -Isrc src/dsp_accel.cpp src/oversample.cpp \
     tests/verify_oversample_latency.cpp
-  echo "== tests/verify_wav_ir.cpp (partitioned-FFT cab IR vs direct conv) =="
-  run_cpp c++17 /tmp/verify_wav_ir -framework Accelerate -Isrc -Ideps/pffft src/dsp_accel.cpp src/wav_ir.cpp \
+  run_named_cpp tests/verify_wav_ir.cpp \
+    "tests/verify_wav_ir.cpp (partitioned-FFT cab IR vs direct conv)" \
+    c++17 /tmp/verify_wav_ir -framework Accelerate -Isrc -Ideps/pffft src/dsp_accel.cpp src/wav_ir.cpp \
     tests/verify_wav_ir.cpp -- /tmp
-  echo "== tests/verify_nsdf.cpp (vectorized tuner NSDF vs scalar) =="
-  run_cpp c++17 /tmp/verify_nsdf -framework Accelerate tests/verify_nsdf.cpp
-else
+  run_named_cpp tests/verify_nsdf.cpp \
+    "tests/verify_nsdf.cpp (vectorized tuner NSDF vs scalar)" \
+    c++17 /tmp/verify_nsdf -framework Accelerate tests/verify_nsdf.cpp
+elif [ "$RUN_ALL" -eq 1 ]; then
   echo "  (skipped: batched/cascade/latency oversampling, WAV IR and NSDF harnesses require macOS Accelerate)"
 fi
 
 # End-to-end smoke test against the INSTALLED rig plugin. Plain C, so it
 # builds with clang even where the C++ toolchain headers are broken.
-RIG_SO="${RIG_SO:-$HOME/Library/Audio/Plug-Ins/LV2/neural_amp_modeler.lv2/neural_amp_modeler_rig.so}"
-echo "== tests/verify_host_smoke.c (installed rig plugin) =="
-if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_host_smoke.c \
-    -o /tmp/verify_host_smoke 2>/dev/null; then
-  /tmp/verify_host_smoke "$RIG_SO" || status=1
-else
-  echo "  (skipped: plugin not installed or harness build failed)"
+if should_run tests/verify_host_smoke.c; then
+  echo "== tests/verify_host_smoke.c (installed rig plugin) =="
+  if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_host_smoke.c \
+      -o /tmp/verify_host_smoke 2>/dev/null; then
+    /tmp/verify_host_smoke "$RIG_SO" || status=1
+  else
+    echo "  (skipped: plugin not installed or harness build failed)"
+  fi
 fi
 
 # Black-box stabilization checks need only the rig library, not model files.
 if [ "$(uname -s)" = "Darwin" ]; then
-  echo "== tests/verify_low_buffer_rig.cpp (small blocks / cached controls) =="
-  run_cpp c++20 /tmp/verify_low_buffer_rig -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+  run_named_cpp tests/verify_low_buffer_rig.cpp \
+    "tests/verify_low_buffer_rig.cpp (small blocks / cached controls)" \
+    c++20 /tmp/verify_low_buffer_rig -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
     -Ideps/NeuralAudio/deps/RTNeural/modules/json tests/verify_low_buffer_rig.cpp \
     -- "$RIG_SO" "${RIG_BASELINE_SO:-$RIG_SO}"
-  echo "== tests/verify_rate_adapted_rig.cpp (44.1 kHz sessions / real model tone) =="
-  run_cpp c++20 /tmp/verify_rate_adapted_rig -pthread -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+  run_named_cpp tests/verify_rate_adapted_rig.cpp \
+    "tests/verify_rate_adapted_rig.cpp (44.1 kHz sessions / real model tone)" \
+    c++20 /tmp/verify_rate_adapted_rig -pthread -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
     -Ideps/NeuralAudio/deps/RTNeural/modules/json src/standalone_worker.cpp \
     tests/verify_rate_adapted_rig.cpp \
     -- "$RIG_SO" deps/NeuralAudio/Utils/Models/BossWN-standard.nam
-  echo "== tests/verify_lstm_oversampling.cpp (LSTM amp in the True domain / alias noise) =="
-  run_cpp c++20 /tmp/verify_lstm_oversampling -pthread -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
+  run_named_cpp tests/verify_lstm_oversampling.cpp \
+    "tests/verify_lstm_oversampling.cpp (LSTM amp in the True domain / alias noise)" \
+    c++20 /tmp/verify_lstm_oversampling -pthread -Isrc -Ideps/lv2/include -Ideps/NeuralAudio \
     -Ideps/NeuralAudio/deps/RTNeural/modules/json src/standalone_worker.cpp \
     tests/verify_lstm_oversampling.cpp \
     -- "$RIG_SO" deps/NeuralAudio/Utils/Models/BossLSTM-1x16.nam
 fi
 
-echo "== tests/verify_tuner_tools_dsp.c (low strings / reference tone / expiry) =="
-if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner_tools_dsp.c -o /tmp/verify_tuner_tools_dsp; then
-  /tmp/verify_tuner_tools_dsp "$RIG_SO" || status=1
-else
-  echo "  (failed: tuner tools harness build failed)"
-  status=1
+if should_run tests/verify_tuner_tools_dsp.c; then
+  echo "== tests/verify_tuner_tools_dsp.c (low strings / reference tone / expiry) =="
+  if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner_tools_dsp.c -o /tmp/verify_tuner_tools_dsp; then
+    /tmp/verify_tuner_tools_dsp "$RIG_SO" || status=1
+  else
+    echo "  (failed: tuner tools harness build failed)"
+    status=1
+  fi
 fi
 
-echo "== tests/verify_tuner.c (tuner stabilization / 48 and 96 kHz) =="
-if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner.c \
-    -o /tmp/verify_tuner; then
-  /tmp/verify_tuner "$RIG_SO" || status=1
-else
-  echo "  (failed: plugin unavailable or tuner harness build failed)"
-  status=1
+if should_run tests/verify_tuner.c; then
+  echo "== tests/verify_tuner.c (tuner stabilization / 48 and 96 kHz) =="
+  if [ -f "$RIG_SO" ] && clang -O2 -Ideps/lv2/include tests/verify_tuner.c \
+      -o /tmp/verify_tuner; then
+    /tmp/verify_tuner "$RIG_SO" || status=1
+  else
+    echo "  (failed: plugin unavailable or tuner harness build failed)"
+    status=1
+  fi
 fi
 
-echo "== tests/verify_transformer_switch.cpp (96 kHz / True 8x) =="
-EXAMPLE_AMP="deps/NeuralAudio/deps/NeuralAmpModelerCore/example_models/wavenet.nam"
-if [ -f "$RIG_SO" ] && [ -f "$EXAMPLE_AMP" ] && \
-    clang++ -O2 -std=c++17 $CXX_EXTRA -Ideps/lv2/include \
-      tests/verify_transformer_switch.cpp -o /tmp/verify_transformer_switch \
-      2>/dev/null; then
-  /tmp/verify_transformer_switch "$RIG_SO" "$EXAMPLE_AMP" 96000 6 || status=1
-else
-  echo "  (skipped: plugin/model unavailable or harness build failed)"
+if should_run tests/verify_transformer_switch.cpp; then
+  echo "== tests/verify_transformer_switch.cpp (96 kHz / True 8x) =="
+  EXAMPLE_AMP="deps/NeuralAudio/deps/NeuralAmpModelerCore/example_models/wavenet.nam"
+  if [ -f "$RIG_SO" ] && [ -f "$EXAMPLE_AMP" ] && \
+      clang++ -O2 -std=c++17 $CXX_EXTRA -Ideps/lv2/include \
+        tests/verify_transformer_switch.cpp -o /tmp/verify_transformer_switch \
+        2>/dev/null; then
+    /tmp/verify_transformer_switch "$RIG_SO" "$EXAMPLE_AMP" 96000 6 || status=1
+  else
+    echo "  (skipped: plugin/model unavailable or harness build failed)"
+  fi
 fi
 
 # This harness installs an identity amp internally; its CLI takes only the rig
 # library, unlike verify_transformer_switch's external model/rate/mode arguments.
-echo "== tests/verify_transformer_controls.cpp (editable trims / base and True 8x) =="
-if [ -f "$RIG_SO" ] && \
-    clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc -Ideps/lv2/include \
-      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
-      tests/verify_transformer_controls.cpp -o /tmp/verify_transformer_controls \
-      2>/dev/null; then
-  /tmp/verify_transformer_controls "$RIG_SO" || status=1
-else
-  echo "  (skipped: plugin unavailable or harness build failed)"
+if should_run tests/verify_transformer_controls.cpp; then
+  echo "== tests/verify_transformer_controls.cpp (editable trims / base and True 8x) =="
+  if [ -f "$RIG_SO" ] && \
+      clang++ -O2 -std=c++17 $CXX_EXTRA -Isrc -Ideps/lv2/include \
+        -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+        tests/verify_transformer_controls.cpp -o /tmp/verify_transformer_controls \
+        2>/dev/null; then
+    /tmp/verify_transformer_controls "$RIG_SO" || status=1
+  else
+    echo "  (skipped: plugin unavailable or harness build failed)"
+  fi
 fi
 
 # Meter placement must be verified against real processing, including merged True domains.
-echo "== tests/verify_stage_db_meters.cpp (inter-stage signal boundaries) =="
-if [ -f "$RIG_SO" ] && \
-    clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
-      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
-      tests/verify_stage_db_meters.cpp -o /tmp/verify_stage_db_meters; then
-  /tmp/verify_stage_db_meters "$RIG_SO" || status=1
-else
-  echo "  (failed: plugin unavailable or meter harness build failed)"
-  status=1
+if should_run tests/verify_stage_db_meters.cpp; then
+  echo "== tests/verify_stage_db_meters.cpp (inter-stage signal boundaries) =="
+  if [ -f "$RIG_SO" ] && \
+      clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
+        -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+        tests/verify_stage_db_meters.cpp -o /tmp/verify_stage_db_meters; then
+    /tmp/verify_stage_db_meters "$RIG_SO" || status=1
+  else
+    echo "  (failed: plugin unavailable or meter harness build failed)"
+    status=1
+  fi
 fi
 
 # Against RIG_SO, this harness supplies its own identity amp and WAV fixtures.
-echo "== tests/verify_rack_bypass.cpp (deck switches / stereo cabinets / legacy defaults) =="
-if [ -f "$RIG_SO" ] && \
-    clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
-      -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
-      tests/verify_rack_bypass.cpp -o /tmp/verify_rack_bypass; then
-  /tmp/verify_rack_bypass "$RIG_SO" || status=1
-else
-  echo "  (failed: plugin unavailable or rack harness build failed)"
-  status=1
+if should_run tests/verify_rack_bypass.cpp; then
+  echo "== tests/verify_rack_bypass.cpp (deck switches / stereo cabinets / legacy defaults) =="
+  if [ -f "$RIG_SO" ] && \
+      clang++ -O2 -std=c++17 $CXX_EXTRA -D_DARWIN_C_SOURCE -Isrc -Ideps/lv2/include \
+        -Ideps/NeuralAudio -Ideps/NeuralAudio/deps/RTNeural/modules/json \
+        tests/verify_rack_bypass.cpp -o /tmp/verify_rack_bypass; then
+    /tmp/verify_rack_bypass "$RIG_SO" || status=1
+  else
+    echo "  (failed: plugin unavailable or rack harness build failed)"
+    status=1
+  fi
 fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
@@ -231,7 +365,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 # Opt in to AppKit runtime checks with a freshly built UI and WindowServer.
-if [ -n "${RIG_UI_SO:-}" ]; then
+if [ -n "${RIG_UI_SO:-}" ] && should_run tests/verify_transformer_ui.mm; then
   echo "== tests/verify_transformer_ui.mm (editable controls and presets) =="
   if [ -f "$RIG_UI_SO" ] && clang++ -std=c++20 $CXX_EXTRA -D_DARWIN_C_SOURCE -fobjc-arc \
       -Isrc -Ideps/lv2/include tests/verify_transformer_ui.mm src/rig_knobs.cpp src/rig_theme.mm src/rig_profile_catalog.mm \
@@ -254,6 +388,9 @@ for t in tests/test_*.py; do
   case "$t" in
     tests/test_max_quality_defaults.py|tests/test_stage_db_meters.py|tests/test_a2_fast_ring_copy.py) continue ;;
   esac
+  if ! should_run "$t"; then
+    continue
+  fi
   echo "== $t =="
   # `set -e` is active: a bare assignment from a failing command substitution
   # would abort the whole run, so capture the status in a condition.

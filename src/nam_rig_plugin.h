@@ -350,6 +350,8 @@ public:
   bool rateAdapted() const noexcept { return hostRateAdapted; }
   int appliedSpeakerProfile() const noexcept { return speakerApplied; }
   int appliedSpeakerBProfile() const noexcept { return speakerBApplied; }
+  enum class TransitionPhase { Steady, FadeOut, FadeIn };
+  TransitionPhase currentTransitionPhase() const noexcept { return transitionPhase; }
   // The standalone host owns this executor; change it only with audio stopped.
   void setCabinetWorker(CabinetWorker* worker) noexcept { cabinetWorker = worker; }
   void setPolyphaseWorker(PolyphaseWorker* worker) noexcept { polyphaseWorker = worker; }
@@ -581,6 +583,8 @@ private:
   std::array<std::array<Up2x, kMaxOsLevels>, kAnalogBanks> analogUp;
   std::array<std::array<Down2x, kMaxOsLevels>, kAnalogBanks> analogDown;
   std::array<std::array<std::vector<float>, 2>, kAnalogBanks> analogScratch;
+  std::array<Down2x, kMaxOsLevels> splitSpeakerDown;
+  std::vector<float> splitSpeakerScratch, splitSpeakerScratch2, cabBChain;
 
   // Last-applied mode per stage (models were loaded for this domain). Indices 2
   // (cab) and 3 (cab2) track amp_oversample so both cabinets keep full True oversampling.
@@ -626,7 +630,6 @@ private:
     char path[MAX_FILE_NAME] = {};
   };
   std::array<PendingSwitch, kStageCount> pendingSwitches{};
-  enum class TransitionPhase { Steady, FadeOut, FadeIn };
   TransitionPhase transitionPhase = TransitionPhase::Steady;
   uint32_t transitionPosition = 0;
   float transitionGain = 1.0f;
@@ -818,9 +821,11 @@ private:
   // fade-out is already running.
   void startTransitionFadeOut();
   void tunerSetRates(double rate);
+  void resolveSpeakerProfiles(int& desiredA, int& desiredB) const noexcept;
   PinBands pinBands(PinEqPane pane) const noexcept;
   void processPostChain(float* mono, uint32_t count, bool cabInChain,
-                        bool modelProcessed, const bool* desiredEnabled) noexcept;
+                        bool modelProcessed, const bool* desiredEnabled,
+                        uint32_t cabBPreparedFrames = 0) noexcept;
   void runModel(size_t stage, NeuralAudio::NeuralModel* model, float* samples,
                 size_t count, double domainRate) noexcept;
   uint32_t processTrueCab(size_t stage, float* samples, uint32_t count,

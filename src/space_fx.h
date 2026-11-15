@@ -214,12 +214,18 @@ class AlignDelay {
     right_.allocate(alloc);
     smoothed_ = 0.0;
     primed_ = false;
+    inputFadeLen_ = std::max<size_t>(1, static_cast<size_t>(std::lround(rate_ * 0.005)));
+    inputFadePos_ = inputFadeLen_;
   }
   void reset() {
     left_.clear();
     right_.clear();
     smoothed_ = 0.0;
     primed_ = false;
+    inputFadePos_ = inputFadeLen_;
+  }
+  void armFadeIn() noexcept {
+    inputFadePos_ = 0;
   }
   void primeNextDelay() noexcept { primed_ = false; }
   void process(float* left, float* right, size_t count, float delayMs) {
@@ -231,6 +237,9 @@ class AlignDelay {
     }
     if (target == 0.0 && smoothed_ == 0.0) {
       for (size_t i = 0; i < count; ++i) {
+        const float g = nextFadeGain();
+        left[i] *= g;
+        right[i] *= g;
         left_.write(left[i]);
         right_.write(right[i]);
       }
@@ -240,18 +249,28 @@ class AlignDelay {
     for (size_t i = 0; i < count; ++i) {
       smoothed_ += (target - smoothed_) * coeff;
       if (std::fabs(target - smoothed_) < 1.0e-3) smoothed_ = target;
-      left_.write(left[i]);
-      right_.write(right[i]);
+      const float g = nextFadeGain();
+      left_.write(left[i] * g);
+      right_.write(right[i] * g);
       left[i] = left_.readAlign(smoothed_);
       right[i] = right_.readAlign(smoothed_);
     }
   }
 
  private:
+  float nextFadeGain() noexcept {
+    if (inputFadePos_ >= inputFadeLen_) return 1.0f;
+    constexpr double kPi = 3.14159265358979323846;
+    const double t = static_cast<double>(inputFadePos_++) / static_cast<double>(inputFadeLen_);
+    return static_cast<float>(0.5 - 0.5 * std::cos(kPi * t));
+  }
+
   double rate_ = 48000.0;
   double maxSamples_ = 0.0;
   double smoothed_ = 0.0;
   bool primed_ = false;
+  size_t inputFadePos_ = 240;
+  size_t inputFadeLen_ = 240;
   DelayLine left_, right_;
 };
 

@@ -3,9 +3,11 @@
 // Usage: verify_parallel_cabs [wavenet.nam [lstm.nam]] [--benchmark]
 #include "nam_rig_plugin.h"
 #include "cabinet_worker.h"
+#include "pin_eq.h"
 #include "polyphase_worker.h"
 #include "wav_ir.h"
 #include "rack_controls.h"
+#include <lv2/atom/util.h>
 
 #include <algorithm>
 #include <array>
@@ -316,6 +318,7 @@ struct Host {
   alignas(8) std::array<uint8_t, kAtomBytes> control{}, notify{};
   std::array<float, kMaximum + 1> input{}, left{}, right{};
   std::array<float, Plugin::kPortCount> controls{};
+  float lastPostAmpDb = -120.0f;
   // Destroy the plugin before the queues and observation state it references.
   Plugin plugin;
 
@@ -412,6 +415,13 @@ struct Host {
     controls[NAMRig::kCompressorReleasePort] = NAMRig::kCompressorReleaseDefault;
     controls[NAMRig::kCompressorEnabledPort] = 1.0f;
     controls[NAMRig::kOverdriveEnabledPort] = 1.0f;
+    controls[NAMRig::kDropPitchPort] = NAMRig::kDropPitchDefault;
+    controls[NAMRig::kModelBandLimitPort] = NAMRig::kModelBandLimitDefault;
+    controls[NAMRig::kDropPitchAttackPort] = NAMRig::kDropPitchAttackDefault;
+    controls[NAMRig::kDropPitchSustainPort] = NAMRig::kDropPitchSustainDefault;
+    controls[NAMRig::kModelBandLimitCutoffPort] = NAMRig::kModelBandLimitCutoffDefault;
+    controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
+    controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
     controls[NAMRig::kSpeakerProfileBPort] = NAMRig::kSpeakerProfileBDefault;
     controls[NAMRig::kCabLowCutSlopePort] = NAMRig::kCabLowCutSlopeDefault;
     controls[NAMRig::kCabHighCutSlopePort] = NAMRig::kCabHighCutSlopeDefault;
@@ -569,6 +579,23 @@ struct Host {
     check(std::isnan(left[count]) && std::isnan(right[count]), "output buffer guards intact");
     check(sequence(notify)->atom.size <= notify.size() - sizeof(LV2_Atom),
           "notify atom fits buffer");
+    const LV2_URID patchSet = mapUri(this, LV2_PATCH__Set);
+    const LV2_URID patchProp = mapUri(this, LV2_PATCH__property);
+    const LV2_URID patchVal = mapUri(this, LV2_PATCH__value);
+    const LV2_URID postAmpUri = mapUri(this, NAM_RIG_POST_AMP_DB_URI);
+    LV2_ATOM_SEQUENCE_FOREACH(sequence(notify), ev) {
+      if (ev->body.type != mapUri(this, LV2_ATOM__Object)) continue;
+      const auto* obj = reinterpret_cast<const LV2_Atom_Object*>(&ev->body);
+      if (obj->body.otype != patchSet) continue;
+      const LV2_Atom* prop = nullptr;
+      const LV2_Atom* val = nullptr;
+      lv2_atom_object_get(obj, patchProp, &prop, patchVal, &val, 0);
+      if (prop && val && prop->type == mapUri(this, LV2_ATOM__URID) &&
+          val->type == mapUri(this, LV2_ATOM__Float) &&
+          reinterpret_cast<const LV2_Atom_URID*>(prop)->body == postAmpUri) {
+        lastPostAmpDb = reinterpret_cast<const LV2_Atom_Float*>(val)->body;
+      }
+    }
     clearControl();
     return std::chrono::duration<double>(end - begin).count();
   }
@@ -891,7 +918,7 @@ void verifyMulticoreModels(const std::string& standard, const std::string& a2,
                 {Stage::Cab, path}, {Stage::Cab2, path}});
     check(pair.sweep(3) > 0.0, "swapped raw models produce nonzero exact output");
     for (Stage stage : {Stage::Pedal, Stage::Amp, Stage::Cab, Stage::Cab2})
-      verifyGraph(stage, path, path == lstm ? 1 : 16);
+      verifyGraph(stage, path, 16);
   }
   executor.pool.stop();
   pair.sweep(); // Attached but stopped pool falls back without resetting graphs.
@@ -1366,6 +1393,48 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
     const auto back = impulsePeaks(pair);
     check(back == dual, "re-enabling both cabinets restores signed alignment without stale history");
   }
+  {
+    testSection = "delayed cab toggle click-free fade-in";
+    for (float alignment : {5.0f, -5.0f}) {
+      Pair pair(rate);
+      pair.set(7, 0); pair.set(8, 0); pair.set(32, 100); pair.set(49, alignment);
+      pair.paths({{Stage::Cab, fixtures.mono}, {Stage::Cab2, fixtures.mono}});
+      pair.run(128, true);
+      // Warm up with continuous tone, toggle Cab B off -> on, and ensure no step click
+      // emerges when the delayed branch exits AlignDelay past the 5 ms FadeIn.
+      double phase = 0.0;
+      const double step = 2.0 * 3.14159265358979323846 * 220.0 / rate;
+      auto runTone = [&](int blocks, double* maxDiff) {
+        float prevL = 0.0f, prevR = 0.0f;
+        bool havePrev = false;
+        for (int b = 0; b < blocks; ++b) {
+          for (uint32_t i = 0; i < 64; ++i) {
+            const float s = 0.25f * static_cast<float>(std::sin(phase));
+            phase += step;
+            pair.serial.input[i] = pair.parallel.input[i] = s;
+          }
+          pair.runControl(64);
+          for (uint32_t i = 0; i < 64; ++i) {
+            if (havePrev && maxDiff) {
+              *maxDiff = std::max(*maxDiff, static_cast<double>(std::fabs(pair.serial.left[i] - prevL)));
+              *maxDiff = std::max(*maxDiff, static_cast<double>(std::fabs(pair.serial.right[i] - prevR)));
+            }
+            prevL = pair.serial.left[i];
+            prevR = pair.serial.right[i];
+            havePrev = true;
+          }
+        }
+      };
+      runTone(40, nullptr);
+      double worstStep = 0.0;
+      pair.set(47, 0);
+      runTone(40, &worstStep);
+      pair.set(47, 1);
+      runTone(80, &worstStep);
+      check(worstStep < 0.03,
+            "toggling Cab B off/on with nonzero alignment delay stays click-free across full delay window");
+    }
+  }
   std::printf("PASS: %.0f Hz WAV cancellation/shelved amplification, optional polarity, stereo smooth switching, signed impulse timing with a session-rate .nam Cab A, A/B-only and dry behavior\n", rate);
 }
 
@@ -1406,17 +1475,17 @@ void verifyDualCabSpeakerDynamics(double rate, const TempWavs& fixtures) {
   pair.set(45, 0.0f);
   pair.set(46, 100.0f);
 
-  auto measure118HzRatioDb = [&]() {
+  auto measureToneRmsDb = [&](double freqHz, double amp, double& outLDb, double& outRDb) {
     const uint32_t warmupFrames = static_cast<uint32_t>(rate * 0.4);
     const uint32_t measureFrames = static_cast<uint32_t>(rate * 0.4);
     double phase = 0.0;
-    const double step = 2.0 * 3.14159265358979323846 * 118.0 / rate;
+    const double step = 2.0 * 3.14159265358979323846 * freqHz / rate;
     double sumL = 0.0, sumR = 0.0;
     uint32_t total = 0;
     while (total < warmupFrames + measureFrames) {
       const uint32_t n = std::min<uint32_t>(128, warmupFrames + measureFrames - total);
       for (uint32_t i = 0; i < n; ++i) {
-        const float s = static_cast<float>(0.25 * std::sin(phase));
+        const float s = static_cast<float>(amp * std::sin(phase));
         pair.serial.input[i] = pair.parallel.input[i] = s;
         phase += step;
       }
@@ -1431,9 +1500,17 @@ void verifyDualCabSpeakerDynamics(double rate, const TempWavs& fixtures) {
       }
       total += n;
     }
-    check(sumL > 1.0e-8 && sumR > 1.0e-8,
+    const double count = static_cast<double>(measureFrames);
+    outLDb = 10.0 * std::log10(std::max(1.0e-18, sumL / count));
+    outRDb = 10.0 * std::log10(std::max(1.0e-18, sumR / count));
+  };
+
+  auto measure118HzRatioDb = [&]() {
+    double lDb = -180.0, rDb = -180.0;
+    measureToneRmsDb(118.0, 0.25, lDb, rDb);
+    check(lDb > -80.0 && rDb > -80.0,
           "dual-cab speaker sine measurement produces audible stereo output");
-    return 10.0 * std::log10(sumL / sumR);
+    return lDb - rDb;
   };
 
   // 1. Auto + Match Cab A resolves independent profiles from WAV Cab A & Cab B names.
@@ -1484,8 +1561,152 @@ void verifyDualCabSpeakerDynamics(double rate, const TempWavs& fixtures) {
   check(std::fabs(sharedRatioDb) < 0.05,
         "matching dual-cab SpeakerDynamics produces matched stereo L/R level");
 
-  std::printf("PASS: %.0f Hz dual-cab SpeakerDynamics (Auto %.2f dB, UK/Cap %.2f dB, shared %.2f dB)\n",
-              rate, autoRatioDb, explicitRatioDb, sharedRatioDb);
+  // 4. Single-fade Auto speaker switch when swapping Cab A path.
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kAuto));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kMatchCabA));
+  pair.paths({{Stage::Cab, fixtures.greenback}, {Stage::Cab2, fixtures.v30}});
+  pair.run(17);
+  pair.sweep(3);
+  pair.paths({{Stage::Cab, fixtures.v30}});
+  std::array<bool, 2> seenOut{}, seenIn{}, seenSteadyAfter{}, reenteredOut{};
+  for (int step = 0; step < 128; ++step) {
+    pair.run(32);
+    const Host* hosts[2] = {&pair.serial, &pair.parallel};
+    for (size_t h = 0; h < 2; ++h) {
+      const auto ph = hosts[h]->plugin.currentTransitionPhase();
+      if (ph == Plugin::TransitionPhase::FadeOut) {
+        if (seenIn[h]) reenteredOut[h] = true;
+        seenOut[h] = true;
+      } else if (ph == Plugin::TransitionPhase::FadeIn) {
+        if (!seenIn[h]) {
+          check(hosts[h]->plugin.appliedSpeakerProfile() == NAMRig::SpeakerDynamics::kModern412 &&
+                    hosts[h]->plugin.appliedSpeakerBProfile() == NAMRig::SpeakerDynamics::kModern412,
+                "Auto Cab A swap commits matched speaker profiles at first FadeIn");
+        }
+        seenIn[h] = true;
+      } else if (seenIn[h]) {
+        seenSteadyAfter[h] = true;
+      }
+    }
+  }
+  check(seenOut[0] && seenOut[1] && seenIn[0] && seenIn[1] &&
+            seenSteadyAfter[0] && seenSteadyAfter[1] &&
+            !reenteredOut[0] && !reenteredOut[1],
+        "Auto Cab A path swap completes in a single fade without double FadeOut");
+
+  // 5. Bypassing Amp in split SpeakerDynamics mode leaves L/R matched (speaker chain bypassed).
+  pair.set(8, 0.0f);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kCaptured));
+  pair.paths({{Stage::Cab, fixtures.identity}, {Stage::Cab2, fixtures.identity}});
+  pair.sweep(3);
+  const double ampBypassRatioDb = measure118HzRatioDb();
+  check(std::fabs(ampBypassRatioDb) < 0.05,
+        "split SpeakerDynamics stays bypassed when Amp is bypassed");
+
+  // 6. NaN / +Inf speaker ports clamp safely and produce finite bit-identical audio.
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  pair.set(8, 1.0f);
+  pair.set(42, nan);
+  pair.set(NAMRig::kSpeakerProfileBPort, inf);
+  pair.set(43, nan);
+  pair.sweep(3);
+  for (Host* host : {&pair.serial, &pair.parallel}) {
+    check(host->plugin.appliedSpeakerProfile() == NAMRig::SpeakerDynamics::kCaptured &&
+              host->plugin.appliedSpeakerBProfile() == NAMRig::SpeakerDynamics::kCaptured,
+          "NaN/+Inf speaker profile ports clamp safely to Captured");
+  }
+
+  // 7. Split mode keeps both Cab A & Cab B Speaker Pin EQ / SpeakerDynamics in the amp's True
+  //    domain (zero HF bilinear cramping shift) and keeps postAmpDb meter invariant.
+  const uint32_t pinShape = NAMRig::pinEqPort(NAMRig::PinEqPane::Speaker, 0, NAMRig::kPinShape);
+  const uint32_t pinFreq = NAMRig::pinEqPort(NAMRig::PinEqPane::Speaker, 0, NAMRig::kPinFreq);
+  const uint32_t pinGain = NAMRig::pinEqPort(NAMRig::PinEqPane::Speaker, 0, NAMRig::kPinGain);
+  const uint32_t pinQ = NAMRig::pinEqPort(NAMRig::PinEqPane::Speaker, 0, NAMRig::kPinQ);
+  pair.set(43, 0.0f); pair.set(44, 0.0f); pair.set(45, 0.0f); pair.set(46, 0.0f);
+  pair.set(pinShape, static_cast<float>(NAMRig::kPinBell));
+  pair.set(pinFreq, 12000.0f);
+  pair.set(pinGain, 12.0f);
+  pair.set(pinQ, 0.7f);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kMatchCabA));
+  pair.sweep(3);
+  double matched18kL = 0.0, matched18kR = 0.0;
+  measureToneRmsDb(18000.0, 0.125, matched18kL, matched18kR);
+  check(std::fabs(matched18kL - matched18kR) < 0.05,
+        "Matched mode runs identical True-domain Speaker Pin EQ on L and R");
+
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kModern412));
+  pair.sweep(3);
+  double split18kL = 0.0, split18kR = 0.0;
+  measureToneRmsDb(18000.0, 0.125, split18kL, split18kR);
+  check(std::fabs(split18kL - matched18kL) < 0.15 && std::fabs(split18kR - matched18kR) < 0.15,
+        "Split dual-cab mode preserves True-domain 18 kHz Speaker Pin EQ on both Cab A and Cab B");
+
+  // postAmpDb invariance with 1 kHz +12 dB Speaker Pin boost.
+  pair.set(pinFreq, 1000.0f);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kMatchCabA));
+  pair.sweep(3, true);
+  double dummyL = 0.0, dummyR = 0.0;
+  measureToneRmsDb(1000.0, 0.5, dummyL, dummyR);
+  const float matchedPostAmpDb = pair.serial.lastPostAmpDb;
+
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kModern412));
+  pair.sweep(3, true);
+  measureToneRmsDb(1000.0, 0.5, dummyL, dummyR);
+  const float splitPostAmpDb = pair.serial.lastPostAmpDb;
+  check(matchedPostAmpDb > 0.0f && std::fabs(matchedPostAmpDb - splitPostAmpDb) < 0.15f,
+        "postAmpDb meter stays invariant when switching Matched <-> Split speaker profiles");
+
+  // 8. Solo Cab B (Cab A OFF, Cab B ON) runs speaker_profile_b in amp's True domain.
+  pair.set(9, 0.0f);
+  pair.set(pinFreq, 12000.0f);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kCaptured));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  pair.sweep(3);
+  double soloB18kL = 0.0, soloB18kR = 0.0;
+  measureToneRmsDb(18000.0, 0.125, soloB18kL, soloB18kR);
+  check(std::fabs(soloB18kR - matched18kR) < 0.15,
+        "Solo Cab B runs Speaker Pin EQ and speaker_profile_b in amp's True domain");
+
+  // 9. Non-True amp_oversample (None: decimation == 1 @ 48k, decimation == 2 @ 96k)
+  //    must still separate Cab A & Cab B SpeakerDynamics without stacking.
+  pair.set(9, 1.0f);
+  pair.set(21, 0.0f);
+  pair.set(43, 0.0f);
+  pair.set(44, 0.0f);
+  pair.set(45, 0.0f);
+  pair.set(46, 100.0f);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kCaptured));
+  pair.set(pinShape, static_cast<float>(NAMRig::kPinOff));
+  pair.set(pinGain, 0.0f);
+  pair.paths({{Stage::Amp, fixtures.identity},
+              {Stage::Cab, fixtures.identity},
+              {Stage::Cab2, fixtures.identity}});
+  pair.run(17);
+  pair.sweep(3);
+  const double baseRateRatioDb = measure118HzRatioDb();
+  check(baseRateRatioDb > 2.0 && baseRateRatioDb < 4.5,
+        "kOsNone split dual-cab SpeakerDynamics isolates Cab A vs Cab B");
+
+  // Restore neutral Pin EQ / Cab A before leaving test.
+  pair.set(9, 1.0f);
+  pair.set(pinShape, static_cast<float>(NAMRig::kPinOff));
+  pair.set(pinGain, 0.0f);
+  pair.set(pinFreq, NAMRig::kPinFreqDefaults[0]);
+  pair.set(pinQ, NAMRig::kPinQDefault);
+  pair.set(42, static_cast<float>(NAMRig::SpeakerDynamics::kAuto));
+  pair.set(NAMRig::kSpeakerProfileBPort, static_cast<float>(NAMRig::SpeakerDynamics::kMatchCabA));
+  pair.set(43, 0.0f);
+  pair.sweep(2);
+
+  std::printf("PASS: %.0f Hz dual-cab SpeakerDynamics (Auto %.2f dB, UK/Cap %.2f dB, shared %.2f dB, split18k delta %.3f/%.3f dB, postAmpDb delta %.2f dB)\n",
+              rate, autoRatioDb, explicitRatioDb, sharedRatioDb,
+              split18kL - matched18kL, split18kR - matched18kR,
+              splitPostAmpDb - matchedPostAmpDb);
 }
 
 void verifyWavIrEdgeCases(double rate, const std::filesystem::path& dir) {

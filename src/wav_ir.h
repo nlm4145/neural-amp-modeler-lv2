@@ -81,6 +81,7 @@ public:
                                            bool autoTrimSilence = false);
 
   ~WavIR();
+  void reset() noexcept;
   // normalizationMode: 1 peak, 2 loudness; all other values use loudness.
   void process(float* samples, uint32_t count, int normalizationMode) noexcept;
 

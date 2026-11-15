@@ -790,6 +790,118 @@ void testPluginSpatialAndShelf(const char* soPath, const std::filesystem::path& 
                 bakedInvPolOn < -1.9 && bakedInvPolOn > -2.5,
             label);
     }
+
+    // --- 3D. Simultaneous Spatial rack + Center Blend commit, dry FX tails, and NaN width ---
+    {
+      // (a) Simultaneous Rack::Spatial ON + centerBlend ON must both commit in
+      //     one transition fade so dark/bright IRs are already balanced on L/R.
+      Controls c = defaultControls(rate);
+      c[9] = 1.0f;
+      c[47] = 1.0f;
+      c[32] = 100.0f;
+      c[kRackControlFirstPort + static_cast<size_t>(Rack::Spatial)] = 0.0f;
+      c[kSpatialCenterBlendPort] = 0.0f;
+      RigHost host(desc, rate, c);
+      host.loadCabWav(Stage::Cab, darkPath);
+      host.loadCabWav(Stage::Cab2, brightPath);
+      host.runSilence(16);
+
+      // Flip both controls simultaneously and settle for 40 ms (> 10 ms single fade).
+      host.controls[kRackControlFirstPort + static_cast<size_t>(Rack::Spatial)] = 1.0f;
+      host.controls[kSpatialCenterBlendPort] = 1.0f;
+      const int settleBlocks = static_cast<int>(std::llround(rate * 0.040 / kBlock));
+      host.runSignal(settleBlocks, [&](size_t n) {
+        const double t = static_cast<double>(n) / rate;
+        return static_cast<float>(0.3 * std::sin(2.0 * kPi * 200.0 * t) +
+                                  0.3 * std::sin(2.0 * kPi * 3000.0 * t));
+      });
+      const int measBlocks = static_cast<int>(std::llround(rate * 0.100 / kBlock));
+      std::vector<float> measL, measR;
+      host.runSignal(measBlocks, [&](size_t n) {
+        const double t = static_cast<double>(n) / rate;
+        return static_cast<float>(0.3 * std::sin(2.0 * kPi * 200.0 * t) +
+                                  0.3 * std::sin(2.0 * kPi * 3000.0 * t));
+      }, &measL, &measR);
+      const size_t measStart = static_cast<size_t>(std::llround(rate * 0.020));
+      const size_t measLen = static_cast<size_t>(std::llround(rate * 0.060));
+      const double diff200 = std::fabs(20.0 * std::log10(
+          measureTone(measL, measStart, measLen, 200.0, rate).mag /
+          std::max(1.0e-12, measureTone(measR, measStart, measLen, 200.0, rate).mag)));
+      const double diff3k = std::fabs(20.0 * std::log10(
+          measureTone(measL, measStart, measLen, 3000.0, rate).mag /
+          std::max(1.0e-12, measureTone(measR, measStart, measLen, 3000.0, rate).mag)));
+
+      // (b) Toggling Center Blend must not duck an active Delay wet tail
+      //     (its min block peak during the 25 ms fade must match an unchanged run).
+      auto measureDelayTailMinPeak = [&](bool toggleCenterBlend) {
+        Controls dlyCtrl = defaultControls(rate);
+        dlyCtrl[9] = 1.0f;
+        dlyCtrl[47] = 1.0f;
+        dlyCtrl[32] = 100.0f;
+        dlyCtrl[50] = 200.0f;  // delay_time ms
+        dlyCtrl[51] = 85.0f;   // delay_feedback %
+        dlyCtrl[53] = 100.0f;  // delay_mix %
+        dlyCtrl[kRackControlFirstPort + static_cast<size_t>(Rack::Delay)] = 1.0f;
+        dlyCtrl[kSpatialCenterBlendPort] = 0.0f;
+        RigHost tailHost(desc, rate, dlyCtrl);
+        tailHost.loadCabWav(Stage::Cab, cohAPath);
+        tailHost.loadCabWav(Stage::Cab2, cohAPath);
+        const int warmBlocks = static_cast<int>(std::llround(rate * 0.10 / kBlock));
+        tailHost.runSignal(warmBlocks, [&](size_t n) {
+          return static_cast<float>(0.4 * std::sin(2.0 * kPi * 440.0 * static_cast<double>(n) / rate));
+        });
+        // Wait 140 ms (> 120 ms cab IR tail) so post-cab dry signal is zero while the 200 ms echo rings.
+        tailHost.runSilence(static_cast<int>(std::llround(rate * 0.14 / kBlock)));
+        if (toggleCenterBlend) tailHost.controls[kSpatialCenterBlendPort] = 1.0f;
+        const int tailBlocks = static_cast<int>(std::llround(rate * 0.025 / kBlock));
+        std::vector<float> tailL, tailR;
+        tailHost.runSignal(tailBlocks, [](size_t) { return 0.0f; }, &tailL, &tailR);
+        double minPeak = 1.0;
+        for (int b = 0; b < tailBlocks; ++b) {
+          double bp = 0.0;
+          for (size_t i = 0; i < kBlock; ++i) {
+            bp = std::max(bp, static_cast<double>(std::max(
+                std::fabs(tailL[b * kBlock + i]), std::fabs(tailR[b * kBlock + i]))));
+          }
+          minPeak = std::min(minPeak, bp);
+        }
+        return minPeak;
+      };
+      const double tailBase = measureDelayTailMinPeak(false);
+      const double tailToggle = measureDelayTailMinPeak(true);
+      const double tailRatio = tailToggle / std::max(1.0e-12, tailBase);
+
+      // (c) NaN stereo_width must fall back safely to 0% (not 100% via std::min(1, NaN)).
+      auto runStereoWidth = [&](float w) {
+        Controls c = defaultControls(rate);
+        c[9] = 1.0f;
+        c[47] = 0.0f;
+        c[32] = w;
+        RigHost h(desc, rate, c);
+        h.loadCabWav(Stage::Cab, stereoPath);
+        std::vector<float> oL, oR;
+        h.runSignal(static_cast<int>(std::llround(rate * 0.15 / kBlock)), [&](size_t n) {
+          return static_cast<float>(0.4 * std::sin(2.0 * kPi * 500.0 * static_cast<double>(n) / rate));
+        }, &oL, &oR);
+        return std::make_pair(oL, oR);
+      };
+      const auto [zeroL, zeroR] = runStereoWidth(0.0f);
+      const auto [nanL, nanR] = runStereoWidth(std::numeric_limits<float>::quiet_NaN());
+      double maxNanErr = 0.0;
+      bool allFinite = true;
+      for (size_t i = nanL.size() / 2; i < nanL.size(); ++i) {
+        if (!std::isfinite(nanL[i]) || !std::isfinite(nanR[i])) allFinite = false;
+        maxNanErr = std::max(maxNanErr, static_cast<double>(
+            std::max(std::fabs(nanL[i] - zeroL[i]), std::fabs(nanR[i] - zeroR[i]))));
+      }
+
+      char label[256];
+      std::snprintf(label, sizeof(label),
+                    "Transitions & guards @ %u Hz: sync=%.2f/%.2f dB, tailRatio=%.3f, NaN width finite=%d vs0=%.2e",
+                    uRate, diff200, diff3k, tailRatio, allFinite ? 1 : 0, maxNanErr);
+      check(diff200 < 0.25 && diff3k < 0.25 && tailRatio > 0.85 && allFinite && maxNanErr < 1.0e-6,
+            label);
+    }
   }
 
   dlclose(lib);

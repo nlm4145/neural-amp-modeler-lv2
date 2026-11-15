@@ -1939,6 +1939,9 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
 @implementation NAMSpeakerDynamicsVisualizer
 - (instancetype)initWithFrame:(NSRect)frame {
   if ((self = [super initWithFrame:frame])) {
+    _cabAActive = YES;
+    _cabBActive = NO;
+    _profileB = NAMRig::SpeakerDynamics::kCaptured;
     self.toolTip = @"Quiet-signal response of the speaker load (resonance, voice-coil rise, thump) including the power amp's damping. Cone compression and drive react to level and are not drawn.";
     _pinEditor = [[NAMPinEQEditor alloc] initWithPane:NAMRig::PinEqPane::Speaker
         accent:[NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:1.0]];
@@ -1962,6 +1965,9 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
 - (void)setThump:(float)v { _thump = v; self.needsDisplay = YES; }
 - (void)setResonance:(float)v { _resonance = v; self.needsDisplay = YES; }
 - (void)setProfile:(int)v { _profile = NAMRig::SpeakerDynamics::clampProfile(v); self.needsDisplay = YES; }
+- (void)setProfileB:(int)v { _profileB = NAMRig::SpeakerDynamics::clampProfile(v); self.needsDisplay = YES; }
+- (void)setCabAActive:(BOOL)v { _cabAActive = v; self.needsDisplay = YES; }
+- (void)setCabBActive:(BOOL)v { _cabBActive = v; self.needsDisplay = YES; }
 - (void)setDamping:(float)v { _damping = v; self.needsDisplay = YES; }
 
 - (void)drawRect:(NSRect)dirty {
@@ -1981,10 +1987,15 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
   };
   [@"SPEAKER LOAD RESPONSE" drawAtPoint:NSMakePoint(14, r.size.height - 18) withAttributes:headerAttrs];
 
-  const bool captured = _profile == NAMRig::SpeakerDynamics::kCaptured;
+  const BOOL splitActive = _cabAActive && _cabBActive && (_profile != _profileB);
+  const bool captured = (_profile == NAMRig::SpeakerDynamics::kCaptured) &&
+                        (!splitActive || _profileB == NAMRig::SpeakerDynamics::kCaptured);
+  NSString* prefix = (!_cabAActive && _cabBActive) ? @"CAB B  •  "
+                   : (splitActive ? @"SPLIT A/B  •  " : @"");
   NSString* stat = captured
-      ? @"CAPTURED LOAD  •  BYPASS"
-      : [NSString stringWithFormat:@"DRV: %.0f%%  •  COMP: %.0f%%  •  THUMP: %.0f%%", _drive, _comp, _thump];
+      ? [NSString stringWithFormat:@"%@CAPTURED LOAD  •  BYPASS", prefix]
+      : [NSString stringWithFormat:@"%@DRV: %.0f%%  •  COMP: %.0f%%  •  THUMP: %.0f%%",
+                                   prefix, _drive, _comp, _thump];
   NSDictionary* statAttrs = @{
     NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.25 green:0.88 blue:0.70 alpha:0.9]
@@ -2006,6 +2017,25 @@ NSPoint boostFrequencyPoint(NAMBoostVisualizer* v, double hz) {
   [[NSColor colorWithSRGBRed:0.22 green:0.25 blue:0.32 alpha:0.6] setStroke];
   [zero stroke];
 
+  if (splitActive) {
+    NSBezierPath* cabBCurve = [NSBezierPath bezierPath];
+    const int n = std::max(48, (int)(pw / 2.0));
+    for (int i = 0; i <= n; ++i) {
+      const double t = (double)i / n;
+      const double hz = 20.0 * std::pow(1000.0, t);
+      const double pinDb = [_pinEditor responseDbAtFrequency:hz] - [self responseDbAtFrequency:hz];
+      const double dbB = NAMRig::SpeakerDynamics::responseDb(_profileB, hz, kPinPlotRate, _thump, _resonance, _damping) + pinDb;
+      const NSPoint p = NSMakePoint(leftM + t * pw, pinPlotY(plot, dbB));
+      if (i == 0) [cabBCurve moveToPoint:p];
+      else [cabBCurve lineToPoint:p];
+    }
+    cabBCurve.lineWidth = 1.6;
+    cabBCurve.lineJoinStyle = NSLineJoinStyleRound;
+    CGFloat dashB[2] = {4.0, 3.0};
+    [cabBCurve setLineDash:dashB count:2 phase:0.0];
+    [[NSColor colorWithSRGBRed:0.98 green:0.72 blue:0.28 alpha:0.88] setStroke];
+    [cabBCurve stroke];
+  }
 }
 - (double)responseDbAtFrequency:(double)hz {
   return NAMRig::SpeakerDynamics::responseDb(_profile, hz, kPinPlotRate, _thump, _resonance, _damping);

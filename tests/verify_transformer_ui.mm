@@ -341,6 +341,30 @@ static void verifyPinEditors(Runtime& runtime, Host& host, Class presetClass) {
   drain();
   CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kCaptured);
 
+  // Auto visualizer Cab B fallback when Cab A is bypassed or cleared, plus NaN clamping.
+  const float cabBOn = 1.0f, cabBOff = 0.0f, cabAOn = 1.0f, cabAOff = 0.0f;
+  runtime.descriptor->port_event(state, 42, sizeof(autoProfile), 0, &autoProfile);
+  runtime.descriptor->port_event(state, 47, sizeof(cabBOn), 0, &cabBOn);
+  runtime.descriptor->port_event(state, 9, sizeof(cabAOff), 0, &cabAOff);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kUK412);
+  runtime.descriptor->port_event(state, 9, sizeof(cabAOn), 0, &cabAOn);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kModern412);
+  state->displayPath(2, "");
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kUK412);
+  const float nanVal = std::numeric_limits<float>::quiet_NaN();
+  runtime.descriptor->port_event(state, 42, sizeof(nanVal), 0, &nanVal);
+  runtime.descriptor->port_event(state, kSpeakerProfileBPort, sizeof(nanVal), 0, &nanVal);
+  drain();
+  CHECK(state->speakerVisualizer.profile == SpeakerDynamics::kCaptured);
+  CHECK(state->deckSpeakerProfilePopup.indexOfSelectedItem == SpeakerDynamics::kCaptured);
+  CHECK(state->deckSpeakerBProfilePopup.indexOfSelectedItem == SpeakerDynamics::kMatchCabA);
+  state->displayPath(2, "/irs/Mesa Recto V30.wav");
+  runtime.descriptor->port_event(state, 47, sizeof(cabBOff), 0, &cabBOff);
+  drain();
+
   stage = "graph pin editors / double-click add writes a bell";
   [runtime.window layoutIfNeeded];
   NAMPinEQEditor* console = state->pinEditors[(size_t)PinEqPane::CabConsole];
@@ -2346,7 +2370,8 @@ static void verifyStageMeters(Runtime& runtime) {
       NSView* rack = racks[key];
       CHECK(rack.superview == page);
       CHECK(!rack.isHiddenOrHasHiddenAncestor);
-      if (index == 0 || index == 4) CHECK(near(rack.bounds.size.height, 630));
+      if (index == 0) CHECK(near(rack.bounds.size.height, 606));
+      if (index == 4) CHECK(near(rack.bounds.size.height, 630));
       CHECK(NSContainsRect(page.bounds, rack.frame));
       [state->workspace selectModule:key];
       CHECK(rack.superview == pages[key]);
@@ -2590,6 +2615,45 @@ static void verifyCabSwap(Runtime& runtime) {
   CHECK(state->availableModelPaths[2].empty());
   CHECK(state->modelPickers[2].selectedItem.representedObject == nil);
   verifyChoices(3, choicesA, choicesA[1]);
+
+  // Explicit Cab A/B speaker profiles swap with the cabinets, Solo Cab B updates
+  // the visualizer, and resetAllKnobs restores port 42 & speaker_profile_b.
+  state->selectedPaths[2] = choicesA[1].UTF8String;
+  state->selectedPaths[3] = choicesB[0].UTF8String;
+  const float spkAInit = static_cast<float>(NAMRig::SpeakerDynamics::kOpenBack);
+  const float spkBInit = static_cast<float>(NAMRig::SpeakerDynamics::kModern412);
+  state->sendControl(42, spkAInit);
+  state->updateControl(42, spkAInit);
+  state->sendControl(NAMRig::kSpeakerProfileBPort, spkBInit);
+  state->updateControl(NAMRig::kSpeakerProfileBPort, spkBInit);
+  drain();
+  action(swap);
+  drain();
+  CHECK((int)(state->currentPortValueForSlot(42) + 0.5f) == NAMRig::SpeakerDynamics::kModern412);
+  CHECK((int)(state->currentPortValueForSlot(NAMRig::kSpeakerProfileBPort) + 0.5f) ==
+        NAMRig::SpeakerDynamics::kOpenBack);
+
+  state->powerButtons[2].state = NSControlStateValueOff;
+  state->powerButtons[3].state = NSControlStateValueOn;
+  state->sendControl(42, static_cast<float>(NAMRig::SpeakerDynamics::kCaptured));
+  state->updateControl(42, static_cast<float>(NAMRig::SpeakerDynamics::kCaptured));
+  state->sendControl(NAMRig::kSpeakerProfileBPort,
+                     static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  state->updateControl(NAMRig::kSpeakerProfileBPort,
+                       static_cast<float>(NAMRig::SpeakerDynamics::kUK412));
+  drain();
+  CHECK(state->speakerVisualizer.profile == NAMRig::SpeakerDynamics::kUK412);
+  CHECK(!state->speakerVisualizer.cabAActive && state->speakerVisualizer.cabBActive);
+
+  [(id<TransformerTestController>)state->uiController resetAllKnobs:nil];
+  drain();
+  CHECK((int)(state->currentPortValueForSlot(42) + 0.5f) == NAMRig::SpeakerDynamics::kCaptured);
+  CHECK((int)(state->currentPortValueForSlot(NAMRig::kSpeakerProfileBPort) + 0.5f) ==
+        NAMRig::SpeakerDynamics::kMatchCabA);
+  CHECK(state->speakerVisualizer.profile == NAMRig::SpeakerDynamics::kCaptured);
+  state->powerButtons[2].state = NSControlStateValueOn;
+  state->powerButtons[3].state = NSControlStateValueOff;
+  state->refreshSpeakerVisualizer();
 }
 
 static void verifyCabCutSlopes(Runtime& runtime, Host& host, Class presetClass) {
