@@ -22,15 +22,20 @@ Always use non-interactive flags when running builds or tests from an agent sess
   ```bash
   ./build.sh --no-menu --no-launch
   ```
-- **Full test suite (DSP, UI, AI Copilot, Presets, Pin EQ)**:
+- **Changed-only test suite (default — detects working tree or branch changes via `tests/select_tests.py`)**:
   ```bash
   ./tests/run_all.sh
   ```
-- **Targeted tests (prefer during iteration)**:
-  - AI Copilot & parser: `python3 tests/test_ai_tone.py`
-  - Port & contract alignment: `python3 tests/test_ports.py`
-  - Preset serialization: `python3 tests/test_presets.py`
-  - DSP numerical regression: `python3 tests/test_dsp.py`
+- **Test selection options & full suite**:
+  - Preview selected tests without executing: `./tests/run_all.sh --list`
+  - Compare branch + working tree against a base ref: `./tests/run_all.sh --base main`
+  - Run tests impacted by specific file(s): `./tests/run_all.sh --files src/overdrive.h`
+  - Full test suite (all ~75 tests & harnesses): `./tests/run_all.sh --all`
+- **Targeted examples**:
+  - AI Copilot & control contract: `python3 tests/test_ai_tone.py`
+  - Presets & bundling contract: `python3 tests/test_presets_contract.py`
+  - Power-tube / transformer / rack contracts: `python3 tests/test_power_tube_contract.py`
+  - DSP numerical / C++ harnesses: `./tests/run_all.sh --files src/wav_ir.cpp` or `python3 tests/test_oversample_2x.py`
 - **SearXNG Local Search Service** ([`tools/searxng/README.md`](tools/searxng/README.md)):
   - Start / auto-launch: `./searxng.sh start`
   - Query (CLI): `./searxng.sh search "query"`
