@@ -31,6 +31,7 @@ public:
   static std::vector<float> loadTaps(const char* path, double hostRate, int channel = -1);
   static constexpr double kMaxSeconds = 0.17;
   ~WavIR();
+  void reset() noexcept;
   // normalizationMode: 1 peak, 2 loudness; all other values use loudness.
   void process(float* samples, uint32_t count, int normalizationMode) noexcept;
 

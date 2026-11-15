@@ -159,7 +159,7 @@ constexpr uint32_t kMaxFrames = 4096;
 constexpr uint32_t kMaxInputChannels = 16;
 constexpr size_t kAtomBufferSize = 16384;
 constexpr size_t kMessageSize = 2048;
-constexpr size_t kMessageCount = 64;
+constexpr size_t kMessageCount = 512;
 constexpr CGFloat kToolbarStripHeight = 28.0;
 constexpr CGFloat kAudioPopupWidth = 236.0;
 
@@ -451,11 +451,12 @@ class AudioSampleRing {
     const uint64_t w = write_.load(std::memory_order_acquire);
     uint64_t avail = (w >= r) ? (w - r) : 0;
 
-    // Wait for a 1-buffer cushion before draining so normal callback jitter
-    // between separate input and output devices does not cause underrun clicks.
-    const uint64_t targetCushion = static_cast<uint64_t>(count) * 2;
+    // Prime only a single callback block on startup to keep round-trip latency minimal,
+    // and avoid resetting primed_ on transient underruns so single-sample clock
+    // jitter never silences subsequent callbacks.
+    const uint64_t primeThreshold = static_cast<uint64_t>(count);
     if (!primed_) {
-      if (avail < targetCushion) {
+      if (avail < primeThreshold) {
         for (uint32_t i = 0; i < count; ++i) {
           lastSample_ *= 0.9f;
           dst[i] = lastSample_;
@@ -463,16 +464,17 @@ class AudioSampleRing {
         return;
       }
       primed_ = true;
-      r = w - targetCushion;
-      avail = targetCushion;
+      r = w - primeThreshold;
+      avail = primeThreshold;
     }
 
     // Prevent latency build-up when input and output devices run on independent clocks.
-    const uint64_t cap = std::max<uint64_t>(maxQueuedFrames, static_cast<uint64_t>(count) * 3);
+    const uint64_t cap = std::max<uint64_t>(maxQueuedFrames, static_cast<uint64_t>(count) * 4);
+    const uint64_t slipTarget = static_cast<uint64_t>(count) * 2;
     bool slipped = false;
     if (avail > cap) {
-      r = w - targetCushion;
-      avail = targetCushion;
+      r = w - slipTarget;
+      avail = slipTarget;
       slipped = true;
     }
 
@@ -499,7 +501,6 @@ class AudioSampleRing {
         dst[i] = lastSample_;
       }
       read_.store(r + avail, std::memory_order_release);
-      primed_ = false;
     }
   }
 
@@ -1312,7 +1313,7 @@ class StandaloneHost {
 
     if (useSplitInputUnit_) {
       if (inputUnit_) {
-        inputRing_.pop(input_.data(), frames, std::max<uint32_t>(bufferSize_ * 3, frames * 3));
+        inputRing_.pop(input_.data(), frames, std::max<uint32_t>(bufferSize_ * 4, frames * 4));
       } else {
         std::fill_n(input_.data(), frames, 0.0f);
       }

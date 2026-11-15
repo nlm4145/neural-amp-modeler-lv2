@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <new>
 
 #if defined(__x86_64__) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
@@ -247,6 +248,11 @@ RealFFT::RealFFT(size_t n) : n_(n) {
 #if defined(__APPLE__)
   log2n_ = static_cast<uint32_t>(std::round(std::log2(static_cast<double>(n))));
   setup_ = vDSP_create_fftsetup(log2n_, kFFTRadix2);
+  // Apple Silicon Accelerate vDSP_fft_zrip changes instruction paths at 64-byte
+  // boundaries, introducing 1-2 ULP differences across heap alignments.
+  const size_t halfBytes = (n_ / 2) * sizeof(float);
+  scratchRe_ = static_cast<float*>(::operator new(halfBytes, std::align_val_t{64}));
+  scratchIm_ = static_cast<float*>(::operator new(halfBytes, std::align_val_t{64}));
 #else
   pffftSetup_ = pffft_new_setup(static_cast<int>(n), PFFFT_REAL);
   work_ = pffft_aligned_malloc(n * sizeof(float));
@@ -255,6 +261,8 @@ RealFFT::RealFFT(size_t n) : n_(n) {
 
 RealFFT::~RealFFT() {
 #if defined(__APPLE__)
+  if (scratchRe_) ::operator delete(scratchRe_, std::align_val_t{64});
+  if (scratchIm_) ::operator delete(scratchIm_, std::align_val_t{64});
   if (setup_) vDSP_destroy_fftsetup(setup_);
 #else
   if (pffftSetup_) pffft_destroy_setup(static_cast<PFFFT_Setup*>(pffftSetup_));
@@ -264,9 +272,12 @@ RealFFT::~RealFFT() {
 
 void RealFFT::forward(const float* timeDomain, float* outRe, float* outIm) noexcept {
 #if defined(__APPLE__)
-  DSPSplitComplex sp{outRe, outIm};
-  vDSP_ctoz(reinterpret_cast<const DSPComplex*>(timeDomain), 2, &sp, 1, (vDSP_Length)(n_ / 2));
+  const size_t half = n_ / 2;
+  DSPSplitComplex sp{scratchRe_, scratchIm_};
+  vDSP_ctoz(reinterpret_cast<const DSPComplex*>(timeDomain), 2, &sp, 1, (vDSP_Length)half);
   vDSP_fft_zrip(setup_, &sp, 1, log2n_, kFFTDirection_Forward);
+  std::memcpy(outRe, scratchRe_, half * sizeof(float));
+  std::memcpy(outIm, scratchIm_, half * sizeof(float));
 #else
   auto* setup = static_cast<PFFFT_Setup*>(pffftSetup_);
   auto* work = static_cast<float*>(work_);
@@ -288,9 +299,12 @@ void RealFFT::forward(const float* timeDomain, float* outRe, float* outIm) noexc
 
 void RealFFT::inverse(const float* inRe, const float* inIm, float* timeDomain) noexcept {
 #if defined(__APPLE__)
-  DSPSplitComplex sp{const_cast<float*>(inRe), const_cast<float*>(inIm)};
+  const size_t half = n_ / 2;
+  std::memcpy(scratchRe_, inRe, half * sizeof(float));
+  std::memcpy(scratchIm_, inIm, half * sizeof(float));
+  DSPSplitComplex sp{scratchRe_, scratchIm_};
   vDSP_fft_zrip(setup_, &sp, 1, log2n_, kFFTDirection_Inverse);
-  vDSP_ztoc(&sp, 1, reinterpret_cast<DSPComplex*>(timeDomain), 2, (vDSP_Length)(n_ / 2));
+  vDSP_ztoc(&sp, 1, reinterpret_cast<DSPComplex*>(timeDomain), 2, (vDSP_Length)half);
 #else
   auto* setup = static_cast<PFFFT_Setup*>(pffftSetup_);
   auto* work = static_cast<float*>(work_);

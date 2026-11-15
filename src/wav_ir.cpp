@@ -411,6 +411,22 @@ WavIR::WavIR(std::vector<float> taps, double sampleRate, int maxBlockSize) {
 
 WavIR::~WavIR() = default;
 
+void WavIR::reset() noexcept {
+  std::fill(historyAndInput.begin(), historyAndInput.end(), 0.0f);
+  std::fill(headOut.begin(), headOut.end(), 0.0f);
+  std::fill(fdl.begin(), fdl.end(), 0.0f);
+  std::fill(fdlNyq.begin(), fdlNyq.end(), 0.0f);
+  fdlNewest = 0;
+  std::fill(fillBuf.begin(), fillBuf.end(), 0.0f);
+  fillPos = 0;
+  std::fill(ring.begin(), ring.end(), 0.0f);
+  ringPos = 0;
+  std::fill(fftTime.begin(), fftTime.end(), 0.0f);
+  std::fill(accRe.begin(), accRe.end(), 0.0f);
+  std::fill(accIm.begin(), accIm.end(), 0.0f);
+  scaleInitialized = false;
+}
+
 void WavIR::linkStereoNormalization(WavIR& left, WavIR& right) noexcept {
   const double peak = std::max(left.responsePeak, right.responsePeak);
   const double rms = std::sqrt(0.5 * (left.responseRms * left.responseRms +

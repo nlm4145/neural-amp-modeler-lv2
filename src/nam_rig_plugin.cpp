@@ -28,10 +28,6 @@ bool validStage(Stage stage) {
   return stageIndex(stage) < kStageCount;
 }
 
-float dbToLinear(float db) {
-  return std::pow(10.0f, db * 0.05f);
-}
-
 float portValue(const float* port, float fallback) {
   return port ? *port : fallback;
 }
@@ -612,9 +608,9 @@ void Plugin::tunerSetRates(double rate) {
   const double dr = rate / tuner.decimFactor;
   tuner.decimRate = (float)dr;
   // Two cascaded RBJ lowpass sections (Q=0.707), cutoff at 0.45 x the
-  // decimated Nyquist — clean anti-alias for the decimator.
+  // decimated Nyquist — clean anti-alias for the decimator in the sampleRate domain.
   const double fc = 0.45 * dr / 2.0;
-  const double w0 = 2.0 * 3.14159265358979323846 * fc / dr;
+  const double w0 = 2.0 * 3.14159265358979323846 * fc / rate;
   const double cosw = std::cos(w0);
   const double alpha = std::sin(w0) / (2.0 * 0.7071);
   const double a0 = 1.0 + alpha;
@@ -1118,10 +1114,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
   // Feed-forward guitar compressor before the pedal/amp chain.
   // Amount progressively lowers threshold (-12 -> -36 dB), raises ratio
-  // (1:1 -> 6:1), and adds the makeup that keeps a -12 dBFS peak at its level
-  // (up to 20 dB). Attack (1..100 ms, default 8 ms)
-  // and release (10..1000 ms, default 120 ms) are the time constants of the
-  // gain reduction in dB, with a 6 dB soft knee (see CompressorCore).
+  // (1:1 -> 6:1), and adds up to 6 dB makeup. Attack (1..100 ms, default 8 ms)
+  // and release (10..1000 ms, default 120 ms) smooth gain reduction with a 6 dB
+  // soft knee to retain pick definition without pumping.
   // Port 184 (compressor_enabled) bypasses the compressor when toggled off.
   const bool compEnabled = !ports.compressor_enabled || *ports.compressor_enabled >= 0.5f;
   const float compAmount = compEnabled
@@ -1132,7 +1127,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   } else {
     const float thresholdDb = -12.0f - 24.0f * compAmount;
     const float ratio = 1.0f + 5.0f * compAmount;
-    const float makeupDb = compressorMakeupDb(thresholdDb, ratio);
+    const float makeupDb = 6.0f * compAmount;
     const float attackMs = std::max(0.1f, portValue(ports.compressor_attack, kCompressorAttackDefault));
     const float releaseMs = std::max(1.0f, portValue(ports.compressor_release, kCompressorReleaseDefault));
     compressorTimingCache.configure(sampleRate, attackMs, releaseMs, blockRounding);
@@ -1140,10 +1135,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     const float gainRelease = compressorTimingCache.gainRelease;
     preCompressor.prepare(sampleRate);
     for (uint32_t i = 0; i < sampleCount; ++i) {
-      const float reductionDb = preCompressor.process(
-          preCompressor.sidechainLevel(0, ports.audio_out[i]), thresholdDb, ratio,
+      ports.audio_out[i] *= preCompressor.process(
+          std::fabs(ports.audio_out[i]), thresholdDb, ratio, makeupDb,
           gainAttack, gainRelease);
-      ports.audio_out[i] *= dbToLinear(makeupDb - reductionDb);
     }
   }
 
@@ -1886,6 +1880,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       // history for sign flips.
       const float cabADomainDelayMs = extraB > extraA
           ? static_cast<float>(1000.0 * (extraB - extraA) / sampleRate) : 0.0f;
+      if (!cabAlignActive) cabAlign.armFadeIn();
       cabAlign.process(L, R, n, std::max(-alignmentMs, 0.0f) + cabADomainDelayMs);
       cabAlignActive = true;
     } else if (cabAlignActive) {
@@ -1914,6 +1909,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       }
       const float domainDelayMs = haveA && extraA > extraB
           ? static_cast<float>(1000.0 * (extraA - extraB) / sampleRate) : 0.0f;
+      if (!cab2AlignActive) cab2Align.armFadeIn();
       cab2Align.process(BL, BR, n,
                         std::max(alignmentMs, 0.0f) + domainDelayMs);
       cab2AlignActive = true;
@@ -2262,8 +2258,21 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     // clean history regardless of what each branch carried into the fade.
     dualCabShelf.reset();
     dualCabShelfR.reset();
-    for (size_t st = 0; st < kStageCount; ++st)
+    for (size_t st = 0; st < kStageCount; ++st) {
+      if (appliedEnabled[st] != desiredEnabled[st] && (st == 2 || st == 3)) {
+        if (irs[st]) irs[st]->reset();
+        if (irsRight[st]) irsRight[st]->reset();
+        if (st == 2 && !desiredEnabled[st] && cabAlignActive) {
+          cabAlign.reset();
+          cabAlignActive = false;
+        }
+        if (st == 3 && !desiredEnabled[st] && cab2AlignActive) {
+          cab2Align.reset();
+          cab2AlignActive = false;
+        }
+      }
       appliedEnabled[st] = desiredEnabled[st];
+    }
     if (rackTransitionActive && appliedRacks != requestedRacks) {
       const auto changed = [&](Rack rack) {
         const size_t i = static_cast<size_t>(rack);
@@ -2353,6 +2362,13 @@ void Plugin::commitPendingSwitches() {
     for (auto& up : osUp[index]) up.reset();
     for (auto& down : osDown[index]) down.reset();
     resetNativeStream(index);
+    if (index == 2 && cabAlignActive) {
+      cabAlign.reset();
+      cabAlign.armFadeIn();
+    } else if (index == 3 && cab2AlignActive) {
+      cab2Align.reset();
+      cab2Align.armFadeIn();
+    }
     schedule->schedule_work(schedule->handle, sizeof(old), &old);
   }
   osTopologySignature = ~uint64_t{0};
