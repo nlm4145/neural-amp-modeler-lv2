@@ -227,6 +227,7 @@ struct RigUIState {
   __strong NSMutableArray<NSPopUpButton*>* modelBandLimitSlopePopups = [NSMutableArray array];
   __strong NSMutableArray<NSView*>* modelBandLimitDetailViews = [NSMutableArray array];
   __strong NSMutableArray<NSTextField*>* modelBandLimitStatusLabels = [NSMutableArray array];
+  __strong NSPopUpButton* hfFilterPresetPopup = nil;
   __strong NAMBoostVisualizer* boostVisualizer = nil;
   // Sculpt's knob row pages between EQ (Bright/Input EQ/Mid Push) and the
   // overdrive (Drive/Tone/Level); the OD tab shows a dot while Drive is on.
