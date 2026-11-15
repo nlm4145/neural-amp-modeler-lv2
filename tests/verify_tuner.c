@@ -563,6 +563,54 @@ static void verifyResponsiveness(Host* h) {
   check(h->healthy, "finite, consistent responsiveness outputs");
 }
 
+static void verifyAntiAlias(Host* h) {
+  const double lowE = 440.0 * exp2((40.0 - 69.0) / 12.0);
+  const double pi = 3.14159265358979323846;
+  const uint32_t total = (uint32_t)llround(h->rate * 0.9);
+  const uint32_t n = h->block;
+  double p0 = 0.0, p1 = 0.0, p2 = 0.0;
+  for (uint32_t done = 0; done < total; done += n) {
+    const uint32_t chunk = done + n <= total ? n : total - done;
+    for (uint32_t i = 0; i < chunk; ++i) {
+      h->input[i] = (float)(0.08 * sin(p0) + 0.15 * sin(p1) + 0.15 * sin(p2));
+      p0 += 2.0 * pi * lowE / h->rate;
+      p1 += 2.0 * pi * 9500.0 / h->rate;
+      p2 += 2.0 * pi * 12120.0 / h->rate;
+      if (p0 >= 2.0 * pi) p0 -= 2.0 * pi;
+      if (p1 >= 2.0 * pi) p1 -= 2.0 * pi;
+      if (p2 >= 2.0 * pi) p2 -= 2.0 * pi;
+    }
+    LV2_Atom_Sequence* control = (LV2_Atom_Sequence*)h->control.bytes;
+    control->atom.type = mapUri(NULL, LV2_ATOM__Sequence);
+    control->atom.size = sizeof(LV2_Atom_Sequence_Body);
+    control->body.unit = control->body.pad = 0;
+    ((LV2_Atom_Sequence*)h->notify.bytes)->atom.size = kAtom - sizeof(LV2_Atom);
+    h->descriptor->run(h->instance, chunk);
+    LV2_ATOM_SEQUENCE_FOREACH((LV2_Atom_Sequence*)h->notify.bytes, event) {
+      if (event->body.type != mapUri(NULL, LV2_ATOM__Object)) continue;
+      const LV2_Atom_Object* object = (const LV2_Atom_Object*)&event->body;
+      if (object->body.otype != mapUri(NULL, LV2_PATCH__Set)) continue;
+      const LV2_Atom *property = NULL, *value = NULL;
+      lv2_atom_object_get(object, mapUri(NULL, LV2_PATCH__property), &property,
+                          mapUri(NULL, LV2_PATCH__value), &value, 0);
+      if (!property || !value || property->type != mapUri(NULL, LV2_ATOM__URID) ||
+          value->type != mapUri(NULL, LV2_ATOM__Float)) continue;
+      const LV2_URID id = ((const LV2_Atom_URID*)property)->body;
+      const float v = ((const LV2_Atom_Float*)value)->body;
+      if (id == mapUri(NULL, "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-tuner-note"))
+        h->sentNote = v;
+      if (id == mapUri(NULL, "http://github.com/mikeoliphant/neural-amp-modeler-lv2#rig-tuner-cents"))
+        h->sentCents = v;
+    }
+    if (round(h->sentNote) != round(h->ctl[kNote]) ||
+        fabs(h->sentCents - h->ctl[kCents]) > 1.01)
+      h->healthy = 0;
+  }
+  check(fabs(h->ctl[kNote] - 40.0) < 0.01 && fabs(h->ctl[kCents]) < 3.0 && h->healthy,
+        "anti-aliased low E locks MIDI 40 under strong HF tones at %.0f Hz (got note=%.1f cents=%.2f)",
+        h->rate, h->ctl[kNote], h->ctl[kCents]);
+}
+
 static void verifyNoise(Host* h) {
   Signal s = {noise, 110.0, 0.0, 0.08, 0};
   Measurement m = feed(h, &s, 3.0, 0.0, 45.0);
@@ -587,9 +635,10 @@ static void verifyMissRecovery(Host* h) {
   Measurement m = feed(h, &s, 0.520, 0.519, 45.0);
   check(m.firstPitch >= 0.360 && m.firstPitch <= 0.520 && accurate(m, 0.5),
          "110Hz acquired before in-window misses: error %.3fc", m.maxError);
-  /* Noise stays above the tail gate and near the string's filtered RMS.
-   * Returning at the same amplitude must not create a replacement onset. */
-  s = (Signal){noise, 110.0, 0.0, 0.32, 0};
+  /* Noise stays above the tail gate and near the string's filtered RMS after
+   * the 2.7 kHz anti-alias lowpass. Returning at the same amplitude must not
+   * create a replacement onset. */
+  s = (Signal){noise, 110.0, 0.0, 0.65, 0};
   feed(h, &s, 0.300, 0.0, 45.0);
   s = (Signal){ramp, 110.0, 0.0, 0.4, 0};
   /* Allow the remaining noise in the NSDF span to finish the eight misses,
@@ -660,6 +709,10 @@ int main(int argc, char** argv) {
       }
       if (openHost(h, d, rates[r], blocks[b])) {
         verifyMissRecovery(h);
+        closeHost(h);
+      }
+      if (openHost(h, d, rates[r], blocks[b])) {
+        verifyAntiAlias(h);
         closeHost(h);
       }
     }
