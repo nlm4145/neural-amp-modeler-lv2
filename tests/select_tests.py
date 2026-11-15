@@ -325,6 +325,7 @@ HARNESS_SPECS: Tuple[HarnessSpec, ...] = (
             "src/dynamics.h",
             "src/overdrive.h",
             "src/pin_eq.h",
+            "src/local_tone_post_eq.h",
         ),
     ),
     HarnessSpec(

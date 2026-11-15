@@ -588,7 +588,7 @@ class StandaloneApp {
   std::array<LV2_URID, 4> pathURIDs_{};
   int32_t maxFramesOption_ = kMaxFrames;
 
-  std::array<float, 186> controls_{};
+  std::array<float, NAMRig::Plugin::kPortCount> controls_{};
   std::array<float, NAMRig::kPinEqPortCount> pinEqControls_{};
 
   std::vector<float> inputAudio_;

@@ -271,6 +271,7 @@ Verification: `python3 tests/test_local_tone_matcher.py`; real-engine smoke via
 | 231–233 | `model_band_limit_cutoff`/`model_band_limit_slope`/`model_band_limit_ripple` | in | Configurable HF Filter parameters in `Input & Gate`: Cutoff `4000–24000 Hz` (default `20500 Hz`), Slope `0..3` (`12/24/36/48 dB/oct`, default `3`), Ripple `0.01–1.00 dB` (default `0.05 dB`); bypassed bit-identically when `model_band_limit` (228) is `0`; excluded from AI Copilot; optional |
 | 234 | `spatial_center_blend` | in | Centered Stereo Blend toggle (`0` = full-width Dome stereo, `1` = center blend); optional |
 | 235 | `speaker_profile_b` | in | Cab B Speaker Load Profile (`0..7` explicit profiles or `8` = `Match Cab A` default). When matched (`8`), Cab B tracks `speaker_profile` (with independent `Auto` filename detection when `speaker_profile = 1`). |
+| 236–237 | `cab_low_cut_slope`/`cab_high_cut_slope` | in | Master Cab Low/High Cut filter slopes (`0 = 12 dB/oct` default, `1 = 18 dB/oct`, `2 = 24 dB/oct`); optional |
 
 The Tone & Voicing selector switches between linked knob and lever views without
 writing audio controls. Edits project the complete EQ response into the other
@@ -286,11 +287,12 @@ Neutral output utilities skip sample writes entirely, including peaks above full
 Returning to OFF/CENTER clears their histories immediately. Existing output trim placement,
 FX behavior and reported latency are unchanged; older presets initialize both new controls to zero.
 
-Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). Stage 3 (Cab B)
-loads at the session rate. When Cab B uses an independent `speaker_profile_b`
-(port 235) or runs solo (`cab_enabled = 0, cab2_enabled = 1`), its speaker dynamics
-and Speaker Pin EQ execute per-sample in the amp's True domain before decimating
-into the Cab B chain.
+Path parameters: `…#rig-{pedal,amp,cab,cab2}-model` (Stage 0..3). `.nam` cabinets
+use the amp oversampling mode (`amp_oversample`, port 21). When Cab B uses an
+independent `speaker_profile_b` (port 235) or runs solo
+(`cab_enabled = 0, cab2_enabled = 1`), its speaker dynamics and Speaker Pin EQ
+execute per-sample in the amp's True domain (or in `processPostChain` when no
+active True cascade covers them) before entering the Cab B chain.
 
 The pedalboard adds Pedal 2 and Pedal 3 at stage indices 4 and 5, with path
 parameters `…#rig-pedal2-model` and `…#rig-pedal3-model`. Ports 192/193
@@ -554,30 +556,37 @@ Related DSP-chain guarantees:
   own any more: the low resonance belongs to the speaker block and the supply
   behaviour to the power stage.
 
-- Control smoothing: AmpAdvanced, the post EQ and the cab cuts glide their
-  settings in 32-sample chunks and recompute coefficients only when a
-  smoothed value changes; the neutral state snaps exactly so bit-transparency
-  is kept.
+- Control smoothing & EQ precision: AmpAdvanced, the post EQ, the pin EQs,
+  and the cab cuts glide their settings in 32-sample chunks and recompute
+  coefficients only when a smoothed value changes; the neutral state snaps
+  exactly so bit-transparency is kept. `DcBlocker`, `Biquad`, and
+  matched-response EQ/pass filters (`pinCoefficients`, `pinPassStages` in
+  `src/pin_eq.h`, shared with `src/local_tone_post_eq.h`) compute and iterate
+  in `double` precision to preserve Nyquist accuracy and low-frequency stability.
 
 - Cabinets: a stereo WAV IR loads both channels (`WavIR::load(..., channel)`);
   the IR limit is 170 ms (`WavIR::kMaxSeconds`). Cab B takes the same post-amp
   tap as Cab A, then alignment/polarity, level, and equal-power spread by Width.
-  While Cab B is engaged (enabled with a model or IR loaded or pending) a
-  `.nam` Cab A is reloaded for the session rate (`desiredStageMode` returns
-  `kOsLegacy2`), so both cabinets run in one base-rate domain with no second
-  converter cascade and no extra latency; dropping Cab B reloads Cab A back
-  into the amp's shared True group. Only while that reload is in flight does
-  Cab A keep its previous True domain, and a native-rate cabinet model keeps
-  its resampling domain: `parallelCabExtras` reports the longer branch on
-  `lv2:latency` and delays the shorter branch to match. Signed user alignment
-  additionally delays A for negative values or B for positive values (up to
-  10 ms), with no added user delay at 0. With both cabinets active, a 200 Hz
-  low shelf of −20·log10(cos θ + sin θ) dB, scaled by the A/B level balance,
-  removes the coherent low-frequency build-up of the equal-power blend
-  (−3 dB at Width 0, 0 dB hard-panned, 0 dB when either cab is muted or Cab B
-  is polarity-inverted). All post-chain processing
-  (cabs, trims, EQ, fade, effects) runs in maxBufferSize slices on internal
-  stereo buffers; the two output ports may alias.
+  `.nam` cabinets (single Cab A and parallel Cab A / Cab B) follow
+  `amp_oversample` (port 21) via `desiredStageMode`. When single Cab A uses the
+  same True oversampling factor as the upstream amp/pedal group, it stays in
+  that shared True cascade; in parallel Cab A + Cab B mode (or mixed oversampling
+  factors), Cab A runs via `processTrueCab` (`osUp[2]`/`osDown[2]`) or its
+  native domain in `processPostChain`, while Cab B runs concurrently on
+  `CabinetWorker` via `processCabB` (`osUp[3]`/`osDown[3]`). A native-rate or
+  True-oversampled `.nam` cabinet reports its extra oversampling/conversion
+  latency through `parallelCabExtras`, which reports `max(extraA, extraB)` on
+  `lv2:latency` and delays the shorter branch via `cabAlign`/`cab2Align` to
+  match. Signed user alignment additionally delays A for negative values or B
+  for positive values (up to 10 ms), with no added user delay at 0. Master Low
+  Cut and High Cut support selectable `12 / 18 / 24 dB/oct` Butterworth slopes
+  (`cab_low_cut_slope` / `cab_high_cut_slope`, ports 236–237). With both
+  cabinets active, a 200 Hz low shelf of −20·log10(cos θ + sin θ) dB, scaled by
+  the A/B level balance, removes the coherent low-frequency build-up of the
+  equal-power blend (−3 dB at Width 0, 0 dB hard-panned, 0 dB when either cab is
+  muted or Cab B is polarity-inverted). All post-chain processing (cabs, trims,
+  EQ, fade, effects) runs in maxBufferSize slices on internal stereo buffers;
+  the two output ports may alias.
 
 - Effects run after the transition fade so model swaps never cut delay or
   reverb tails.

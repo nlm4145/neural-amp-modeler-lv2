@@ -1374,6 +1374,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         const bool splitHere = splitDualSpeaker && sliceCanCacheCabB &&
                                domainRate >= sampleRate - 0.5 &&
                                count <= splitSpeakerScratch.size();
+        const bool deferDualSpeakerToPost = splitDualSpeaker && !splitHere;
         if (splitHere) {
           std::memcpy(splitSpeakerScratch.data(), samples, count * sizeof(float));
           speakerDynamicsB.process(splitSpeakerScratch.data(), count, domainRate,
@@ -1386,14 +1387,16 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
           splitCabBDomainCount = count;
           splitCabBPreparedThisSlice = true;
         }
-        const int singleProfile = (!cabAActive && parallelCabs)
-            ? speakerBApplied : speakerApplied;
-        speakerDynamics.process(samples, count, domainRate, singleProfile,
-                                *ports.speaker_drive, *ports.speaker_compression,
-                                *ports.speaker_thump, *ports.speaker_resonance,
-                                dampingArg);
-        float* channels[1] = {samples};
-        speakerPins.process(channels, 1, count, domainRate, speakerPinBands);
+        if (!deferDualSpeakerToPost) {
+          const int singleProfile = (!cabAActive && parallelCabs)
+              ? speakerBApplied : speakerApplied;
+          speakerDynamics.process(samples, count, domainRate, singleProfile,
+                                  *ports.speaker_drive, *ports.speaker_compression,
+                                  *ports.speaker_thump, *ports.speaker_resonance,
+                                  dampingArg);
+          float* channels[1] = {samples};
+          speakerPins.process(channels, 1, count, domainRate, speakerPinBands);
+        }
       }
       // Capture in the amp's domain, before a grouped NAM cabinet or decimation.
       for (size_t i = 0; i < count; ++i)
@@ -1585,6 +1588,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
           if (off == 0) latencyFrames += nativeLatencyFrames(decimation);
         } else {
           applyModel(st, models[st], chain, n, sampleRate);
+          finishSplitCabBSlice(n, 1);
         }
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
@@ -1952,6 +1956,13 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
 
     uint32_t extraA = 0, extraB = 0;
     parallelCabExtras(extraA, extraB);
+
+    if (!cabBPreparedSlice && splitFallbackInPost) {
+      speakerDynamics.process(L, n, sampleRate, speakerApplied,
+                              spkDrive, spkComp, spkThump, spkRes, spkDamping);
+      float* ch[1] = {L};
+      speakerPins.process(ch, 1, n, sampleRate, spkPinBands);
+    }
 
     if (enabled[2]) {
       if (irs[2]) {
