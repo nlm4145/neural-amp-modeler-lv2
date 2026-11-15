@@ -4143,9 +4143,10 @@ static void centerX(NSView* v, NSView* to, CGFloat c) {
   self.copilotTargetStatus.textColor = r.referenceIsFullMix ? [NSColor systemOrangeColor] : rigDimText();
   const BOOL hasTarget = r.referenceTotalDuration > 0;
   const BOOL sectionEditable = hasTarget && !busy && !self.copilotDemucsRunning;
-  for (NSControl* control in @[self.copilotTargetAutoButton, self.copilotTargetStartField,
-                               self.copilotTargetStartStepper, self.copilotTargetLengthPopup])
-    control.enabled = sectionEditable;
+  self.copilotTargetAutoButton.enabled = sectionEditable;
+  self.copilotTargetStartField.enabled = sectionEditable;
+  self.copilotTargetStartStepper.enabled = sectionEditable;
+  self.copilotTargetLengthPopup.enabled = sectionEditable;
   self.copilotTargetAutoButton.state = !hasTarget || r.referenceSelectionAuto ? NSControlStateValueOn : NSControlStateValueOff;
   // Do not overwrite a start time the user is typing.
   if (!self.copilotTargetStartField.currentEditor)
