@@ -40,8 +40,15 @@ cab = dsp.index("void Plugin::processPostChain")
 assert post < iron < speaker < cab, "speaker load must follow the power stage and iron, before the cab"
 
 # A tube output stage follows the impedance curve in proportion to its output
-# impedance, so Negative Feedback (damping) must scale the curve.
-assert re.search(r"speakerDynamics\.process\((?:[^;]*?)\?\s*\*ports\.negative_feedback \* 0\.01f\s*:\s*0\.0f\)", dsp, re.S), (
+# impedance, so Negative Feedback (damping) must scale the curve for both cabs.
+assert (
+    re.search(r"speakerDynamics\.process\((?:[^;]*?)\?\s*\*ports\.negative_feedback \* 0\.01f\s*:\s*0\.0f\)", dsp, re.S)
+    or (
+        re.search(r"dampingArg\s*=\s*powerOn\s*\?\s*\*ports\.negative_feedback \* 0\.01f\s*:\s*0\.0f\s*;", dsp)
+        and re.search(r"speakerDynamics\.process\([^;]*?dampingArg\s*\)", dsp, re.S)
+        and re.search(r"speakerDynamicsB\.process\([^;]*?dampingArg\s*\)", dsp, re.S)
+    )
+), (
     "Negative Feedback must drive speaker damping only while the Power rack is enabled"
 )
 speaker_src = (ROOT / "src/speaker_dynamics.h").read_text()
@@ -59,4 +66,10 @@ assert "Resistive — Flat resistive dummy load" in ui
 assert "profileDescription" in speaker_src
 assert "Resistive — Flat resistive dummy load" in speaker_src
 assert "Resistive (flat dummy load)" in ttl
+assert "loaded Cabinet B impulse response or model name" in ui, (
+    "Cab B Auto tooltip must reference Cabinet B instead of Cabinet A"
+)
+assert "speakerDynamicsB" in dsp and "splitSpeakerDown" in dsp and "splitSpeakerDown" in header, (
+    "Cab B must run independent True-domain SpeakerDynamics/PinEQ and decimate via splitSpeakerDown"
+)
 print("  PASS  speaker load ports, bypass default, damping coupling, DSP placement, and UI are wired")

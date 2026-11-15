@@ -1414,18 +1414,45 @@ struct RigUIState {
   void refreshSpeakerVisualizer() {
     if (!speakerVisualizer) return;
     const float rawProfile = currentPortValueForSlot(42);
-    int profile = std::isfinite(rawProfile)
+    const int rawAInt = std::isfinite(rawProfile)
         ? NAMRig::SpeakerDynamics::clampProfile((int)(std::clamp(
               rawProfile, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileCount - 1)) + 0.5f))
         : NAMRig::SpeakerDynamics::kCaptured;
-    if (profile == NAMRig::SpeakerDynamics::kAuto) {
-      const bool cabAOn = !powerButtons[2] || powerButtons[2].state == NSControlStateValueOn;
-      const bool cabBOn = powerButtons[3] && powerButtons[3].state == NSControlStateValueOn;
-      profile = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabPath.c_str());
-      if (cabBOn && !speakerCabBPath.empty() && (!cabAOn || speakerCabPath.empty()))
-        profile = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabBPath.c_str());
+    const bool cabAOn = !powerButtons[2] || powerButtons[2].state == NSControlStateValueOn;
+    const bool cabBOn = powerButtons[3] && powerButtons[3].state == NSControlStateValueOn;
+    int resolvedA = rawAInt;
+    if (rawAInt == NAMRig::SpeakerDynamics::kAuto) {
+      resolvedA = (!speakerCabPath.empty() || !cabBOn || speakerCabBPath.empty())
+          ? NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabPath.c_str())
+          : NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabBPath.c_str());
     }
-    speakerVisualizer.profile = profile;
+    const float rawProfileB = currentPortValueForSlot(NAMRig::kSpeakerProfileBPort);
+    const int rawBInt = std::isfinite(rawProfileB)
+        ? NAMRig::SpeakerDynamics::clampProfileB((int)(std::clamp(
+              rawProfileB, 0.0f, static_cast<float>(NAMRig::SpeakerDynamics::kProfileBCount - 1)) + 0.5f))
+        : NAMRig::SpeakerDynamics::kMatchCabA;
+    int resolvedB = resolvedA;
+    if (rawBInt == NAMRig::SpeakerDynamics::kMatchCabA) {
+      if (rawAInt == NAMRig::SpeakerDynamics::kAuto && !speakerCabBPath.empty()) {
+        resolvedB = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabBPath.c_str());
+      }
+    } else if (rawBInt == NAMRig::SpeakerDynamics::kAuto) {
+      resolvedB = NAMRig::SpeakerDynamics::profileFromCabPath(speakerCabBPath.c_str());
+    } else {
+      resolvedB = rawBInt;
+    }
+    const bool cabBLoaded = !speakerCabBPath.empty();
+    const bool cabAActive = cabAOn && (!speakerCabPath.empty() || !cabBOn || !cabBLoaded);
+    const int primaryProfile = (!cabAOn && cabBOn) ? resolvedB
+        : (cabAOn && cabBOn && cabBLoaded && speakerCabPath.empty() &&
+           rawAInt == NAMRig::SpeakerDynamics::kAuto &&
+           rawBInt == NAMRig::SpeakerDynamics::kMatchCabA)
+            ? resolvedB
+            : resolvedA;
+    speakerVisualizer.cabAActive = cabAActive;
+    speakerVisualizer.cabBActive = cabBOn;
+    speakerVisualizer.profile = primaryProfile;
+    speakerVisualizer.profileB = resolvedB;
     const bool powerOn = rackControls[(size_t)NAMRig::Rack::Power] >= 0.5f;
     const float rawNfb = currentPortValueForSlot(38);
     speakerVisualizer.damping = (powerOn && std::isfinite(rawNfb)) ? rawNfb * 0.01f : 0.0f;

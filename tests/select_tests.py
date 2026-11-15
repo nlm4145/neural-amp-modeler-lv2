@@ -327,6 +327,26 @@ HARNESS_SPECS: Tuple[HarnessSpec, ...] = (
             "src/pin_eq.h",
         ),
     ),
+    HarnessSpec(
+        "tests/verify_spatial_stereo.cpp",
+        "rig_so",
+        darwin_only=True,
+        requires_rig_so=True,
+        mirrors_only=True,
+        extra_triggers=(
+            "src/nam_rig_plugin.cpp",
+            "src/nam_rig_plugin.h",
+            "src/spatial_stereo.h",
+            "src/cabinet_worker.cpp",
+            "src/cabinet_worker.h",
+            "src/wav_ir.cpp",
+            "src/wav_ir.h",
+            "src/dsp_accel.cpp",
+            "src/dsp_accel.h",
+            "src/align_delay_table.h",
+            "src/win32_control_defaults.h",
+        ),
+    ),
     # Optional RIG_UI_SO integration harness
     HarnessSpec(
         "tests/verify_transformer_ui.mm",

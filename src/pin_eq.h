@@ -18,9 +18,9 @@ namespace NAMRig {
 // or at 0 dB is skipped entirely, so the default state is exact bypass.
 //
 //   Sculpt      - pre-amp, after Bright/Input EQ/Mid Push, in the amp's True domain
-//   Transformer - after the output transformer, before the speaker, in the domain
+//   Transformer - after the output transformer, before the speaker, in the amp's True domain
 //   Cab Console - after the cab cuts on the stereo cabinet mix, at session rate
-//   Speaker     - after the speaker load/excursion, before the cab, in the domain
+//   Speaker     - after the speaker load/excursion, before the cab, in the amp's True domain
 // Panes are appended in port order (Speaker came last), not signal order.
 enum class PinEqPane : size_t { Sculpt = 0, Transformer = 1, CabConsole = 2, Speaker = 3 };
 inline constexpr size_t kPinEqPaneCount = 4;
@@ -350,9 +350,19 @@ class BasicPinEq {
           const PinCoeffs& c = st.c;
           for (size_t i = 0; i < n; ++i) {
             const double x = s[i];
+            if (!std::isfinite(x)) {
+              z1 = z2 = 0.0;
+              s[i] = 0.0f;
+              continue;
+            }
             const double y = c.b0 * x + z1;
             z1 = c.b1 * x - c.a1 * y + z2;
             z2 = c.b2 * x - c.a2 * y;
+            if (!std::isfinite(y) || !std::isfinite(z1) || !std::isfinite(z2)) {
+              z1 = z2 = 0.0;
+              s[i] = 0.0f;
+              continue;
+            }
             s[i] = static_cast<float>(y);
           }
           st.z[ch][0] = z1;
