@@ -391,6 +391,13 @@ struct Host {
     controls[NAMRig::kCompressorReleasePort] = NAMRig::kCompressorReleaseDefault;
     controls[NAMRig::kCompressorEnabledPort] = 1.0f;
     controls[NAMRig::kOverdriveEnabledPort] = 1.0f;
+    controls[NAMRig::kDropPitchPort] = NAMRig::kDropPitchDefault;
+    controls[NAMRig::kModelBandLimitPort] = NAMRig::kModelBandLimitDefault;
+    controls[NAMRig::kDropPitchAttackPort] = NAMRig::kDropPitchAttackDefault;
+    controls[NAMRig::kDropPitchSustainPort] = NAMRig::kDropPitchSustainDefault;
+    controls[NAMRig::kModelBandLimitCutoffPort] = NAMRig::kModelBandLimitCutoffDefault;
+    controls[NAMRig::kModelBandLimitSlopePort] = NAMRig::kModelBandLimitSlopeDefault;
+    controls[NAMRig::kModelBandLimitRipplePort] = NAMRig::kModelBandLimitRippleDefault;
     // Connect the original fields explicitly; append arrays and tube controls below.
     plugin.ports = {
         sequence(control), sequence(notify), input.data(), left.data(),
@@ -867,8 +874,10 @@ void verifyMulticoreModels(const std::string& standard, const std::string& a2,
                 {Stage::Cab, path}, {Stage::Cab2, path}});
     check(pair.sweep(3) > 0.0, "swapped raw models produce nonzero exact output");
     for (Stage stage : {Stage::Pedal, Stage::Amp, Stage::Cab, Stage::Cab2})
-      verifyGraph(stage, path, path == lstm ? 1
-                              : stage == Stage::Cab2 || stage == Stage::Cab ? 2 : 16);
+      verifyGraph(stage, path,
+                  (stage == Stage::Cab2 || stage == Stage::Cab)
+                      ? (path == lstm ? 1 : 2)
+                      : 16);
   }
   executor.pool.stop();
   pair.sweep(); // Attached but stopped pool falls back without resetting graphs.
@@ -913,13 +922,12 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
     check(pair.serial.loads[3] == cabBLoads, "amp True changes never reload Cab B");
     const int latency = factor == 2 ? 23 : factor == 4 ? 35 : factor == 8 ? 41
                       : factor == 16 ? 44 : 0;
-    // Pedal True cascade + the LSTM amp's native domain (mode NONE keeps the
-    // unadapted reference path instead) + the longer parallel branch (the LSTM
-    // Cab B's native domain; the WaveNet Cab A adds nothing).
-    const float expectedLatency = static_cast<float>(latency) +
-        (mode == 0 ? 0.0f : nativeHold(rate)) + nativeHold(rate);
+    // Pedal and phase-split LSTM amp share one True cascade (or run unadapted
+    // at NONE) + the longer parallel branch (the LSTM Cab B's native domain;
+    // the WaveNet Cab A adds nothing).
+    const float expectedLatency = static_cast<float>(latency) + nativeHold(rate);
     check(pair.serial.controls[29] == expectedLatency,
-          "latency sums the pedal cascade, the native amp domain and the longer cabinet branch");
+          "latency sums the True cascade and the longer cabinet branch");
 
     for (bool future : {false, true}) {
       for (uint32_t count : kCounts) {
@@ -1014,7 +1022,7 @@ void verifyPlugins(double rate, const std::string& wave, const std::string& lstm
   testSection = "Cab unload/reload and mode change with initial load in flight";
   pair.paths({{Stage::Cab2, ""}});
   pair.run(513);
-  pair.steady(true, false, false, pipelineFactor(6, rate), native, 0);
+  pair.steady(true, false, false, pipelineFactor(6, rate), 0, 0);
   pair.installed(Stage::Cab2, "");
   pair.paths({{Stage::Cab2, wave}, {Stage::Cab, ""}});
   pair.run(128);
@@ -1342,6 +1350,48 @@ void verifyAlignment(double rate, const TempWavs& fixtures) {
     pair.set(47, 1);
     const auto back = impulsePeaks(pair);
     check(back == dual, "re-enabling both cabinets restores signed alignment without stale history");
+  }
+  {
+    testSection = "delayed cab toggle click-free fade-in";
+    for (float alignment : {5.0f, -5.0f}) {
+      Pair pair(rate);
+      pair.set(7, 0); pair.set(8, 0); pair.set(32, 100); pair.set(49, alignment);
+      pair.paths({{Stage::Cab, fixtures.mono}, {Stage::Cab2, fixtures.mono}});
+      pair.run(128, true);
+      // Warm up with continuous tone, toggle Cab B off -> on, and ensure no step click
+      // emerges when the delayed branch exits AlignDelay past the 5 ms FadeIn.
+      double phase = 0.0;
+      const double step = 2.0 * 3.14159265358979323846 * 220.0 / rate;
+      auto runTone = [&](int blocks, double* maxDiff) {
+        float prevL = 0.0f, prevR = 0.0f;
+        bool havePrev = false;
+        for (int b = 0; b < blocks; ++b) {
+          for (uint32_t i = 0; i < 64; ++i) {
+            const float s = 0.25f * static_cast<float>(std::sin(phase));
+            phase += step;
+            pair.serial.input[i] = pair.parallel.input[i] = s;
+          }
+          pair.runControl(64);
+          for (uint32_t i = 0; i < 64; ++i) {
+            if (havePrev && maxDiff) {
+              *maxDiff = std::max(*maxDiff, static_cast<double>(std::fabs(pair.serial.left[i] - prevL)));
+              *maxDiff = std::max(*maxDiff, static_cast<double>(std::fabs(pair.serial.right[i] - prevR)));
+            }
+            prevL = pair.serial.left[i];
+            prevR = pair.serial.right[i];
+            havePrev = true;
+          }
+        }
+      };
+      runTone(40, nullptr);
+      double worstStep = 0.0;
+      pair.set(47, 0);
+      runTone(40, &worstStep);
+      pair.set(47, 1);
+      runTone(80, &worstStep);
+      check(worstStep < 0.03,
+            "toggling Cab B off/on with nonzero alignment delay stays click-free across full delay window");
+    }
   }
   std::printf("PASS: %.0f Hz WAV cancellation/shelved amplification, optional polarity, stereo smooth switching, signed impulse timing with a session-rate .nam Cab A, A/B-only and dry behavior\n", rate);
 }
