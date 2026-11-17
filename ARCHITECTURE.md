@@ -38,7 +38,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/rig_riff_recorder.{h,mm}`, `src/rig_riff_renderer.{h,mm}` | Live DI + processed stereo take recorder, spectral/loudness audio telemetry analyzer, and offline A/B candidate renderer |
 | `src/rig_local_tone_matcher.{h,mm}`, `src/local_tone_learning.h` | Experimental local target matcher: real-render gear shortlist, locally trained ridge surrogate, verified finalists; no provider calls |
 | `src/rig_local_server.{h,mm}`, `scripts/axe_fx_mcp.py` | Local HTTP JSON control server (`127.0.0.1:49162`) and Python stdio MCP bridge for external agent control |
-| `src/standalone_main.mm`, `src/standalone_controls.h`, `src/standalone_worker.{h,cpp}` | macOS CoreAudio/CoreMIDI standalone host (`Axe FX.app`), control port binding, and LV2 worker queue |
+| `src/standalone_main.mm`, `src/standalone_controls.h`, `src/standalone_worker.{h,cpp}` | macOS CoreAudio/CoreMIDI standalone host (`Axe FX.app`), control port binding, LV2 worker queue, and lock-free titlebar stereo output WAV recorder (`~/Music/Axe FX Recordings`) |
 | `src/standalone_main_win32.cpp`, `src/nam_rig_win32_ui.cpp`, `src/win32_*.{h,cpp}` | Windows WASAPI standalone host, Win32 UI, preset serialization, and allocation-free control defaults |
 | `src/rig_tone_api.{h,mm}`, `src/rig_tone_browser.{h,mm}` | Tone3000 API client (OAuth/PKCE, keychain sessions) and Tone Explorer UI (search pagination, disk cache, downloads, favorites) |
 

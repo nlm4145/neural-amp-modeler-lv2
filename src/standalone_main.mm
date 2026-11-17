@@ -520,6 +520,98 @@ struct FixedMessage {
   std::array<uint8_t, kMessageSize> bytes{};
 };
 
+// Lock-free SPSC stereo ring buffer for streaming transformed output audio to disk.
+class StereoOutputRecordRing {
+ public:
+  StereoOutputRecordRing() : samples_(kCapacityFrames * 2, 0.0f) {}
+
+  void clear() noexcept {
+    read_.store(0, std::memory_order_relaxed);
+    write_.store(0, std::memory_order_relaxed);
+  }
+
+  uint32_t push(const float* left, const float* right, uint32_t frames) noexcept {
+    if ((!left && !right) || frames == 0) return 0;
+    const uint64_t w = write_.load(std::memory_order_relaxed);
+    const uint64_t r = read_.load(std::memory_order_acquire);
+    const uint64_t used = (w >= r) ? (w - r) : 0;
+    if (used >= kCapacityFrames) return 0;
+    const uint32_t count = static_cast<uint32_t>(
+        std::min<uint64_t>(frames, kCapacityFrames - used));
+    for (uint32_t i = 0; i < count; ++i) {
+      const float l = (left && std::isfinite(left[i])) ? left[i] : 0.0f;
+      const float rt = right ? (std::isfinite(right[i]) ? right[i] : 0.0f) : l;
+      const size_t idx = static_cast<size_t>((w + i) & kMask) * 2;
+      samples_[idx] = l;
+      samples_[idx + 1] = rt;
+    }
+    write_.store(w + count, std::memory_order_release);
+    return count;
+  }
+
+  uint32_t popChunk(float* dstInterleaved, uint32_t maxFrames) noexcept {
+    if (!dstInterleaved || maxFrames == 0) return 0;
+    const uint64_t r = read_.load(std::memory_order_relaxed);
+    const uint64_t w = write_.load(std::memory_order_acquire);
+    const uint64_t avail = (w >= r) ? (w - r) : 0;
+    if (avail == 0) return 0;
+    const uint32_t count = static_cast<uint32_t>(std::min<uint64_t>(avail, maxFrames));
+    for (uint32_t i = 0; i < count; ++i) {
+      const size_t idx = static_cast<size_t>((r + i) & kMask) * 2;
+      dstInterleaved[i * 2] = samples_[idx];
+      dstInterleaved[i * 2 + 1] = samples_[idx + 1];
+    }
+    read_.store(r + count, std::memory_order_release);
+    return count;
+  }
+
+ private:
+  static constexpr uint64_t kCapacityFrames = 262144;
+  static constexpr uint64_t kMask = kCapacityFrames - 1;
+  std::vector<float> samples_;
+  std::atomic<uint64_t> read_{0};
+  std::atomic<uint64_t> write_{0};
+};
+
+static void writeWavHeader24Stereo(std::FILE* fp, uint64_t frames, double sampleRate) {
+  if (!fp) return;
+  const uint32_t sr = static_cast<uint32_t>(std::max(8000.0, std::min(192000.0, std::round(sampleRate))));
+  const uint16_t channels = 2;
+  const uint16_t bitsPerSample = 24;
+  const uint16_t blockAlign = channels * (bitsPerSample / 8);
+  const uint32_t byteRate = sr * blockAlign;
+  const uint64_t rawBytes64 = frames * blockAlign;
+  const uint32_t dataBytes = static_cast<uint32_t>(std::min<uint64_t>(rawBytes64, 0xFFFFFF00ull));
+  const uint32_t riffSize = 36u + dataBytes + (dataBytes & 1u);
+
+  uint8_t hdr[44]{};
+  auto put16 = [&](size_t off, uint16_t v) {
+    hdr[off] = static_cast<uint8_t>(v & 0xFFu);
+    hdr[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+  };
+  auto put32 = [&](size_t off, uint32_t v) {
+    hdr[off] = static_cast<uint8_t>(v & 0xFFu);
+    hdr[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+    hdr[off + 2] = static_cast<uint8_t>((v >> 16) & 0xFFu);
+    hdr[off + 3] = static_cast<uint8_t>((v >> 24) & 0xFFu);
+  };
+  std::memcpy(hdr + 0, "RIFF", 4);
+  put32(4, riffSize);
+  std::memcpy(hdr + 8, "WAVEfmt ", 8);
+  put32(16, 16u);
+  put16(20, 1u);  // PCM
+  put16(22, channels);
+  put32(24, sr);
+  put32(28, byteRate);
+  put16(32, blockAlign);
+  put16(34, bitsPerSample);
+  std::memcpy(hdr + 36, "data", 4);
+  put32(40, dataBytes);
+
+  std::fseek(fp, 0, SEEK_SET);
+  std::fwrite(hdr, 1, sizeof(hdr), fp);
+}
+
 // Single-producer/single-consumer queue. UI->audio and audio->UI each have
 // their own instance, so the Core Audio callback never takes a mutex.
 class MessageRing {
@@ -666,6 +758,7 @@ class StandaloneHost {
                                               selector:@selector(main)
                                               userInfo:nil
                                                repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:uiTimer_ forMode:NSRunLoopCommonModes];
     return true;
   }
 
@@ -697,6 +790,9 @@ class StandaloneHost {
   }
 
   void stop() {
+    if (isOutputRecording()) {
+      stopOutputRecording();
+    }
     [uiTimer_ invalidate];
     uiTimer_ = nil;
     stopObservingDisplaySleep();
@@ -818,7 +914,202 @@ class StandaloneHost {
     dockAmpView_ = dockAmp;
   }
 
+  void setRecordingViews(NSView* pill, NSButton* toggleBtn, NSTextField* timeLabel,
+                         NSButton* revealBtn) {
+    recPill_ = pill;
+    recToggleBtn_ = toggleBtn;
+    recTimeLabel_ = timeLabel;
+    recRevealBtn_ = revealBtn;
+    updateRecordingDisplay(true);
+  }
+
+  static NSString* recordingsDirectoryPath() {
+    NSArray<NSString*>* musicDirs =
+        NSSearchPathForDirectoriesInDomains(NSMusicDirectory, NSUserDomainMask, YES);
+    NSString* musicBase =
+        musicDirs.firstObject ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Music"];
+    NSString* dir = [musicBase stringByAppendingPathComponent:@"Axe FX Recordings"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    return dir;
+  }
+
+  bool isOutputRecording() const noexcept {
+    return outputRecording_.load(std::memory_order_acquire);
+  }
+
+  bool startOutputRecording(NSString** error = nullptr) {
+    if (isOutputRecording()) return true;
+    NSString* dir = recordingsDirectoryPath();
+    NSDateFormatter* fmt = [[NSDateFormatter alloc] init];
+    fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    fmt.dateFormat = @"yyyy-MM-dd HH-mm-ss";
+    NSString* stamp = [fmt stringFromDate:[NSDate date]];
+    NSString* baseName = [NSString stringWithFormat:@"Axe FX %@", stamp];
+    NSString* filePath = [dir stringByAppendingPathComponent:
+                              [baseName stringByAppendingPathExtension:@"wav"]];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    int suffix = 2;
+    while ([fm fileExistsAtPath:filePath]) {
+      NSString* numbered = [NSString stringWithFormat:@"%@-%d.wav", baseName, suffix++];
+      filePath = [dir stringByAppendingPathComponent:numbered];
+    }
+
+    std::FILE* fp = std::fopen(filePath.fileSystemRepresentation, "wb");
+    if (!fp) {
+      return fail(error, @"Could not create recording file in ~/Music/Axe FX Recordings.");
+    }
+    const double sr = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
+    writeWavHeader24Stereo(fp, 0, sr);
+
+    outputRecordRing_.clear();
+    outputRecordedFrames_.store(0, std::memory_order_relaxed);
+    outputWrittenFrames_ = 0;
+    outputRecordSampleRate_ = sr;
+    outputRecordFile_ = fp;
+    activeRecordingPath_ = filePath;
+    outputRecording_.store(true, std::memory_order_release);
+    updateRecordingDisplay(true);
+    return true;
+  }
+
+  NSString* stopOutputRecording() {
+    if (!isOutputRecording() && !outputRecordFile_) return lastSavedRecordingPath_;
+    outputRecording_.store(false, std::memory_order_release);
+    drainOutputRecordingToDisk();
+    NSString* savedPath = activeRecordingPath_;
+    if (outputRecordFile_) {
+      writeWavHeader24Stereo(outputRecordFile_, outputWrittenFrames_, outputRecordSampleRate_);
+      if ((outputWrittenFrames_ * 6u) & 1u) {
+        const uint8_t pad = 0;
+        std::fwrite(&pad, 1, 1, outputRecordFile_);
+      }
+      std::fflush(outputRecordFile_);
+      std::fclose(outputRecordFile_);
+      outputRecordFile_ = nullptr;
+    }
+    activeRecordingPath_ = nil;
+    if (outputWrittenFrames_ > 0 && savedPath.length > 0) {
+      lastSavedRecordingPath_ = savedPath;
+      lastSavedRecordingDuration_ =
+          outputRecordSampleRate_ > 0.0
+              ? static_cast<double>(outputWrittenFrames_) / outputRecordSampleRate_
+              : 0.0;
+    } else if (savedPath.length > 0) {
+      [[NSFileManager defaultManager] removeItemAtPath:savedPath error:nil];
+    }
+    updateRecordingDisplay(true);
+    return lastSavedRecordingPath_;
+  }
+
+  void toggleOutputRecording(NSString** error = nullptr) {
+    if (isOutputRecording()) {
+      stopOutputRecording();
+    } else {
+      startOutputRecording(error);
+    }
+  }
+
+  void revealOutputRecordingInFinder() {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* targetPath = isOutputRecording() ? activeRecordingPath_ : lastSavedRecordingPath_;
+    if (targetPath.length > 0 && [fm fileExistsAtPath:targetPath]) {
+      NSURL* fileURL = [NSURL fileURLWithPath:targetPath];
+      [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[fileURL]];
+      return;
+    }
+    NSString* dir = recordingsDirectoryPath();
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:dir isDirectory:YES]];
+  }
+
  private:
+  void drainOutputRecordingToDisk() {
+    if (!outputRecordFile_) return;
+    constexpr uint32_t kChunkFrames = 4096;
+    if (outputFloatScratch_.size() < kChunkFrames * 2) {
+      outputFloatScratch_.resize(kChunkFrames * 2);
+      outputPcmScratch_.resize(kChunkFrames * 6);
+    }
+    while (true) {
+      const uint32_t n = outputRecordRing_.popChunk(outputFloatScratch_.data(), kChunkFrames);
+      if (n == 0) break;
+      const size_t totalSamples = static_cast<size_t>(n) * 2;
+      for (size_t i = 0; i < totalSamples; ++i) {
+        const float clamped = std::clamp(outputFloatScratch_[i], -1.0f, 1.0f);
+        const int32_t v = static_cast<int32_t>(std::lrint(clamped * 8388607.0f));
+        outputPcmScratch_[i * 3 + 0] = static_cast<uint8_t>(v & 0xFF);
+        outputPcmScratch_[i * 3 + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        outputPcmScratch_[i * 3 + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+      }
+      std::fwrite(outputPcmScratch_.data(), 1, totalSamples * 3, outputRecordFile_);
+      outputWrittenFrames_ += n;
+    }
+  }
+
+  static NSString* formatRecordingClock(double seconds) {
+    const long totalSec = std::max<long>(0, std::lround(std::floor(seconds)));
+    const long mins = totalSec / 60;
+    const long secs = totalSec % 60;
+    return [NSString stringWithFormat:@"%02ld:%02ld", mins, secs];
+  }
+
+  void updateRecordingDisplay(bool force = false) {
+    if (!recToggleBtn_ && !recTimeLabel_) return;
+    const bool rec = isOutputRecording();
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (!force && rec == lastRecUiState_ && (now - lastRecUiTime_) < 0.2) return;
+    lastRecUiState_ = rec;
+    lastRecUiTime_ = now;
+
+    double seconds = lastSavedRecordingDuration_;
+    if (rec) {
+      const uint64_t frames = outputRecordedFrames_.load(std::memory_order_relaxed);
+      const double sr = outputRecordSampleRate_ > 0.0 ? outputRecordSampleRate_ : 48000.0;
+      seconds = static_cast<double>(frames) / sr;
+    }
+    if (recTimeLabel_) {
+      recTimeLabel_.stringValue = formatRecordingClock(seconds);
+      recTimeLabel_.textColor = rec
+          ? [NSColor colorWithSRGBRed:1.00 green:0.42 blue:0.42 alpha:1.0]
+          : (lastSavedRecordingPath_.length > 0
+                 ? [NSColor colorWithSRGBRed:0.86 green:0.89 blue:0.95 alpha:1.0]
+                 : [NSColor colorWithSRGBRed:0.58 green:0.63 blue:0.72 alpha:1.0]);
+    }
+    if (recPill_ && recPill_.layer) {
+      recPill_.layer.borderColor = rec
+          ? [NSColor colorWithSRGBRed:0.92 green:0.24 blue:0.24 alpha:0.85].CGColor
+          : [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0].CGColor;
+      recPill_.layer.backgroundColor = rec
+          ? [NSColor colorWithSRGBRed:0.18 green:0.07 blue:0.08 alpha:1.0].CGColor
+          : [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0].CGColor;
+    }
+    if (recToggleBtn_) {
+      NSString* title = rec ? @"■ STOP" : @"● REC";
+      NSColor* fg = rec
+          ? [NSColor colorWithSRGBRed:1.00 green:0.38 blue:0.38 alpha:1.0]
+          : [NSColor colorWithSRGBRed:0.94 green:0.32 blue:0.32 alpha:1.0];
+      NSDictionary* attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: fg,
+      };
+      recToggleBtn_.attributedTitle =
+          [[NSAttributedString alloc] initWithString:title attributes:attrs];
+      recToggleBtn_.toolTip = rec
+          ? @"Stop recording and auto-save WAV to ~/Music/Axe FX Recordings (⌘R)."
+          : @"Record the fully transformed stereo output to ~/Music/Axe FX Recordings (⌘R).";
+    }
+    if (recRevealBtn_) {
+      if (lastSavedRecordingPath_.length > 0) {
+        recRevealBtn_.toolTip = [NSString stringWithFormat:
+            @"Last saved: %@ — Click to reveal in Finder.",
+            lastSavedRecordingPath_.lastPathComponent];
+      } else {
+        recRevealBtn_.toolTip = @"Open ~/Music/Axe FX Recordings in Finder.";
+      }
+    }
+  }
   static NSString* audioSettingsFilePath() {
     NSArray<NSString*>* paths = NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES);
@@ -876,6 +1167,9 @@ class StandaloneHost {
   }
 
   bool restartAudioEngine(NSString** error) {
+    if (isOutputRecording() && std::fabs(outputRecordSampleRate_ - sampleRate_) > 0.5) {
+      stopOutputRecording();
+    }
     stopAudioUnits();
     if (plugin_ && std::fabs(plugin_->hostSampleRate - sampleRate_) > 0.5) {
       plugin_->setSampleRateAndReload(sampleRate_);
@@ -1138,6 +1432,10 @@ class StandaloneHost {
 
     uiDescriptor_->port_event(uiHandle_, NAMRig::kOutputReductionPort, sizeof(float), 0,
                                 &masterOutputControls_[2]);
+    if (isOutputRecording()) {
+      drainOutputRecordingToDisk();
+    }
+    updateRecordingDisplay();
     updateCpuDisplay();
     updateAnimatedAmpIcons();
   }
@@ -1360,6 +1658,12 @@ class StandaloneHost {
     collectNotifications();
     rigRiffRecorderPushPair(input_.data(), output_.data(), outputR_.data(), frames, sampleRate_,
         static_cast<uint32_t>(std::max(0.0f, controls_[29 - 4])));
+    if (outputRecording_.load(std::memory_order_acquire)) {
+      const uint32_t pushed = outputRecordRing_.push(output_.data(), outputR_.data(), frames);
+      if (pushed > 0) {
+        outputRecordedFrames_.fetch_add(pushed, std::memory_order_relaxed);
+      }
+    }
 
     // The block peak only drives the animated amp icons; skip the scan while
     // neither icon is on screen (the main thread publishes that flag).
@@ -1865,11 +2169,28 @@ class StandaloneHost {
   NSTextField* __weak cpuLabel_ = nil;
   NSView* __weak cpuBarFill_ = nil;
   NSView* __weak cpuBarSlot_ = nil;
+  NSView* __weak recPill_ = nil;
+  NSButton* __weak recToggleBtn_ = nil;
+  NSTextField* __weak recTimeLabel_ = nil;
+  NSButton* __weak recRevealBtn_ = nil;
   StandaloneAnimatedAmpView* __weak headerAmpView_ = nil;
   StandaloneAnimatedAmpView* __weak dockAmpView_ = nil;
   std::atomic<float> cpuLoadPercent_{0.0f};
   std::atomic<float> signalLevel_{0.0f};
   std::atomic<bool> ampIconsVisible_{true};
+  std::atomic<bool> outputRecording_{false};
+  std::atomic<uint64_t> outputRecordedFrames_{0};
+  StereoOutputRecordRing outputRecordRing_;
+  std::vector<float> outputFloatScratch_;
+  std::vector<uint8_t> outputPcmScratch_;
+  std::FILE* outputRecordFile_ = nullptr;
+  uint64_t outputWrittenFrames_ = 0;
+  double outputRecordSampleRate_ = 48000.0;
+  NSString* __strong activeRecordingPath_ = nil;
+  NSString* __strong lastSavedRecordingPath_ = nil;
+  double lastSavedRecordingDuration_ = 0.0;
+  CFAbsoluteTime lastRecUiTime_ = 0.0;
+  bool lastRecUiState_ = false;
   bool displayAsleep_ = false;
   std::vector<id> displayObservers_;
   double ampPhase_ = 0.0;
@@ -1983,6 +2304,26 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
 }
 
 }  // namespace
+
+@interface StandaloneTitlebarRecContainerView : NSView
+@property(nonatomic, strong) NSView* recPill;
+@end
+
+@implementation StandaloneTitlebarRecContainerView
+- (NSSize)intrinsicContentSize {
+  return NSMakeSize(160.0, 28.0);
+}
+- (void)layout {
+  [super layout];
+  if (_recPill) {
+    const CGFloat pillW = _recPill.frame.size.width;
+    const CGFloat pillH = _recPill.frame.size.height;
+    const CGFloat x = std::max<CGFloat>(0.0, self.bounds.size.width - 24.0 - pillW);
+    const CGFloat y = std::floor((self.bounds.size.height - pillH) * 0.5);
+    _recPill.frame = NSMakeRect(x, y, pillW, pillH);
+  }
+}
+@end
 
 @interface StandaloneContentRootView : NSView
 @property(nonatomic, strong) NSView* cpuPill;
@@ -2501,6 +2842,25 @@ extern void openAICopilotInActiveRig();
   openAICopilotInActiveRig();
 }
 
+- (void)toggleOutputRecordingAction:(id)sender {
+  (void)sender;
+  if (!_host) return;
+  NSString* err = nil;
+  _host->toggleOutputRecording(&err);
+  if (err.length > 0) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"Could Not Start Output Recording";
+    alert.informativeText = err;
+    [alert runModal];
+  }
+}
+
+- (void)revealOutputRecordingAction:(id)sender {
+  (void)sender;
+  if (!_host) return;
+  _host->revealOutputRecordingInFinder();
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   (void)notification;
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -2547,6 +2907,21 @@ extern void openAICopilotInActiveRig();
   copilotItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
   copilotItem.target = self;
   [appMenu addItem:copilotItem];
+
+  [appMenu addItem:[NSMenuItem separatorItem]];
+
+  NSMenuItem* recToggleItem = [[NSMenuItem alloc] initWithTitle:@"Start/Stop Output Recording"
+                                                         action:@selector(toggleOutputRecordingAction:)
+                                                  keyEquivalent:@"r"];
+  recToggleItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  recToggleItem.target = self;
+  [appMenu addItem:recToggleItem];
+
+  NSMenuItem* recRevealItem = [[NSMenuItem alloc] initWithTitle:@"Show Recordings in Finder"
+                                                         action:@selector(revealOutputRecordingAction:)
+                                                  keyEquivalent:@""];
+  recRevealItem.target = self;
+  [appMenu addItem:recRevealItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
   [appMenu addItemWithTitle:@"Quit Axe FX"
@@ -2665,6 +3040,67 @@ extern void openAICopilotInActiveRig();
   rootContent.cpuPill = cpuPill;
   [rootContent addSubview:cpuPill positioned:NSWindowAbove relativeTo:nil];
 
+  // Right-hand grey titlebar output recorder pill (aligned above CPU pill).
+  const CGFloat recPillW = 136.0;
+  const CGFloat recPillH = 22.0;
+  StandaloneTitlebarRecContainerView* recContainer =
+      [[StandaloneTitlebarRecContainerView alloc] initWithFrame:NSMakeRect(0, 0, recPillW + 24.0, 28.0)];
+  NSView* recPill = [[NSView alloc] initWithFrame:NSMakeRect(0, 3, recPillW, recPillH)];
+  recPill.wantsLayer = YES;
+  recPill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0].CGColor;
+  recPill.layer.cornerRadius = 7.0;
+  recPill.layer.borderWidth = 1.0;
+  recPill.layer.borderColor = [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0].CGColor;
+  recPill.toolTip = @"Record the fully transformed stereo output to ~/Music/Axe FX Recordings.";
+
+  NSButton* recToggleBtn = [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 56, 20)];
+  recToggleBtn.bordered = NO;
+  recToggleBtn.bezelStyle = NSBezelStyleInline;
+  recToggleBtn.target = self;
+  recToggleBtn.action = @selector(toggleOutputRecordingAction:);
+  [recPill addSubview:recToggleBtn];
+
+  NSView* recDivider1 = [[NSView alloc] initWithFrame:NSMakeRect(61, 4, 1, 14)];
+  recDivider1.wantsLayer = YES;
+  recDivider1.layer.backgroundColor = [NSColor colorWithSRGBRed:0.18 green:0.21 blue:0.27 alpha:1.0].CGColor;
+  [recPill addSubview:recDivider1];
+
+  NSTextField* recTimeLabel = [NSTextField labelWithString:@"00:00"];
+  recTimeLabel.font = [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium];
+  recTimeLabel.textColor = [NSColor colorWithSRGBRed:0.58 green:0.63 blue:0.72 alpha:1.0];
+  recTimeLabel.alignment = NSTextAlignmentCenter;
+  recTimeLabel.frame = NSMakeRect(63, 3, 46, 15);
+  [recPill addSubview:recTimeLabel];
+
+  NSView* recDivider2 = [[NSView alloc] initWithFrame:NSMakeRect(110, 4, 1, 14)];
+  recDivider2.wantsLayer = YES;
+  recDivider2.layer.backgroundColor = [NSColor colorWithSRGBRed:0.18 green:0.21 blue:0.27 alpha:1.0].CGColor;
+  [recPill addSubview:recDivider2];
+
+  NSButton* recRevealBtn = [[NSButton alloc] initWithFrame:NSMakeRect(112, 1, 22, 20)];
+  recRevealBtn.bordered = NO;
+  recRevealBtn.bezelStyle = NSBezelStyleInline;
+  NSDictionary* revealAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.72 green:0.78 blue:0.88 alpha:1.0],
+  };
+  recRevealBtn.attributedTitle =
+      [[NSAttributedString alloc] initWithString:@"↗" attributes:revealAttrs];
+  recRevealBtn.target = self;
+  recRevealBtn.action = @selector(revealOutputRecordingAction:);
+  recRevealBtn.toolTip = @"Open ~/Music/Axe FX Recordings in Finder.";
+  [recPill addSubview:recRevealBtn];
+
+  recContainer.recPill = recPill;
+  [recContainer addSubview:recPill];
+  [recContainer.widthAnchor constraintEqualToConstant:recPillW + 24.0].active = YES;
+
+  NSTitlebarAccessoryViewController* titlebarRecAccessory =
+      [[NSTitlebarAccessoryViewController alloc] init];
+  titlebarRecAccessory.view = recContainer;
+  titlebarRecAccessory.layoutAttribute = NSLayoutAttributeRight;
+  [_window addTitlebarAccessoryViewController:titlebarRecAccessory];
+
   [_window center];
 
   _host = std::make_unique<StandaloneHost>();
@@ -2678,6 +3114,7 @@ extern void openAICopilotInActiveRig();
     return;
   }
   _host->setCpuMeterViews(cpuLabel, cpuFill, cpuSlot);
+  _host->setRecordingViews(recPill, recToggleBtn, recTimeLabel, recRevealBtn);
   _host->setAnimatedAmpViews(headerAmp, _dockAmpView);
   [self refreshAudioMenusAndTitle];
   [rootContent setNeedsLayout:YES];

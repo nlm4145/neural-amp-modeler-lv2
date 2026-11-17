@@ -86,7 +86,9 @@ Choose **Modify current preset** (load your saved preset first), **Build from sc
 or **Refine last proposal**. The base is frozen for each request; applying a proposal
 refuses to overwrite live edits made since that request.
 
-In the macOS **standalone app**, **Record Riff** captures the raw mono DI before all
+In the macOS **standalone app**, the top-right window titlebar also provides a **Stereo Output Recorder** pill (`● REC | 00:00 | ↗`, shortcut **⌘R**) that streams the fully transformed stereo output to timestamped 24-bit PCM WAV files in `~/Music/Axe FX Recordings` (click `↗` to reveal the saved take in Finder).
+
+Separately inside **AI Tone Tuning**, **Record Riff** captures the raw mono DI before all
 app processing and the full stereo rig output simultaneously, for up to 20 seconds.
 It retains the recording-time preset and optional tuning/pickup/interface metadata.
 DI float samples remain unnormalized for replay; PCM24 WAVs are used for audition/upload.

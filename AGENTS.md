@@ -9,6 +9,7 @@ High-signal navigation index and operational rules for AI coding assistants (Ant
     ```bash
     python3 scripts/generate_rig_control_contract.py
     ```
+- **Default Git Branch Rule**: [`.agents/rules/default-main-branch.md`](.agents/rules/default-main-branch.md) — Always work on and place diffs on the `main` branch unless the user explicitly specifies another branch. Verify `git branch --show-current` is `main` before editing.
 - **Studio Pro Deck UI Rule**: [`.agents/rules/studio-deck-slot-presets.md`](.agents/rules/studio-deck-slot-presets.md) — Every rack slot in `addLowerStudioDeck` (`src/nam_rig_ui.mm`) must use `addSlotPresetDropdown(...)` with both factory and user preset CRUD actions (`Save Preset`, `Save Preset As…`, `Rename Preset…`, `Delete Preset`).
 
 ## 2. Build, Install & Verification Commands
