@@ -1050,7 +1050,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
   // Pre-amp polyphonic Drop Pitch / Virtual Capo: shifts the gated, trimmed
   // DI before compression, overdrive, pedal, and amp saturation.
-  modelBandLimitOn = portValue(ports.model_band_limit, kModelBandLimitDefault) >= 0.5f;
+  modelBandLimitOn = (portValue(ports.model_band_limit, kModelBandLimitDefault) >= 0.5f) ||
+                     AuditMode::has(AuditMode::kInterStageBandLimit);
   modelBandLimitParams = ModelBandLimit::Params{
       ModelBandLimit::clampCutoffHz(portValue(ports.model_band_limit_cutoff, kModelBandLimitCutoffDefault)),
       ModelBandLimit::clampSlope(portValue(ports.model_band_limit_slope, kModelBandLimitSlopeDefault)),
@@ -1259,8 +1260,18 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       oversampleChanged = true;
     }
   }
-  if (oversampleChanged)
-    reloadModelsForOversample();
+  const uint32_t currentAuditModelFlags =
+      AuditMode::flags() & (AuditMode::kNativeTrueBaseRate | AuditMode::kPolyphaseCondition);
+  bool auditModelFlagsChanged = false;
+  if (!auditFlagsLatched) {
+    lastAuditModelFlags = currentAuditModelFlags;
+    auditFlagsLatched = true;
+  } else if (currentAuditModelFlags != lastAuditModelFlags) {
+    lastAuditModelFlags = currentAuditModelFlags;
+    auditModelFlagsChanged = true;
+  }
+  if (oversampleChanged || auditModelFlagsChanged)
+    reloadModelsForOversample(auditModelFlagsChanged);
 
   const bool autoTrim = desiredAutoTrim();
   if (autoTrim != cabIrAutoTrimRequested) {
@@ -2658,7 +2669,7 @@ void Plugin::commitPendingSwitches() {
   osTopologySignature = ~uint64_t{0};
 }
 
-void Plugin::reloadModelsForOversample() {
+void Plugin::reloadModelsForOversample(bool forceAll) {
   // Re-send every loaded model path through the worker so the models are
   // re-created with the loader external rate matching the new domain.
   // Never clobber an in-flight load (workResponse re-domains it on completion)
@@ -2670,11 +2681,11 @@ void Plugin::reloadModelsForOversample() {
     if (pending.ready) {
       const size_t len = strnlen(pending.path, MAX_FILE_NAME);
       if (pending.model && len > 0 && len < MAX_FILE_NAME &&
-          normalizeLoadMode(stage, pending.oversampleMode) != mode) {
+          (forceAll || normalizeLoadMode(stage, pending.oversampleMode) != mode)) {
         scheduleModelLoad(stage, pending.path, len, mode);
       }
     } else if (loadGeneration[i] == respondedGeneration[i] && models[i] &&
-               !irs[i] && osApplied[i] != mode && !modelPaths[i].empty() &&
+               !irs[i] && (forceAll || osApplied[i] != mode) && !modelPaths[i].empty() &&
                modelPaths[i].size() < MAX_FILE_NAME) {
       scheduleModelLoad(stage, modelPaths[i].c_str(), modelPaths[i].size(), mode);
     }

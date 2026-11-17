@@ -147,6 +147,17 @@ int main() {
     check(maxSlopeJump < 0.06f, "slope switches fade without single-sample pops");
   }
 
+  // Proposed AuditMode::kInterStageBandLimit clamps cutoff below 0.5 * modelRate.
+  {
+    NAMRig::AuditMode::setFlags(NAMRig::AuditMode::kInterStageBandLimit);
+    ModelBandLimit::Params maxCutoff{24000.0f, 3, 0.05f};
+    const double resp48kAt26k = ModelBandLimit::responseDb(26000.0, 384000.0, 48000.0, maxCutoff);
+    const double resp44kAt24k = ModelBandLimit::responseDb(24000.0, 352800.0, 44100.0, maxCutoff);
+    NAMRig::AuditMode::setFlags(NAMRig::AuditMode::kNone);
+    check(resp48kAt26k < -15.0 && resp44kAt24k < -15.0,
+          "Proposed mode clamps 24 kHz cutoff below 0.5 * modelRate (48k and 44.1k)");
+  }
+
   std::printf("%s\n", failures ? "FAILED" : "verify_model_band_limit: all checks passed");
   return failures ? 1 : 0;
 }

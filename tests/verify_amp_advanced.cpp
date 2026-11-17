@@ -476,6 +476,42 @@ int main() {
     CHECK(nan == input, "non-finite Mid Push falls back to bypass");
   }
 
+  // ---- Proposed Mode (Audit 1.1 & 2.1): NFB linearity, biased ZDF solver, C^2 knee, dual sag ----
+  {
+    NAMRig::AuditMode::setFlags(NAMRig::AuditMode::kPowerStageZdfAndTube);
+    // 1. NFB at Master=0, Sag=0, Bias=0, Captured must stay 100% linear even on hot signals (> 0.7).
+    const size_t n = 16384;
+    std::vector<float> hotSine(n);
+    for (size_t i = 0; i < n; ++i)
+      hotSine[i] = 1.25f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 440.0 * i / rate));
+    auto nfbOut = hotSine;
+    NAMRig::AmpAdvanced propAmp;
+    propAmp.processPostAmp(nfbOut.data(), n, rate, 0.0f, 0.0f, 0.0f, 0.0f, 80.0f, 0.0f);
+    float maxNfbDiff = 0.0f;
+    for (size_t i = n / 2; i < n; ++i)
+      maxNfbDiff = std::max(maxNfbDiff, std::fabs(nfbOut[i] - hotSine[i]));
+    CHECK(maxNfbDiff < 1.0e-5f,
+          "Proposed mode keeps Negative Feedback purely linear when Master/Sag/Bias/Tube are neutral");
+
+    // 2. Biased ZDF solver at silence (x = 0) with heavy negative bias + sag must output exact 0.
+    std::vector<float> silence(4096, 0.0f);
+    propAmp.reset();
+    propAmp.processPostAmp(silence.data(), silence.size(), rate,
+                           0.0f, 0.0f, 100.0f, -100.0f, 50.0f, 80.0f,
+                           NAMRig::PowerTube::kEL34, 100.0f);
+    float maxSilence = 0.0f;
+    for (float v : silence) maxSilence = std::max(maxSilence, std::fabs(v));
+    CHECK(maxSilence < 1.0e-7f,
+          "Proposed biased ZDF solver produces exact zero DC offset at silence under extreme bias");
+
+    // 3. C^2 knee + dual-stage sag compresses loud signals and remains bounded/finite at 768 kHz.
+    const double propQuiet = toneGainDb(0, 0, 100.0f, 0, 0, 60.0f, 110.0, 0.03f);
+    const double propLoud = toneGainDb(0, 0, 100.0f, 0, 0, 60.0f, 110.0, 0.9f);
+    CHECK(propLoud < propQuiet - 3.0,
+          "Proposed dual-stage sag and C^2 tube curve compress loud signals dynamically");
+    NAMRig::AuditMode::setFlags(NAMRig::AuditMode::kNone);
+  }
+
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);
   return failures ? 1 : 0;
 }
