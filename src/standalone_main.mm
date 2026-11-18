@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AudioUnit.h>
 #import <CoreAudio/CoreAudio.h>
 #include <os/workgroup.h>
@@ -520,18 +521,19 @@ struct FixedMessage {
   std::array<uint8_t, kMessageSize> bytes{};
 };
 
-// Lock-free SPSC stereo ring buffer for streaming transformed output audio to disk.
-class StereoOutputRecordRing {
+// Lock-free SPSC ring buffer for streaming mono DI or stereo output audio to disk.
+template <uint32_t kChannels>
+class SampleRecordRing {
  public:
-  StereoOutputRecordRing() : samples_(kCapacityFrames * 2, 0.0f) {}
+  SampleRecordRing() : samples_(kCapacityFrames * kChannels, 0.0f) {}
 
   void clear() noexcept {
     read_.store(0, std::memory_order_relaxed);
     write_.store(0, std::memory_order_relaxed);
   }
 
-  uint32_t push(const float* left, const float* right, uint32_t frames) noexcept {
-    if ((!left && !right) || frames == 0) return 0;
+  uint32_t push(const float* ch0, const float* ch1, uint32_t frames) noexcept {
+    if ((!ch0 && !ch1) || frames == 0) return 0;
     const uint64_t w = write_.load(std::memory_order_relaxed);
     const uint64_t r = read_.load(std::memory_order_acquire);
     const uint64_t used = (w >= r) ? (w - r) : 0;
@@ -539,11 +541,13 @@ class StereoOutputRecordRing {
     const uint32_t count = static_cast<uint32_t>(
         std::min<uint64_t>(frames, kCapacityFrames - used));
     for (uint32_t i = 0; i < count; ++i) {
-      const float l = (left && std::isfinite(left[i])) ? left[i] : 0.0f;
-      const float rt = right ? (std::isfinite(right[i]) ? right[i] : 0.0f) : l;
-      const size_t idx = static_cast<size_t>((w + i) & kMask) * 2;
-      samples_[idx] = l;
-      samples_[idx + 1] = rt;
+      const float s0 = (ch0 && std::isfinite(ch0[i])) ? ch0[i] : 0.0f;
+      const size_t idx = static_cast<size_t>((w + i) & kMask) * kChannels;
+      samples_[idx] = s0;
+      if constexpr (kChannels == 2) {
+        const float s1 = ch1 ? (std::isfinite(ch1[i]) ? ch1[i] : 0.0f) : s0;
+        samples_[idx + 1] = s1;
+      }
     }
     write_.store(w + count, std::memory_order_release);
     return count;
@@ -557,9 +561,10 @@ class StereoOutputRecordRing {
     if (avail == 0) return 0;
     const uint32_t count = static_cast<uint32_t>(std::min<uint64_t>(avail, maxFrames));
     for (uint32_t i = 0; i < count; ++i) {
-      const size_t idx = static_cast<size_t>((r + i) & kMask) * 2;
-      dstInterleaved[i * 2] = samples_[idx];
-      dstInterleaved[i * 2 + 1] = samples_[idx + 1];
+      const size_t idx = static_cast<size_t>((r + i) & kMask) * kChannels;
+      for (uint32_t c = 0; c < kChannels; ++c) {
+        dstInterleaved[i * kChannels + c] = samples_[idx + c];
+      }
     }
     read_.store(r + count, std::memory_order_release);
     return count;
@@ -573,10 +578,9 @@ class StereoOutputRecordRing {
   std::atomic<uint64_t> write_{0};
 };
 
-static void writeWavHeader24Stereo(std::FILE* fp, uint64_t frames, double sampleRate) {
+static void writeWavHeader24(std::FILE* fp, uint64_t frames, double sampleRate, uint16_t channels) {
   if (!fp) return;
   const uint32_t sr = static_cast<uint32_t>(std::max(8000.0, std::min(192000.0, std::round(sampleRate))));
-  const uint16_t channels = 2;
   const uint16_t bitsPerSample = 24;
   const uint16_t blockAlign = channels * (bitsPerSample / 8);
   const uint32_t byteRate = sr * blockAlign;
@@ -610,6 +614,65 @@ static void writeWavHeader24Stereo(std::FILE* fp, uint64_t frames, double sample
 
   std::fseek(fp, 0, SEEK_SET);
   std::fwrite(hdr, 1, sizeof(hdr), fp);
+}
+
+static bool decodeMonoAudioFile(NSURL* url, double targetRate, std::vector<float>& outSamples, NSString** error) {
+  auto failWith = [&](NSString* msg) -> bool {
+    if (error) *error = msg;
+    return false;
+  };
+  if (!url) return failWith(@"No audio file URL provided.");
+  ExtAudioFileRef file = nullptr;
+  if (ExtAudioFileOpenURL((__bridge CFURLRef)url, &file) != noErr || !file) {
+    return failWith(@"Could not open audio file. Use WAV, AIFF, MP3, M4A, ALAC, or FLAC.");
+  }
+  std::unique_ptr<OpaqueExtAudioFile, OSStatus (*)(ExtAudioFileRef)> guard(file, ExtAudioFileDispose);
+
+  AudioStreamBasicDescription fileFmt{};
+  UInt32 propSize = sizeof(fileFmt);
+  if (ExtAudioFileGetProperty(file, kExtAudioFileProperty_FileDataFormat, &propSize, &fileFmt) != noErr) {
+    return failWith(@"Could not read the audio file format.");
+  }
+  if ((fileFmt.mChannelsPerFrame != 1 && fileFmt.mChannelsPerFrame != 2) ||
+      !std::isfinite(fileFmt.mSampleRate) || fileFmt.mSampleRate < 8000.0 || fileFmt.mSampleRate > 192000.0) {
+    return failWith(@"Use a mono or stereo audio file at 8–192 kHz.");
+  }
+
+  AudioStreamBasicDescription clientFmt{};
+  clientFmt.mSampleRate = targetRate > 0.0 ? targetRate : fileFmt.mSampleRate;
+  clientFmt.mFormatID = kAudioFormatLinearPCM;
+  clientFmt.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+  clientFmt.mBitsPerChannel = 32;
+  clientFmt.mChannelsPerFrame = 1;
+  clientFmt.mFramesPerPacket = 1;
+  clientFmt.mBytesPerFrame = sizeof(float);
+  clientFmt.mBytesPerPacket = sizeof(float);
+  if (ExtAudioFileSetProperty(file, kExtAudioFileProperty_ClientDataFormat, sizeof(clientFmt), &clientFmt) != noErr) {
+    return failWith(@"Could not convert the audio file to mono float at the engine sample rate.");
+  }
+
+  constexpr size_t kMaxDISamples = 32u * 1024u * 1024u;  // ~11 min at 48 kHz
+  std::vector<float> samples;
+  std::vector<float> chunk(8192);
+  while (samples.size() < kMaxDISamples) {
+    UInt32 frames = static_cast<UInt32>(std::min<size_t>(chunk.size(), kMaxDISamples - samples.size()));
+    AudioBufferList list{};
+    list.mNumberBuffers = 1;
+    list.mBuffers[0] = {1u, static_cast<UInt32>(frames * sizeof(float)), chunk.data()};
+    if (ExtAudioFileRead(file, &frames, &list) != noErr) {
+      return failWith(@"Failed decoding audio file partway through.");
+    }
+    if (frames == 0) break;
+    for (UInt32 i = 0; i < frames; ++i) {
+      if (!std::isfinite(chunk[i])) return failWith(@"Audio file contains non-finite samples.");
+    }
+    samples.insert(samples.end(), chunk.begin(), chunk.begin() + frames);
+  }
+  if (samples.size() < 64) {
+    return failWith(@"The audio file is empty or too short.");
+  }
+  outSamples.swap(samples);
+  return true;
 }
 
 // Single-producer/single-consumer queue. UI->audio and audio->UI each have
@@ -923,6 +986,13 @@ class StandaloneHost {
     updateRecordingDisplay(true);
   }
 
+  void setDIPlaybackViews(NSView* pill, NSButton* toggleBtn, NSButton* loadBtn) {
+    diPill_ = pill;
+    diToggleBtn_ = toggleBtn;
+    diLoadBtn_ = loadBtn;
+    updateDIPlaybackDisplay();
+  }
+
   static NSString* recordingsDirectoryPath() {
     NSArray<NSString*>* musicDirs =
         NSSearchPathForDirectoriesInDomains(NSMusicDirectory, NSUserDomainMask, YES);
@@ -940,6 +1010,77 @@ class StandaloneHost {
     return outputRecording_.load(std::memory_order_acquire);
   }
 
+  bool isDIPlaybackActive() const noexcept {
+    return diPlayActive_.load(std::memory_order_acquire);
+  }
+
+  bool hasLoadedDIPlayback() const noexcept {
+    return diPlayHasSamples_;
+  }
+
+  bool hasLastSavedDIRecording() const noexcept {
+    return lastSavedDIRecordingPath_.length > 0 &&
+           [[NSFileManager defaultManager] fileExistsAtPath:lastSavedDIRecordingPath_];
+  }
+
+  NSString* lastSavedDIRecordingPath() const noexcept {
+    return lastSavedDIRecordingPath_;
+  }
+
+  bool loadDIPlaybackFromURL(NSURL* url, bool startPlayback, NSString** error = nullptr) {
+    if (!url) return fail(error, @"No Clean DI audio file selected.");
+    const double targetRate = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
+    std::vector<float> decoded;
+    if (!decodeMonoAudioFile(url, targetRate, decoded, error)) {
+      return false;
+    }
+
+    diPlayActive_.store(false, std::memory_order_release);
+    const uint32_t prev = renderState_.fetch_or(kRenderSuspended, std::memory_order_acq_rel);
+    while (renderState_.load(std::memory_order_acquire) & kRenderActive) {
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    diPlaySamples_.swap(decoded);
+    diPlayCursor_.store(0, std::memory_order_relaxed);
+    if ((prev & kRenderSuspended) == 0) {
+      renderState_.fetch_and(~kRenderSuspended, std::memory_order_release);
+    }
+
+    diPlayHasSamples_ = !diPlaySamples_.empty();
+    diPlaySampleRate_ = targetRate;
+    diPlaySourceURL_ = url;
+    diPlayFileName_ = url.lastPathComponent ?: @"Clean DI.wav";
+    if (startPlayback && diPlayHasSamples_) {
+      diPlayActive_.store(true, std::memory_order_release);
+    }
+    updateDIPlaybackDisplay();
+    return true;
+  }
+
+  bool useLastRecordedDI(NSString** error = nullptr) {
+    if (!hasLastSavedDIRecording()) {
+      return fail(error, @"No Clean DI recording found yet. Record a take with ● REC first.");
+    }
+    return loadDIPlaybackFromURL([NSURL fileURLWithPath:lastSavedDIRecordingPath_], true, error);
+  }
+
+  void toggleDIPlayback() {
+    if (!diPlayHasSamples_) return;
+    if (isDIPlaybackActive()) {
+      stopDIPlayback();
+    } else {
+      diPlayCursor_.store(0, std::memory_order_relaxed);
+      diPlayActive_.store(true, std::memory_order_release);
+      updateDIPlaybackDisplay();
+    }
+  }
+
+  void stopDIPlayback() {
+    if (!isDIPlaybackActive()) return;
+    diPlayActive_.store(false, std::memory_order_release);
+    updateDIPlaybackDisplay();
+  }
+
   bool startOutputRecording(NSString** error = nullptr) {
     if (isOutputRecording()) return true;
     NSString* dir = recordingsDirectoryPath();
@@ -950,47 +1091,67 @@ class StandaloneHost {
     NSString* baseName = [NSString stringWithFormat:@"Axe FX %@", stamp];
     NSString* filePath = [dir stringByAppendingPathComponent:
                               [baseName stringByAppendingPathExtension:@"wav"]];
+    NSString* diFilePath = [dir stringByAppendingPathComponent:
+                                [NSString stringWithFormat:@"%@ - Clean DI.wav", baseName]];
     NSFileManager* fm = [NSFileManager defaultManager];
     int suffix = 2;
-    while ([fm fileExistsAtPath:filePath]) {
-      NSString* numbered = [NSString stringWithFormat:@"%@-%d.wav", baseName, suffix++];
-      filePath = [dir stringByAppendingPathComponent:numbered];
+    while ([fm fileExistsAtPath:filePath] || [fm fileExistsAtPath:diFilePath]) {
+      NSString* numberedBase = [NSString stringWithFormat:@"%@-%d", baseName, suffix++];
+      filePath = [dir stringByAppendingPathComponent:[numberedBase stringByAppendingPathExtension:@"wav"]];
+      diFilePath = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@ - Clean DI.wav", numberedBase]];
     }
 
     std::FILE* fp = std::fopen(filePath.fileSystemRepresentation, "wb");
     if (!fp) {
       return fail(error, @"Could not create recording file in ~/Music/Axe FX Recordings.");
     }
+    std::FILE* diFp = std::fopen(diFilePath.fileSystemRepresentation, "wb");
+    if (!diFp) {
+      std::fclose(fp);
+      [fm removeItemAtPath:filePath error:nil];
+      return fail(error, @"Could not create Clean DI recording file in ~/Music/Axe FX Recordings.");
+    }
     const double sr = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
-    writeWavHeader24Stereo(fp, 0, sr);
+    writeWavHeader24(fp, 0, sr, 2);
+    writeWavHeader24(diFp, 0, sr, 1);
 
     outputRecordRing_.clear();
+    diRecordRing_.clear();
     outputRecordedFrames_.store(0, std::memory_order_relaxed);
     outputWrittenFrames_ = 0;
+    diWrittenFrames_ = 0;
     outputRecordSampleRate_ = sr;
     outputRecordFile_ = fp;
+    diRecordFile_ = diFp;
     activeRecordingPath_ = filePath;
+    activeDIRecordingPath_ = diFilePath;
     outputRecording_.store(true, std::memory_order_release);
     updateRecordingDisplay(true);
     return true;
   }
 
   NSString* stopOutputRecording() {
-    if (!isOutputRecording() && !outputRecordFile_) return lastSavedRecordingPath_;
+    if (!isOutputRecording() && !outputRecordFile_ && !diRecordFile_) return lastSavedRecordingPath_;
     outputRecording_.store(false, std::memory_order_release);
     drainOutputRecordingToDisk();
     NSString* savedPath = activeRecordingPath_;
-    if (outputRecordFile_) {
-      writeWavHeader24Stereo(outputRecordFile_, outputWrittenFrames_, outputRecordSampleRate_);
-      if ((outputWrittenFrames_ * 6u) & 1u) {
+    NSString* savedDIPath = activeDIRecordingPath_;
+    auto finalizeWavFile = [&](std::FILE*& fp, uint64_t writtenFrames, uint16_t channels) {
+      if (!fp) return;
+      writeWavHeader24(fp, writtenFrames, outputRecordSampleRate_, channels);
+      const uint64_t dataBytes = writtenFrames * channels * 3ull;
+      if (dataBytes & 1ull) {
         const uint8_t pad = 0;
-        std::fwrite(&pad, 1, 1, outputRecordFile_);
+        std::fwrite(&pad, 1, 1, fp);
       }
-      std::fflush(outputRecordFile_);
-      std::fclose(outputRecordFile_);
-      outputRecordFile_ = nullptr;
-    }
+      std::fflush(fp);
+      std::fclose(fp);
+      fp = nullptr;
+    };
+    finalizeWavFile(outputRecordFile_, outputWrittenFrames_, 2);
+    finalizeWavFile(diRecordFile_, diWrittenFrames_, 1);
     activeRecordingPath_ = nil;
+    activeDIRecordingPath_ = nil;
     if (outputWrittenFrames_ > 0 && savedPath.length > 0) {
       lastSavedRecordingPath_ = savedPath;
       lastSavedRecordingDuration_ =
@@ -999,6 +1160,11 @@ class StandaloneHost {
               : 0.0;
     } else if (savedPath.length > 0) {
       [[NSFileManager defaultManager] removeItemAtPath:savedPath error:nil];
+    }
+    if (diWrittenFrames_ > 0 && savedDIPath.length > 0) {
+      lastSavedDIRecordingPath_ = savedDIPath;
+    } else if (savedDIPath.length > 0) {
+      [[NSFileManager defaultManager] removeItemAtPath:savedDIPath error:nil];
     }
     updateRecordingDisplay(true);
     return lastSavedRecordingPath_;
@@ -1025,17 +1191,20 @@ class StandaloneHost {
   }
 
  private:
-  void drainOutputRecordingToDisk() {
-    if (!outputRecordFile_) return;
+  template <uint32_t kChannels>
+  void drainRingToWav24(SampleRecordRing<kChannels>& ring, std::FILE* fp, uint64_t& writtenFrames) {
+    if (!fp) return;
     constexpr uint32_t kChunkFrames = 4096;
-    if (outputFloatScratch_.size() < kChunkFrames * 2) {
-      outputFloatScratch_.resize(kChunkFrames * 2);
-      outputPcmScratch_.resize(kChunkFrames * 6);
+    if (outputFloatScratch_.size() < kChunkFrames * kChannels) {
+      outputFloatScratch_.resize(kChunkFrames * kChannels);
+    }
+    if (outputPcmScratch_.size() < kChunkFrames * kChannels * 3) {
+      outputPcmScratch_.resize(kChunkFrames * kChannels * 3);
     }
     while (true) {
-      const uint32_t n = outputRecordRing_.popChunk(outputFloatScratch_.data(), kChunkFrames);
+      const uint32_t n = ring.popChunk(outputFloatScratch_.data(), kChunkFrames);
       if (n == 0) break;
-      const size_t totalSamples = static_cast<size_t>(n) * 2;
+      const size_t totalSamples = static_cast<size_t>(n) * kChannels;
       for (size_t i = 0; i < totalSamples; ++i) {
         const float clamped = std::clamp(outputFloatScratch_[i], -1.0f, 1.0f);
         const int32_t v = static_cast<int32_t>(std::lrint(clamped * 8388607.0f));
@@ -1043,9 +1212,14 @@ class StandaloneHost {
         outputPcmScratch_[i * 3 + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
         outputPcmScratch_[i * 3 + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
       }
-      std::fwrite(outputPcmScratch_.data(), 1, totalSamples * 3, outputRecordFile_);
-      outputWrittenFrames_ += n;
+      std::fwrite(outputPcmScratch_.data(), 1, totalSamples * 3, fp);
+      writtenFrames += n;
     }
+  }
+
+  void drainOutputRecordingToDisk() {
+    drainRingToWav24(outputRecordRing_, outputRecordFile_, outputWrittenFrames_);
+    drainRingToWav24(diRecordRing_, diRecordFile_, diWrittenFrames_);
   }
 
   static NSString* formatRecordingClock(double seconds) {
@@ -1097,17 +1271,65 @@ class StandaloneHost {
       recToggleBtn_.attributedTitle =
           [[NSAttributedString alloc] initWithString:title attributes:attrs];
       recToggleBtn_.toolTip = rec
-          ? @"Stop recording and auto-save WAV to ~/Music/Axe FX Recordings (⌘R)."
-          : @"Record the fully transformed stereo output to ~/Music/Axe FX Recordings (⌘R).";
+          ? @"Stop recording and auto-save transformed + Clean DI WAVs to ~/Music/Axe FX Recordings (⌘R)."
+          : @"Record transformed stereo output + Clean DI WAV to ~/Music/Axe FX Recordings (⌘R).";
     }
     if (recRevealBtn_) {
       if (lastSavedRecordingPath_.length > 0) {
         recRevealBtn_.toolTip = [NSString stringWithFormat:
-            @"Last saved: %@ — Click to reveal in Finder.",
+            @"Last saved: %@ (+ Clean DI) — Click to reveal in Finder.",
             lastSavedRecordingPath_.lastPathComponent];
       } else {
         recRevealBtn_.toolTip = @"Open ~/Music/Axe FX Recordings in Finder.";
       }
+    }
+    updateDIPlaybackDisplay();
+  }
+
+  void updateDIPlaybackDisplay() {
+    if (!diToggleBtn_ && !diPill_ && !diLoadBtn_) return;
+    const bool active = isDIPlaybackActive();
+    if (diPill_ && diPill_.layer) {
+      diPill_.layer.borderColor = active
+          ? [NSColor colorWithSRGBRed:0.20 green:0.78 blue:0.94 alpha:0.85].CGColor
+          : [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0].CGColor;
+      diPill_.layer.backgroundColor = active
+          ? [NSColor colorWithSRGBRed:0.06 green:0.14 blue:0.18 alpha:1.0].CGColor
+          : [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0].CGColor;
+    }
+    if (diToggleBtn_) {
+      NSString* title = active ? @"■ DI" : @"▶ DI";
+      NSColor* fg = active
+          ? [NSColor colorWithSRGBRed:0.30 green:0.88 blue:1.00 alpha:1.0]
+          : (diPlayHasSamples_ || hasLastSavedDIRecording()
+                 ? [NSColor colorWithSRGBRed:0.76 green:0.82 blue:0.92 alpha:1.0]
+                 : [NSColor colorWithSRGBRed:0.54 green:0.60 blue:0.70 alpha:1.0]);
+      NSDictionary* attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10.5 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: fg,
+      };
+      diToggleBtn_.attributedTitle =
+          [[NSAttributedString alloc] initWithString:title attributes:attrs];
+      if (active) {
+        diToggleBtn_.toolTip = [NSString stringWithFormat:
+            @"Looping Clean DI (%@) into the live rig for A/B testing. Click to stop (⇧⌘D).",
+            diPlayFileName_ ?: @"WAV"];
+      } else if (diPlayHasSamples_) {
+        diToggleBtn_.toolTip = [NSString stringWithFormat:
+            @"Play/loop loaded Clean DI (%@) through the live rig for A/B testing (⇧⌘D).",
+            diPlayFileName_ ?: @"WAV"];
+      } else if (hasLastSavedDIRecording()) {
+        diToggleBtn_.toolTip = [NSString stringWithFormat:
+            @"Loop last recorded Clean DI (%@) through the live rig for A/B testing.",
+            lastSavedDIRecordingPath_.lastPathComponent];
+      } else {
+        diToggleBtn_.toolTip = @"Load and loop a Clean DI WAV through the live rig for A/B preset testing.";
+      }
+    }
+    if (diLoadBtn_) {
+      diLoadBtn_.toolTip = diPlayFileName_.length > 0
+          ? [NSString stringWithFormat:@"Loaded Clean DI: %@ — Click to choose another WAV (⇧⌘L).", diPlayFileName_]
+          : @"Choose a Clean DI WAV file to loop through the live rig (⇧⌘L).";
     }
   }
   static NSString* audioSettingsFilePath() {
@@ -1173,6 +1395,13 @@ class StandaloneHost {
     stopAudioUnits();
     if (plugin_ && std::fabs(plugin_->hostSampleRate - sampleRate_) > 0.5) {
       plugin_->setSampleRateAndReload(sampleRate_);
+    }
+    if (diPlaySourceURL_ && std::fabs(diPlaySampleRate_ - sampleRate_) > 0.5) {
+      const bool wasActive = isDIPlaybackActive();
+      NSString* reloadErr = nil;
+      if (!loadDIPlaybackFromURL(diPlaySourceURL_, wasActive, &reloadErr)) {
+        stopDIPlayback();
+      }
     }
     const bool ok = startAudio(error);
     lastCpuUiTime_ = 0.0;
@@ -1651,6 +1880,22 @@ class StandaloneHost {
       }
     }
 
+    if (diPlayActive_.load(std::memory_order_acquire) && !diPlaySamples_.empty()) {
+      const size_t total = diPlaySamples_.size();
+      size_t cursor = diPlayCursor_.load(std::memory_order_relaxed);
+      if (cursor >= total) cursor %= total;
+      for (UInt32 i = 0; i < frames; ++i) {
+        input_[i] = diPlaySamples_[cursor];
+        if (++cursor >= total) cursor = 0;
+      }
+      diPlayCursor_.store(cursor, std::memory_order_relaxed);
+    }
+
+    const bool rec = outputRecording_.load(std::memory_order_acquire);
+    if (rec) {
+      diRecordRing_.push(input_.data(), nullptr, frames);
+    }
+
     worker_.applyResponses();
     buildControlSequence();
     resetSequence(notifyBuffer_, kAtomBufferSize - sizeof(LV2_Atom));
@@ -1658,7 +1903,7 @@ class StandaloneHost {
     collectNotifications();
     rigRiffRecorderPushPair(input_.data(), output_.data(), outputR_.data(), frames, sampleRate_,
         static_cast<uint32_t>(std::max(0.0f, controls_[29 - 4])));
-    if (outputRecording_.load(std::memory_order_acquire)) {
+    if (rec) {
       const uint32_t pushed = outputRecordRing_.push(output_.data(), outputR_.data(), frames);
       if (pushed > 0) {
         outputRecordedFrames_.fetch_add(pushed, std::memory_order_relaxed);
@@ -2173,6 +2418,9 @@ class StandaloneHost {
   NSButton* __weak recToggleBtn_ = nil;
   NSTextField* __weak recTimeLabel_ = nil;
   NSButton* __weak recRevealBtn_ = nil;
+  NSView* __weak diPill_ = nil;
+  NSButton* __weak diToggleBtn_ = nil;
+  NSButton* __weak diLoadBtn_ = nil;
   StandaloneAnimatedAmpView* __weak headerAmpView_ = nil;
   StandaloneAnimatedAmpView* __weak dockAmpView_ = nil;
   std::atomic<float> cpuLoadPercent_{0.0f};
@@ -2180,14 +2428,26 @@ class StandaloneHost {
   std::atomic<bool> ampIconsVisible_{true};
   std::atomic<bool> outputRecording_{false};
   std::atomic<uint64_t> outputRecordedFrames_{0};
-  StereoOutputRecordRing outputRecordRing_;
+  SampleRecordRing<2> outputRecordRing_;
+  SampleRecordRing<1> diRecordRing_;
   std::vector<float> outputFloatScratch_;
   std::vector<uint8_t> outputPcmScratch_;
   std::FILE* outputRecordFile_ = nullptr;
+  std::FILE* diRecordFile_ = nullptr;
   uint64_t outputWrittenFrames_ = 0;
+  uint64_t diWrittenFrames_ = 0;
   double outputRecordSampleRate_ = 48000.0;
   NSString* __strong activeRecordingPath_ = nil;
+  NSString* __strong activeDIRecordingPath_ = nil;
   NSString* __strong lastSavedRecordingPath_ = nil;
+  NSString* __strong lastSavedDIRecordingPath_ = nil;
+  std::atomic<bool> diPlayActive_{false};
+  std::atomic<size_t> diPlayCursor_{0};
+  std::vector<float> diPlaySamples_;
+  bool diPlayHasSamples_ = false;
+  double diPlaySampleRate_ = 48000.0;
+  NSURL* __strong diPlaySourceURL_ = nil;
+  NSString* __strong diPlayFileName_ = nil;
   double lastSavedRecordingDuration_ = 0.0;
   CFAbsoluteTime lastRecUiTime_ = 0.0;
   bool lastRecUiState_ = false;
@@ -2306,21 +2566,30 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
 }  // namespace
 
 @interface StandaloneTitlebarRecContainerView : NSView
+@property(nonatomic, strong) NSView* diPill;
 @property(nonatomic, strong) NSView* recPill;
 @end
 
 @implementation StandaloneTitlebarRecContainerView
 - (NSSize)intrinsicContentSize {
-  return NSMakeSize(160.0, 28.0);
+  return NSMakeSize(264.0, 28.0);
 }
 - (void)layout {
   [super layout];
+  CGFloat recX = self.bounds.size.width - 24.0;
   if (_recPill) {
     const CGFloat pillW = _recPill.frame.size.width;
     const CGFloat pillH = _recPill.frame.size.height;
-    const CGFloat x = std::max<CGFloat>(0.0, self.bounds.size.width - 24.0 - pillW);
+    recX = std::max<CGFloat>(0.0, self.bounds.size.width - 24.0 - pillW);
     const CGFloat y = std::floor((self.bounds.size.height - pillH) * 0.5);
-    _recPill.frame = NSMakeRect(x, y, pillW, pillH);
+    _recPill.frame = NSMakeRect(recX, y, pillW, pillH);
+  }
+  if (_diPill) {
+    const CGFloat pillW = _diPill.frame.size.width;
+    const CGFloat pillH = _diPill.frame.size.height;
+    const CGFloat x = std::max<CGFloat>(0.0, recX - 8.0 - pillW);
+    const CGFloat y = std::floor((self.bounds.size.height - pillH) * 0.5);
+    _diPill.frame = NSMakeRect(x, y, pillW, pillH);
   }
 }
 @end
@@ -2861,6 +3130,62 @@ extern void openAICopilotInActiveRig();
   _host->revealOutputRecordingInFinder();
 }
 
+- (void)loadDIWavAction:(id)sender {
+  (void)sender;
+  if (!_host) return;
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.allowedFileTypes = @[@"wav", @"aif", @"aiff", @"caf", @"flac", @"mp3", @"m4a"];
+  panel.title = @"Load Clean DI WAV for A/B Testing";
+  panel.message = @"Select a clean guitar DI audio file to loop through the live rig so you can A/B test presets with identical playing.";
+  panel.prompt = @"Load & Loop DI";
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = NO;
+  NSString* recDir = StandaloneHost::recordingsDirectoryPath();
+  if (recDir.length > 0) {
+    panel.directoryURL = [NSURL fileURLWithPath:recDir isDirectory:YES];
+  }
+  [panel beginSheetModalForWindow:_window completionHandler:^(NSModalResponse response) {
+    if (response != NSModalResponseOK || !panel.URL || !self->_host) return;
+    NSString* err = nil;
+    if (!self->_host->loadDIPlaybackFromURL(panel.URL, true, &err) && err.length > 0) {
+      NSAlert* alert = [[NSAlert alloc] init];
+      alert.messageText = @"Could Not Load Clean DI Audio";
+      alert.informativeText = err;
+      [alert runModal];
+    }
+  }];
+}
+
+- (void)toggleDIPlaybackAction:(id)sender {
+  (void)sender;
+  if (!_host) return;
+  if (_host->hasLoadedDIPlayback()) {
+    _host->toggleDIPlayback();
+  } else if (_host->hasLastSavedDIRecording()) {
+    NSString* err = nil;
+    if (!_host->useLastRecordedDI(&err) && err.length > 0) {
+      NSAlert* alert = [[NSAlert alloc] init];
+      alert.messageText = @"Could Not Play Last Clean DI";
+      alert.informativeText = err;
+      [alert runModal];
+    }
+  } else {
+    [self loadDIWavAction:sender];
+  }
+}
+
+- (void)useLastRecordedDIAction:(id)sender {
+  (void)sender;
+  if (!_host) return;
+  NSString* err = nil;
+  if (!_host->useLastRecordedDI(&err) && err.length > 0) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"No Clean DI Recording Available";
+    alert.informativeText = err;
+    [alert runModal];
+  }
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   (void)notification;
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -2922,6 +3247,28 @@ extern void openAICopilotInActiveRig();
                                                   keyEquivalent:@""];
   recRevealItem.target = self;
   [appMenu addItem:recRevealItem];
+
+  [appMenu addItem:[NSMenuItem separatorItem]];
+
+  NSMenuItem* diLoadItem = [[NSMenuItem alloc] initWithTitle:@"Load Clean DI WAV for A/B…"
+                                                      action:@selector(loadDIWavAction:)
+                                               keyEquivalent:@"L"];
+  diLoadItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  diLoadItem.target = self;
+  [appMenu addItem:diLoadItem];
+
+  NSMenuItem* diToggleItem = [[NSMenuItem alloc] initWithTitle:@"Play/Stop Clean DI Loop"
+                                                        action:@selector(toggleDIPlaybackAction:)
+                                                 keyEquivalent:@"D"];
+  diToggleItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  diToggleItem.target = self;
+  [appMenu addItem:diToggleItem];
+
+  NSMenuItem* diLastItem = [[NSMenuItem alloc] initWithTitle:@"Use Last Recorded Clean DI"
+                                                      action:@selector(useLastRecordedDIAction:)
+                                               keyEquivalent:@""];
+  diLastItem.target = self;
+  [appMenu addItem:diLastItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
   [appMenu addItemWithTitle:@"Quit Axe FX"
@@ -3040,18 +3387,57 @@ extern void openAICopilotInActiveRig();
   rootContent.cpuPill = cpuPill;
   [rootContent addSubview:cpuPill positioned:NSWindowAbove relativeTo:nil];
 
-  // Right-hand grey titlebar output recorder pill (aligned above CPU pill).
+  // Right-hand grey titlebar DI re-amp + output recorder pills (aligned above CPU pill).
+  const CGFloat diPillW = 96.0;
   const CGFloat recPillW = 136.0;
   const CGFloat recPillH = 22.0;
   StandaloneTitlebarRecContainerView* recContainer =
-      [[StandaloneTitlebarRecContainerView alloc] initWithFrame:NSMakeRect(0, 0, recPillW + 24.0, 28.0)];
+      [[StandaloneTitlebarRecContainerView alloc] initWithFrame:NSMakeRect(0, 0, diPillW + 8.0 + recPillW + 24.0, 28.0)];
+
+  NSView* diPill = [[NSView alloc] initWithFrame:NSMakeRect(0, 3, diPillW, recPillH)];
+  diPill.wantsLayer = YES;
+  diPill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0].CGColor;
+  diPill.layer.cornerRadius = 7.0;
+  diPill.layer.borderWidth = 1.0;
+  diPill.layer.borderColor = [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0].CGColor;
+  diPill.toolTip = @"Loop a Clean DI WAV through the live rig for A/B preset testing.";
+
+  NSButton* diToggleBtn = [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 60, 20)];
+  diToggleBtn.bordered = NO;
+  diToggleBtn.bezelStyle = NSBezelStyleInline;
+  diToggleBtn.target = self;
+  diToggleBtn.action = @selector(toggleDIPlaybackAction:);
+  [diPill addSubview:diToggleBtn];
+
+  NSView* diDivider = [[NSView alloc] initWithFrame:NSMakeRect(66, 4, 1, 14)];
+  diDivider.wantsLayer = YES;
+  diDivider.layer.backgroundColor = [NSColor colorWithSRGBRed:0.18 green:0.21 blue:0.27 alpha:1.0].CGColor;
+  [diPill addSubview:diDivider];
+
+  NSButton* diLoadBtn = [[NSButton alloc] initWithFrame:NSMakeRect(68, 1, 26, 20)];
+  diLoadBtn.bordered = NO;
+  diLoadBtn.bezelStyle = NSBezelStyleInline;
+  NSDictionary* diLoadAttrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold],
+    NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:0.72 green:0.78 blue:0.88 alpha:1.0],
+  };
+  diLoadBtn.attributedTitle =
+      [[NSAttributedString alloc] initWithString:@"…" attributes:diLoadAttrs];
+  diLoadBtn.target = self;
+  diLoadBtn.action = @selector(loadDIWavAction:);
+  diLoadBtn.toolTip = @"Choose a Clean DI WAV file to loop through the live rig (⇧⌘L).";
+  [diPill addSubview:diLoadBtn];
+
+  recContainer.diPill = diPill;
+  [recContainer addSubview:diPill];
+
   NSView* recPill = [[NSView alloc] initWithFrame:NSMakeRect(0, 3, recPillW, recPillH)];
   recPill.wantsLayer = YES;
   recPill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0].CGColor;
   recPill.layer.cornerRadius = 7.0;
   recPill.layer.borderWidth = 1.0;
   recPill.layer.borderColor = [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0].CGColor;
-  recPill.toolTip = @"Record the fully transformed stereo output to ~/Music/Axe FX Recordings.";
+  recPill.toolTip = @"Record transformed stereo output + Clean DI WAV to ~/Music/Axe FX Recordings.";
 
   NSButton* recToggleBtn = [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 56, 20)];
   recToggleBtn.bordered = NO;
@@ -3093,7 +3479,7 @@ extern void openAICopilotInActiveRig();
 
   recContainer.recPill = recPill;
   [recContainer addSubview:recPill];
-  [recContainer.widthAnchor constraintEqualToConstant:recPillW + 24.0].active = YES;
+  [recContainer.widthAnchor constraintEqualToConstant:diPillW + 8.0 + recPillW + 24.0].active = YES;
 
   NSTitlebarAccessoryViewController* titlebarRecAccessory =
       [[NSTitlebarAccessoryViewController alloc] init];
@@ -3115,6 +3501,7 @@ extern void openAICopilotInActiveRig();
   }
   _host->setCpuMeterViews(cpuLabel, cpuFill, cpuSlot);
   _host->setRecordingViews(recPill, recToggleBtn, recTimeLabel, recRevealBtn);
+  _host->setDIPlaybackViews(diPill, diToggleBtn, diLoadBtn);
   _host->setAnimatedAmpViews(headerAmp, _dockAmpView);
   [self refreshAudioMenusAndTitle];
   [rootContent setNeedsLayout:YES];
