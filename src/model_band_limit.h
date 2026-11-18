@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "amp_audit_mode.h"
+
 namespace NAMRig {
 
 // Low-pass in front of a NAM model that runs above its training rate.
@@ -80,12 +82,15 @@ class ModelBandLimit {
     }
 
     const int targetSections = target.slope + 1;
-    if ((mix_ <= 0.0f && wanted) ||
-        domainRate != domainRate_ || modelRate != modelRate_) {
+    const bool nyquistClamp = AuditMode::has(AuditMode::kInterStageBandLimit);
+    const bool rateChanged = domainRate != domainRate_ || modelRate != modelRate_;
+    if ((mix_ <= 0.0f && wanted) || rateChanged || nyquistClamp != designedNyquistClamp_) {
       smoothCutoffHz_ = target.cutoffHz;
       smoothRippleDb_ = target.rippleDb;
       design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
-      clearState();
+      if (mix_ <= 0.0f || rateChanged) {
+        clearState();
+      }
     }
 
     const float step = static_cast<float>(1.0 / (domainRate * 0.005));
@@ -216,10 +221,14 @@ class ModelBandLimit {
     modelRate_ = modelRate;
     designedCutoffHz_ = cutoffHz;
     designedRippleDb_ = rippleDb;
+    designedNyquistClamp_ = AuditMode::has(AuditMode::kInterStageBandLimit);
     activeSections_ = std::clamp(sections, 1, kMaxSections);
     constexpr double kPi = 3.14159265358979323846;
     const int order = 2 * activeSections_;
-    const double edge = std::min(cutoffHz, 0.45 * domainRate);
+    double edge = std::min(cutoffHz, 0.45 * domainRate);
+    if (designedNyquistClamp_ && modelRate > 0.0) {
+      edge = std::min(edge, 0.44 * modelRate);
+    }
     const double k = std::tan(kPi * edge / domainRate);
     const double epsilon = std::sqrt(std::pow(10.0, rippleDb / 10.0) - 1.0);
     const double mu = std::asinh(1.0 / epsilon) / order;
@@ -251,6 +260,7 @@ class ModelBandLimit {
   double smoothCutoffHz_ = kDefaultCutoffHz;
   double smoothRippleDb_ = kDefaultRippleDb;
   int activeSections_ = kDefaultSlope + 1;
+  bool designedNyquistClamp_ = false;
   float mix_ = 0.0f;
 };
 

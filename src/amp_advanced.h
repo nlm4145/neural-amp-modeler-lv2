@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 
+#include "amp_audit_mode.h"
 #include "power_tube_controls.h"
 
 namespace NAMRig {
@@ -153,9 +154,14 @@ class AmpAdvanced {
       return;
     }
 
+    const bool proposedZdf = AuditMode::has(AuditMode::kPowerStageZdfAndTube);
     const float fullSmooth = chunkCoeff(rate, kChunk);
     const double attack = 1.0 - std::exp(-1.0 / (rate * 0.015));
     const double release = 1.0 - std::exp(-1.0 / (rate * 0.220));
+    const double screenAttack = 1.0 - std::exp(-1.0 / (rate * 0.008));
+    const double screenRelease = 1.0 - std::exp(-1.0 / (rate * 0.055));
+    const double reservoirAttack = 1.0 - std::exp(-1.0 / (rate * 0.040));
+    const double reservoirRelease = 1.0 - std::exp(-1.0 / (rate * 0.280));
     float cachedMaster = -1.0f;
     double drive = 1.0;
     double outputScale = 1.0;
@@ -204,8 +210,9 @@ class AmpAdvanced {
       const double legacyNonlinearAmount = std::max(
           std::max(static_cast<double>(smoothSag_),
                    std::fabs(static_cast<double>(smoothBias_))),
-          std::max(static_cast<double>(smoothFeedback_),
-                   static_cast<double>(smoothMaster_)));
+          proposedZdf ? static_cast<double>(smoothMaster_)
+                      : std::max(static_cast<double>(smoothFeedback_),
+                                 static_cast<double>(smoothMaster_)));
       const double nonlinearAmount = Legacy ? legacyNonlinearAmount
                                             : std::max(legacyNonlinearAmount, character);
 
@@ -216,34 +223,60 @@ class AmpAdvanced {
         const double c = s[i] * inputScale - beta * partial;
         const double k = beta * f0;
         double normalized, nonlinearY;
-        if (Legacy || character == 0.0) {
-          const double headroom = std::max(kMinHeadroom, 1.0 - sagDepth * supplyEnvelope_);
-          const double bias = biasStatic - excursionDepth * supplyEnvelope_;
-          const double biasOut = sat<true>(bias, kKnee);
-          const double solved = solve<true>(kOpenLoopGain / headroom, k * headroom,
-                                           c + k * headroom * biasOut +
-                                               bias * headroom / kOpenLoopGain, kKnee);
-          normalized = solved - biasOut;
-          nonlinearY = headroom * normalized;
+        if (!proposedZdf) {
+          if (Legacy || character == 0.0) {
+            const double headroom = std::max(kMinHeadroom, 1.0 - sagDepth * supplyEnvelope_);
+            const double bias = biasStatic - excursionDepth * supplyEnvelope_;
+            const double biasOut = sat<true>(bias, kKnee);
+            const double solved = solve<true>(kOpenLoopGain / headroom, k * headroom,
+                                             c + k * headroom * biasOut +
+                                                 bias * headroom / kOpenLoopGain, kKnee);
+            normalized = solved - biasOut;
+            nonlinearY = headroom * normalized;
+          } else {
+            const double headroom = tubeHeadroom *
+                std::max(kMinHeadroom, 1.0 - sagDepth * supplyEnvelope_);
+            const double bias = biasSensitivity * (biasStatic - excursionDepth * supplyEnvelope_) +
+                                asymmetry;
+            const double biasOut = sat<false>(bias, knee);
+            const double solved = solve<false>(kOpenLoopGain / headroom, k * headroom,
+                                              c + k * headroom * biasOut +
+                                                  bias * headroom / kOpenLoopGain, knee);
+            normalized = solved - biasOut;
+            nonlinearY = headroom * normalized;
+          }
+          const double linearY = kOpenLoopGain * c / (1.0 + kOpenLoopGain * k);
+          const double y = linearY + nonlinearAmount * (nonlinearY - linearY);
+          const double level = std::fabs(normalized);
+          supplyEnvelope_ += (level - supplyEnvelope_) *
+                             (level > supplyEnvelope_ ? attack : release);
+          reservoirEnvelope_ = supplyEnvelope_;
+          presence_.advance(depth_.advance(y));
+          s[i] = static_cast<float>(y * outputScale);
         } else {
-          const double headroom = tubeHeadroom *
-              std::max(kMinHeadroom, 1.0 - sagDepth * supplyEnvelope_);
-          const double bias = biasSensitivity * (biasStatic - excursionDepth * supplyEnvelope_) +
-                              asymmetry;
-          const double biasOut = sat<false>(bias, knee);
-          const double solved = solve<false>(kOpenLoopGain / headroom, k * headroom,
-                                            c + k * headroom * biasOut +
-                                                bias * headroom / kOpenLoopGain, knee);
+          const double sagEnv = 0.55 * supplyEnvelope_ + 0.45 * reservoirEnvelope_;
+          const double effKnee = (Legacy || character == 0.0) ? kKnee : knee;
+          const double headroom = ((Legacy || character == 0.0) ? 1.0 : tubeHeadroom) *
+              std::max(kMinHeadroom, 1.0 - sagDepth * sagEnv);
+          const double bias = ((Legacy || character == 0.0) ? 1.0 : biasSensitivity) *
+              (biasStatic - excursionDepth * sagEnv) +
+              ((Legacy || character == 0.0) ? 0.0 : asymmetry);
+          const double biasOut = satC2(bias, effKnee);
+          const double solved = solveBiasedC2(kOpenLoopGain / headroom, k * headroom,
+                                              c, bias, biasOut, effKnee);
           normalized = solved - biasOut;
           nonlinearY = headroom * normalized;
+          const double linearY = kOpenLoopGain * c / (1.0 + kOpenLoopGain * k);
+          const double y = linearY + nonlinearAmount * (nonlinearY - linearY);
+          const double absNorm = std::fabs(normalized);
+          const double conduction = absNorm * (0.65 + 0.35 * std::min(1.5, absNorm));
+          supplyEnvelope_ += (conduction - supplyEnvelope_) *
+                             (conduction > supplyEnvelope_ ? screenAttack : screenRelease);
+          reservoirEnvelope_ += (conduction - reservoirEnvelope_) *
+                                (conduction > reservoirEnvelope_ ? reservoirAttack : reservoirRelease);
+          presence_.advance(depth_.advance(y));
+          s[i] = static_cast<float>(y * outputScale);
         }
-        const double linearY = kOpenLoopGain * c / (1.0 + kOpenLoopGain * k);
-        const double y = linearY + nonlinearAmount * (nonlinearY - linearY);
-        const double level = std::fabs(normalized);
-        supplyEnvelope_ += (level - supplyEnvelope_) *
-                           (level > supplyEnvelope_ ? attack : release);
-        presence_.advance(depth_.advance(y));
-        s[i] = static_cast<float>(y * outputScale);
       }
     }
   }
@@ -285,6 +318,7 @@ class AmpAdvanced {
     appliedPresence_ = appliedDepth_ = appliedFeedback_ = 1.0e9f;
     appliedPostRate_ = 0.0;
     supplyEnvelope_ = 0.0;
+    reservoirEnvelope_ = 0.0;
   }
 
   static float clamp01(float x) noexcept { return std::max(0.0f, std::min(1.0f, x)); }
@@ -332,6 +366,52 @@ class AmpAdvanced {
     const double disc = std::max(0.0, b2 * b2 - 4.0 * a2 * c2);
     const double w = 2.0 * c2 / (-b2 + std::sqrt(disc));
     return sign * (t + std::min(w, d));
+  }
+
+  // C^2-continuous soft-knee tube saturator:
+  //   |u| <= t0: u
+  //   |u| >  t0: sign(u) * (t0 + d * (v + v^2) / (1 + v + v^2)), v = (|u| - t0) / d
+  // Matches value (t0), 1st derivative (1), and 2nd derivative (0) at |u| = t0.
+  static double satC2(double u, double knee) noexcept {
+    const double t0 = 0.65 * knee;
+    const double a = std::fabs(u);
+    if (a <= t0) return u;
+    const double d = 1.0 - t0;
+    const double v = (a - t0) / d;
+    const double vv = v * v;
+    const double phi = (v + vv) / (1.0 + v + vv);
+    return u < 0.0 ? -(t0 + d * phi) : (t0 + d * phi);
+  }
+
+  // Exact biased ZDF solver in the saturator input coordinate u:
+  //   u + G * satC2(u, knee) = r,  where G = A * k >= 0, r = A * c + G * biasOut + bias
+  // Returns s = satC2(u, knee).
+  static double solveBiasedC2(double A, double k, double c, double bias,
+                              double biasOut, double knee) noexcept {
+    const double G = std::max(0.0, A * k);
+    const double r = A * c + G * biasOut + bias;
+    const double t0 = 0.65 * knee;
+    const double uLin = r / (1.0 + G);
+    if (std::fabs(uLin) <= t0) return uLin;
+    const double sign = r < 0.0 ? -1.0 : 1.0;
+    const double d = 1.0 - t0;
+    const double rho = (std::fabs(r) - (1.0 + G) * t0) / d;
+    const double bq = 1.0 + G - rho;
+    const double disc = std::max(0.0, bq * bq + 4.0 * rho);
+    double v = (bq >= 0.0) ? (2.0 * rho) / (bq + std::sqrt(disc))
+                           : (-bq + std::sqrt(disc)) * 0.5;
+    for (int iter = 0; iter < 2; ++iter) {
+      const double vv = v * v;
+      const double D = 1.0 + v + vv;
+      const double invD = 1.0 / D;
+      const double phi = (v + vv) * invD;
+      const double dphi = (1.0 + 2.0 * v) * invD * invD;
+      const double err = v + G * phi - rho;
+      v = std::max(0.0, v - err / (1.0 + G * dphi));
+    }
+    const double vv = v * v;
+    const double phi = (v + vv) / (1.0 + v + vv);
+    return sign * (t0 + d * std::min(phi, 1.0));
   }
 
   static void setHighPass(Filter& f, float frequency, double rate) noexcept {
@@ -396,6 +476,7 @@ class AmpAdvanced {
   float smoothTubeCharacter_ = 0.0f;
   float appliedPresence_ = 1.0e9f, appliedDepth_ = 1.0e9f, appliedFeedback_ = 1.0e9f;
   double supplyEnvelope_ = 0.0;
+  double reservoirEnvelope_ = 0.0;
   double appliedPostRate_ = 0.0;
   double appliedPreRate_ = 0.0;
 };
