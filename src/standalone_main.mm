@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "nam_rig_plugin.h"
+#include "amp_engine_mode.h"
 #include "cabinet_worker.h"
 #include "polyphase_worker.h"
 #include "rack_controls.h"
@@ -2680,6 +2681,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   NSPopUpButton* _audioPopup;
   NSMenu* _appAudioSubmenu;
   NSMenu* _appPerfSubmenu;
+  NSMenu* _appEngineSubmenu;
   StandaloneAnimatedAmpView* _dockAmpView;
   std::unique_ptr<StandaloneHost> _host;
 }
@@ -2943,6 +2945,31 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     }
   }
 
+  // 7b. AMPLIFIER ENGINE (A/B EVAL)
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"AMPLIFIER ENGINE (A/B EVAL)");
+  {
+    const uint32_t curFlags = NAMRig::EngineMode::requestedFlags();
+    struct PresetEntry {
+      uint32_t flags;
+      NSString* title;
+    };
+    const PresetEntry kPresets[] = {
+      {NAMRig::EngineMode::kAllTier1And2, @"Enhanced (Tier 1 + Tier 2)"},
+      {NAMRig::EngineMode::kTier1, @"Tier 1 Only (Clarity & Fixes)"},
+      {NAMRig::EngineMode::kNone, @"Original (Baseline)"},
+    };
+    for (const auto& p : kPresets) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:p.title
+                                                    action:@selector(selectEnginePreset:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = static_cast<NSInteger>(p.flags);
+      item.state = (curFlags == p.flags) ? NSControlStateValueOn : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+
   // 8. PROFILER
   [menu addItem:[NSMenuItem separatorItem]];
   addHeader(@"DSP PERFORMANCE PROFILER");
@@ -2988,6 +3015,153 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   }
 }
 
+- (void)populateEngineMenu:(NSMenu*)menu {
+  [menu removeAllItems];
+  menu.autoenablesItems = NO;
+
+  auto addHeader = ^(NSString* text) {
+    NSMenuItem* hdr = [[NSMenuItem alloc] initWithTitle:text action:NULL keyEquivalent:@""];
+    hdr.enabled = NO;
+    NSDictionary* attrs = @{
+      NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightBold],
+      NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+    };
+    hdr.attributedTitle = [[NSAttributedString alloc] initWithString:text attributes:attrs];
+    [menu addItem:hdr];
+  };
+
+  const uint32_t curFlags = NAMRig::EngineMode::requestedFlags();
+  const float curCalDbu = NAMRig::EngineMode::requestedInputCalibrationDbu();
+
+  NSMenuItem* toggleItem = [[NSMenuItem alloc] initWithTitle:@"Toggle Enhanced ↔ Original"
+                                                      action:@selector(toggleEngineEnhancedAction:)
+                                               keyEquivalent:@"E"];
+  toggleItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  toggleItem.target = self;
+  toggleItem.toolTip = @"Click-free 5 ms A/B toggle between Enhanced (Tier 1 + Tier 2) and Original baseline DSP.";
+  [menu addItem:toggleItem];
+
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"ENGINE MODE");
+  {
+    struct PresetEntry {
+      uint32_t flags;
+      NSString* title;
+      NSString* tip;
+    };
+    const PresetEntry kPresets[] = {
+      {NAMRig::EngineMode::kAllTier1And2, @"Enhanced (Tier 1 + Tier 2)",
+       @"Enables all Tier 1 clarity/anti-aliasing fixes and Tier 2 palm-mute dynamics & tube physics."},
+      {NAMRig::EngineMode::kTier1, @"Tier 1 Only (Clarity & Anti-Aliasing)",
+       @"Enables only Tier 1 fixes (44.1 kHz resampling, DC blocking, 14.5 kHz band-limit, OD 2x ADAA & matched EQ)."},
+      {NAMRig::EngineMode::kNone, @"Original (Baseline)",
+       @"Bit-exact original DSP engine for honest A/B comparison."},
+    };
+    for (const auto& p : kPresets) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:p.title
+                                                    action:@selector(selectEnginePreset:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = static_cast<NSInteger>(p.flags);
+      item.toolTip = p.tip;
+      item.state = (curFlags == p.flags) ? NSControlStateValueOn : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"TIER 1 — QUALITY, CLARITY & BUG FIXES");
+  {
+    struct FlagEntry {
+      uint32_t flag;
+      NSString* title;
+      NSString* tip;
+    };
+    const FlagEntry kTier1Flags[] = {
+      {NAMRig::EngineMode::kModelRateResampling, @"T1.1 · 44.1 kHz Rational Model Resampling",
+       @"Resamples non-divisible 44.1 kHz WaveNet/LSTM models via 147/160 polyphase SRC so pitch & tone stay accurate."},
+      {NAMRig::EngineMode::kInterStageDcBlocking, @"T1.2 · Inter-Stage DC Blocking (OD / Power / Iron)",
+       @"Blocks rectified DC from asymmetric overdrive, biased power tubes, and transformer core flux."},
+      {NAMRig::EngineMode::kParallelCabAndOdBandLimit, @"T1.3 · Parallel Cab & 14.5 kHz Tighter Band-Limit",
+       @"Applies tighter 14.5 kHz Bessel6 inter-stage band-limiting to serial & parallel cabs; skips Clean OD."},
+      {NAMRig::EngineMode::kOverdriveAdaaAndMatchedEq, @"T1.4 · Overdrive 2× ADAA & Nyquist-Matched Filters",
+       @"2x midpoint ADAA + TPT filters in Overdrive, flux ADAA in Transformer, and Orfanidis/Vicanek matched filters."},
+    };
+    for (const auto& f : kTier1Flags) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:f.title
+                                                    action:@selector(toggleEngineFlag:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = static_cast<NSInteger>(f.flag);
+      item.toolTip = f.tip;
+      item.state = ((curFlags & f.flag) == f.flag) ? NSControlStateValueOn : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"TIER 2 — PALM-MUTE DYNAMICS & TUBE REALISM");
+  {
+    struct FlagEntry {
+      uint32_t flag;
+      NSString* title;
+      NSString* tip;
+    };
+    const FlagEntry kTier2Flags[] = {
+      {NAMRig::EngineMode::kCalibrationAndPedalStaging, @"T2.1 · Interface dBu Calibration & Pedal→Amp Staging",
+       @"Aligns audio interface headroom to model input_level_dbu and preserves real pedal boost into the amp."},
+      {NAMRig::EngineMode::kPowerStageTubeDynamics, @"T2.2 · Tube Power Stage (Headroom, Sag & Class AB)",
+       @"Calibrated +6 dB tube knee, low-noise Master curve, low-weighted charged-cap sag, and symmetric Class AB crossover."},
+      {NAMRig::EngineMode::kSpeakerPalmMuteDynamics, @"T2.3 · Speaker Palm-Mute Thump, Excursion & NFB Coupling",
+       @"Dynamic onset Thump, low-band-only excursion (clear pick attack), and live power-amp NFB damping bloom."},
+      {NAMRig::EngineMode::kGateAndCompDynamics, @"T2.4 · 0.75 ms Lookahead Gate & Sidechain-HPF Comp",
+       @"0.75 ms lookahead + 95 Hz–4.5 kHz sidechain + 4:1 mute closure on Gate; 110 Hz sidechain HPF & fast release on Comp."},
+      {NAMRig::EngineMode::kPreAmpTightAndBrightCap, @"T2.5 · Pre-Amp 6 dB/oct Dynamic Tight & Bright Cap",
+       @"Keeps OD Tight contour clean at Drive 0%, passive 6 dB/oct dynamic palm-mute HPF, and gain-coupled Bright cap."},
+    };
+    for (const auto& f : kTier2Flags) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:f.title
+                                                    action:@selector(toggleEngineFlag:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = static_cast<NSInteger>(f.flag);
+      item.toolTip = f.tip;
+      item.state = ((curFlags & f.flag) == f.flag) ? NSControlStateValueOn : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"INTERFACE INPUT CALIBRATION (FOR T2.1)");
+  {
+    struct CalEntry {
+      float dbu;
+      NSString* title;
+    };
+    const CalEntry kCals[] = {
+      {8.5f,  @"+8.5 dBu  (Audient iD4 / iD14 / iD24 Inst)"},
+      {9.0f,  @"+9.0 dBu  (SSL 2 / 2+ Inst)"},
+      {10.0f, @"+10.0 dBu (MOTU M2 / M4 Inst)"},
+      {12.0f, @"+12.0 dBu (Scarlett 4th Gen / RME / NAM Default)"},
+      {12.5f, @"+12.5 dBu (Scarlett 3rd Gen Inst)"},
+      {13.0f, @"+13.0 dBu (UAD Volt / PreSonus Inst)"},
+      {15.0f, @"+15.0 dBu (High-Headroom Inst / Active DI)"},
+      {18.0f, @"+18.0 dBu (Apollo Hi-Z / Line / Reamp)"},
+    };
+    for (const auto& c : kCals) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:c.title
+                                                    action:@selector(selectInputCalibrationDbu:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.representedObject = @(c.dbu);
+      item.state = (std::fabs(curCalDbu - c.dbu) < 0.05f)
+                       ? NSControlStateValueOn
+                       : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+}
+
 - (void)refreshAudioMenusAndTitle {
   if (_audioPopup) {
     [self populateAudioMenu:_audioPopup.menu includeTitleItem:YES];
@@ -3008,6 +3182,21 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   if (_appPerfSubmenu) {
     [self populatePerformanceMenu:_appPerfSubmenu];
   }
+  if (_appEngineSubmenu) {
+    [self populateEngineMenu:_appEngineSubmenu];
+  }
+  if (_window) {
+    const uint32_t curFlags = NAMRig::EngineMode::requestedFlags();
+    if (curFlags == NAMRig::EngineMode::kAllTier1And2) {
+      _window.title = @"Axe FX — Enhanced Engine (Tier 1+2)";
+    } else if (curFlags == NAMRig::EngineMode::kTier1) {
+      _window.title = @"Axe FX — Tier 1 Engine (Clarity)";
+    } else if (curFlags == NAMRig::EngineMode::kNone) {
+      _window.title = @"Axe FX — Original Engine (Baseline)";
+    } else {
+      _window.title = @"Axe FX — Custom Engine (A/B)";
+    }
+  }
 }
 
 - (void)menuNeedsUpdate:(NSMenu*)menu {
@@ -3017,7 +3206,48 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     [self populateAudioMenu:menu includeTitleItem:NO];
   } else if (menu == _appPerfSubmenu) {
     [self populatePerformanceMenu:menu];
+  } else if (menu == _appEngineSubmenu) {
+    [self populateEngineMenu:menu];
   }
+}
+
+- (void)persistEngineSettings {
+  NSUserDefaults* defs = [NSUserDefaults standardUserDefaults];
+  [defs setObject:@(NAMRig::EngineMode::requestedFlags()) forKey:@"AxeFXAmpEngineFlags"];
+  [defs setObject:@(NAMRig::EngineMode::requestedInputCalibrationDbu()) forKey:@"AxeFXInputCalibrationDbu"];
+}
+
+- (void)toggleEngineEnhancedAction:(id)sender {
+  (void)sender;
+  const uint32_t cur = NAMRig::EngineMode::requestedFlags();
+  const uint32_t next = (cur == NAMRig::EngineMode::kNone)
+      ? NAMRig::EngineMode::kAllTier1And2
+      : NAMRig::EngineMode::kNone;
+  NAMRig::EngineMode::requestFlags(next);
+  [self persistEngineSettings];
+  [self refreshAudioMenusAndTitle];
+}
+
+- (void)selectEnginePreset:(NSMenuItem*)sender {
+  const uint32_t flags = static_cast<uint32_t>(sender.tag);
+  NAMRig::EngineMode::requestFlags(flags);
+  [self persistEngineSettings];
+  [self refreshAudioMenusAndTitle];
+}
+
+- (void)toggleEngineFlag:(NSMenuItem*)sender {
+  const uint32_t flag = static_cast<uint32_t>(sender.tag);
+  NAMRig::EngineMode::requestToggleFlag(flag);
+  [self persistEngineSettings];
+  [self refreshAudioMenusAndTitle];
+}
+
+- (void)selectInputCalibrationDbu:(NSMenuItem*)sender {
+  if (![sender.representedObject respondsToSelector:@selector(floatValue)]) return;
+  const float dbu = [sender.representedObject floatValue];
+  NAMRig::EngineMode::requestInputCalibrationDbu(dbu);
+  [self persistEngineSettings];
+  [self refreshAudioMenusAndTitle];
 }
 
 - (void)selectInputDevice:(NSMenuItem*)sender {
@@ -3209,6 +3439,14 @@ extern void openAICopilotInActiveRig();
   _appPerfSubmenu.delegate = self;
   perfMenuItem.submenu = _appPerfSubmenu;
   [appMenu addItem:perfMenuItem];
+
+  NSMenuItem* engineMenuItem = [[NSMenuItem alloc] initWithTitle:@"Amplifier Engine (A/B Eval)"
+                                                          action:NULL
+                                                   keyEquivalent:@""];
+  _appEngineSubmenu = [[NSMenu alloc] initWithTitle:@"Amplifier Engine (A/B Eval)"];
+  _appEngineSubmenu.delegate = self;
+  engineMenuItem.submenu = _appEngineSubmenu;
+  [appMenu addItem:engineMenuItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
 
@@ -3488,6 +3726,23 @@ extern void openAICopilotInActiveRig();
   [_window addTitlebarAccessoryViewController:titlebarRecAccessory];
 
   [_window center];
+
+  // Restore saved Amplifier Engine A/B evaluation mode & dBu calibration before
+  // starting the host so initial model loads use the selected resampling mode.
+  {
+    NSUserDefaults* defs = [NSUserDefaults standardUserDefaults];
+    NSNumber* savedFlags = [defs objectForKey:@"AxeFXAmpEngineFlags"];
+    const uint32_t initialFlags = savedFlags
+        ? [savedFlags unsignedIntValue]
+        : NAMRig::EngineMode::kAllTier1And2;
+    NAMRig::EngineMode::setFlags(initialFlags);
+
+    NSNumber* savedCal = [defs objectForKey:@"AxeFXInputCalibrationDbu"];
+    const float initialCal = savedCal
+        ? [savedCal floatValue]
+        : NAMRig::EngineMode::kDefaultInputCalibrationDbu;
+    NAMRig::EngineMode::setInputCalibrationDbu(initialCal);
+  }
 
   _host = std::make_unique<StandaloneHost>();
   NSString* error = nil;

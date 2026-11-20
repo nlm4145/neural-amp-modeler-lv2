@@ -7,6 +7,9 @@
 #include <cstddef>
 #include <cstring>
 
+#include "amp_engine_mode.h"
+#include "pin_eq.h"
+
 namespace NAMRig {
 
 // Optional speaker-load and excursion response between the amp and cabinet.
@@ -128,14 +131,22 @@ class SpeakerDynamics {
     thump_.reset();
     inductance_.reset();
     excursionLow_ = excursion_ = driveLow_ = 0.0;
+    excursionBand_ = thermalEnv_ = thumpFast_ = thumpSlow_ = 0.0;
     resetBreakupStates();
     smoothedDrive_ = smoothedCompression_ = smoothedThump_ = 0.0;
     smoothedResonance_ = smoothedDamping_ = 0.0;
+    dynamicDampingScale_ = 1.0;
     profile_ = kCaptured;
     sampleRate_ = 0.0;
+    matchedEq_ = false;
   }
 
   void bypassDamping() noexcept { smoothedDamping_ = 0.0; }
+  void setDynamicDampingScale(float scale) noexcept {
+    dynamicDampingScale_ = std::isfinite(scale)
+        ? std::clamp(static_cast<double>(scale), 0.25, 1.0)
+        : 1.0;
+  }
 
   // Quiet-signal magnitude (dB) of the load filters at `hz`, as process() runs
   // them once the smoothers settle: resonance, inductance and thump blended by
@@ -149,27 +160,41 @@ class SpeakerDynamics {
     if (profile == kCaptured || profile == kAuto) return 0.0;
     sampleRate = std::max(8000.0, sampleRate);
     const Profile& p = kProfiles_[profile];
+    const bool matchedEq = EngineMode::has(EngineMode::kOverdriveAdaaAndMatchedEq);
+    const bool enhancedDyn = EngineMode::has(EngineMode::kSpeakerPalmMuteDynamics);
     Biquad resonance, thump, inductance;
-    setPeaking(resonance, p.resonanceHz, p.resonanceDb, p.resonanceQ, sampleRate);
-    setPeaking(thump, p.thumpHz, p.thumpDb, p.thumpQ, sampleRate);
-    setHighShelf(inductance, std::min(p.inductanceHz, sampleRate * 0.2), p.inductanceDb,
-                 sampleRate);
+    if (matchedEq) {
+      setFromPin(resonance, pinCoefficients(kPinBell, p.resonanceHz, p.resonanceDb, p.resonanceQ, sampleRate));
+      setFromPin(thump, pinCoefficients(kPinBell, p.thumpHz, p.thumpDb, p.thumpQ, sampleRate));
+      setFromPin(inductance, pinCoefficients(kPinHighShelf, std::min(p.inductanceHz, sampleRate * 0.2),
+                                             p.inductanceDb, kButterworthQ, sampleRate));
+    } else {
+      setPeaking(resonance, p.resonanceHz, p.resonanceDb, p.resonanceQ, sampleRate);
+      setPeaking(thump, p.thumpHz, p.thumpDb, p.thumpQ, sampleRate);
+      setHighShelf(inductance, std::min(p.inductanceHz, sampleRate * 0.2), p.inductanceDb,
+                   sampleRate);
+    }
     const double loadScale = clamp01(resonanceAmount * 0.01f) * (1.0 - 0.6 * clamp01(dampingAmount));
     const double thumpWet = clamp01(thumpAmount * 0.01f);
+    const double midTrim = enhancedDyn
+        ? std::pow(10.0, -0.18 * loadScale * (p.resonanceDb + p.inductanceDb) / 20.0)
+        : 1.0;
     const std::complex<double> z1 = std::polar(1.0, -2.0 * kPi * hz / sampleRate);
     const auto blend = [&](const Biquad& f, double wet) {
       const std::complex<double> h = (f.b0 + f.b1 * z1 + f.b2 * z1 * z1) /
                                      (1.0 + f.a1 * z1 + f.a2 * z1 * z1);
       return 1.0 + wet * (h - 1.0);
     };
-    const double magnitude = std::abs(blend(resonance, loadScale) * blend(inductance, loadScale) *
-                                      blend(thump, thumpWet));
+    const double magnitude = midTrim * std::abs(blend(resonance, loadScale) *
+                                                blend(inductance, loadScale) *
+                                                blend(thump, thumpWet));
     return 20.0 * std::log10(std::max(1.0e-12, magnitude));
   }
 
   void process(float* samples, size_t count, double sampleRate, int profile,
                float driveAmount, float compressionAmount, float thumpAmount,
-               float resonanceAmount, float dampingAmount) noexcept {
+               float resonanceAmount, float dampingAmount,
+               float dynamicDampingScale = 1.0f) noexcept {
     if (!samples || count == 0) return;
     profile = clampProfile(profile);
     if (profile == kCaptured || profile == kAuto) {
@@ -177,8 +202,11 @@ class SpeakerDynamics {
       return;
     }
     sampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate) : 48000.0;
-    if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5)
-      configure(profile, sampleRate);
+    const bool matchedEq = EngineMode::has(EngineMode::kOverdriveAdaaAndMatchedEq);
+    const bool enhancedDyn = EngineMode::has(EngineMode::kSpeakerPalmMuteDynamics);
+    if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5 ||
+        matchedEq != matchedEq_)
+      configure(profile, sampleRate, matchedEq);
 
     const Profile& p = kProfiles_[profile];
     const double smooth = 1.0 - std::exp(-1.0 / (sampleRate * 0.010));
@@ -187,7 +215,21 @@ class SpeakerDynamics {
     const double thumpTarget = clamp01(thumpAmount * 0.01f);
     const double resonanceTarget = clamp01(resonanceAmount * 0.01f);
     const double dampingTarget = clamp01(dampingAmount);
+    const double argScale = std::isfinite(dynamicDampingScale)
+        ? std::clamp(static_cast<double>(dynamicDampingScale), 0.25, 1.0)
+        : 1.0;
+    const double dynDampScale = enhancedDyn
+        ? std::clamp(dynamicDampingScale_ * argScale, 0.25, 1.0)
+        : 1.0;
     const double excursionCoeff = 1.0 - std::exp(-2.0 * kPi * p.excursionHz / sampleRate);
+    const double excursionBandCoeff =
+        1.0 - std::exp(-2.0 * kPi * std::min(2.2 * p.excursionHz, sampleRate * 0.2) / sampleRate);
+    const double thumpFastAtt = 1.0 - std::exp(-1.0 / (sampleRate * 0.002));
+    const double thumpFastRel = 1.0 - std::exp(-1.0 / (sampleRate * 0.022));
+    const double thumpSlowAtt = 1.0 - std::exp(-1.0 / (sampleRate * 0.035));
+    const double thumpSlowRel = 1.0 - std::exp(-1.0 / (sampleRate * 0.090));
+    const double thermalAtt = 1.0 - std::exp(-1.0 / (sampleRate * 0.150));
+    const double thermalRel = 1.0 - std::exp(-1.0 / (sampleRate * 0.800));
     // ZDF/TPT Linkwitz-Riley LR2 (-12 dB/oct) crossover for the excursion band.
     const double driveFc = std::min(4.0 * p.excursionHz, sampleRate * 0.2);
     const double driveTan = std::tan(kPi * driveFc / sampleRate);
@@ -213,7 +255,9 @@ class SpeakerDynamics {
 
       // Filters run at each profile's maximum response; wet interpolation
       // gives smooth controls without recalculating coefficients per sample.
-      const double loadScale = smoothedResonance_ * (1.0 - 0.6 * smoothedDamping_);
+      const double loadScale = enhancedDyn
+          ? smoothedResonance_ * (1.0 - 0.6 * smoothedDamping_ * dynDampScale)
+          : smoothedResonance_ * (1.0 - 0.6 * smoothedDamping_);
       const double resonanceWet =
           loadScale / (1.0 + 2.0 * p.compression * smoothedCompression_ * excursion_);
       const double dry = samples[i];
@@ -226,13 +270,49 @@ class SpeakerDynamics {
       double x = dry + resonanceWet * (resonant - dry);
       const double inductive = inductance_.process(x);
       x += loadScale * (inductive - x);
-      const double thumped = thump_.process(x);
-      x += smoothedThump_ * (thumped - x);
 
-      excursionLow_ += excursionCoeff * (x - excursionLow_);
-      const double level = std::fabs(excursionLow_);
-      excursion_ += (level - excursion_) * (level > excursion_ ? attack : release);
-      x *= 1.0 / (1.0 + p.compression * smoothedCompression_ * excursion_);
+      if (!enhancedDyn) {
+        const double thumped = thump_.process(x);
+        x += smoothedThump_ * (thumped - x);
+
+        excursionLow_ += excursionCoeff * (x - excursionLow_);
+        const double level = std::fabs(excursionLow_);
+        excursion_ += (level - excursion_) * (level > excursion_ ? attack : release);
+        x *= 1.0 / (1.0 + p.compression * smoothedCompression_ * excursion_);
+      } else {
+        // Impedance mid-band saddle trim keeps perceived loudness neutral.
+        const double midTrim = std::pow(
+            10.0, -0.18 * loadScale * (p.resonanceDb + p.inductanceDb) / 20.0);
+        x *= midTrim;
+
+        // Low-band onset transient drives dynamic cabinet Thump (explosive
+        // palm-mute punch without bloating sustained notes).
+        excursionLow_ += excursionCoeff * (x - excursionLow_);
+        const double level = std::fabs(excursionLow_);
+        thumpFast_ += (level - thumpFast_) * (level > thumpFast_ ? thumpFastAtt : thumpFastRel);
+        thumpSlow_ += (level - thumpSlow_) * (level > thumpSlow_ ? thumpSlowAtt : thumpSlowRel);
+        const double onsetRatio = std::clamp(
+            (thumpFast_ - thumpSlow_) / std::max(0.02, thumpFast_ + 0.02), 0.0, 1.0);
+        const double dynThumpWet = smoothedThump_ * (0.30 + 1.15 * onsetRatio);
+        const double thumped = thump_.process(x);
+        x += dynThumpWet * (thumped - x);
+
+        // Low-band-only mechanical excursion compression preserves 1.5-5 kHz
+        // pick clarity during heavy 82 Hz palm mutes, paired with subtle slow
+        // broadband voice-coil thermal glue.
+        excursion_ += (level - excursion_) * (level > excursion_ ? attack : release);
+        excursionBand_ += excursionBandCoeff * (x - excursionBand_);
+        const double xHigh = x - excursionBand_;
+        const double excursionGain =
+            1.0 / (1.0 + 1.15 * p.compression * smoothedCompression_ * excursion_);
+        x = xHigh + excursionBand_ * excursionGain;
+
+        const double absX = std::fabs(x);
+        thermalEnv_ += (absX - thermalEnv_) * (absX > thermalEnv_ ? thermalAtt : thermalRel);
+        const double thermalGain =
+            1.0 / (1.0 + 0.16 * p.compression * smoothedCompression_ * std::min(1.5, thermalEnv_));
+        x *= thermalGain;
+      }
 
       const bool breakupNeeded = driveTarget > 1.0e-6 || smoothedDrive_ > 1.0e-6 ||
                                  std::fabs(dcPrevIn_) > 1.0e-6 || std::fabs(dcPrevOut_) > 1.0e-6;
@@ -389,6 +469,13 @@ class SpeakerDynamics {
     prevResidual = rCur;
     return out;
   }
+  static void setFromPin(Biquad& f, const PinCoeffs& c) noexcept {
+    f.b0 = c.b0;
+    f.b1 = c.b1;
+    f.b2 = c.b2;
+    f.a1 = c.a1;
+    f.a2 = c.a2;
+  }
   static void setPeaking(Biquad& f, double hz, double gainDb, double q,
                          double rate) noexcept {
     const double A = std::pow(10.0, gainDb / 40.0);
@@ -429,23 +516,35 @@ class SpeakerDynamics {
     thump_.reset();
     inductance_.reset();
     excursionLow_ = excursion_ = driveLow_ = 0.0;
+    excursionBand_ = thermalEnv_ = thumpFast_ = thumpSlow_ = 0.0;
     resetBreakupStates();
   }
 
-  void configure(int profile, double rate) noexcept {
+  void configure(int profile, double rate, bool matchedEq) noexcept {
     profile_ = profile;
     sampleRate_ = rate;
+    matchedEq_ = matchedEq;
     clearAudioStates();
     const Profile& p = kProfiles_[profile_];
-    setPeaking(resonance_, p.resonanceHz, p.resonanceDb, p.resonanceQ, rate);
-    setPeaking(thump_, p.thumpHz, p.thumpDb, p.thumpQ, rate);
-    setHighShelf(inductance_, std::min(p.inductanceHz, rate * 0.2), p.inductanceDb, rate);
+    if (matchedEq_) {
+      setFromPin(resonance_, pinCoefficients(kPinBell, p.resonanceHz, p.resonanceDb, p.resonanceQ, rate));
+      setFromPin(thump_, pinCoefficients(kPinBell, p.thumpHz, p.thumpDb, p.thumpQ, rate));
+      setFromPin(inductance_, pinCoefficients(kPinHighShelf, std::min(p.inductanceHz, rate * 0.2),
+                                              p.inductanceDb, kButterworthQ, rate));
+    } else {
+      setPeaking(resonance_, p.resonanceHz, p.resonanceDb, p.resonanceQ, rate);
+      setPeaking(thump_, p.thumpHz, p.thumpDb, p.thumpQ, rate);
+      setHighShelf(inductance_, std::min(p.inductanceHz, rate * 0.2), p.inductanceDb, rate);
+    }
   }
 
   int profile_ = kCaptured;
   double sampleRate_ = 0.0;
+  bool matchedEq_ = false;
   Biquad resonance_, thump_, inductance_;
   double excursionLow_ = 0.0, excursion_ = 0.0, driveLow_ = 0.0;
+  double excursionBand_ = 0.0, thermalEnv_ = 0.0;
+  double thumpFast_ = 0.0, thumpSlow_ = 0.0;
   double lrState1_ = 0.0, lrState2_ = 0.0;
   double prevDriveLow_ = 0.0, prevLowResidual_ = 0.0;
   double coneIc1_ = 0.0, coneIc2_ = 0.0;
@@ -454,6 +553,7 @@ class SpeakerDynamics {
   double crossoverMix_ = 0.0;
   double smoothedDrive_ = 0.0, smoothedCompression_ = 0.0;
   double smoothedThump_ = 0.0, smoothedResonance_ = 0.0, smoothedDamping_ = 0.0;
+  double dynamicDampingScale_ = 1.0;
 };
 
 }  // namespace NAMRig

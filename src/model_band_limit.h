@@ -44,10 +44,13 @@ class ModelBandLimit {
     bool bessel6 = false;
   };
 
-  static Params autoInterStageParams(double modelRate) noexcept {
+  static Params autoInterStageParams(double modelRate, bool tighterGuitarBand = false) noexcept {
     const double rate = modelRate > 0.0 ? modelRate : 48000.0;
+    const double cutoff = tighterGuitarBand
+        ? std::min(14500.0, 0.34 * rate)
+        : (0.44 * rate);
     return Params{
-        clampCutoffHz(static_cast<float>(0.44 * rate)),
+        clampCutoffHz(static_cast<float>(cutoff)),
         2,  // 3 biquad sections = 6th-order Bessel
         kDefaultRippleDb,
         true,

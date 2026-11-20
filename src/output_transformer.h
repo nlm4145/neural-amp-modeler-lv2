@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "amp_engine_mode.h"
+#include "pin_eq.h"
 #include "transformer_controls.h"
 
 namespace NAMRig {
@@ -89,7 +91,11 @@ public:
 
   void reset() {
     flux_ = 0.0;
+    prevFlux_ = 0.0;
+    prevX_ = 0.0;
     saturatedFlux_ = 0.0;
+    dcPrevIn_ = 0.0;
+    dcPrevOut_ = 0.0;
     highPass_.reset();
     leakage_.reset();
     voice_.reset();
@@ -102,15 +108,21 @@ public:
     if (!samples || count == 0) return;
     profile = clampProfile(profile);
     sampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate) : 48000.0;
+    const bool matchedAndAdaa = EngineMode::has(EngineMode::kOverdriveAdaaAndMatchedEq);
+    const bool blockDc = EngineMode::has(EngineMode::kInterStageDcBlocking);
+
     TransformerAdjustments target;
     for (size_t i = 0; i < target.size(); ++i) {
       const auto& c = kTransformerControls[i];
       target[i] = std::isfinite(adjustments[i])
           ? std::clamp(adjustments[i], c.minimum, c.maximum) : c.defaultValue;
     }
-    if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5)
-      configure(profile, sampleRate, target);
+    if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5 ||
+        matchedAndAdaa != matchedEq_)
+      configure(profile, sampleRate, target, matchedAndAdaa);
     if (profile_ == kCaptured) return;
+
+    const double dcR = std::exp(-2.0 * kPi * 5.0 / sampleRate_);
 
     for (size_t i = 0; i < count; ++i) {
       if (chunkRemaining_ == 0) {
@@ -132,13 +144,33 @@ public:
       double x = highPass_.process(samples[i]);
       x = voice_.process(x);
 
+      const double prevFlux = flux_;
       flux_ += fluxCoeff_ * (x - flux_);
-      const double saturated =
-          (sigmoid(drive_ * flux_ + asymmetry_) - sigmoid(asymmetry_)) / drive_;
-      const double coreVoltage =
-          (saturated - (1.0 - fluxCoeff_) * saturatedFlux_) / fluxCoeff_;
-      saturatedFlux_ = saturated;
-      double y = x + saturationMix_ * (coreVoltage - x);
+      double coreResidual = 0.0;
+      if (!matchedAndAdaa) {
+        const double saturated =
+            (sigmoid(drive_ * flux_ + asymmetry_) - sigmoid(asymmetry_)) / drive_;
+        const double coreVoltage =
+            (saturated - (1.0 - fluxCoeff_) * saturatedFlux_) / fluxCoeff_;
+        saturatedFlux_ = saturated;
+        coreResidual = coreVoltage - x;
+      } else {
+        const double saturated = evalFluxAdaa(prevFlux, flux_, drive_, asymmetry_);
+        const double coreVoltage =
+            (saturated - (1.0 - fluxCoeff_) * saturatedFlux_) / fluxCoeff_;
+        saturatedFlux_ = saturated;
+        prevFlux_ = prevFlux;
+        const double xHalf = 0.5 * (x + prevX_);
+        prevX_ = x;
+        coreResidual = coreVoltage - xHalf;
+      }
+      if (blockDc) {
+        const double dcBalanced = coreResidual - dcPrevIn_ + dcR * dcPrevOut_;
+        dcPrevIn_ = coreResidual;
+        dcPrevOut_ = dcBalanced;
+        coreResidual = dcBalanced;
+      }
+      double y = x + saturationMix_ * coreResidual;
 
       y = leakage_.process(y);
       samples[i] = static_cast<float>(highCut_.process(y) * makeup_);
@@ -190,6 +222,30 @@ private:
 
   static double sigmoid(double x) { return x / std::sqrt(1.0 + x * x); }
 
+  static double fluxAntideriv(double u, double drive, double asym, double sigAsym) {
+    const double z = drive * u + asym;
+    return (std::sqrt(1.0 + z * z) / drive - sigAsym * u) / drive;
+  }
+
+  static double evalFluxAdaa(double uPrev, double uCur, double drive, double asym) {
+    const double sigAsym = sigmoid(asym);
+    const double du = uCur - uPrev;
+    if (std::fabs(du) < 1.0e-6) {
+      const double uMid = 0.5 * (uPrev + uCur);
+      return (sigmoid(drive * uMid + asym) - sigAsym) / drive;
+    }
+    return (fluxAntideriv(uCur, drive, asym, sigAsym) -
+            fluxAntideriv(uPrev, drive, asym, sigAsym)) / du;
+  }
+
+  static void setFromPin(Biquad& f, const PinCoeffs& c) {
+    f.b0 = c.b0;
+    f.b1 = c.b1;
+    f.b2 = c.b2;
+    f.a1 = c.a1;
+    f.a2 = c.a2;
+  }
+
   static void setHighPass(Biquad& f, double hz, double rate) {
     const double w = 2.0 * kPi * hz / rate;
     const double c = std::cos(w), s = std::sin(w);
@@ -228,9 +284,11 @@ private:
     f.a2 = (1.0 - alpha / A) / a0;
   }
 
-  void configure(int profile, double rate, const TransformerAdjustments& target) {
+  void configure(int profile, double rate, const TransformerAdjustments& target,
+                 bool matchedEq) {
     profile_ = clampProfile(profile);
     sampleRate_ = rate;
+    matchedEq_ = matchedEq;
     reset();
     std::copy(target.begin(), target.end(), adjustments_.begin());
     smoothCoeff_ = 1.0 - std::exp(-32.0 / (sampleRate_ * 0.020));
@@ -240,16 +298,30 @@ private:
 
   void applyParameters(const Parameters& p) {
     const double band = sampleRate_ * 0.42;
-    setHighPass(highPass_, p.lowCutHz, sampleRate_);
-    setPeaking(voice_, std::min(p.voiceHz, band), p.voiceDb, p.voiceQ, sampleRate_);
-    setPeaking(leakage_, std::min(p.leakageHz, band * 0.9), p.leakageDb,
-               p.leakageQ, sampleRate_);
-    setLowPass(highCut_, std::min(p.highCutHz, band), sampleRate_);
+    if (matchedEq_) {
+      setFromPin(highPass_, pinPassCoefficients(true, p.lowCutHz, sampleRate_));
+      setFromPin(voice_, pinCoefficients(kPinBell, std::min(p.voiceHz, band),
+                                         p.voiceDb, p.voiceQ, sampleRate_));
+      setFromPin(leakage_, pinCoefficients(kPinBell, std::min(p.leakageHz, band * 0.9),
+                                           p.leakageDb, p.leakageQ, sampleRate_));
+      setFromPin(highCut_, pinPassCoefficients(false, std::min(p.highCutHz, band), sampleRate_));
+    } else {
+      setHighPass(highPass_, p.lowCutHz, sampleRate_);
+      setPeaking(voice_, std::min(p.voiceHz, band), p.voiceDb, p.voiceQ, sampleRate_);
+      setPeaking(leakage_, std::min(p.leakageHz, band * 0.9), p.leakageDb,
+                 p.leakageQ, sampleRate_);
+      setLowPass(highCut_, std::min(p.highCutHz, band), sampleRate_);
+    }
     // Both flux samples must use the same drive curve, or the inverse
     // integrator amplifies the curve change into a voltage impulse.
-    if (p.drive != drive_)
-      saturatedFlux_ =
-          (sigmoid(p.drive * flux_ + p.asymmetry) - sigmoid(p.asymmetry)) / p.drive;
+    if (p.drive != drive_) {
+      if (matchedEq_) {
+        saturatedFlux_ = evalFluxAdaa(prevFlux_, flux_, p.drive, p.asymmetry);
+      } else {
+        saturatedFlux_ =
+            (sigmoid(p.drive * flux_ + p.asymmetry) - sigmoid(p.asymmetry)) / p.drive;
+      }
+    }
     fluxCoeff_ = 1.0 - std::exp(-2.0 * kPi * p.fluxHz / sampleRate_);
     drive_ = p.drive;
     saturationMix_ = p.saturationMix;
@@ -259,12 +331,17 @@ private:
 
   int profile_ = kCaptured;
   double sampleRate_ = 0.0;
+  bool matchedEq_ = false;
   std::array<double, kTransformerControlCount> adjustments_{};
   double smoothCoeff_ = 1.0;
   size_t chunkRemaining_ = 0;
   Biquad highPass_, leakage_, voice_, highCut_;
   double flux_ = 0.0;
+  double prevFlux_ = 0.0;
+  double prevX_ = 0.0;
   double saturatedFlux_ = 0.0;
+  double dcPrevIn_ = 0.0;
+  double dcPrevOut_ = 0.0;
   double fluxCoeff_ = 1.0;
   double drive_ = 1.0;
   double saturationMix_ = 0.0;

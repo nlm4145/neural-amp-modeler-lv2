@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@
 #include "oversample.h"
 #include "oversample_modes.h"
 #include "rate_adapter.h"
+#include "amp_engine_mode.h"
 #include "drop_pitch.h"
 #include "model_band_limit.h"
 #include "dynamics.h"
@@ -468,6 +470,11 @@ private:
   int tubeRequested = PowerTube::kCaptured;
   int tubeApplied = PowerTube::kCaptured;
   bool tubeLatched = false;
+  uint32_t engineFlagsRequested = EngineMode::kNone;
+  uint32_t engineFlagsApplied = EngineMode::kNone;
+  bool engineFlagsLatched = false;
+  float calibrationDbuRequested = EngineMode::kDefaultInputCalibrationDbu;
+  float calibrationDbuApplied = EngineMode::kDefaultInputCalibrationDbu;
   // Largest block of the internal DSP, and the host block it was derived from.
   int32_t maxBufferSize = 512;
   int32_t hostMaxBufferSize = 512;
@@ -606,6 +613,50 @@ private:
   std::array<size_t, kStageCount> nativeQueued{};
   std::array<uint32_t, kStageCount> nativePadding{};
   std::array<bool, kStageCount> nativePrimed{};
+  // Per-stage rational resampling for non-divisible model rates (e.g. 44.1 kHz
+  // WaveNet/LSTM models inside 48/96/192 kHz sessions). 11173 = 76 * 147 + 1
+  // yields an exact integer 76-frame roundtrip latency in session frames.
+  // Handed off via lock-free atomic side-slots so LV2 worker message ABI stays
+  // unchanged for external dlopen harnesses.
+  static constexpr int kModelRateUp = 147;
+  static constexpr int kModelRateDown = 160;
+  static constexpr int kModelRateProtoLength = 11173;
+  static constexpr double kModelRateStopbandDb = 100.0;
+  static constexpr uint32_t kModelRateLatencyFrames = 76u;
+  struct StageRateBundle {
+    RationalResampler rateIn;
+    RationalResampler rateOut;
+    double resampledBaseRate = 0.0;
+    uint32_t rateLatencyFrames = 0u;
+    uint64_t generation = 0u;
+  };
+  static constexpr size_t kStagedRateSlots = 8;
+  static constexpr size_t kRetiredRateSlots = 32;
+  std::array<std::array<std::atomic<StageRateBundle*>, kStagedRateSlots>, kStageCount> stagedRateBundles{};
+  std::array<std::atomic<StageRateBundle*>, kRetiredRateSlots> retiredRateBundles{};
+  std::array<StageRateBundle*, kStageCount> activeRateBundles{};
+  std::array<StageRateBundle*, kStageCount> pendingRateBundles{};
+  std::array<std::vector<float>, kStageCount> stageRateMidBuf{};
+  std::array<std::vector<float>, kStageCount> stageRateOutBuf{};
+  std::array<std::array<float, 8>, kStageCount> stageRateQueue{};
+  std::array<size_t, kStageCount> stageRateQueued{};
+
+  void retireRateBundle(StageRateBundle* bundle) noexcept {
+    if (!bundle) return;
+    for (auto& slot : retiredRateBundles) {
+      StageRateBundle* expected = nullptr;
+      if (slot.compare_exchange_strong(expected, bundle, std::memory_order_acq_rel))
+        return;
+    }
+    // Fallback if all 32 retirement slots are unexpectedly full: avoid leak on teardown.
+    delete bundle;
+  }
+
+  void drainRetiredRateBundles() noexcept {
+    for (auto& slot : retiredRateBundles) {
+      delete slot.exchange(nullptr, std::memory_order_acq_rel);
+    }
+  }
   // Two coherent cabinets add up to +3 dB in the lows under the equal-power
   // blend; this shelf takes that back while both are active.
   Biquad dualCabShelf, dualCabShelfR;
@@ -681,13 +732,15 @@ private:
     return stageOversample(stage);
   }
 
-  // Session rate over the model's native rate when the stage must run at its
-  // native rate: 1 = same rate, 2/4/8 = decimation cascade levels, 0 = the
-  // stage follows its oversample domain. Unsupported ratios fall back to 1.
+  // Session rate (or stage's rational base rate) over the model's native rate
+  // when the stage must run at its native rate: 1 = same rate, 2/4/8 = decimation
+  // cascade levels, 0 = the stage follows its oversample domain.
   int nativeDecimation(size_t stage) const {
     const double native = stageNativeRate[stage];
-    if (native <= 0.0 || sampleRate <= 0.0) return 0;
-    const double ratio = sampleRate / native;
+    const double baseRate = activeRateBundles[stage]
+        ? activeRateBundles[stage]->resampledBaseRate : sampleRate;
+    if (native <= 0.0 || baseRate <= 0.0) return 0;
+    const double ratio = baseRate / native;
     for (int decimation : {1, 2, 4, 8})
       if (std::fabs(ratio - decimation) < 1.0e-3) return decimation;
     return 1;
@@ -707,7 +760,9 @@ private:
   // small queue carries the surplus into the next block.
   template <class Body>
   uint32_t runNativeDomain(size_t stage, float* samples, uint32_t count,
-                           int decimation, Body&& body) noexcept {
+                           int decimation, Body&& body,
+                           double baseRateOverride = 0.0) noexcept {
+    const double baseRate = baseRateOverride > 0.0 ? baseRateOverride : sampleRate;
     const size_t levels = cascadeLevels(decimation);
     float* bufs[2] = {osScratch[stage].data(), osScratch2[stage].data()};
     if (!nativePrimed[stage]) {
@@ -721,7 +776,7 @@ private:
     float* produced = bufs[(levels - 1) % 2];
     size_t back = 0;
     if (n > 0) {
-      body(produced, static_cast<uint32_t>(n), sampleRate / decimation);
+      body(produced, static_cast<uint32_t>(n), baseRate / decimation);
       back = n;
       for (size_t c = levels; c-- > 0;) {
         float* out = produced == bufs[0] ? bufs[1] : bufs[0];
@@ -758,6 +813,56 @@ private:
     nativePrimed[stage] = false;
     nativeQueued[stage] = 0;
     nativePadding[stage] = 0;
+  }
+
+  void resetRationalStageStream(size_t stage) noexcept {
+    if (activeRateBundles[stage]) {
+      activeRateBundles[stage]->rateIn.reset();
+      activeRateBundles[stage]->rateOut.reset();
+    }
+    stageRateQueued[stage] = 0;
+    stageRateQueue[stage].fill(0.0f);
+  }
+
+  template <class Body>
+  uint32_t runRationalStageDomain(size_t stage, float* samples, uint32_t count,
+                                  Body&& body) noexcept {
+    StageRateBundle* bundle = activeRateBundles[stage];
+    if (!bundle || count == 0) return count;
+    auto& inR = bundle->rateIn;
+    auto& outR = bundle->rateOut;
+    if (count > inR.maxInput() || count + 16 > stageRateMidBuf[stage].size() ||
+        outR.maxOutput(count + 16) > stageRateOutBuf[stage].size())
+      return count;
+    const size_t m = inR.process(samples, count, stageRateMidBuf[stage].data());
+    if (m > 0) {
+      body(stageRateMidBuf[stage].data(), static_cast<uint32_t>(m),
+           bundle->resampledBaseRate);
+    }
+    const size_t produced = m > 0
+        ? outR.process(stageRateMidBuf[stage].data(), m, stageRateOutBuf[stage].data())
+        : 0;
+    auto& queue = stageRateQueue[stage];
+    size_t& queued = stageRateQueued[stage];
+    const size_t fromQueue = std::min<size_t>(queued, count);
+    std::copy(queue.begin(), queue.begin() + fromQueue, samples);
+    std::copy(queue.begin() + fromQueue, queue.begin() + queued, queue.begin());
+    queued -= fromQueue;
+    const size_t fromProduced = std::min<size_t>(produced, count - fromQueue);
+    std::copy(stageRateOutBuf[stage].begin(),
+              stageRateOutBuf[stage].begin() + fromProduced,
+              samples + fromQueue);
+    const size_t written = fromQueue + fromProduced;
+    const size_t surplus = std::min(produced - fromProduced, queue.size() - queued);
+    std::copy(stageRateOutBuf[stage].begin() + fromProduced,
+              stageRateOutBuf[stage].begin() + fromProduced + surplus,
+              queue.begin() + queued);
+    queued += surplus;
+    if (written < count) {
+      const float fill = written > 0 ? samples[written - 1] : 0.0f;
+      std::fill(samples + written, samples + count, fill);
+    }
+    return count;
   }
 
   // TRUE modes target an ABSOLUTE domain rate pinned to the user's session
@@ -814,6 +919,7 @@ private:
     return value >= 0.5f;
   }
   void reloadModelsForOversample();
+  void reloadModelsForRateResampling();
   void reloadWavIrsForTrim();
   void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
   void commitPendingSwitches();
@@ -828,14 +934,17 @@ private:
                         uint32_t cabBPreparedFrames = 0) noexcept;
   void runModel(size_t stage, NeuralAudio::NeuralModel* model, float* samples,
                 size_t count, double domainRate,
-                bool upstreamNonlinear = false) noexcept;
+                bool upstreamNonlinear = false,
+                float* busDbu = nullptr,
+                bool hasDownstreamAmp = false) noexcept;
   uint32_t processTrueCab(size_t stage, float* samples, uint32_t count,
-                          int factor) noexcept;
+                          int factor, double baseRateOverride = 0.0) noexcept;
   // Cab B's .nam model at the session rate or in its native-rate domain.
   void processCabB(float* samples, uint32_t count) noexcept;
   // Extra pipeline frames of each parallel cabinet branch beyond the serial
   // chain (Cab A's own True cascade or native domain, Cab B's native domain).
   void parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcept;
+  bool cabUpstreamNonlinearActive = false;
   bool cab2AlignActive = false;
   bool cabAlignActive = false;
   static constexpr size_t stageIndex(Stage stage) {

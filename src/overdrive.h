@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "amp_engine_mode.h"
+
 namespace NAMRig {
 
 // Tube Screamer-style overdrive at the front of Pre-Amp Tonal Sculpt, ahead of
@@ -52,15 +54,27 @@ class Overdrive {
 
   void reset() noexcept {
     bass_ = lp_ = tone_ = bias_ = 0.0;
+    tptBass_ = tptLp_ = tptTone_ = 0.0;
+    odDcIn_ = odDcOut_ = 0.0;
     smoothOn_ = smoothDrive_ = smoothTone_ = smoothLevel_ = 0.0f;
     smoothTight_ = kTightDefault;
     currentVoicing_ = targetVoicing_ = 0;
     voicingFade_ = 1.0f;
     primed_ = false;
-    for (ClipSlot& slot : clipSlots_) slot.valid = false;
+    lastEnhancedAdaa_ = false;
+    for (ClipSlot& slot : clipSlots_) {
+      slot.valid = false;
+      slot.prevY = 0.0;
+    }
   }
 
   bool active() const noexcept { return smoothOn_ > 0.0f; }
+
+  bool isPureClean() const noexcept {
+    return currentVoicing_ == static_cast<int>(Voicing::Clean) &&
+           targetVoicing_ == static_cast<int>(Voicing::Clean) &&
+           voicingFade_ >= 1.0f;
+  }
 
   // Dynamic self-biasing drift voltage across the feedback capacitor network (V).
   // Settles dynamically during pick attack with ~25 ms time constant.
@@ -116,7 +130,22 @@ class Overdrive {
     const float fadeStep = static_cast<float>(1.0 / (safeRate * 0.010));
     // Dynamic bias drift tracking: tau = 25 ms virtual-ground sag / feedback cap memory
     const double biasK = 1.0 - std::exp(-1.0 / (safeRate * 0.025));
-    const bool antialias = safeRate >= kAntialiasMinRate;
+    const bool enhancedAdaa = EngineMode::has(EngineMode::kOverdriveAdaaAndMatchedEq);
+    const bool interStageDc = EngineMode::has(EngineMode::kInterStageDcBlocking);
+    const bool tightZeroDrive = EngineMode::has(EngineMode::kPreAmpTightAndBrightCap);
+    const double odDcR = std::exp(-2.0 * kPi * 7.0 / safeRate);
+    if (enhancedAdaa != lastEnhancedAdaa_) {
+      for (ClipSlot& slot : clipSlots_) {
+        slot.valid = false;
+        slot.prevY = 0.0;
+      }
+      tptBass_ = bass_;
+      tptLp_ = lp_;
+      tptTone_ = tone_;
+      lastEnhancedAdaa_ = enhancedAdaa;
+    }
+    const bool antialias = enhancedAdaa || safeRate >= kAntialiasMinRate;
+    const bool useAdaa2x = enhancedAdaa && safeRate < kAntialiasMinRate;
     if (!antialias)
       for (ClipSlot& slot : clipSlots_) slot.valid = false;
     float cachedDrive = -1.0f, cachedTight = -1.0f, cachedTone = -1.0f, cachedLevel = -999.0f;
@@ -135,15 +164,17 @@ class Overdrive {
 
       if (smoothDrive_ != cachedDrive) {
         g = branchGain(smoothDrive_);
-        lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * rate), rate);
+        const double fbHz = std::min(feedbackLowPassHz(smoothDrive_), 0.45 * safeRate);
+        lpK = enhancedAdaa ? tptOnePole(fbHz, safeRate) : onePole(fbHz, rate);
         cachedDrive = smoothDrive_;
       }
       if (smoothTight_ != cachedTight) {
-        hpK = onePole(smoothTight_, rate);
+        hpK = enhancedAdaa ? tptOnePole(smoothTight_, safeRate) : onePole(smoothTight_, rate);
         cachedTight = smoothTight_;
       }
       if (smoothTone_ != cachedTone) {
-        toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
+        const double tHz = std::min(toneHz(smoothTone_), 0.45 * safeRate);
+        toneK = enhancedAdaa ? tptOnePole(tHz, safeRate) : onePole(tHz, rate);
         cachedTone = smoothTone_;
       }
       if (smoothLevel_ != cachedLevel) {
@@ -157,18 +188,34 @@ class Overdrive {
       for (size_t i = 0; i < n; ++i) {
         on += onStep;
         const double x = s[i];
-        bass_ += hpK * (x - bass_);
-        lp_ += lpK * ((x - bass_) - lp_);
+        double bandPassed = 0.0;
+        if (enhancedAdaa) {
+          const double vBass = (x - tptBass_) * hpK;
+          const double bassOut = vBass + tptBass_;
+          tptBass_ = bassOut + vBass;
+          bass_ = bassOut;
+          const double hp = x - bassOut;
+          const double vLp = (hp - tptLp_) * lpK;
+          bandPassed = vLp + tptLp_;
+          tptLp_ = bandPassed + vLp;
+          lp_ = bandPassed;
+        } else {
+          bass_ += hpK * (x - bass_);
+          lp_ += lpK * ((x - bass_) - lp_);
+          bandPassed = lp_;
+        }
         // Clipper input is modulated by dynamic bias drift
-        const double u = g * lp_ - bias_;
+        const double u = g * bandPassed - bias_;
         const bool currentClean = currentVoicing_ == static_cast<int>(Voicing::Clean);
-        double clipped = shape(currentClean ? g * lp_ : u, currentVoicing_, 0, antialias);
+        double clipped = shape(currentClean ? g * bandPassed : u, currentVoicing_, 0,
+                               antialias, useAdaa2x);
         double biasSignal = currentClean ? 0.0 : clipped;
         if (voicingFade_ >= 1.0f) {
           clipSlots_[1].valid = false;
         } else {
           const bool targetClean = targetVoicing_ == static_cast<int>(Voicing::Clean);
-          const double c1 = shape(targetClean ? g * lp_ : u, targetVoicing_, 1, antialias);
+          const double c1 = shape(targetClean ? g * bandPassed : u, targetVoicing_, 1,
+                                  antialias, useAdaa2x);
           clipped = (1.0 - voicingFade_) * clipped + voicingFade_ * c1;
           biasSignal = (1.0 - voicingFade_) * biasSignal + voicingFade_ * (targetClean ? 0.0 : c1);
           voicingFade_ += fadeStep;
@@ -179,9 +226,40 @@ class Overdrive {
         }
         // Leak integrator models dynamic self-biasing charge (tau = 25 ms, 15% coupling factor)
         bias_ += biasK * (0.15 * biasSignal - bias_);
-        const double pedal = x + smoothDrive_ * clipped;
-        tone_ += toneK * (pedal - tone_);
-        s[i] = static_cast<float>(x + on * (tone_ * level - x));
+        if (interStageDc) {
+          if (currentClean && voicingFade_ >= 1.0f) {
+            odDcIn_ = odDcOut_ = 0.0;
+          } else {
+            // Output coupling cap blocks asymmetric diode DC before Amp NAM.
+            const double dcRemoved = clipped - odDcIn_ + odDcR * odDcOut_;
+            odDcIn_ = clipped;
+            odDcOut_ = dcRemoved;
+            clipped = dcRemoved;
+          }
+        }
+        double pedal;
+        if (tightZeroDrive) {
+          // Real TS/Precision-Drive zero-drive tightening: keep the Tight HPF
+          // mid-focus contour active even at Drive 0% (distortionless) while
+          // smoothly blending in diode saturation as Drive rises.
+          const double clipMix = std::sqrt(static_cast<double>(smoothDrive_));
+          const double cleanMid = 1.35 * bandPassed;
+          const double dryWeight = 0.55 + 0.45 * clipMix;
+          pedal = dryWeight * x + (1.0 - clipMix) * cleanMid + clipMix * clipped;
+        } else {
+          pedal = x + smoothDrive_ * clipped;
+        }
+        double toned = 0.0;
+        if (enhancedAdaa) {
+          const double vTone = (pedal - tptTone_) * toneK;
+          toned = vTone + tptTone_;
+          tptTone_ = toned + vTone;
+          tone_ = toned;
+        } else {
+          tone_ += toneK * (pedal - tone_);
+          toned = tone_;
+        }
+        s[i] = static_cast<float>(x + on * (toned * level - x));
       }
     }
     if (onTarget == 0.0f && smoothOn_ < 1.0e-4f) reset();
@@ -377,28 +455,44 @@ class Overdrive {
   struct ClipSlot {
     double x = 0.0;
     double integral = 0.0;
+    double prevY = 0.0;
     int voicing = 0;
     bool valid = false;
   };
 
+  static double evalAdaa1(double x0, double f0, double x1, double f1, int voicing) noexcept {
+    const double dx = x1 - x0;
+    return std::fabs(dx) > 1.0e-5 ? (f1 - f0) / dx : clip(0.5 * (x0 + x1), voicing);
+  }
+
   // The diode curve of one voicing. With antialias on, the output is the mean
   // of the curve between the last input and this input (first-order
   // antiderivative antialiasing), which removes most of the fold-back of the
-  // clipper harmonics. The linear voicing needs none.
-  double shape(double x, int voicing, int slotIndex, bool antialias) noexcept {
+  // clipper harmonics. Below 352 kHz in enhanced mode, 2x midpoint ADAA
+  // preserves high-frequency sparkle while suppressing aliasing down to 48 kHz.
+  double shape(double x, int voicing, int slotIndex, bool antialias,
+               bool adaa2x = false) noexcept {
     ClipSlot& slot = clipSlots_[static_cast<size_t>(slotIndex)];
     if (!antialias || voicing == static_cast<int>(Voicing::Clean)) {
       slot.valid = false;
+      slot.prevY = 0.0;
       return clip(x, voicing);
     }
     const double integral = clipIntegral(x, voicing);
     double y;
     if (!slot.valid || slot.voicing != voicing) {
       y = clip(x, voicing);
+      slot.prevY = y;
+    } else if (adaa2x) {
+      const double xMid = 0.5 * (slot.x + x);
+      const double fMid = clipIntegral(xMid, voicing);
+      const double yMid = evalAdaa1(slot.x, slot.integral, xMid, fMid, voicing);
+      const double yCur = evalAdaa1(xMid, fMid, x, integral, voicing);
+      y = 0.25 * slot.prevY + 0.5 * yMid + 0.25 * yCur;
+      slot.prevY = yCur;
     } else {
-      const double dx = x - slot.x;
-      y = std::fabs(dx) > 1.0e-5 ? (integral - slot.integral) / dx
-                                 : clip(0.5 * (x + slot.x), voicing);
+      y = evalAdaa1(slot.x, slot.integral, x, integral, voicing);
+      slot.prevY = y;
     }
     slot.x = x;
     slot.integral = integral;
@@ -412,16 +506,24 @@ class Overdrive {
   static double onePole(double hz, double rate) noexcept {
     return 1.0 - std::exp(-2.0 * kPi * hz / std::max(1.0, rate));
   }
+  static double tptOnePole(double hz, double rate) noexcept {
+    const double safeRate = std::max(1.0, rate);
+    const double g = std::tan(kPi * std::min(hz, 0.45 * safeRate) / safeRate);
+    return g / (1.0 + g);
+  }
   static void glide(float& value, float target, float coeff) noexcept {
     value += (target - value) * coeff;
     if (std::fabs(target - value) < 1.0e-5f) value = target;
   }
 
   double bass_ = 0.0, lp_ = 0.0, tone_ = 0.0, bias_ = 0.0;
+  double tptBass_ = 0.0, tptLp_ = 0.0, tptTone_ = 0.0;
+  double odDcIn_ = 0.0, odDcOut_ = 0.0;
   float smoothOn_ = 0.0f, smoothDrive_ = 0.0f, smoothTight_ = kTightDefault, smoothTone_ = 0.0f, smoothLevel_ = 0.0f;
   int currentVoicing_ = 0, targetVoicing_ = 0;
   float voicingFade_ = 1.0f;
   bool primed_ = false;
+  bool lastEnhancedAdaa_ = false;
 };
 
 }  // namespace NAMRig
