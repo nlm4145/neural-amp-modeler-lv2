@@ -144,8 +144,9 @@ int main() {
     CHECK(finite, "extreme pins at 1.536 MHz must stay finite and bounded");
   }
 
-  // The Speaker graph draws SpeakerDynamics::responseDb; with compression and
-  // drive at zero the DSP is linear and must measure exactly that.
+  // The Speaker graph draws SpeakerDynamics::responseDb (quiet-signal static
+  // magnitude); with compression and drive at zero, a quiet sine wave must
+  // match the drawn curve accurately.
   for (int profile = SpeakerDynamics::kResistive; profile < SpeakerDynamics::kProfileCount; ++profile) {
     for (double rate : {48000.0, 384000.0}) {
       const float thump = 70.0f, resonance = 80.0f, damping = 0.4f;
@@ -155,13 +156,13 @@ int main() {
         const size_t settle = static_cast<size_t>(rate * 0.3), span = static_cast<size_t>(rate * 0.1);
         std::vector<float> buf(settle + span);
         for (size_t i = 0; i < buf.size(); ++i)
-          buf[i] = static_cast<float>(0.1 * std::sin(2.0 * kPi * hz * i / rate));
+          buf[i] = static_cast<float>(0.001 * std::sin(2.0 * kPi * hz * i / rate));
         for (size_t start = 0; start < buf.size(); start += 512)
           spk.process(buf.data() + start, std::min<size_t>(512, buf.size() - start), rate, profile,
                       0.0f, 0.0f, thump, resonance, damping);
         double in = 0.0, out = 0.0;
         for (size_t i = settle; i < buf.size(); ++i) {
-          const double x = 0.1 * std::sin(2.0 * kPi * hz * i / rate);
+          const double x = 0.001 * std::sin(2.0 * kPi * hz * i / rate);
           in += x * x;
           out += static_cast<double>(buf[i]) * buf[i];
         }

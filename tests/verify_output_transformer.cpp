@@ -119,8 +119,9 @@ std::vector<float> factoryReference(std::vector<float> samples, double rate, int
   auto voice = bell(p.voiceHz, p.voiceDb, p.voiceQ);
   auto leak = bell(std::min(p.leakageHz, rate * 0.42 * 0.9), p.leakageDb, p.leakageQ);
   const double coeff = 1.0 - std::exp(-2.0 * kPi * p.fluxHz / rate);
+  const double dcR = std::exp(-2.0 * kPi * 5.0 / rate);
   const auto sigmoid = [](double x) { return x / std::sqrt(1.0 + x * x); };
-  double flux = 0, saturatedFlux = 0;
+  double flux = 0, saturatedFlux = 0, dcPrevIn = 0, dcPrevOut = 0;
   for (float& sample : samples) {
     const double x = voice.process(hp.process(sample));
     flux += coeff * (x - flux);
@@ -128,8 +129,12 @@ std::vector<float> factoryReference(std::vector<float> samples, double rate, int
                               sigmoid(p.asymmetry)) / p.drive;
     const double core = (saturated - (1.0 - coeff) * saturatedFlux) / coeff;
     saturatedFlux = saturated;
+    const double rawResidual = core - x;
+    const double coreResidual = rawResidual - dcPrevIn + dcR * dcPrevOut;
+    dcPrevIn = rawResidual;
+    dcPrevOut = coreResidual;
     sample = static_cast<float>(lp.process(leak.process(
-        x + p.saturationMix * (core - x))) * p.makeup);
+        x + p.saturationMix * coreResidual)) * p.makeup);
   }
   return samples;
 }

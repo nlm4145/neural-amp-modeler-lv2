@@ -68,6 +68,7 @@ set(RIG_CORE_SOURCES
 	oversample.cpp
 	oversample.h
 	oversample_modes.h
+	amp_engine_mode.h
 	amp_advanced.h
 	output_transformer.h
 	speaker_dynamics.h
@@ -327,6 +328,12 @@ if (APPLE)
 	target_include_directories(verify_parallel_cabs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
 	target_link_libraries(verify_parallel_cabs PRIVATE NeuralAudio ${ACCELERATE_FRAMEWORK})
+
+	add_executable(verify_amp_engine_eval EXCLUDE_FROM_ALL
+		../tests/verify_amp_engine_eval.cpp $<TARGET_OBJECTS:rig_dsp_core>)
+	target_include_directories(verify_amp_engine_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+		../deps/NeuralAudio ../deps/lv2/include ../deps/denormal)
+	target_link_libraries(verify_amp_engine_eval PRIVATE NeuralAudio ${ACCELERATE_FRAMEWORK})
 
 	add_library(neural_amp_modeler_ui MODULE
 		nam_ui.mm

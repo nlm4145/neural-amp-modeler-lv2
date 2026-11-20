@@ -90,6 +90,8 @@ public:
   void reset() {
     flux_ = 0.0;
     saturatedFlux_ = 0.0;
+    dcPrevIn_ = 0.0;
+    dcPrevOut_ = 0.0;
     highPass_.reset();
     leakage_.reset();
     voice_.reset();
@@ -102,6 +104,7 @@ public:
     if (!samples || count == 0) return;
     profile = clampProfile(profile);
     sampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate) : 48000.0;
+
     TransformerAdjustments target;
     for (size_t i = 0; i < target.size(); ++i) {
       const auto& c = kTransformerControls[i];
@@ -111,6 +114,8 @@ public:
     if (profile != profile_ || std::fabs(sampleRate - sampleRate_) > 0.5)
       configure(profile, sampleRate, target);
     if (profile_ == kCaptured) return;
+
+    const double dcR = std::exp(-2.0 * kPi * 5.0 / sampleRate_);
 
     for (size_t i = 0; i < count; ++i) {
       if (chunkRemaining_ == 0) {
@@ -138,7 +143,11 @@ public:
       const double coreVoltage =
           (saturated - (1.0 - fluxCoeff_) * saturatedFlux_) / fluxCoeff_;
       saturatedFlux_ = saturated;
-      double y = x + saturationMix_ * (coreVoltage - x);
+      const double rawResidual = coreVoltage - x;
+      const double coreResidual = rawResidual - dcPrevIn_ + dcR * dcPrevOut_;
+      dcPrevIn_ = rawResidual;
+      dcPrevOut_ = coreResidual;
+      double y = x + saturationMix_ * coreResidual;
 
       y = leakage_.process(y);
       samples[i] = static_cast<float>(highCut_.process(y) * makeup_);
@@ -247,9 +256,10 @@ private:
     setLowPass(highCut_, std::min(p.highCutHz, band), sampleRate_);
     // Both flux samples must use the same drive curve, or the inverse
     // integrator amplifies the curve change into a voltage impulse.
-    if (p.drive != drive_)
+    if (p.drive != drive_) {
       saturatedFlux_ =
           (sigmoid(p.drive * flux_ + p.asymmetry) - sigmoid(p.asymmetry)) / p.drive;
+    }
     fluxCoeff_ = 1.0 - std::exp(-2.0 * kPi * p.fluxHz / sampleRate_);
     drive_ = p.drive;
     saturationMix_ = p.saturationMix;
@@ -265,6 +275,8 @@ private:
   Biquad highPass_, leakage_, voice_, highCut_;
   double flux_ = 0.0;
   double saturatedFlux_ = 0.0;
+  double dcPrevIn_ = 0.0;
+  double dcPrevOut_ = 0.0;
   double fluxCoeff_ = 1.0;
   double drive_ = 1.0;
   double saturationMix_ = 0.0;

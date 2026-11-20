@@ -161,9 +161,10 @@ int main() {
   {
     const auto bessel = ModelBandLimit::autoInterStageParams(48000.0);
     const double pass5k = ModelBandLimit::responseDb(5000.0, 384000.0, 48000.0, bessel);
+    const double stop36k = ModelBandLimit::responseDb(36000.0, 384000.0, 48000.0, bessel);
     const double stop48k = ModelBandLimit::responseDb(48000.0, 384000.0, 48000.0, bessel);
     const double stop72k = ModelBandLimit::responseDb(72000.0, 384000.0, 48000.0, bessel);
-    check(pass5k > -0.3 && stop48k < -18.0 && stop72k < -38.0,
+    check(pass5k > -0.45 && stop36k < -22.0 && stop48k < -35.0 && stop72k < -50.0,
           "auto inter-stage Bessel6 stays flat in guitar band and attenuates ultrasonics");
 
     // Prime the 5 ms fade with zeros, then feed a clipped OD palm-mute waveform.

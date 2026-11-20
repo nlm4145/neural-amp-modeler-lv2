@@ -31,75 +31,130 @@ class AmpAdvanced {
 
   void resetPreAmp() noexcept {
     bright_.reset();
-    inputEq_.reset();
     midPush_.reset();
     smoothBright_ = smoothInputEq_ = smoothMidPush_ = 0.0f;
-    appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
+    appliedBright_ = appliedMidPush_ = -1.0f;
+    appliedBrightDrive_ = 1.0e9f;
+    tightHpfState_ = 0.0;
+    lowDetectState_ = 0.0;
+    tightEnv_ = 0.0;
   }
 
   void resetPostAmp(bool preserveTubeCharacter = false) noexcept {
-    const float character = smoothTubeCharacter_;
+    if (preserveTubeCharacter) {
+      const bool powerAlreadyNeutral =
+          smoothPresence_ == 0.0f && smoothDepth_ == 0.0f &&
+          smoothSag_ == 0.0f && smoothBias_ == 0.0f &&
+          smoothFeedback_ == 0.0f && smoothMaster_ == 0.0f;
+      if (powerAlreadyNeutral) {
+        // Power controls were already neutral; leave the active Tube's live
+        // envelopes, grid-blocking state, and DC blocker undisturbed.
+        return;
+      }
+      const float character = smoothTubeCharacter_;
+      resetLoop();
+      smoothTubeCharacter_ = character;
+      return;
+    }
     resetLoop();
-    if (preserveTubeCharacter) smoothTubeCharacter_ = character;
   }
   void resetTubeCharacter() noexcept { smoothTubeCharacter_ = 0.0f; }
   bool hasTubeCharacter() const noexcept { return smoothTubeCharacter_ > 0.0f; }
+  double lastDynamicDamping() const noexcept { return dynamicDamping_; }
 
   void processPreAmp(float* samples, size_t count, double rate,
                      float brightAmount, float inputEqAmount,
-                     float midPushAmount = 0.0f) noexcept {
+                     float midPushAmount = 0.0f,
+                     float ampDriveDb = 0.0f) noexcept {
     const float brightTarget = clamp01(brightAmount * 0.01f);
     const float inputEqTarget = clamp01(inputEqAmount * 0.01f);
     const float midPushTarget = std::isfinite(midPushAmount) ? clamp01(midPushAmount * 0.01f) : 0.0f;
     if (brightTarget <= 0.0f && inputEqTarget <= 0.0f && midPushTarget <= 0.0f &&
         smoothBright_ <= 0.0f && smoothInputEq_ <= 0.0f && smoothMidPush_ <= 0.0f) {
       bright_.reset();
-      inputEq_.reset();
       midPush_.reset();
-      appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
+      tightHpfState_ = 0.0;
+      lowDetectState_ = 0.0;
+      tightEnv_ = 0.0;
+      appliedBright_ = appliedMidPush_ = -1.0f;
+      appliedBrightDrive_ = 1.0e9f;
       return;
     }
     if (rate != appliedPreRate_) {
-      appliedBright_ = appliedInputEq_ = appliedMidPush_ = -1.0f;
+      appliedBright_ = appliedMidPush_ = -1.0f;
+      appliedBrightDrive_ = 1.0e9f;
       appliedPreRate_ = rate;
     }
+    const float safeDriveDb = std::isfinite(ampDriveDb)
+        ? std::clamp(ampDriveDb, -24.0f, 24.0f) : 0.0f;
     const float fullSmooth = chunkCoeff(rate, kChunk);
+    const double safeRate = std::max(8000.0, rate);
+    const double lowDetectCoeff = 1.0 - std::exp(-2.0 * kPi * 160.0 / safeRate);
+    const double tightAttack = 1.0 - std::exp(-1.0 / (safeRate * 0.003));
+    const double tightRelease = 1.0 - std::exp(-1.0 / (safeRate * 0.045));
+
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
       const float smooth = (n == kChunk) ? fullSmooth : chunkCoeff(rate, n);
       glide(smoothBright_, brightTarget, smooth);
       glide(smoothInputEq_, inputEqTarget, smooth);
       glide(smoothMidPush_, midPushTarget, smooth);
-      if (smoothInputEq_ != appliedInputEq_) {
-        if (smoothInputEq_ > 0.0f)
-          setHighPass(inputEq_, 20.0f + 160.0f * smoothInputEq_, rate);
-        else
-          inputEq_.reset();
-        appliedInputEq_ = smoothInputEq_;
+
+      if (smoothInputEq_ <= 0.0f) {
+        tightHpfState_ = 0.0;
+        lowDetectState_ = 0.0;
+        tightEnv_ = 0.0;
       }
-      if (smoothBright_ != appliedBright_) {
-        if (smoothBright_ > 0.0f)
-          setShelf(bright_, 6.0f * smoothBright_, 2200.0f, rate, true);
-        else
+      // Gain-coupled Bright Cap: strongest (+7.5 dB @ 2.6 kHz) at low/unity drive,
+      // naturally tapering down to +2.5 dB as Amp Drive increases toward +24 dB.
+      if (smoothBright_ != appliedBright_ ||
+          std::fabs(safeDriveDb - appliedBrightDrive_) > 0.05f) {
+        if (smoothBright_ > 0.0f) {
+          const double driveNorm = std::clamp(static_cast<double>(safeDriveDb) / 24.0, 0.0, 1.0);
+          const double brightMaxDb = 7.5 - 5.0 * driveNorm;
+          const double brightDb = brightMaxDb * static_cast<double>(smoothBright_);
+          setShelf(bright_, brightDb, 2600.0f, rate, true);
+        } else {
           bright_.reset();
+        }
         appliedBright_ = smoothBright_;
+        appliedBrightDrive_ = safeDriveDb;
       }
-      // Overdrive-style mid hump in front of the capture (Tube Screamer /
-      // tight-boost voicing); pair with Input EQ for the low cut.
       if (smoothMidPush_ != appliedMidPush_) {
-        if (smoothMidPush_ > 0.0f)
-          setPeak(midPush_, kMidPushMaxDb * smoothMidPush_, kMidPushHz, kMidPushQ, rate);
-        else
+        if (smoothMidPush_ > 0.0f) {
+          const double midDb = kMidPushMaxDb * static_cast<double>(smoothMidPush_);
+          setPeak(midPush_, midDb, kMidPushHz, kMidPushQ, rate);
+        } else {
           midPush_.reset();
+        }
         appliedMidPush_ = smoothMidPush_;
       }
       const bool eqOn = smoothInputEq_ > 0.0f;
       const bool brightOn = smoothBright_ > 0.0f;
       const bool midOn = smoothMidPush_ > 0.0f;
+      const double eqAmt = static_cast<double>(smoothInputEq_);
+      const double baseFc = 40.0 + 240.0 * eqAmt;
+      const double tightWet = std::min(1.0, eqAmt * 10.0);
+      const double invRate = 1.0 / safeRate;
       float* s = samples + start;
       for (size_t i = 0; i < n; ++i) {
         double x = s[i];
-        if (eqOn) x = inputEq_.advance(x);
+        if (eqOn) {
+          // 6 dB/oct passive-style TPT HPF + dynamic palm-mute tightening on < 160 Hz chugs.
+          lowDetectState_ += lowDetectCoeff * (x - lowDetectState_);
+          const double lowLevel = std::fabs(lowDetectState_);
+          tightEnv_ += (lowLevel - tightEnv_) *
+                       (lowLevel > tightEnv_ ? tightAttack : tightRelease);
+          const double chug = std::clamp((tightEnv_ - 0.04) * 3.0, 0.0, 1.0);
+          const double fc = std::min(rate * 0.25, baseFc * (1.0 + 0.46 * chug * eqAmt));
+          const double u = kPi * fc * invRate;
+          const double g = (u < 0.2) ? (u * (1.0 + (u * u) * (1.0 / 3.0))) : std::tan(u);
+          const double k = g / (1.0 + g);
+          const double v = (x - tightHpfState_) * k;
+          const double lp = v + tightHpfState_;
+          tightHpfState_ = lp + v;
+          x = x - tightWet * lp;
+        }
         if (brightOn) x = bright_.advance(x);
         if (midOn) x = midPush_.advance(x);
         s[i] = static_cast<float>(x);
@@ -154,13 +209,30 @@ class AmpAdvanced {
     }
 
     const float fullSmooth = chunkCoeff(rate, kChunk);
-    const double screenAttack = 1.0 - std::exp(-1.0 / (rate * 0.008));
-    const double screenRelease = 1.0 - std::exp(-1.0 / (rate * 0.055));
-    const double reservoirAttack = 1.0 - std::exp(-1.0 / (rate * 0.040));
-    const double reservoirRelease = 1.0 - std::exp(-1.0 / (rate * 0.280));
+    const double safeRate = std::max(8000.0, rate);
+    const double postDcR = std::exp(-2.0 * kPi * 5.0 / safeRate);
+
+    // Calibrated +8 dB internal operating point so loudness-normalized NAM peaks
+    // (-12 dBFS) genuinely engage the tube knee while quiet playing stays linear;
+    // sane Master curve (+0..+13 dB with <= +4.6 dB small-signal boost); low-weighted
+    // + overdrive-driven dual-rail sag preserving initial charged-cap pick snap;
+    // symmetric Class AB crossover & grid-current blocking; live NFB collapse &
+    // tube plate-resistance damping output.
+    constexpr double kNominalBoost = 2.5;
+    const double screenAttack = 1.0 - std::exp(-1.0 / (safeRate * 0.014));
+    const double screenRelease = 1.0 - std::exp(-1.0 / (safeRate * 0.048));
+    const double reservoirAttack = 1.0 - std::exp(-1.0 / (safeRate * 0.045));
+    const double reservoirRelease = 1.0 - std::exp(-1.0 / (safeRate * 0.240));
+    const double lowWeightCoeff = 1.0 - std::exp(-2.0 * kPi * 220.0 / safeRate);
+    const double gridBlockAttack = 1.0 - std::exp(-1.0 / (safeRate * 0.004));
+    const double gridBlockRelease = 1.0 - std::exp(-1.0 / (safeRate * 0.035));
+    const double dampAttack = 1.0 - std::exp(-1.0 / (safeRate * 0.003));
+    const double dampRelease = 1.0 - std::exp(-1.0 / (safeRate * 0.035));
+
     float cachedMaster = -1.0f;
-    double drive = 1.0;
-    double outputScale = 1.0;
+    double masterDrive = 1.0;
+    double totalDrive = kNominalBoost;
+    double baseOutputScale = 1.0 / kNominalBoost;
 
     for (size_t start = 0; start < count; start += kChunk) {
       const size_t n = std::min(kChunk, count - start);
@@ -173,36 +245,48 @@ class AmpAdvanced {
       glide(smoothMaster_, masterTarget, smooth);
       if constexpr (!Legacy) glide(smoothTubeCharacter_, characterTarget, smooth);
 
-      const double character = Legacy ? 0.0 : smoothTubeCharacter_;
-      const double knee = kKnee + character * (profile.knee - kKnee);
+      const double character = Legacy ? 0.0 : static_cast<double>(smoothTubeCharacter_);
+      const double baseKnee = kKnee + character * (profile.knee - kKnee);
       const double tubeHeadroom = 1.0 + character * (profile.headroom - 1.0);
       const double biasSensitivity = 1.0 + character * (profile.biasSensitivity - 1.0);
       const double asymmetry = character * profile.asymmetry;
+      // Pentode (EL34) has higher plate resistance -> lower natural speaker damping
+      // than beam tetrode (6L6).
+      double tubeRpFactor = 1.0;
+      if (tubeProfile == PowerTube::kEL34) {
+        tubeRpFactor = 1.0 - 0.22 * character;
+      } else if (tubeProfile == PowerTube::k6L6) {
+        tubeRpFactor = 1.0 - 0.05 * character;
+      }
+      // Gentle auto-level matching across tube headroom differences (EL34 0.58 vs 6L6 0.85).
+      const double tubeMakeup = 1.0 / std::pow(std::max(0.25, tubeHeadroom), 0.35);
 
       const double beta = 0.15 + 0.75 * smoothFeedback_;
       const double loopGain = kOpenLoopGain * beta;
       if (smoothPresence_ != appliedPresence_ || smoothFeedback_ != appliedFeedback_ ||
           smoothDepth_ != appliedDepth_ || rate != appliedPostRate_) {
-        setShelf(presence_, feedbackShelfDb(smoothPresence_, loopGain), 3200.0f, rate, true);
-        setShelf(depth_, feedbackShelfDb(smoothDepth_, loopGain), 110.0f, rate, false);
+        const double presDb = feedbackShelfDb(smoothPresence_, loopGain);
+        const double depDb = feedbackShelfDb(smoothDepth_, loopGain);
+        setShelf(presence_, presDb, 3200.0f, rate, true);
+        setShelf(depth_, depDb, 110.0f, rate, false);
         appliedPresence_ = smoothPresence_;
         appliedDepth_ = smoothDepth_;
         appliedFeedback_ = smoothFeedback_;
         appliedPostRate_ = rate;
       }
       if (smoothMaster_ != cachedMaster) {
-        drive = std::pow(10.0, 1.8 * smoothMaster_);
-        outputScale = 1.0 / std::sqrt(drive);
+        masterDrive = std::pow(10.0, 0.65 * static_cast<double>(smoothMaster_));
+        totalDrive = kNominalBoost * masterDrive;
+        baseOutputScale = 1.0 / (kNominalBoost * std::pow(masterDrive, 0.65));
         cachedMaster = smoothMaster_;
       }
-      const double inputScale = drive * (1.0 + loopGain) / kOpenLoopGain;
-      const double sagDepth = 0.5 * smoothSag_;
-      const double excursionDepth = 0.4 * smoothSag_;
-      const double biasStatic = 0.45 * smoothBias_;
-      // Presence and Depth can use the linear feedback loop on their own.
-      // The power-stage saturation is introduced continuously by the dynamic
-      // controls, so moving any control away from exact neutral cannot switch
-      // a fully driven nonlinear stage into the signal path at once.
+
+      const double outputScale = baseOutputScale * tubeMakeup;
+      const double inputScale = totalDrive * (1.0 + loopGain) / kOpenLoopGain;
+      const double sagDepth = 0.48 * static_cast<double>(smoothSag_);
+      const double hotBias = std::max(0.0, static_cast<double>(smoothBias_));
+      const double coldBias = std::max(0.0, -static_cast<double>(smoothBias_));
+      const double effKnee = std::max(0.32, baseKnee - 0.16 * hotBias);
       const double legacyNonlinearAmount = std::max(
           std::max(static_cast<double>(smoothSag_),
                    std::fabs(static_cast<double>(smoothBias_))),
@@ -214,30 +298,72 @@ class AmpAdvanced {
       for (size_t i = 0; i < n; ++i) {
         const double f0 = depth_.b0 * presence_.b0;
         const double partial = presence_.b0 * depth_.z1 + presence_.z1;
-        const double c = s[i] * inputScale - beta * partial;
+        const double driveIn = s[i] * inputScale;
+        const double c = driveIn - beta * partial;
         const double k = beta * f0;
-        const double sagEnv = 0.55 * supplyEnvelope_ + 0.45 * reservoirEnvelope_;
-        const double effKnee = (Legacy || character == 0.0) ? kKnee : knee;
-        const double headroom = ((Legacy || character == 0.0) ? 1.0 : tubeHeadroom) *
-            std::max(kMinHeadroom, 1.0 - sagDepth * sagEnv);
-        const double bias = ((Legacy || character == 0.0) ? 1.0 : biasSensitivity) *
-            (biasStatic - excursionDepth * sagEnv) +
-            ((Legacy || character == 0.0) ? 0.0 : asymmetry);
-        const double biasOut = satC2(bias, effKnee);
-        const double solved = solveBiasedC2(kOpenLoopGain / headroom, k * headroom,
-                                            c, bias, biasOut, effKnee);
-        const double normalized = solved - biasOut;
-        const double nonlinearY = headroom * normalized;
         const double linearY = kOpenLoopGain * c / (1.0 + kOpenLoopGain * k);
-        const double y = linearY + nonlinearAmount * (nonlinearY - linearY);
-        const double absNorm = std::fabs(normalized);
-        const double conduction = absNorm * (0.65 + 0.35 * std::min(1.5, absNorm));
-        supplyEnvelope_ += (conduction - supplyEnvelope_) *
-                           (conduction > supplyEnvelope_ ? screenAttack : screenRelease);
-        reservoirEnvelope_ += (conduction - reservoirEnvelope_) *
-                              (conduction > reservoirEnvelope_ ? reservoirAttack : reservoirRelease);
+
+        double y = linearY;
+        double satSlope = 1.0;
+        if (nonlinearAmount > 1.0e-5) {
+          const double sagEnv = 0.55 * supplyEnvelope_ + 0.45 * reservoirEnvelope_;
+          const double rawHeadroom = tubeHeadroom * std::max(kMinHeadroom, 1.0 - sagDepth * sagEnv);
+          // Continuous ceiling engagement (no dry/wet parallel unclipped spike blend).
+          const double effHeadroom = rawHeadroom / std::max(1.0e-4, nonlinearAmount);
+          const double bias = biasSensitivity * (0.12 * hotBias - 0.08 * smoothSag_ * sagEnv)
+                              + asymmetry;
+          const double biasOut = satC2(bias, effKnee);
+          double uSolved = 0.0;
+          const double solved = solveBiasedC2(kOpenLoopGain / effHeadroom, k * effHeadroom,
+                                              c, bias, biasOut, effKnee, &uSolved);
+          const double normalized = solved - biasOut;
+          double nonlinearY = effHeadroom * normalized;
+
+          // Symmetric Class AB crossover & overdrive grid-current blocking (zero DC).
+          const double t0 = 0.65 * effKnee;
+          const double odExcess = std::max(0.0, std::fabs(uSolved) - t0);
+          gridBlockEnv_ += (std::tanh(odExcess) - gridBlockEnv_) *
+                           (odExcess > gridBlockEnv_ ? gridBlockAttack : gridBlockRelease);
+          const double coldCrossover = std::min(0.46,
+              0.30 * coldBias * biasSensitivity + 0.14 * gridBlockEnv_ * nonlinearAmount);
+          if (coldCrossover > 1.0e-6) {
+            const double z = nonlinearY / std::max(0.08, 0.14 * rawHeadroom);
+            nonlinearY *= 1.0 - coldCrossover / (1.0 + z * z);
+          }
+          y = nonlinearY;
+          satSlope = satC2Deriv(uSolved, effKnee);
+
+          // Low-frequency-weighted + overdrive screen-current dual-rail sag.
+          xLow_ += lowWeightCoeff * (driveIn - xLow_);
+          const double lowPower = std::fabs(xLow_) / std::max(0.25, rawHeadroom);
+          const double rawCurrent = 0.40 * std::fabs(normalized)
+                                  + 0.60 * lowPower
+                                  + 0.55 * odExcess;
+          const double conduction = std::tanh(0.65 * rawCurrent);
+          supplyEnvelope_ += (conduction - supplyEnvelope_) *
+                             (conduction > supplyEnvelope_ ? screenAttack : screenRelease);
+          reservoirEnvelope_ += (conduction - reservoirEnvelope_) *
+                                (conduction > reservoirEnvelope_ ? reservoirAttack : reservoirRelease);
+        } else {
+          // Decay dynamic states smoothly when operating purely linearly (Presence/Depth only).
+          supplyEnvelope_ *= (1.0 - screenRelease);
+          reservoirEnvelope_ *= (1.0 - reservoirRelease);
+          gridBlockEnv_ *= (1.0 - gridBlockRelease);
+          xLow_ *= (1.0 - lowWeightCoeff);
+        }
+
+        // Track live NFB collapse & tube plate resistance for SpeakerDynamics damping.
+        const double targetDamp = std::clamp(tubeRpFactor * (0.30 + 0.70 * satSlope), 0.25, 1.0);
+        dynamicDamping_ += (targetDamp - dynamicDamping_) *
+                           (targetDamp < dynamicDamping_ ? dampAttack : dampRelease);
+
         presence_.advance(depth_.advance(y));
-        s[i] = static_cast<float>(y * outputScale);
+        const double nonlinRes = y - linearY;
+        const double resDc = nonlinRes - postDcIn_ + postDcR * postDcOut_;
+        postDcIn_ = nonlinRes;
+        postDcOut_ = resDc;
+        const double yOut = linearY + resDc;
+        s[i] = static_cast<float>(yOut * outputScale);
       }
     }
   }
@@ -280,6 +406,11 @@ class AmpAdvanced {
     appliedPostRate_ = 0.0;
     supplyEnvelope_ = 0.0;
     reservoirEnvelope_ = 0.0;
+    xLow_ = 0.0;
+    gridBlockEnv_ = 0.0;
+    dynamicDamping_ = 1.0;
+    postDcIn_ = 0.0;
+    postDcOut_ = 0.0;
   }
 
   static float clamp01(float x) noexcept { return std::max(0.0f, std::min(1.0f, x)); }
@@ -315,16 +446,30 @@ class AmpAdvanced {
     return u < 0.0 ? -(t0 + d * phi) : (t0 + d * phi);
   }
 
+  static double satC2Deriv(double u, double knee) noexcept {
+    const double t0 = 0.65 * knee;
+    const double a = std::fabs(u);
+    if (a <= t0) return 1.0;
+    const double d = 1.0 - t0;
+    const double v = (a - t0) / d;
+    const double denom = 1.0 + v + v * v;
+    return (1.0 + 2.0 * v) / (denom * denom);
+  }
+
   // Exact biased ZDF solver in the saturator input coordinate u:
   //   u + G * satC2(u, knee) = r,  where G = A * k >= 0, r = A * c + G * biasOut + bias
-  // Returns s = satC2(u, knee).
+  // Returns s = satC2(u, knee), optionally writing solved u to outU.
   static double solveBiasedC2(double A, double k, double c, double bias,
-                              double biasOut, double knee) noexcept {
+                              double biasOut, double knee,
+                              double* outU = nullptr) noexcept {
     const double G = std::max(0.0, A * k);
     const double r = A * c + G * biasOut + bias;
     const double t0 = 0.65 * knee;
     const double uLin = r / (1.0 + G);
-    if (std::fabs(uLin) <= t0) return uLin;
+    if (std::fabs(uLin) <= t0) {
+      if (outU) *outU = uLin;
+      return uLin;
+    }
     const double sign = r < 0.0 ? -1.0 : 1.0;
     const double d = 1.0 - t0;
     const double rho = (std::fabs(r) - (1.0 + G) * t0) / d;
@@ -341,20 +486,10 @@ class AmpAdvanced {
       const double err = v + G * phi - rho;
       v = std::max(0.0, v - err / (1.0 + G * dphi));
     }
+    if (outU) *outU = sign * (t0 + d * v);
     const double vv = v * v;
     const double phi = (v + vv) / (1.0 + v + vv);
     return sign * (t0 + d * std::min(phi, 1.0));
-  }
-
-  static void setHighPass(Filter& f, float frequency, double rate) noexcept {
-    const double w0 = 2.0 * kPi * frequency / rate;
-    const double c = std::cos(w0), s = std::sin(w0);
-    const double alpha = s / (2.0 * kQ), a0 = 1.0 + alpha;
-    f.b0 = (1.0 + c) * 0.5 / a0;
-    f.b1 = -(1.0 + c) / a0;
-    f.b2 = f.b0;
-    f.a1 = -2.0 * c / a0;
-    f.a2 = (1.0 - alpha) / a0;
   }
 
   static void setPeak(Filter& f, double gainDb, float frequency, double q,
@@ -400,15 +535,24 @@ class AmpAdvanced {
     f.a2 = a2 / a0;
   }
 
-  Filter bright_, inputEq_, midPush_, depth_, presence_;
+  Filter bright_, midPush_, depth_, presence_;
   float smoothBright_ = 0.0f, smoothInputEq_ = 0.0f, smoothMidPush_ = 0.0f;
-  float appliedBright_ = -1.0f, appliedInputEq_ = -1.0f, appliedMidPush_ = -1.0f;
+  float appliedBright_ = -1.0f, appliedMidPush_ = -1.0f;
+  float appliedBrightDrive_ = 1.0e9f;
   float smoothPresence_ = 0.0f, smoothDepth_ = 0.0f, smoothSag_ = 0.0f;
   float smoothBias_ = 0.0f, smoothFeedback_ = 0.0f, smoothMaster_ = 0.0f;
   float smoothTubeCharacter_ = 0.0f;
   float appliedPresence_ = 1.0e9f, appliedDepth_ = 1.0e9f, appliedFeedback_ = 1.0e9f;
   double supplyEnvelope_ = 0.0;
   double reservoirEnvelope_ = 0.0;
+  double tightHpfState_ = 0.0;
+  double lowDetectState_ = 0.0;
+  double tightEnv_ = 0.0;
+  double xLow_ = 0.0;
+  double gridBlockEnv_ = 0.0;
+  double dynamicDamping_ = 1.0;
+  double postDcIn_ = 0.0;
+  double postDcOut_ = 0.0;
   double appliedPostRate_ = 0.0;
   double appliedPreRate_ = 0.0;
 };

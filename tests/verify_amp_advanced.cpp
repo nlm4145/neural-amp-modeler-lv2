@@ -234,7 +234,11 @@ int main() {
       const auto dry = quiet;
       NAMRig::AmpAdvanced stage;
       stage.processPostAmp(quiet.data(), n, sampleRate, 0, 0, 0, 0, 0, 0, profile, 100);
-      for (size_t i = n / 2; i < n; ++i) quietUnity &= std::fabs(quiet[i] - dry[i]) < 1e-7f;
+      const double expectedGain =
+          1.0 / std::pow(std::max(0.25, NAMRig::PowerTube::kProfiles[profile].headroom), 0.35);
+      const float tol = (profile == NAMRig::PowerTube::kCaptured) ? 1e-7f : 1e-5f;
+      for (size_t i = n / 2; i < n; ++i)
+        quietUnity &= std::fabs(quiet[i] - static_cast<float>(dry[i] * expectedGain)) < tol;
       stage.reset();
       profiles[profile] = loud;
       stage.processPostAmp(profiles[profile].data(), n, sampleRate, 0, 0, 0, 0, 0, 0, profile, 100);
@@ -258,7 +262,7 @@ int main() {
         distinctShape &= std::sqrt(residual / bb) > .01;
       }
     }
-    CHECK(quietUnity, "all profiles retain quiet-signal unity without makeup gain");
+    CHECK(quietUnity, "all profiles remain linear at quiet level with expected auto-level matching");
     CHECK(zeroNeutral, "Character 0 is bit-transparent with otherwise neutral Power controls");
     CHECK(distinctShape, "Captured, 6L6 and EL34 differ in waveform shape, not merely loudness");
   }

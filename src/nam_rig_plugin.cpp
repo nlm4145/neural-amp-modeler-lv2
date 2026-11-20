@@ -124,6 +124,14 @@ Plugin::~Plugin() {
     delete ir;
   for (auto* ir : irsRight)
     delete ir;
+  for (auto* b : activeRateBundles)
+    delete b;
+  for (auto* b : pendingRateBundles)
+    delete b;
+  for (auto& row : stagedRateBundles)
+    for (auto& slot : row)
+      delete slot.exchange(nullptr, std::memory_order_acq_rel);
+  drainRetiredRateBundles();
   for (auto& pending : pendingSwitches) {
     delete pending.model;
     delete pending.ir;
@@ -216,6 +224,9 @@ bool Plugin::initialize(double rate, const LV2_Feature* const* features) noexcep
   // maxBlockLength option, and a null scratch_ would crash on first use.
   // The default (512) is generous for typical blocks; if a host later
   // reports a larger block via optionsSet, it grows.
+  EngineMode::commitRequested();
+  calibrationDbuRequested = calibrationDbuApplied = EngineMode::inputCalibrationDbu();
+  calibrationLatched = true;
   setMaxBufferSize(static_cast<int>(hostMaxBufferSize));
   return true;
 }
@@ -309,7 +320,10 @@ void Plugin::setMaxBufferSize(int size) noexcept {
     }
     osScratch[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
     osScratch2[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
+    stageRateMidBuf[st].assign(static_cast<size_t>(std::max(1, size)) + 64, 0.0f);
+    stageRateOutBuf[st].assign(static_cast<size_t>(std::max(1, size)) * 2 + 64, 0.0f);
     resetNativeStream(st);
+    resetRationalStageStream(st);
   }
   for (size_t bank = 0; bank < kAnalogBanks; ++bank) {
     for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
@@ -354,6 +368,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
     delete message->model;
     delete message->ir;
     delete message->irRight;
+    rig->drainRetiredRateBundles();
     return LV2_WORKER_SUCCESS;
   }
 
@@ -364,10 +379,12 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
   if (!validStage(message->stage))
     return LV2_WORKER_ERR_UNKNOWN;
 
+  rig->drainRetiredRateBundles();
   LV2SwitchModelMsg response{kWorkTypeSwitch, message->stage,
                              message->oversampleMode, message->generation,
                              {}, nullptr, nullptr, nullptr, false, 0.0f,
                              message->trimIrSilence};
+  StageRateBundle* loadedRateBundle = nullptr;
   const size_t length = strnlen(message->path, MAX_FILE_NAME);
   const int requestedMode = Plugin::normalizeLoadMode(message->stage,
                                                       message->oversampleMode);
@@ -388,22 +405,8 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                                     rig->maxBufferSize, -1, trimIr).release();
         }
       } else {
-        // The stage's oversample mode decides the loader external rate.
-        // NONE (0): 48000 — dilation is a no-op for common-rate models.
-        // LEGACY Nx (1..3): session rate — dilation = hostRate/modelRate
-        //                    (NeuralAudio stretches the model's dilations;
-        //                    a "4x" Legacy model runs the SAME math per
-        //                    sample, just reaches further back in time).
-        // TRUE Nx (4..7): Nx * session rate — the model is created for the
-        //                    genuine pipeline domain it will process in.
         const int sessionRate = static_cast<int>(rig->sampleRate);
         const int mode = requestedMode;
-        // TRUE: absolute target = kTrueBaseRate * N (96k session pinned),
-        // immune to the Element wrapper — the model is created for the
-        // domain the pipeline will actually run, which is what the incoming
-        // rate still lacks (see truePipelineFactor). LEGACY: dilation from
-        // the incoming rate — the Element menu keeps affecting it (user
-        // decision, 2026-08-29). NONE: pinned 48k.
         const int pipelineFactor = Plugin::truePipelineFactor(mode, rig->sampleRate);
         const int modelRate = mode == Plugin::kOsNone ? 48000
                               : pipelineFactor > 0 ? static_cast<int>(
@@ -411,35 +414,70 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                                                    : sessionRate;
         auto& loader = rig->loaders[stageIndex(message->stage)];
         loader.SetExternalSampleRate(modelRate);
-        // Only a True domain has the converters that band-limit a phase-split
-        // LSTM. Legacy, parallel-cabinet and NONE loads keep the LSTM native.
         loader.SetPolyphaseRecurrent(pipelineFactor > 0);
         response.model = loader.CreateFromFile(message->path);
         loader.SetPolyphaseRecurrent(false);
         loader.SetExternalSampleRate(sessionRate);
-        // The model must be sized for the largest block it will ever be fed.
-        // NeuralAudio sizes internal buffers (WaveNet Eigen matrices, ring
-        // buffers) from the loader's DefaultMaxAudioBufferSize at load time;
-        // classic WaveNet does NOT chunk in Process (its
-        // num_frames <= maxBufferSize assert is compiled out in Release), so
-        // a block larger than the sizing overruns those buffers and corrupts
-        // the heap. The transient window after ANY mode click is the danger:
-        // the audio thread flips its pipeline immediately while the OLD
-        // (just replaced) or NEW models keep processing whatever block shape
-        // the pipeline now feeds. Size for the worst case (16x = 8192 samples
-        // at a 512 max block) in EVERY mode — a few MB per model, no CPU.
-        // Do NOT make this mode-conditional; that re-opens the 2026-08-29
-        // click-crash (verified via unified-log forensics).
         if (response.model) {
+          // Tier 1.1: If the loaded model's native rate does not evenly divide
+          // the target domain rate (e.g. a 44.1 kHz WaveNet/LSTM capture in a
+          // 48/96/192 kHz internal session), wrap this stage in a 147/160
+          // rational resampler and reload at the exact divisible 44.1k multiple.
+          const std::string architecture = modelArchitecture(message->path);
+          const double curDomainRate = mode == Plugin::kOsNone ? 48000.0
+              : (pipelineFactor > 0 ? rig->sampleRate * pipelineFactor : rig->sampleRate);
+          const double nativeModelRate = response.model->GetSampleRate();
+          auto is48kFamily = [](double r) {
+            for (double m : {1.0, 2.0, 4.0})
+              if (std::fabs(r - 48000.0 * m) < 1.0) return true;
+            return false;
+          };
+          auto is44kFamily = [](double r) {
+            for (double m : {1.0, 2.0, 4.0})
+              if (std::fabs(r - 44100.0 * m) < 1.0) return true;
+            return false;
+          };
+          if (nativeModelRate > 0.0 &&
+              std::fmod(curDomainRate, nativeModelRate) > 1.0e-6 &&
+              is48kFamily(rig->sampleRate) && is44kFamily(nativeModelRate)) {
+            const double resampledBase = rig->sampleRate *
+                static_cast<double>(Plugin::kModelRateUp) /
+                static_cast<double>(Plugin::kModelRateDown);
+            const double targetDomainDouble = (mode == Plugin::kOsNone) ? resampledBase
+                : (pipelineFactor > 0 ? resampledBase * pipelineFactor : resampledBase);
+            if (std::fmod(targetDomainDouble, nativeModelRate) <= 1.0e-6) {
+              const int targetDomainInt = static_cast<int>(std::lround(targetDomainDouble));
+              loader.SetExternalSampleRate(targetDomainInt);
+              loader.SetPolyphaseRecurrent(pipelineFactor > 0);
+              NeuralAudio::NeuralModel* resampledModel = loader.CreateFromFile(message->path);
+              loader.SetPolyphaseRecurrent(false);
+              loader.SetExternalSampleRate(sessionRate);
+              if (resampledModel) {
+                delete response.model;
+                response.model = resampledModel;
+                const size_t maxResampInput = std::max<size_t>(
+                    8192u, static_cast<size_t>(std::max(1, rig->maxBufferSize)));
+                loadedRateBundle = new StageRateBundle();
+                loadedRateBundle->rateIn.configure(Plugin::kModelRateUp, Plugin::kModelRateDown,
+                                                   Plugin::kModelRateProtoLength,
+                                                   Plugin::kModelRateStopbandDb, maxResampInput);
+                loadedRateBundle->rateOut.configure(Plugin::kModelRateDown, Plugin::kModelRateUp,
+                                                    Plugin::kModelRateProtoLength,
+                                                    Plugin::kModelRateStopbandDb, maxResampInput);
+                loadedRateBundle->resampledBaseRate = resampledBase;
+                loadedRateBundle->rateLatencyFrames = Plugin::kModelRateLatencyFrames;
+                loadedRateBundle->generation = message->generation;
+                lv2_log_note(&rig->logger,
+                             "Model '%s' (%.0f Hz) resampled via 147/160 rational domain "
+                             "(base %.0f Hz, domain %.0f Hz).\n",
+                             message->path, nativeModelRate, resampledBase, targetDomainDouble);
+              }
+            }
+          }
+
           response.model->SetMaxAudioBufferSize(kMaxOsFactor * rig->maxBufferSize);
           // Maximum-sound policy: always select the full A2/Slimmable tier.
           response.model->SetQualityScaleFactor(1.0f);
-          // A model NeuralAudio cannot rate-adapt would otherwise run at the
-          // domain rate with weights trained for its own rate. NONE keeps the
-          // unadapted reference behaviour on purpose.
-          // An LSTM that the loader split into native-rate phases already
-          // runs at the domain rate.
-          const std::string architecture = modelArchitecture(message->path);
           const bool phaseSplit =
               dynamic_cast<NeuralAudio::PolyphaseModel*>(response.model) != nullptr;
           if (mode != Plugin::kOsNone && !rateAdaptable(architecture) && !phaseSplit) {
@@ -450,7 +488,7 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
                          message->path, architecture.c_str(), response.nativeRate);
           }
         }
-        if (mode == Plugin::kOsNone)
+        if (mode == Plugin::kOsNone && !loadedRateBundle)
           lv2_log_warning(&rig->logger,
                           "Oversampling NONE: model '%s' runs without rate "
                           "adaptation — a non-48k model at this session rate will "
@@ -468,10 +506,13 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
         const int stageMode = requestedMode;
         const int pipelineFactor2 = Plugin::truePipelineFactor(stageMode,
                                                                 rig->sampleRate);
-        const double domainRate = stageMode == Plugin::kOsNone ? 48000.0
-                                 : pipelineFactor2 > 0
-                                       ? rig->sampleRate * pipelineFactor2
-                                       : rig->sampleRate;
+        const double baseRateForCheck = loadedRateBundle
+            ? loadedRateBundle->resampledBaseRate : rig->sampleRate;
+        const double domainRate = stageMode == Plugin::kOsNone
+            ? (loadedRateBundle ? baseRateForCheck : 48000.0)
+            : pipelineFactor2 > 0
+                  ? baseRateForCheck * pipelineFactor2
+                  : baseRateForCheck;
         const double modelRate = response.model->GetSampleRate();
         if (modelRate > 0.0 && std::fmod(domainRate, modelRate) > 1e-6)
           lv2_log_warning(&rig->logger,
@@ -481,11 +522,24 @@ LV2_Worker_Status Plugin::work(LV2_Handle instance,
       }
     }
   } catch (...) {
+    delete response.model;
     delete response.ir;
     delete response.irRight;
+    delete loadedRateBundle;
     response.model = nullptr;
     response.ir = nullptr;
     response.irRight = nullptr;
+    loadedRateBundle = nullptr;
+  }
+
+  // Publish any rate bundle in the stage's lock-free slot before respond() hands
+  // the fixed-ABI LV2SwitchModelMsg to workResponse().
+  {
+    const size_t st = stageIndex(message->stage);
+    const size_t slot = static_cast<size_t>(message->generation & (kStagedRateSlots - 1));
+    StageRateBundle* prev = rig->stagedRateBundles[st][slot].exchange(
+        loadedRateBundle, std::memory_order_acq_rel);
+    delete prev;
   }
 
   if (!response.model && !response.ir && length > 0)
@@ -505,9 +559,18 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
 
   auto* rig = static_cast<Plugin*>(instance);
   const size_t index = stageIndex(message->stage);
+  const size_t rateSlot = static_cast<size_t>(message->generation & (kStagedRateSlots - 1));
+  StageRateBundle* bundle = rig->stagedRateBundles[index][rateSlot].exchange(
+      nullptr, std::memory_order_acq_rel);
+  if (bundle && bundle->generation != message->generation) {
+    rig->retireRateBundle(bundle);
+    bundle = nullptr;
+  }
+
   if (message->generation != rig->loadGeneration[index]) {
     // A newer path or oversampling request superseded this load while it was
     // running. Dispose of the stale result on the worker thread.
+    rig->retireRateBundle(bundle);
     LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir, message->irRight};
     rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
     return LV2_WORKER_SUCCESS;
@@ -524,6 +587,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
     // completed response's path and load it for the latest settings.
     const size_t length = strnlen(message->path, MAX_FILE_NAME);
     if (length > 0 && length < MAX_FILE_NAME) {
+      rig->retireRateBundle(bundle);
       rig->scheduleModelLoad(message->stage, message->path, length, desiredMode);
       LV2FreeModelMsg stale{kWorkTypeFree, message->model, message->ir, message->irRight};
       rig->schedule->schedule_work(rig->schedule->handle, sizeof(stale), &stale);
@@ -532,6 +596,8 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   }
   auto& pending = rig->pendingSwitches[index];
   if (pending.ready) {
+    rig->retireRateBundle(rig->pendingRateBundles[index]);
+    rig->pendingRateBundles[index] = nullptr;
     LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir, pending.irRight};
     rig->schedule->schedule_work(rig->schedule->handle,
                                  sizeof(superseded), &superseded);
@@ -539,6 +605,7 @@ LV2_Worker_Status Plugin::workResponse(LV2_Handle instance, uint32_t size, const
   pending.model = message->model;
   pending.ir = message->ir;
   pending.irRight = message->irRight;
+  rig->pendingRateBundles[index] = bundle;
   pending.oversampleMode = message->model ? responseMode : desiredMode;
   pending.fullRig = message->fullRig;
   pending.nativeRate = message->nativeRate;
@@ -1084,7 +1151,6 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     compressorTimingCache.configure(sampleRate, attackMs, releaseMs, blockRounding);
     const float gainAttack = compressorTimingCache.gainAttack;
     const float gainRelease = compressorTimingCache.gainRelease;
-    preCompressor.prepare(sampleRate);
     for (uint32_t i = 0; i < sampleCount; ++i) {
       ports.audio_out[i] *= preCompressor.process(
           std::fabs(ports.audio_out[i]), thresholdDb, ratio, makeupDb,
@@ -1268,6 +1334,23 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     reloadWavIrsForTrim();
   }
 
+  // ---- Interface input dBu calibration latching ----
+  const float reqCalibrationDbu = EngineMode::requestedInputCalibrationDbu();
+  if (!calibrationLatched) {
+    EngineMode::commitRequested();
+    calibrationDbuRequested = calibrationDbuApplied = EngineMode::inputCalibrationDbu();
+    calibrationLatched = true;
+  } else if (std::fabs(reqCalibrationDbu - calibrationDbuRequested) > 1.0e-4f) {
+    calibrationDbuRequested = reqCalibrationDbu;
+    if (std::fabs(reqCalibrationDbu - EngineMode::inputCalibrationDbu()) > 1.0e-4f) {
+      // Runtime UI change via EngineMode::requestInputCalibrationDbu(): fade to silence before committing.
+      startTransitionFadeOut();
+    } else {
+      // Immediate setInputCalibrationDbu() (e.g. unit test harness): update tracked state directly.
+      calibrationDbuApplied = reqCalibrationDbu;
+    }
+  }
+
   // Converter histories belong to a particular grouping of active stages.
   // If bypass, model presence, cab type, or an applied factor changes, a
   // group may acquire a different owner bank; reset all histories instead of
@@ -1278,7 +1361,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
                          | (models[st] ? 2u : 0u)
                          | (irs[st] ? 4u : 0u)
                          | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3)
-                         | ((uint64_t)nativeDecimation(st) << 8);
+                         | ((uint64_t)nativeDecimation(st) << 8)
+                         | ((activeRateBundles[st] ? 1ULL : 0ULL) << 12);
     topology = (topology * 1099511628211ULL) ^ state;
   }
   topology = (topology * 1099511628211ULL) ^ static_cast<uint64_t>(appliedPedalOrder);
@@ -1298,7 +1382,10 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     for (auto& bank : analogDown)
       for (auto& down : bank) down.reset();
     for (auto& down : splitSpeakerDown) down.reset();
-    for (size_t st = 0; st < kStageCount; ++st) resetNativeStream(st);
+    for (size_t st = 0; st < kStageCount; ++st) {
+      resetNativeStream(st);
+      resetRationalStageStream(st);
+    }
   }
 
   // ---- Stage processing with per-stage oversample domains ----
@@ -1329,7 +1416,9 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate,
                         unsigned parts = kPartAll,
-                        bool* domainNonlinear = nullptr) {
+                        bool* domainNonlinear = nullptr,
+                        float* busDbu = nullptr,
+                        bool hasDownstreamAmp = false) {
     if (stage == 1 && (parts & kPartPre)) {
       // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
       const bool odOn = portValue(ports.od_enabled, 0.0f) >= 0.5f;
@@ -1338,7 +1427,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
                         portValue(ports.od_level, 0.0f),
                         portValue(ports.od_tight, Overdrive::kTightDefault),
                         portValue(ports.od_voicing, 0.0f), odOn);
-      if (odOn && domainNonlinear) *domainNonlinear = true;
+      const bool odNonlinear = odOn && !overdrive.isPureClean();
+      if (odNonlinear && domainNonlinear) *domainNonlinear = true;
       const float target = ampGainCache.get(*ports.amp_drive, blockRounding);
       const float coeff = ampDriveRateCache.get(domainRate, blockRounding);
       for (size_t i = 0; i < count; ++i) {
@@ -1348,7 +1438,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       if (rackOn(Rack::Sculpt)) {
         ampAdvanced.processPreAmp(samples, count, domainRate,
                                   *ports.bright, *ports.input_eq,
-                                  portValue(ports.mid_push, 0.0f));
+                                  portValue(ports.mid_push, 0.0f),
+                                  *ports.amp_drive);
         float* channels[1] = {samples};
         sculptPins.process(channels, 1, count, domainRate, sculptPinBands);
       }
@@ -1359,7 +1450,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     }
     if (parts & kPartModel) {
       runModel(stage, model, samples, count, domainRate,
-               domainNonlinear ? *domainNonlinear : false);
+               domainNonlinear ? *domainNonlinear : false,
+               busDbu, hasDownstreamAmp);
       if (domainNonlinear) *domainNonlinear = true;
     }
     if (stage == stageIndex(Stage::Amp) && (parts & kPartPost)) {
@@ -1384,12 +1476,16 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       }
       if (rackOn(Rack::Speaker)) {
         const float dampingArg = powerOn ? *ports.negative_feedback * 0.01f : 0.0f;
+        const float dynDampScale = (powerOn || activeTube)
+            ? static_cast<float>(ampAdvanced.lastDynamicDamping()) : 1.0f;
         const bool splitHere = splitDualSpeaker && sliceCanCacheCabB &&
+                               activeRateBundles[stageIndex(Stage::Amp)] == nullptr &&
                                domainRate >= sampleRate - 0.5 &&
                                count <= splitSpeakerScratch.size();
         const bool deferDualSpeakerToPost = splitDualSpeaker && !splitHere;
         if (splitHere) {
           std::memcpy(splitSpeakerScratch.data(), samples, count * sizeof(float));
+          speakerDynamicsB.setDynamicDampingScale(dynDampScale);
           speakerDynamicsB.process(splitSpeakerScratch.data(), count, domainRate,
                                    speakerBApplied,
                                    *ports.speaker_drive, *ports.speaker_compression,
@@ -1403,6 +1499,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         if (!deferDualSpeakerToPost) {
           const int singleProfile = (!cabAActive && parallelCabs)
               ? speakerBApplied : speakerApplied;
+          speakerDynamics.setDynamicDampingScale(dynDampScale);
           speakerDynamics.process(samples, count, domainRate, singleProfile,
                                   *ports.speaker_drive, *ports.speaker_compression,
                                   *ports.speaker_thump, *ports.speaker_resonance,
@@ -1452,7 +1549,11 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   auto processTrueGroup = [&](size_t owner, const size_t* stages,
                               size_t stageCount, float* samples,
                               uint32_t count, int f,
-                              bool initialNonlinear) -> uint32_t {
+                              bool initialNonlinear,
+                              float* busDbu = nullptr,
+                              bool hasDownstreamAmp = false,
+                              double baseRateOverride = 0.0) -> uint32_t {
+    const double baseRate = baseRateOverride > 0.0 ? baseRateOverride : sampleRate;
     const size_t levels = cascadeLevels(f);
     float* bufs[2] = {osScratch[owner].data(), osScratch2[owner].data()};
     size_t n = osUp[owner][0].process(samples, count, bufs[0]);
@@ -1463,8 +1564,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       return count;
     bool groupNonlinear = initialNonlinear;
     for (size_t i = 0; i < stageCount; ++i)
-      applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f,
-                 kPartAll, &groupNonlinear);
+      applyModel(stages[i], models[stages[i]], domain, n, baseRate * f,
+                 kPartAll, &groupNonlinear, busDbu, hasDownstreamAmp);
 
     size_t back = n;
     const float* dnIn = domain;
@@ -1497,12 +1598,15 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     if ((slot == 0 && !extraPedalsActive) || (enabled[slot] && models[slot])) serial[serialCount++] = slot;
   serial[serialCount++] = 1;
   serial[serialCount++] = 2;
+  const bool hasActiveAmpModel = enabled[stageIndex(Stage::Amp)] &&
+                                 models[stageIndex(Stage::Amp)] != nullptr;
   for (uint32_t off = 0; off < sampleCount; off += sliceMax) {
     const uint32_t sliceLen = std::min(sliceMax, sampleCount - off);
     float* io = ports.audio_out + off;
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
     bool baseDomainNonlinear = false;
+    float sliceBusDbu = calibrationDbuApplied;
     ampMetersCapturedThisSlice = false;
     sliceCanCacheCabB = splitDualSpeaker && (off + sliceLen <= cabBChain.size());
     splitCabBPreparedThisSlice = false;
@@ -1553,33 +1657,73 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         continue;
       }
 
+      // Tier 1.1: Non-divisible model rate (e.g. 44.1 kHz WaveNet/LSTM in a
+      // 48/96/192 kHz session) runs inside its own 147/160 rational domain.
+      if (activeRateBundles[st] != nullptr) {
+        const auto* rateBundle = activeRateBundles[st];
+        const int decimation = nativeDecimation(st);
+        const int f = decimation == 0 ? truePipelineFactor(osApplied[st], sampleRate) : 1;
+        const bool initialNonlinear = (sampleRate > 48500.0) && baseDomainNonlinear;
+        n = runRationalStageDomain(st, chain, n, [&](float* midBuf, uint32_t m, double midRate) {
+          if (decimation > 1) {
+            runNativeDomain(st, midBuf, m, decimation,
+                            [&](float* domain, uint32_t dm, double rate) {
+                              applyModel(st, models[st], domain, dm, rate, kPartAll,
+                                         &baseDomainNonlinear, &sliceBusDbu, hasActiveAmpModel);
+                            }, midRate);
+          } else if (f > 1) {
+            processTrueGroup(st, &st, 1, midBuf, m, f, initialNonlinear,
+                             &sliceBusDbu, hasActiveAmpModel, midRate);
+          } else {
+            applyModel(st, models[st], midBuf, m, midRate, kPartAll,
+                       &baseDomainNonlinear, &sliceBusDbu, hasActiveAmpModel);
+          }
+        });
+        baseDomainNonlinear = true;
+        if (off == 0) {
+          uint32_t stageLat = rateBundle->rateLatencyFrames;
+          if (decimation > 1) {
+            stageLat += static_cast<uint32_t>(std::lround(
+                nativeLatencyFrames(decimation) * sampleRate / rateBundle->resampledBaseRate));
+          } else if (decimation == 0 && f > 1) {
+            stageLat += static_cast<uint32_t>(std::lround(
+                cascadeLatencyFrames(f) * sampleRate / rateBundle->resampledBaseRate));
+          }
+          latencyFrames += stageLat;
+        }
+        modelProcessed = true;
+        if (st == 2) cabProcessed = true;
+        ++position;
+        continue;
+      }
+
       // Non-adaptable models (LSTM, ...) run at their own rate: decimate the
       // session stream, process, interpolate back. Same rate = plain base path.
       const int decimation = nativeDecimation(st);
       const int analogFactor = decimation > 0 && st == stageIndex(Stage::Amp)
           ? truePipelineFactor(osApplied[st], sampleRate) : 0;
       if (analogFactor > 1) {
-        // The model stays at its native rate. The analog stages around it
-        // run in the True domain that the amp's mode selects.
-        // A converter that is still priming returns fewer frames. The
-        // frames it did not reach stay silent instead of holding stale input.
         const uint32_t requested = n;
         n = runAnalogDomain(0, chain, n, analogFactor,
                             [&](float* domain, size_t m, double rate) {
-                              applyModel(st, models[st], domain, m, rate, kPartPre);
+                              applyModel(st, models[st], domain, m, rate, kPartPre,
+                                         nullptr, &sliceBusDbu, hasActiveAmpModel);
                             });
         if (decimation > 1) {
           n = runNativeDomain(st, chain, n, decimation,
                               [&](float* domain, uint32_t m, double rate) {
-                                applyModel(st, models[st], domain, m, rate, kPartModel);
+                                applyModel(st, models[st], domain, m, rate, kPartModel,
+                                           nullptr, &sliceBusDbu, hasActiveAmpModel);
                               });
         } else {
-          applyModel(st, models[st], chain, n, sampleRate, kPartModel);
+          applyModel(st, models[st], chain, n, sampleRate, kPartModel,
+                     nullptr, &sliceBusDbu, hasActiveAmpModel);
         }
         const uint32_t nBeforeAnalog = n;
         n = runAnalogDomain(1, chain, n, analogFactor,
                             [&](float* domain, size_t m, double rate) {
-                              applyModel(st, models[st], domain, m, rate, kPartPost);
+                              applyModel(st, models[st], domain, m, rate, kPartPost,
+                                         nullptr, &sliceBusDbu, hasActiveAmpModel);
                             });
         if (splitCabBPreparedThisSlice) {
           finishSplitCabBSlice(nBeforeAnalog, analogFactor);
@@ -1600,11 +1744,13 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         if (decimation > 1) {
           n = runNativeDomain(st, chain, n, decimation,
                               [&](float* domain, uint32_t m, double rate) {
-                                applyModel(st, models[st], domain, m, rate);
+                                applyModel(st, models[st], domain, m, rate, kPartAll,
+                                           nullptr, &sliceBusDbu, hasActiveAmpModel);
                               });
           if (off == 0) latencyFrames += nativeLatencyFrames(decimation);
         } else {
-          applyModel(st, models[st], chain, n, sampleRate);
+          applyModel(st, models[st], chain, n, sampleRate, kPartAll,
+                     nullptr, &sliceBusDbu, hasActiveAmpModel);
           finishSplitCabBSlice(n, 1);
         }
         modelProcessed = true;
@@ -1616,7 +1762,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
         applyModel(st, models[st], chain, n, sampleRate, kPartAll,
-                   &baseDomainNonlinear);
+                   &baseDomainNonlinear, &sliceBusDbu, hasActiveAmpModel);
         finishSplitCabBSlice(n, 1);
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
@@ -1629,6 +1775,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       size_t next = position + 1;
       while (next < serialCount && enabled[serial[next]] && models[serial[next]] &&
              !(serial[next] == 2 && (irs[2] || parallelCabs)) &&
+             activeRateBundles[serial[next]] == nullptr &&
              nativeDecimation(serial[next]) == 0 &&
              truePipelineFactor(osApplied[serial[next]], sampleRate) == f) {
         group[groupCount++] = serial[next++];
@@ -1640,7 +1787,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       const bool groupInitialNonlinear =
           (sampleRate > 48500.0) && baseDomainNonlinear;
       n = processTrueGroup(st, group, groupCount, chain, n, f,
-                           groupInitialNonlinear);
+                           groupInitialNonlinear, &sliceBusDbu, hasActiveAmpModel);
       baseDomainNonlinear = true;
       finishSplitCabBSlice(nBeforeGroup, f);
       modelProcessed = true;
@@ -1717,7 +1864,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
 void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
                       float* samples, size_t count, double domainRate,
-                      bool upstreamNonlinear) noexcept {
+                      bool upstreamNonlinear, float* busDbu,
+                      bool hasDownstreamAmp) noexcept {
   const double modelRate = model->GetSampleRate();
   const double effectiveModelRate = modelRate > 0.0 ? modelRate : 48000.0;
   const bool autoBandLimit = !modelBandLimitOn && upstreamNonlinear;
@@ -1726,8 +1874,31 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
       modelBandLimitOn || autoBandLimit,
       autoBandLimit ? ModelBandLimit::autoInterStageParams(effectiveModelRate)
                     : modelBandLimitParams);
-  const float pre = modelInputGainCache[stage].get(
-      model->GetRecommendedInputDBAdjustment(), blockRounding);
+
+  const bool isPedalStage = (stage == stageIndex(Stage::Pedal) ||
+                             stage == stageIndex(Stage::Pedal2) ||
+                             stage == stageIndex(Stage::Pedal3));
+  const bool isAmpStage = (stage == stageIndex(Stage::Amp));
+
+  float preDb = model->GetRecommendedInputDBAdjustment();
+  float postDb = model->GetRecommendedOutputDBAdjustment();
+  if (busDbu && (isPedalStage || isAmpStage)) {
+    if (model->HasModelInputLevelDBu() ||
+        std::fabs(*busDbu - EngineMode::kDefaultInputCalibrationDbu) > 1.0e-4f) {
+      preDb = std::clamp(*busDbu - model->GetModelInputLevelDBu(), -24.0f, 24.0f);
+    }
+    if (isPedalStage && hasDownstreamAmp &&
+        (model->HasModelOutputLevelDBu() || model->HasModelInputLevelDBu())) {
+      // Preserve true pedal boost/cut into the amp instead of loudness-normalizing
+      // the pedal output to -18 dBFS RMS.
+      postDb = 0.0f;
+      *busDbu = model->HasModelOutputLevelDBu()
+          ? model->GetModelOutputLevelDBu()
+          : model->GetModelInputLevelDBu();
+    }
+  }
+
+  const float pre = modelInputGainCache[stage].get(preDb, blockRounding);
   if (pre != 1.0f)
     for (size_t i = 0; i < count; ++i) samples[i] *= pre;
   // Cab B may already be running on a different executor. Only the callback's
@@ -1738,8 +1909,7 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
   } else {
     model->Process(samples, samples, count);
   }
-  const float post = modelOutputGainCache[stage].get(
-      model->GetRecommendedOutputDBAdjustment(), blockRounding);
+  const float post = modelOutputGainCache[stage].get(postDb, blockRounding);
   if (post != 1.0f)
     for (size_t i = 0; i < count; ++i) samples[i] *= post;
   if (std::fabs(stageDcRate[stage] - domainRate) > 0.5) {
@@ -1752,7 +1922,8 @@ void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
 }
 
 uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
-                               int factor) noexcept {
+                               int factor, double baseRateOverride) noexcept {
+  const double baseRate = baseRateOverride > 0.0 ? baseRateOverride : sampleRate;
   const size_t levels = cascadeLevels(factor);
   float* bufs[2] = {osScratch[stage].data(), osScratch2[stage].data()};
   size_t n = osUp[stage][0].process(samples, count, bufs[0]);
@@ -1761,7 +1932,7 @@ uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
                                    bufs[level % 2]);
   float* domain = bufs[(levels - 1) % 2];
   if (n == 0 || n + 64 > osScratch[stage].size()) return count;
-  runModel(stage, models[stage], domain, n, sampleRate * factor);
+  runModel(stage, models[stage], domain, n, baseRate * factor, cabUpstreamNonlinearActive);
 
   size_t back = n;
   const float* downInput = domain;
@@ -1779,11 +1950,32 @@ uint32_t Plugin::processTrueCab(size_t stage, float* samples, uint32_t count,
 
 void Plugin::processCabB(float* samples, uint32_t count) noexcept {
   constexpr size_t kCabB = stageIndex(Stage::Cab2);
+  if (activeRateBundles[kCabB] != nullptr) {
+    const int decimation = nativeDecimation(kCabB);
+    const int factor = decimation == 0
+        ? truePipelineFactor(osApplied[kCabB], sampleRate)
+        : 1;
+    runRationalStageDomain(kCabB, samples, count,
+                           [this, decimation, factor](
+                               float* midBuf, uint32_t m, double midRate) noexcept {
+                             if (decimation > 1) {
+                               runNativeDomain(kCabB, midBuf, m, decimation,
+                                               [this](float* domain, uint32_t dm, double rate) noexcept {
+                                                 runModel(kCabB, models[kCabB], domain, dm, rate, cabUpstreamNonlinearActive);
+                                               }, midRate);
+                             } else if (factor > 1) {
+                               processTrueCab(kCabB, midBuf, m, factor, midRate);
+                             } else {
+                               runModel(kCabB, models[kCabB], midBuf, m, midRate, cabUpstreamNonlinearActive);
+                             }
+                           });
+    return;
+  }
   const int decimation = nativeDecimation(kCabB);
   if (decimation > 1) {
     runNativeDomain(kCabB, samples, count, decimation,
                     [this](float* domain, uint32_t m, double rate) noexcept {
-                      runModel(kCabB, models[kCabB], domain, m, rate);
+                      runModel(kCabB, models[kCabB], domain, m, rate, cabUpstreamNonlinearActive);
                     });
     return;
   }
@@ -1793,7 +1985,7 @@ void Plugin::processCabB(float* samples, uint32_t count) noexcept {
   if (factor > 1)
     processTrueCab(kCabB, samples, count, factor);
   else
-    runModel(kCabB, models[kCabB], samples, count, sampleRate);
+    runModel(kCabB, models[kCabB], samples, count, sampleRate, cabUpstreamNonlinearActive);
 }
 
 void Plugin::parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcept {
@@ -1801,6 +1993,20 @@ void Plugin::parallelCabExtras(uint32_t& extraA, uint32_t& extraB) const noexcep
   auto stageExtra = [&](size_t stage) -> uint32_t {
     if (!models[stage] || irs[stage]) return 0;
     const int decimation = nativeDecimation(stage);
+    if (const auto* rateBundle = activeRateBundles[stage]) {
+      uint32_t total = rateBundle->rateLatencyFrames;
+      if (decimation > 1) {
+        total += static_cast<uint32_t>(std::lround(
+            nativeLatencyFrames(decimation) * sampleRate / rateBundle->resampledBaseRate));
+      } else if (decimation == 0) {
+        const int factor = truePipelineFactor(osApplied[stage], sampleRate);
+        if (factor > 1) {
+          total += static_cast<uint32_t>(std::lround(
+              cascadeLatencyFrames(factor) * sampleRate / rateBundle->resampledBaseRate));
+        }
+      }
+      return total;
+    }
     if (decimation > 1) return nativeLatencyFrames(decimation);
     if (decimation == 0) {
       const int factor = truePipelineFactor(osApplied[stage], sampleRate);
@@ -1872,6 +2078,8 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
   const float spkThump = *ports.speaker_thump;
   const float spkRes = *ports.speaker_resonance;
   const float spkDamping = rackOn(Rack::Power) ? *ports.negative_feedback * 0.01f : 0.0f;
+  const float spkDynDamping = static_cast<float>(ampAdvanced.lastDynamicDamping());
+  cabUpstreamNonlinearActive = modelProcessed;
   const PinBands consolePinBands = pinBands(PinEqPane::CabConsole);
   const int norm = decodeIrNormalization(*ports.ir_normalization);
   const uint32_t sliceMax = static_cast<uint32_t>(std::max(1, maxBufferSize));
@@ -1964,10 +2172,10 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       uint32_t count;
       bool applySpeakerB;
       int speakerBProfile;
-      float drive, comp, thump, resonance, damping;
+      float drive, comp, thump, resonance, damping, dynDamping;
       PinBands pinBands;
     } job{this, cabBL.data(), n, !cabBPreparedSlice && splitFallbackInPost, speakerBApplied,
-          spkDrive, spkComp, spkThump, spkRes, spkDamping, spkPinBands};
+          spkDrive, spkComp, spkThump, spkRes, spkDamping, spkDynDamping, spkPinBands};
     bool cabBDispatched = false;
     if (cabinetWorker && parallelCabs && enabled[2] && models[2] && !irs[2] &&
         models[3] && !irs[3]) {
@@ -1975,6 +2183,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       cabBDispatched = cabinetWorker->submit([](void* context) noexcept {
         auto& j = *static_cast<CabJob*>(context);
         if (j.applySpeakerB) {
+          j.plugin->speakerDynamicsB.setDynamicDampingScale(j.dynDamping);
           j.plugin->speakerDynamicsB.process(j.samples, j.count, j.plugin->sampleRate,
               j.speakerBProfile, j.drive, j.comp, j.thump, j.resonance, j.damping);
           float* ch[1] = {j.samples};
@@ -1988,6 +2197,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
     parallelCabExtras(extraA, extraB);
 
     if (!cabBPreparedSlice && splitFallbackInPost) {
+      speakerDynamics.setDynamicDampingScale(spkDynDamping);
       speakerDynamics.process(L, n, sampleRate, speakerApplied,
                               spkDrive, spkComp, spkThump, spkRes, spkDamping);
       float* ch[1] = {L};
@@ -2004,16 +2214,34 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
         irs[2]->process(L, n, norm);
         cabProcessed = true;
       } else if (models[2] && parallelCabs) {
-        // Run Cab A in its True oversampled or native-rate domain.
+        // Run Cab A in its True oversampled, rational-resampled, or native-rate domain.
         const int decimation = nativeDecimation(2);
-        const int factor = truePipelineFactor(osApplied[2], sampleRate);
-        if (decimation > 1)
+        const int factor = decimation == 0 ? truePipelineFactor(osApplied[2], sampleRate) : 1;
+        if (activeRateBundles[2] != nullptr) {
+          runRationalStageDomain(2, L, n,
+                                 [this, decimation, factor](
+                                     float* midBuf, uint32_t m, double midRate) noexcept {
+                                   if (decimation > 1) {
+                                     runNativeDomain(2, midBuf, m, decimation,
+                                                     [this](float* domain, uint32_t dm, double rate) noexcept {
+                                                       runModel(2, models[2], domain, dm, rate, cabUpstreamNonlinearActive);
+                                                     }, midRate);
+                                   } else if (factor > 1) {
+                                     processTrueCab(2, midBuf, m, factor, midRate);
+                                   } else {
+                                     runModel(2, models[2], midBuf, m, midRate, cabUpstreamNonlinearActive);
+                                   }
+                                 });
+        } else if (decimation > 1) {
           runNativeDomain(2, L, n, decimation,
                           [this](float* domain, uint32_t m, double rate) noexcept {
-                            runModel(2, models[2], domain, m, rate);
+                            runModel(2, models[2], domain, m, rate, cabUpstreamNonlinearActive);
                           });
-        else if (factor > 1) processTrueCab(2, L, n, factor);
-        else runModel(2, models[2], L, n, sampleRate);
+        } else if (factor > 1) {
+          processTrueCab(2, L, n, factor);
+        } else {
+          runModel(2, models[2], L, n, sampleRate, cabUpstreamNonlinearActive);
+        }
         cabProcessed = true;
       }
       haveA = cabProcessed;
@@ -2047,6 +2275,7 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       if (!cabBDispatched) {
         std::memcpy(BL, cabBSource, n * sizeof(float));
         if (!cabBPreparedSlice && splitFallbackInPost) {
+          speakerDynamicsB.setDynamicDampingScale(spkDynDamping);
           speakerDynamicsB.process(BL, n, sampleRate, speakerBApplied,
                                    spkDrive, spkComp, spkThump, spkRes, spkDamping);
           float* ch[1] = {BL};
@@ -2605,6 +2834,11 @@ void Plugin::processPostChain(float* mono, uint32_t count, bool cabInChain,
       centerBlendApplied = centerBlendRequested;
       centerStereoizer.reset();
     }
+    if (std::fabs(calibrationDbuApplied - calibrationDbuRequested) > 1.0e-4f ||
+        std::fabs(EngineMode::inputCalibrationDbu() - calibrationDbuRequested) > 1.0e-4f) {
+      EngineMode::commitRequested();
+      calibrationDbuApplied = EngineMode::inputCalibrationDbu();
+    }
     const bool postParallel = appliedEnabled[3] && (models[3] || irs[3]);
     const bool postHaveA = appliedEnabled[2] && (models[2] || irs[2]);
     if (shelfSnapNeeded || preParallel != postParallel || preHaveA != postHaveA ||
@@ -2655,6 +2889,9 @@ void Plugin::commitPendingSwitches() {
     models[index] = pending.model;
     irs[index] = pending.ir;
     irsRight[index] = pending.irRight;
+    retireRateBundle(activeRateBundles[index]);
+    activeRateBundles[index] = pendingRateBundles[index];
+    pendingRateBundles[index] = nullptr;
     pending.model = nullptr;
     pending.ir = nullptr;
     pending.irRight = nullptr;
@@ -2669,6 +2906,7 @@ void Plugin::commitPendingSwitches() {
     for (auto& up : osUp[index]) up.reset();
     for (auto& down : osDown[index]) down.reset();
     resetNativeStream(index);
+    resetRationalStageStream(index);
     if (index == 2 && cabAlignActive) {
       cabAlign.reset();
       cabAlign.armFadeIn();
@@ -2732,6 +2970,8 @@ void Plugin::scheduleModelLoad(Stage stage, const char* path, size_t length,
   const size_t index = stageIndex(stage);
   auto& pending = pendingSwitches[index];
   if (pending.ready) {
+    retireRateBundle(pendingRateBundles[index]);
+    pendingRateBundles[index] = nullptr;
     LV2FreeModelMsg superseded{kWorkTypeFree, pending.model, pending.ir, pending.irRight};
     schedule->schedule_work(schedule->handle, sizeof(superseded), &superseded);
     pending.model = nullptr;

@@ -161,8 +161,10 @@ int main() {
         "every profile has both a low resonance and a rising HF inductance");
   check(dampingFlattens,
         "Negative Feedback damping flattens both ends of the curve");
-  check(gainDb(Spk::kUK412, 118.0, 0.05f, 0, 0, 0, 100, 0) >
-            gainDb(Spk::kResistive, 95.0, 0.05f, 0, 0, 0, 100, 0) + 2.0,
+  check((gainDb(Spk::kUK412, 118.0, 0.05f, 0, 0, 0, 100, 0) -
+         gainDb(Spk::kUK412, 500.0, 0.05f, 0, 0, 0, 100, 0)) >
+            (gainDb(Spk::kResistive, 95.0, 0.05f, 0, 0, 0, 100, 0) -
+             gainDb(Spk::kResistive, 500.0, 0.05f, 0, 0, 0, 100, 0)) + 2.0,
         "UK 4x12 has a far stronger resonance than the Resistive load");
 
   // ---- Speaker Drive saturates excursion (the low band) only. ----
@@ -192,8 +194,34 @@ int main() {
   }
   check(levelDependent,
         "excursion compression lowers the resonance as level rises");
-  check(gainDb(Spk::kUK412, 60.0, 0.05f, 0, 0, 100, 0, 0) > 0.5,
-        "Thump lifts the sub-resonance excursion region");
+  {
+    // Dynamic Thump: maintains a subtle steady-state lift and blooms strongly on
+    // low-end palm-mute transient onsets.
+    const double steadyThumpDb = gainDb(Spk::kUK412, 105.0, 0.05f, 0, 0, 100, 0, 0);
+    Spk spkOnset;
+    std::vector<float> silent(2400, 0.0f);
+    spkOnset.process(silent.data(), silent.size(), 48000.0, Spk::kUK412,
+                     0, 0, 100, 0, 0);
+    std::vector<float> burst(24000, 0.0f);
+    for (size_t i = 0; i < burst.size(); ++i)
+      burst[i] = 0.25f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 105.0 * i / 48000.0));
+    const auto dryBurst = burst;
+    spkOnset.process(burst.data(), burst.size(), 48000.0, Spk::kUK412,
+                     0, 0, 100, 0, 0);
+    double onsetIn = 0.0, onsetOut = 0.0, sustainIn = 0.0, sustainOut = 0.0;
+    for (size_t i = 240; i < 1920; ++i) {
+      onsetIn += static_cast<double>(dryBurst[i]) * dryBurst[i];
+      onsetOut += static_cast<double>(burst[i]) * burst[i];
+    }
+    for (size_t i = 18000; i < 24000; ++i) {
+      sustainIn += static_cast<double>(dryBurst[i]) * dryBurst[i];
+      sustainOut += static_cast<double>(burst[i]) * burst[i];
+    }
+    const double onsetDb = 10.0 * std::log10(onsetOut / onsetIn);
+    const double sustainDb = 10.0 * std::log10(sustainOut / sustainIn);
+    check(steadyThumpDb > 0.35 && onsetDb > sustainDb + 0.5,
+          "Thump lifts the sub-resonance excursion region and blooms on palm-mute onsets");
+  }
 
   // ---- Block-boundary invariance. ----
   auto whole = program(32768, 96000.0), chunked = whole;

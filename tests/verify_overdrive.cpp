@@ -221,13 +221,19 @@ int main() {
     check(h2TS < 1.0e-5, "Classic TS has negligible even harmonics (symmetric)");
     check(h2SD1 / f0SD1 > 0.02, "SD-1 Asymmetric generates prominent 2nd-order even harmonics (> -34 dBc)");
 
-    // Positive vs Negative peak asymmetry in SD-1:
+    // Positive vs Negative peak asymmetry in SD-1 (after 7 Hz output coupling-cap DC block):
     float maxPos = 0.0f, maxNeg = 0.0f;
+    double dcSum = 0.0;
     for (size_t i = n / 2; i < n; ++i) {
       if (xSD1[i] > maxPos) maxPos = xSD1[i];
       if (-xSD1[i] > maxNeg) maxNeg = -xSD1[i];
+      dcSum += xSD1[i];
     }
-    check(maxPos > maxNeg * 1.15f, "SD-1 clips positive and negative half-cycles with asymmetric thresholds");
+    const double dcMean = dcSum / static_cast<double>(n - n / 2);
+    check(Overdrive::clip(1.0, 1) > -Overdrive::clip(-1.0, 1) * 1.5 && maxPos > maxNeg * 1.02f,
+          "SD-1 clips positive and negative half-cycles with asymmetric thresholds");
+    check(std::fabs(dcMean) < 1.0e-3,
+          "SD-1 output coupling cap removes rectified diode DC offset (< 1e-3)");
 
     // Dynamic Bias Drift: SD-1 charges AC feedback memory under heavy pick attack; TS stays centered.
     check(odSD1.dynamicBias() > 0.01, "SD-1 develops dynamic self-biasing drift (> 10 mV) on asymmetric pick attack");

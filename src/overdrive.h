@@ -52,6 +52,7 @@ class Overdrive {
 
   void reset() noexcept {
     bass_ = lp_ = tone_ = bias_ = 0.0;
+    odDcIn_ = odDcOut_ = 0.0;
     smoothOn_ = smoothDrive_ = smoothTone_ = smoothLevel_ = 0.0f;
     smoothTight_ = kTightDefault;
     currentVoicing_ = targetVoicing_ = 0;
@@ -61,6 +62,12 @@ class Overdrive {
   }
 
   bool active() const noexcept { return smoothOn_ > 0.0f; }
+
+  bool isPureClean() const noexcept {
+    return currentVoicing_ == static_cast<int>(Voicing::Clean) &&
+           targetVoicing_ == static_cast<int>(Voicing::Clean) &&
+           voicingFade_ >= 1.0f;
+  }
 
   // Dynamic self-biasing drift voltage across the feedback capacitor network (V).
   // Settles dynamically during pick attack with ~25 ms time constant.
@@ -116,6 +123,7 @@ class Overdrive {
     const float fadeStep = static_cast<float>(1.0 / (safeRate * 0.010));
     // Dynamic bias drift tracking: tau = 25 ms virtual-ground sag / feedback cap memory
     const double biasK = 1.0 - std::exp(-1.0 / (safeRate * 0.025));
+    const double odDcR = std::exp(-2.0 * kPi * 7.0 / safeRate);
     const bool antialias = safeRate >= kAntialiasMinRate;
     if (!antialias)
       for (ClipSlot& slot : clipSlots_) slot.valid = false;
@@ -135,7 +143,7 @@ class Overdrive {
 
       if (smoothDrive_ != cachedDrive) {
         g = branchGain(smoothDrive_);
-        lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * rate), rate);
+        lpK = onePole(std::min(feedbackLowPassHz(smoothDrive_), 0.45 * safeRate), rate);
         cachedDrive = smoothDrive_;
       }
       if (smoothTight_ != cachedTight) {
@@ -143,7 +151,7 @@ class Overdrive {
         cachedTight = smoothTight_;
       }
       if (smoothTone_ != cachedTone) {
-        toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * rate), rate);
+        toneK = onePole(std::min(toneHz(smoothTone_), 0.45 * safeRate), rate);
         cachedTone = smoothTone_;
       }
       if (smoothLevel_ != cachedLevel) {
@@ -159,16 +167,17 @@ class Overdrive {
         const double x = s[i];
         bass_ += hpK * (x - bass_);
         lp_ += lpK * ((x - bass_) - lp_);
+        const double bandPassed = lp_;
         // Clipper input is modulated by dynamic bias drift
-        const double u = g * lp_ - bias_;
+        const double u = g * bandPassed - bias_;
         const bool currentClean = currentVoicing_ == static_cast<int>(Voicing::Clean);
-        double clipped = shape(currentClean ? g * lp_ : u, currentVoicing_, 0, antialias);
+        double clipped = shape(currentClean ? g * bandPassed : u, currentVoicing_, 0, antialias);
         double biasSignal = currentClean ? 0.0 : clipped;
         if (voicingFade_ >= 1.0f) {
           clipSlots_[1].valid = false;
         } else {
           const bool targetClean = targetVoicing_ == static_cast<int>(Voicing::Clean);
-          const double c1 = shape(targetClean ? g * lp_ : u, targetVoicing_, 1, antialias);
+          const double c1 = shape(targetClean ? g * bandPassed : u, targetVoicing_, 1, antialias);
           clipped = (1.0 - voicingFade_) * clipped + voicingFade_ * c1;
           biasSignal = (1.0 - voicingFade_) * biasSignal + voicingFade_ * (targetClean ? 0.0 : c1);
           voicingFade_ += fadeStep;
@@ -179,7 +188,21 @@ class Overdrive {
         }
         // Leak integrator models dynamic self-biasing charge (tau = 25 ms, 15% coupling factor)
         bias_ += biasK * (0.15 * biasSignal - bias_);
-        const double pedal = x + smoothDrive_ * clipped;
+        if (currentClean && voicingFade_ >= 1.0f) {
+          odDcIn_ = odDcOut_ = 0.0;
+        } else {
+          // Output coupling cap blocks asymmetric diode DC before Amp NAM.
+          const double dcRemoved = clipped - odDcIn_ + odDcR * odDcOut_;
+          odDcIn_ = clipped;
+          odDcOut_ = dcRemoved;
+          clipped = dcRemoved;
+        }
+        // Keep the Tight HPF mid-focus contour active even at Drive 0% (distortionless)
+        // while smoothly blending in diode saturation as Drive rises.
+        const double clipMix = std::sqrt(static_cast<double>(smoothDrive_));
+        const double cleanMid = 1.35 * bandPassed;
+        const double dryWeight = 0.55 + 0.45 * clipMix;
+        const double pedal = dryWeight * x + (1.0 - clipMix) * cleanMid + clipMix * clipped;
         tone_ += toneK * (pedal - tone_);
         s[i] = static_cast<float>(x + on * (tone_ * level - x));
       }
@@ -384,7 +407,7 @@ class Overdrive {
   // The diode curve of one voicing. With antialias on, the output is the mean
   // of the curve between the last input and this input (first-order
   // antiderivative antialiasing), which removes most of the fold-back of the
-  // clipper harmonics. The linear voicing needs none.
+  // clipper harmonics.
   double shape(double x, int voicing, int slotIndex, bool antialias) noexcept {
     ClipSlot& slot = clipSlots_[static_cast<size_t>(slotIndex)];
     if (!antialias || voicing == static_cast<int>(Voicing::Clean)) {
@@ -398,7 +421,7 @@ class Overdrive {
     } else {
       const double dx = x - slot.x;
       y = std::fabs(dx) > 1.0e-5 ? (integral - slot.integral) / dx
-                                 : clip(0.5 * (x + slot.x), voicing);
+                                 : clip(0.5 * (slot.x + x), voicing);
     }
     slot.x = x;
     slot.integral = integral;
@@ -418,6 +441,7 @@ class Overdrive {
   }
 
   double bass_ = 0.0, lp_ = 0.0, tone_ = 0.0, bias_ = 0.0;
+  double odDcIn_ = 0.0, odDcOut_ = 0.0;
   float smoothOn_ = 0.0f, smoothDrive_ = 0.0f, smoothTight_ = kTightDefault, smoothTone_ = 0.0f, smoothLevel_ = 0.0f;
   int currentVoicing_ = 0, targetVoicing_ = 0;
   float voicingFade_ = 1.0f;

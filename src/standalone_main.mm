@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "nam_rig_plugin.h"
+#include "amp_engine_mode.h"
 #include "cabinet_worker.h"
 #include "polyphase_worker.h"
 #include "rack_controls.h"
@@ -2680,6 +2681,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   NSPopUpButton* _audioPopup;
   NSMenu* _appAudioSubmenu;
   NSMenu* _appPerfSubmenu;
+  NSMenu* _appCalibrationSubmenu;
   StandaloneAnimatedAmpView* _dockAmpView;
   std::unique_ptr<StandaloneHost> _host;
 }
@@ -2943,6 +2945,38 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     }
   }
 
+  // 7b. INTERFACE INPUT CALIBRATION (dBu)
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"INTERFACE INPUT CALIBRATION (dBu)");
+  {
+    const float curCalDbu = NAMRig::EngineMode::requestedInputCalibrationDbu();
+    struct CalEntry {
+      float dbu;
+      NSString* title;
+    };
+    const CalEntry kCals[] = {
+      {8.5f,  @"+8.5 dBu  (Audient iD4 / iD14 / iD24 Inst)"},
+      {9.0f,  @"+9.0 dBu  (SSL 2 / 2+ Inst)"},
+      {10.0f, @"+10.0 dBu (MOTU M2 / M4 Inst)"},
+      {12.0f, @"+12.0 dBu (Scarlett 4th Gen / RME / NAM Default)"},
+      {12.5f, @"+12.5 dBu (Scarlett 3rd Gen Inst)"},
+      {13.0f, @"+13.0 dBu (UAD Volt / PreSonus Inst)"},
+      {15.0f, @"+15.0 dBu (High-Headroom Inst / Active DI)"},
+      {18.0f, @"+18.0 dBu (Apollo Hi-Z / Line / Reamp)"},
+    };
+    for (const auto& c : kCals) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:c.title
+                                                    action:@selector(selectInputCalibrationDbu:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.representedObject = @(c.dbu);
+      item.state = (std::fabs(curCalDbu - c.dbu) < 0.05f)
+                       ? NSControlStateValueOn
+                       : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+  }
+
   // 8. PROFILER
   [menu addItem:[NSMenuItem separatorItem]];
   addHeader(@"DSP PERFORMANCE PROFILER");
@@ -2988,6 +3022,39 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   }
 }
 
+- (void)populateCalibrationMenu:(NSMenu*)menu {
+  [menu removeAllItems];
+  menu.autoenablesItems = NO;
+
+  const float curCalDbu = NAMRig::EngineMode::requestedInputCalibrationDbu();
+  struct CalEntry {
+    float dbu;
+    NSString* title;
+  };
+  const CalEntry kCals[] = {
+    {8.5f,  @"+8.5 dBu  (Audient iD4 / iD14 / iD24 Inst)"},
+    {9.0f,  @"+9.0 dBu  (SSL 2 / 2+ Inst)"},
+    {10.0f, @"+10.0 dBu (MOTU M2 / M4 Inst)"},
+    {12.0f, @"+12.0 dBu (Scarlett 4th Gen / RME / NAM Default)"},
+    {12.5f, @"+12.5 dBu (Scarlett 3rd Gen Inst)"},
+    {13.0f, @"+13.0 dBu (UAD Volt / PreSonus Inst)"},
+    {15.0f, @"+15.0 dBu (High-Headroom Inst / Active DI)"},
+    {18.0f, @"+18.0 dBu (Apollo Hi-Z / Line / Reamp)"},
+  };
+  for (const auto& c : kCals) {
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:c.title
+                                                  action:@selector(selectInputCalibrationDbu:)
+                                           keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = @(c.dbu);
+    item.toolTip = @"Match your audio interface's 0 dBFS instrument-input headroom to NAM model input_level_dbu.";
+    item.state = (std::fabs(curCalDbu - c.dbu) < 0.05f)
+                     ? NSControlStateValueOn
+                     : NSControlStateValueOff;
+    [menu addItem:item];
+  }
+}
+
 - (void)refreshAudioMenusAndTitle {
   if (_audioPopup) {
     [self populateAudioMenu:_audioPopup.menu includeTitleItem:YES];
@@ -2997,7 +3064,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     const double ms = (sr > 0.0) ? (static_cast<double>(buf) / sr) * 1000.0 : 0.0;
     _audioPopup.toolTip = [NSString stringWithFormat:
         @"Audio I/O & Engine Settings — Input: %s → Output: %s · %.1f kHz · %u samples (%.1f ms). "
-        @"Click to change input/output devices, input/output channels (Stereo Out), sample rate (kHz), buffer size, or oversampling mode.",
+        @"Click to change input/output devices, input/output channels (Stereo Out), sample rate (kHz), buffer size, oversampling mode, or interface input calibration (dBu).",
         _host ? _host->activeInputDeviceName().c_str() : "Default",
         _host ? _host->activeOutputDeviceName().c_str() : "Default",
         sr / 1000.0, buf, ms];
@@ -3008,6 +3075,9 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   if (_appPerfSubmenu) {
     [self populatePerformanceMenu:_appPerfSubmenu];
   }
+  if (_appCalibrationSubmenu) {
+    [self populateCalibrationMenu:_appCalibrationSubmenu];
+  }
 }
 
 - (void)menuNeedsUpdate:(NSMenu*)menu {
@@ -3017,7 +3087,18 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     [self populateAudioMenu:menu includeTitleItem:NO];
   } else if (menu == _appPerfSubmenu) {
     [self populatePerformanceMenu:menu];
+  } else if (menu == _appCalibrationSubmenu) {
+    [self populateCalibrationMenu:menu];
   }
+}
+
+- (void)selectInputCalibrationDbu:(NSMenuItem*)sender {
+  if (![sender.representedObject respondsToSelector:@selector(floatValue)]) return;
+  const float dbu = [sender.representedObject floatValue];
+  NAMRig::EngineMode::requestInputCalibrationDbu(dbu);
+  [[NSUserDefaults standardUserDefaults] setObject:@(NAMRig::EngineMode::requestedInputCalibrationDbu())
+                                            forKey:@"AxeFXInputCalibrationDbu"];
+  [self refreshAudioMenusAndTitle];
 }
 
 - (void)selectInputDevice:(NSMenuItem*)sender {
@@ -3209,6 +3290,14 @@ extern void openAICopilotInActiveRig();
   _appPerfSubmenu.delegate = self;
   perfMenuItem.submenu = _appPerfSubmenu;
   [appMenu addItem:perfMenuItem];
+
+  NSMenuItem* calMenuItem = [[NSMenuItem alloc] initWithTitle:@"Interface Input Calibration (dBu)"
+                                                       action:NULL
+                                                keyEquivalent:@""];
+  _appCalibrationSubmenu = [[NSMenu alloc] initWithTitle:@"Interface Input Calibration (dBu)"];
+  _appCalibrationSubmenu.delegate = self;
+  calMenuItem.submenu = _appCalibrationSubmenu;
+  [appMenu addItem:calMenuItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
 
@@ -3488,6 +3577,16 @@ extern void openAICopilotInActiveRig();
   [_window addTitlebarAccessoryViewController:titlebarRecAccessory];
 
   [_window center];
+
+  // Restore saved audio interface input headroom calibration (dBu) before
+  // starting the host so initial audio callbacks use the calibrated headroom.
+  {
+    NSNumber* savedCal = [[NSUserDefaults standardUserDefaults] objectForKey:@"AxeFXInputCalibrationDbu"];
+    const float initialCal = savedCal
+        ? [savedCal floatValue]
+        : NAMRig::EngineMode::kDefaultInputCalibrationDbu;
+    NAMRig::EngineMode::setInputCalibrationDbu(initialCal);
+  }
 
   _host = std::make_unique<StandaloneHost>();
   NSString* error = nil;

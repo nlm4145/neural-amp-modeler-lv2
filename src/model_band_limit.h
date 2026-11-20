@@ -46,8 +46,9 @@ class ModelBandLimit {
 
   static Params autoInterStageParams(double modelRate) noexcept {
     const double rate = modelRate > 0.0 ? modelRate : 48000.0;
+    const double cutoff = std::min(14500.0, 0.34 * rate);
     return Params{
-        clampCutoffHz(static_cast<float>(0.44 * rate)),
+        clampCutoffHz(static_cast<float>(cutoff)),
         2,  // 3 biquad sections = 6th-order Bessel
         kDefaultRippleDb,
         true,
