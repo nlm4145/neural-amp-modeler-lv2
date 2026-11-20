@@ -593,8 +593,6 @@ private:
   // corresponding worker response lands, so an old model is never pushed
   // through a newly-selected rate domain during an asynchronous reload.
   std::array<int, 2> osRequested = {kOsTrue8, kOsTrue8};
-  uint32_t lastAuditModelFlags = 0u;
-  bool auditFlagsLatched = false;
   std::array<uint64_t, kStageCount> loadGeneration{};
   // Generation of the last response that was not stale; equal to
   // loadGeneration when no load is in flight for the stage.
@@ -771,7 +769,6 @@ private:
   // Legacy tiles are deliberately the exception: dilation is defined by the
   // incoming rate, so the Element menu keeps affecting them (user decision).
   static constexpr double kTrueBaseRate = 96000.0;   // Element session rate
-  static constexpr double kProposedTrueBaseRate = 48000.0; // Native NAM training rate
 
   // Fixed pipeline delay of one True cascade, in base-rate frames, measured
   // impulse-through (block-size independent): each 2x pair holds back 23
@@ -790,10 +787,7 @@ private:
     if (mode < kOsTrue2) return 0;
     const int n = 1 << (mode - kOsTrue2 + 1);          // 2 / 4 / 8 / 16
     if (incomingRate <= 0.0) return n;
-    const double baseRate = AuditMode::has(AuditMode::kNativeTrueBaseRate)
-                                ? kProposedTrueBaseRate
-                                : kTrueBaseRate;
-    const double want = baseRate * n / incomingRate;
+    const double want = kTrueBaseRate * n / incomingRate;
     // The implementation is a cascade of 2x stages, so never return an
     // unsupported factor such as 3 or 32.
     if (want < 1.5) return 1;
@@ -819,7 +813,7 @@ private:
                             : kCabIrAutoTrimDefault;
     return value >= 0.5f;
   }
-  void reloadModelsForOversample(bool forceAll = false);
+  void reloadModelsForOversample();
   void reloadWavIrsForTrim();
   void scheduleModelLoad(Stage stage, const char* path, size_t length, int mode);
   void commitPendingSwitches();
@@ -833,7 +827,8 @@ private:
                         bool modelProcessed, const bool* desiredEnabled,
                         uint32_t cabBPreparedFrames = 0) noexcept;
   void runModel(size_t stage, NeuralAudio::NeuralModel* model, float* samples,
-                size_t count, double domainRate) noexcept;
+                size_t count, double domainRate,
+                bool upstreamNonlinear = false) noexcept;
   uint32_t processTrueCab(size_t stage, float* samples, uint32_t count,
                           int factor) noexcept;
   // Cab B's .nam model at the session rate or in its native-rate domain.

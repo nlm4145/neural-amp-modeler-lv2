@@ -2680,7 +2680,6 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   NSPopUpButton* _audioPopup;
   NSMenu* _appAudioSubmenu;
   NSMenu* _appPerfSubmenu;
-  NSMenu* _appAuditSubmenu;
   StandaloneAnimatedAmpView* _dockAmpView;
   std::unique_ptr<StandaloneHost> _host;
 }
@@ -2944,33 +2943,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     }
   }
 
-  // 8. AMPLIFIER ENGINE (ORIGINAL / PROPOSED AUDIT A/B)
-  [menu addItem:[NSMenuItem separatorItem]];
-  addHeader(@"AMPLIFIER ENGINE (ORIGINAL / PROPOSED)");
-  {
-    const bool allProp = NAMRig::AuditMode::allProposed();
-    const bool anyProp = NAMRig::AuditMode::anyProposed();
-
-    NSMenuItem* propItem = [[NSMenuItem alloc] initWithTitle:@"Proposed (Audit Improvements)"
-                                                      action:@selector(selectAuditModePreset:)
-                                               keyEquivalent:@""];
-    propItem.target = self;
-    propItem.tag = 1;
-    propItem.state = allProp ? NSControlStateValueOn
-                   : anyProp ? NSControlStateValueMixed
-                             : NSControlStateValueOff;
-    [menu addItem:propItem];
-
-    NSMenuItem* origItem = [[NSMenuItem alloc] initWithTitle:@"Original (Legacy Baseline)"
-                                                      action:@selector(selectAuditModePreset:)
-                                               keyEquivalent:@""];
-    origItem.target = self;
-    origItem.tag = 0;
-    origItem.state = !anyProp ? NSControlStateValueOn : NSControlStateValueOff;
-    [menu addItem:origItem];
-  }
-
-  // 9. PROFILER
+  // 8. PROFILER
   [menu addItem:[NSMenuItem separatorItem]];
   addHeader(@"DSP PERFORMANCE PROFILER");
   {
@@ -3015,72 +2988,6 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   }
 }
 
-- (void)populateAuditMenu:(NSMenu*)menu {
-  [menu removeAllItems];
-  const bool allProp = NAMRig::AuditMode::allProposed();
-  const bool anyProp = NAMRig::AuditMode::anyProposed();
-
-  NSMenuItem* propItem = [[NSMenuItem alloc] initWithTitle:@"Proposed (All Audit Improvements)"
-                                                    action:@selector(selectAuditModePreset:)
-                                             keyEquivalent:@""];
-  propItem.target = self;
-  propItem.tag = 1;
-  propItem.toolTip = @"Enables all 5 amplifier audit improvements: Power Stage biased ZDF solver + NFB linearity + C² tube curve + dual-stage sag, exact WaveNet std::tanh, Polyphase A2-max (condition_dsp) & multi-tap head, inter-stage ultrasonic band-limiting (< 0.5× model rate), and native 48 kHz True-oversampling base rate.";
-  propItem.state = allProp ? NSControlStateValueOn
-                 : anyProp ? NSControlStateValueMixed
-                           : NSControlStateValueOff;
-  [menu addItem:propItem];
-
-  NSMenuItem* origItem = [[NSMenuItem alloc] initWithTitle:@"Original (Legacy Baseline)"
-                                                    action:@selector(selectAuditModePreset:)
-                                             keyEquivalent:@""];
-  origItem.target = self;
-  origItem.tag = 0;
-  origItem.toolTip = @"Reverts all amplifier stages to the exact pre-audit baseline implementation for instant A/B comparison.";
-  origItem.state = !anyProp ? NSControlStateValueOn : NSControlStateValueOff;
-  [menu addItem:origItem];
-
-  [menu addItem:[NSMenuItem separatorItem]];
-  NSMenuItem* hdr = [[NSMenuItem alloc] initWithTitle:@"INDIVIDUAL AUDIT FIXES"
-                                               action:NULL
-                                        keyEquivalent:@""];
-  hdr.enabled = NO;
-  [menu addItem:hdr];
-
-  struct FixEntry {
-    uint32_t flag;
-    NSString* title;
-    NSString* tip;
-  };
-  const FixEntry kFixes[] = {
-    {NAMRig::AuditMode::kInterStageBandLimit,
-     @"#1 (1.4) Inter-Stage Ultrasonic Band-Limit & Nyquist Clamp",
-     @"Automatically band-limits ultrasonic harmonics (> 20.5 kHz, clamped < 0.5× model rate) before oversampled NAM stages to eliminate intermodulation aliasing."},
-    {NAMRig::AuditMode::kPowerStageZdfAndTube,
-     @"#2 (1.1 & 2.1) Power Stage Biased ZDF, NFB Linearity, C² Tube & Dual Sag",
-     @"Solves the biased ZDF loop in input coordinate u, keeps Negative Feedback linear at Master=0, upgrades the knee to a C² tube curve, and splits sag into fast screen-grid squish + slow B+ reservoir bloom."},
-    {NAMRig::AuditMode::kExactWaveNetTanh,
-     @"#3 (1.2) Exact WaveNet Tanh (Disable Clamping fast_tanh)",
-     @"Uses exact IEEE-754 std::tanh across WaveNet & NAMCore layers instead of the clamping rational approximation."},
-    {NAMRig::AuditMode::kPolyphaseCondition,
-     @"1.3 Polyphase A2-max (condition_dsp) & Multi-Tap Head",
-     @"Wraps condition_dsp (A2-max) and multi-tap head WaveNets in PolyphaseModel inside True oversampling domains so their internal delays stay at native 48 kHz."},
-    {NAMRig::AuditMode::kNativeTrueBaseRate,
-     @"1.5 Native 48 kHz True-Oversampling Base Rate",
-     @"Pins True Nx oversampling to the 48 kHz native NAM rate instead of 96 kHz, cutting 48 kHz True-oversampling latency by 12–21 samples and halving CPU at True 2×/4×/8×."},
-  };
-  for (const auto& f : kFixes) {
-    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:f.title
-                                                  action:@selector(toggleAuditFixFlag:)
-                                           keyEquivalent:@""];
-    item.target = self;
-    item.tag = static_cast<NSInteger>(f.flag);
-    item.toolTip = f.tip;
-    item.state = NAMRig::AuditMode::has(f.flag) ? NSControlStateValueOn : NSControlStateValueOff;
-    [menu addItem:item];
-  }
-}
-
 - (void)refreshAudioMenusAndTitle {
   if (_audioPopup) {
     [self populateAudioMenu:_audioPopup.menu includeTitleItem:YES];
@@ -3101,16 +3008,6 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   if (_appPerfSubmenu) {
     [self populatePerformanceMenu:_appPerfSubmenu];
   }
-  if (_appAuditSubmenu) {
-    [self populateAuditMenu:_appAuditSubmenu];
-  }
-  if (_window) {
-    const bool allProp = NAMRig::AuditMode::allProposed();
-    const bool anyProp = NAMRig::AuditMode::anyProposed();
-    _window.title = allProp ? @"Axe FX — Proposed Engine"
-                  : anyProp ? @"Axe FX — Custom Audit Engine"
-                            : @"Axe FX — Original Engine";
-  }
 }
 
 - (void)menuNeedsUpdate:(NSMenu*)menu {
@@ -3120,8 +3017,6 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     [self populateAudioMenu:menu includeTitleItem:NO];
   } else if (menu == _appPerfSubmenu) {
     [self populatePerformanceMenu:menu];
-  } else if (menu == _appAuditSubmenu) {
-    [self populateAuditMenu:menu];
   }
 }
 
@@ -3196,22 +3091,6 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
 - (void)selectOversampleMode:(NSMenuItem*)sender {
   if (!_host) return;
   _host->setOversampleMode(static_cast<int>(sender.tag));
-  [self refreshAudioMenusAndTitle];
-}
-
-- (void)selectAuditModePreset:(NSMenuItem*)sender {
-  const bool enableProposed = (sender.tag != 0);
-  NAMRig::AuditMode::setProposed(enableProposed);
-  [[NSUserDefaults standardUserDefaults] setInteger:static_cast<NSInteger>(NAMRig::AuditMode::flags())
-                                             forKey:@"AxeFXAmpAuditFlags"];
-  [self refreshAudioMenusAndTitle];
-}
-
-- (void)toggleAuditFixFlag:(NSMenuItem*)sender {
-  const uint32_t flag = static_cast<uint32_t>(sender.tag);
-  NAMRig::AuditMode::toggleFlag(flag);
-  [[NSUserDefaults standardUserDefaults] setInteger:static_cast<NSInteger>(NAMRig::AuditMode::flags())
-                                             forKey:@"AxeFXAmpAuditFlags"];
   [self refreshAudioMenusAndTitle];
 }
 
@@ -3330,14 +3209,6 @@ extern void openAICopilotInActiveRig();
   _appPerfSubmenu.delegate = self;
   perfMenuItem.submenu = _appPerfSubmenu;
   [appMenu addItem:perfMenuItem];
-
-  NSMenuItem* auditMenuItem = [[NSMenuItem alloc] initWithTitle:@"Amplifier Engine (Original / Proposed)"
-                                                         action:NULL
-                                                  keyEquivalent:@""];
-  _appAuditSubmenu = [[NSMenu alloc] initWithTitle:@"Amplifier Engine (Original / Proposed)"];
-  _appAuditSubmenu.delegate = self;
-  auditMenuItem.submenu = _appAuditSubmenu;
-  [appMenu addItem:auditMenuItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
 
@@ -3617,14 +3488,6 @@ extern void openAICopilotInActiveRig();
   [_window addTitlebarAccessoryViewController:titlebarRecAccessory];
 
   [_window center];
-
-  NSUserDefaults* auditDefaults = [NSUserDefaults standardUserDefaults];
-  if ([auditDefaults objectForKey:@"AxeFXAmpAuditFlags"] != nil) {
-    NAMRig::AuditMode::setFlags(
-        static_cast<uint32_t>([auditDefaults integerForKey:@"AxeFXAmpAuditFlags"]));
-  } else {
-    NAMRig::AuditMode::setProposed(true);
-  }
 
   _host = std::make_unique<StandaloneHost>();
   NSString* error = nil;

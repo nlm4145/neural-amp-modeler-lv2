@@ -5,8 +5,6 @@
 #include <cmath>
 #include <cstddef>
 
-#include "amp_audit_mode.h"
-
 namespace NAMRig {
 
 // Low-pass in front of a NAM model that runs above its training rate.
@@ -40,7 +38,21 @@ class ModelBandLimit {
     float cutoffHz = kDefaultCutoffHz;
     int slope = kDefaultSlope;
     float rippleDb = kDefaultRippleDb;
+    // When true, uses a 6th-order Bessel (maximally flat group delay, ~1.2%
+    // step overshoot, +0.0 dB clipped-edge peak boost) for transient-safe
+    // automatic inter-stage ultrasonic band-limiting.
+    bool bessel6 = false;
   };
+
+  static Params autoInterStageParams(double modelRate) noexcept {
+    const double rate = modelRate > 0.0 ? modelRate : 48000.0;
+    return Params{
+        clampCutoffHz(static_cast<float>(0.44 * rate)),
+        2,  // 3 biquad sections = 6th-order Bessel
+        kDefaultRippleDb,
+        true,
+    };
+  }
 
   static float clampCutoffHz(float v) noexcept {
     return std::isfinite(v) ? std::clamp(v, kMinCutoffHz, kMaxCutoffHz) : kDefaultCutoffHz;
@@ -81,13 +93,14 @@ class ModelBandLimit {
       return;
     }
 
-    const int targetSections = target.slope + 1;
-    const bool nyquistClamp = AuditMode::has(AuditMode::kInterStageBandLimit);
+    const int targetSections = target.bessel6 ? 3 : (target.slope + 1);
     const bool rateChanged = domainRate != domainRate_ || modelRate != modelRate_;
-    if ((mix_ <= 0.0f && wanted) || rateChanged || nyquistClamp != designedNyquistClamp_) {
+    const bool shapeChanged = target.bessel6 != designedBessel6_;
+    if ((mix_ <= 0.0f && wanted) || rateChanged || (mix_ <= 0.0f && shapeChanged)) {
       smoothCutoffHz_ = target.cutoffHz;
       smoothRippleDb_ = target.rippleDb;
-      design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
+      design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_,
+             target.bessel6);
       if (mix_ <= 0.0f || rateChanged) {
         clearState();
       }
@@ -101,7 +114,7 @@ class ModelBandLimit {
       const size_t chunkEnd = std::min(count, offset + kCtrlChunk);
       const size_t chunkLen = chunkEnd - offset;
 
-      if (targetSections == activeSections_) {
+      if (targetSections == activeSections_ && target.bessel6 == designedBessel6_) {
         if (smoothCutoffHz_ != target.cutoffHz || smoothRippleDb_ != target.rippleDb) {
           const double alpha = 1.0 - std::exp(-static_cast<double>(chunkLen) / smoothTau);
           const auto glide = [alpha](double& cur, double tgt) noexcept {
@@ -113,14 +126,17 @@ class ModelBandLimit {
         }
 
         if (smoothCutoffHz_ != designedCutoffHz_ || smoothRippleDb_ != designedRippleDb_) {
-          design(domainRate, modelRate, smoothCutoffHz_, activeSections_, smoothRippleDb_);
+          design(domainRate, modelRate, smoothCutoffHz_, activeSections_, smoothRippleDb_,
+                 designedBessel6_);
         }
       }
 
-      // Ramp down smoothly before switching section count (slope) or bypassing
-      // so order changes never inject a step discontinuity into high-gain stages.
+      // Ramp down smoothly before switching section count (slope), filter shape, or bypassing
+      // so topology changes never inject a step discontinuity into high-gain stages.
       const float targetMix =
-          (!wanted || targetSections != activeSections_) ? 0.0f : 1.0f;
+          (!wanted || targetSections != activeSections_ || target.bessel6 != designedBessel6_)
+              ? 0.0f
+              : 1.0f;
 
       for (size_t i = offset; i < chunkEnd; ++i) {
         double y = samples[i];
@@ -150,10 +166,11 @@ class ModelBandLimit {
       }
 
       if (mix_ <= 0.0f) {
-        if (targetSections != activeSections_) {
+        if (targetSections != activeSections_ || target.bessel6 != designedBessel6_) {
           smoothCutoffHz_ = target.cutoffHz;
           smoothRippleDb_ = target.rippleDb;
-          design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_);
+          design(domainRate, modelRate, smoothCutoffHz_, targetSections, smoothRippleDb_,
+                 target.bessel6);
           clearState();
         }
         if (!wanted) {
@@ -176,7 +193,8 @@ class ModelBandLimit {
                            const Params& rawParams) noexcept {
     const Params p = sanitizeParams(rawParams);
     ModelBandLimit filter;
-    filter.design(domainRate, modelRate, p.cutoffHz, p.slope + 1, p.rippleDb);
+    filter.design(domainRate, modelRate, p.cutoffHz, p.bessel6 ? 3 : (p.slope + 1),
+                  p.rippleDb, p.bessel6);
     constexpr double kPi = 3.14159265358979323846;
     const double w = 2.0 * kPi * hz / domainRate;
     double db = 0.0;
@@ -212,40 +230,63 @@ class ModelBandLimit {
         clampCutoffHz(p.cutoffHz),
         clampSlope(static_cast<float>(p.slope)),
         clampRippleDb(p.rippleDb),
+        p.bessel6,
     };
   }
 
   void design(double domainRate, double modelRate, double cutoffHz,
-              int sections, double rippleDb) noexcept {
+              int sections, double rippleDb, bool bessel6 = false) noexcept {
     domainRate_ = domainRate;
     modelRate_ = modelRate;
     designedCutoffHz_ = cutoffHz;
     designedRippleDb_ = rippleDb;
-    designedNyquistClamp_ = AuditMode::has(AuditMode::kInterStageBandLimit);
-    activeSections_ = std::clamp(sections, 1, kMaxSections);
+    designedBessel6_ = bessel6;
+    activeSections_ = bessel6 ? 3 : std::clamp(sections, 1, kMaxSections);
     constexpr double kPi = 3.14159265358979323846;
     const int order = 2 * activeSections_;
     double edge = std::min(cutoffHz, 0.45 * domainRate);
-    if (designedNyquistClamp_ && modelRate > 0.0) {
+    if (modelRate > 0.0) {
       edge = std::min(edge, 0.44 * modelRate);
     }
     const double k = std::tan(kPi * edge / domainRate);
-    const double epsilon = std::sqrt(std::pow(10.0, rippleDb / 10.0) - 1.0);
-    const double mu = std::asinh(1.0 / epsilon) / order;
-    // Order lowest-Q section first to avoid internal resonant peaking before damping.
-    for (int idx = 0; idx < activeSections_; ++idx) {
-      const int poleIdx = activeSections_ - 1 - idx;
-      const double theta = kPi * (2.0 * poleIdx + 1.0) / (2.0 * order);
-      const double sigma = std::sinh(mu) * std::sin(theta);
-      const double omega = std::cosh(mu) * std::cos(theta);
-      const double w = k * k * (sigma * sigma + omega * omega);
-      const double a0 = 1.0 + 2.0 * k * sigma + w;
-      Section& s = sections_[static_cast<size_t>(idx)];
-      s.b0 = w / a0;
-      s.b1 = 2.0 * w / a0;
-      s.b2 = w / a0;
-      s.a1 = 2.0 * (w - 1.0) / a0;
-      s.a2 = (1.0 - 2.0 * k * sigma + w) / a0;
+    if (bessel6) {
+      // 6th-order Bessel-Thomson poles normalized to -3 dB at w = 1,
+      // ordered lowest-Q first for minimal internal headroom excursion.
+      static constexpr double kBessel6Poles[3][2] = {
+          {1.5715008831, 0.3208985141},
+          {1.3818673125, 0.9714783690},
+          {0.9306627290, 1.6618743511},
+      };
+      for (int idx = 0; idx < 3; ++idx) {
+        const double sigma = kBessel6Poles[idx][0];
+        const double omega = kBessel6Poles[idx][1];
+        const double w = k * k * (sigma * sigma + omega * omega);
+        const double a0 = 1.0 + 2.0 * k * sigma + w;
+        Section& s = sections_[static_cast<size_t>(idx)];
+        s.b0 = w / a0;
+        s.b1 = 2.0 * w / a0;
+        s.b2 = w / a0;
+        s.a1 = 2.0 * (w - 1.0) / a0;
+        s.a2 = (1.0 - 2.0 * k * sigma + w) / a0;
+      }
+    } else {
+      const double epsilon = std::sqrt(std::pow(10.0, rippleDb / 10.0) - 1.0);
+      const double mu = std::asinh(1.0 / epsilon) / order;
+      // Order lowest-Q section first to avoid internal resonant peaking before damping.
+      for (int idx = 0; idx < activeSections_; ++idx) {
+        const int poleIdx = activeSections_ - 1 - idx;
+        const double theta = kPi * (2.0 * poleIdx + 1.0) / (2.0 * order);
+        const double sigma = std::sinh(mu) * std::sin(theta);
+        const double omega = std::cosh(mu) * std::cos(theta);
+        const double w = k * k * (sigma * sigma + omega * omega);
+        const double a0 = 1.0 + 2.0 * k * sigma + w;
+        Section& s = sections_[static_cast<size_t>(idx)];
+        s.b0 = w / a0;
+        s.b1 = 2.0 * w / a0;
+        s.b2 = w / a0;
+        s.a1 = 2.0 * (w - 1.0) / a0;
+        s.a2 = (1.0 - 2.0 * k * sigma + w) / a0;
+      }
     }
     for (int i = activeSections_; i < kMaxSections; ++i) {
       sections_[static_cast<size_t>(i)] = Section{};
@@ -260,7 +301,7 @@ class ModelBandLimit {
   double smoothCutoffHz_ = kDefaultCutoffHz;
   double smoothRippleDb_ = kDefaultRippleDb;
   int activeSections_ = kDefaultSlope + 1;
-  bool designedNyquistClamp_ = false;
+  bool designedBessel6_ = false;
   float mix_ = 0.0f;
 };
 

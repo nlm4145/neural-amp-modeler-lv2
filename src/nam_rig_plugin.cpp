@@ -1050,8 +1050,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
   // Pre-amp polyphonic Drop Pitch / Virtual Capo: shifts the gated, trimmed
   // DI before compression, overdrive, pedal, and amp saturation.
-  modelBandLimitOn = (portValue(ports.model_band_limit, kModelBandLimitDefault) >= 0.5f) ||
-                     AuditMode::has(AuditMode::kInterStageBandLimit);
+  modelBandLimitOn = portValue(ports.model_band_limit, kModelBandLimitDefault) >= 0.5f;
   modelBandLimitParams = ModelBandLimit::Params{
       ModelBandLimit::clampCutoffHz(portValue(ports.model_band_limit_cutoff, kModelBandLimitCutoffDefault)),
       ModelBandLimit::clampSlope(portValue(ports.model_band_limit_slope, kModelBandLimitSlopeDefault)),
@@ -1260,18 +1259,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
       oversampleChanged = true;
     }
   }
-  const uint32_t currentAuditModelFlags =
-      AuditMode::flags() & (AuditMode::kNativeTrueBaseRate | AuditMode::kPolyphaseCondition);
-  bool auditModelFlagsChanged = false;
-  if (!auditFlagsLatched) {
-    lastAuditModelFlags = currentAuditModelFlags;
-    auditFlagsLatched = true;
-  } else if (currentAuditModelFlags != lastAuditModelFlags) {
-    lastAuditModelFlags = currentAuditModelFlags;
-    auditModelFlagsChanged = true;
-  }
-  if (oversampleChanged || auditModelFlagsChanged)
-    reloadModelsForOversample(auditModelFlagsChanged);
+  if (oversampleChanged)
+    reloadModelsForOversample();
 
   const bool autoTrim = desiredAutoTrim();
   if (autoTrim != cabIrAutoTrimRequested) {
@@ -1339,7 +1328,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   enum : unsigned { kPartPre = 1u, kPartModel = 2u, kPartPost = 4u, kPartAll = 7u };
   auto applyModel = [&](size_t stage, NeuralAudio::NeuralModel* model,
                         float* samples, size_t count, double domainRate,
-                        unsigned parts = kPartAll) {
+                        unsigned parts = kPartAll,
+                        bool* domainNonlinear = nullptr) {
     if (stage == 1 && (parts & kPartPre)) {
       // The overdrive is a pedal in front of the amp, so it precedes Amp Drive.
       const bool odOn = portValue(ports.od_enabled, 0.0f) >= 0.5f;
@@ -1348,6 +1338,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
                         portValue(ports.od_level, 0.0f),
                         portValue(ports.od_tight, Overdrive::kTightDefault),
                         portValue(ports.od_voicing, 0.0f), odOn);
+      if (odOn && domainNonlinear) *domainNonlinear = true;
       const float target = ampGainCache.get(*ports.amp_drive, blockRounding);
       const float coeff = ampDriveRateCache.get(domainRate, blockRounding);
       for (size_t i = 0; i < count; ++i) {
@@ -1366,7 +1357,11 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         if (a > blockPreAmpPeak) blockPreAmpPeak = a;
       }
     }
-    if (parts & kPartModel) runModel(stage, model, samples, count, domainRate);
+    if (parts & kPartModel) {
+      runModel(stage, model, samples, count, domainRate,
+               domainNonlinear ? *domainNonlinear : false);
+      if (domainNonlinear) *domainNonlinear = true;
+    }
     if (stage == stageIndex(Stage::Amp) && (parts & kPartPost)) {
       const bool powerOn = rackOn(Rack::Power);
       const int tubeProfile = rackOn(Rack::PowerTube) ? tubeApplied : PowerTube::kCaptured;
@@ -1456,7 +1451,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
   // signal-chain order.
   auto processTrueGroup = [&](size_t owner, const size_t* stages,
                               size_t stageCount, float* samples,
-                              uint32_t count, int f) -> uint32_t {
+                              uint32_t count, int f,
+                              bool initialNonlinear) -> uint32_t {
     const size_t levels = cascadeLevels(f);
     float* bufs[2] = {osScratch[owner].data(), osScratch2[owner].data()};
     size_t n = osUp[owner][0].process(samples, count, bufs[0]);
@@ -1465,8 +1461,10 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     float* domain = bufs[(levels - 1) % 2];
     if (n == 0 || n + 64 > osScratch[owner].size())
       return count;
+    bool groupNonlinear = initialNonlinear;
     for (size_t i = 0; i < stageCount; ++i)
-      applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f);
+      applyModel(stages[i], models[stages[i]], domain, n, sampleRate * f,
+                 kPartAll, &groupNonlinear);
 
     size_t back = n;
     const float* dnIn = domain;
@@ -1504,6 +1502,7 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
     float* io = ports.audio_out + off;
     std::memcpy(chain, io, sliceLen * sizeof(float));
     uint32_t n = sliceLen;
+    bool baseDomainNonlinear = false;
     ampMetersCapturedThisSlice = false;
     sliceCanCacheCabB = splitDualSpeaker && (off + sliceLen <= cabBChain.size());
     splitCabBPreparedThisSlice = false;
@@ -1616,7 +1615,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 
       const int f = truePipelineFactor(osApplied[st], sampleRate);
       if (f <= 1) {
-        applyModel(st, models[st], chain, n, sampleRate);
+        applyModel(st, models[st], chain, n, sampleRate, kPartAll,
+                   &baseDomainNonlinear);
         finishSplitCabBSlice(n, 1);
         modelProcessed = true;
         if (st == 2) cabProcessed = true;
@@ -1634,7 +1634,14 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
         group[groupCount++] = serial[next++];
       }
       const uint32_t nBeforeGroup = n;
-      n = processTrueGroup(st, group, groupCount, chain, n, f);
+      // At <= 48 kHz session rates, osUp already band-limits the input below
+      // 24 kHz; at > 48 kHz (e.g. 96 kHz), upstream nonlinearities on the base
+      // bus can carry 24..48 kHz content into the new True group.
+      const bool groupInitialNonlinear =
+          (sampleRate > 48500.0) && baseDomainNonlinear;
+      n = processTrueGroup(st, group, groupCount, chain, n, f,
+                           groupInitialNonlinear);
+      baseDomainNonlinear = true;
       finishSplitCabBSlice(nBeforeGroup, f);
       modelProcessed = true;
       if (off == 0) latencyFrames += cascadeLatencyFrames(f);
@@ -1709,11 +1716,16 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
 }
 
 void Plugin::runModel(size_t stage, NeuralAudio::NeuralModel* model,
-                      float* samples, size_t count, double domainRate) noexcept {
+                      float* samples, size_t count, double domainRate,
+                      bool upstreamNonlinear) noexcept {
   const double modelRate = model->GetSampleRate();
-  modelBandLimit[stage].process(samples, count, domainRate,
-                                modelRate > 0.0 ? modelRate : 48000.0,
-                                modelBandLimitOn, modelBandLimitParams);
+  const double effectiveModelRate = modelRate > 0.0 ? modelRate : 48000.0;
+  const bool autoBandLimit = !modelBandLimitOn && upstreamNonlinear;
+  modelBandLimit[stage].process(
+      samples, count, domainRate, effectiveModelRate,
+      modelBandLimitOn || autoBandLimit,
+      autoBandLimit ? ModelBandLimit::autoInterStageParams(effectiveModelRate)
+                    : modelBandLimitParams);
   const float pre = modelInputGainCache[stage].get(
       model->GetRecommendedInputDBAdjustment(), blockRounding);
   if (pre != 1.0f)
@@ -2669,7 +2681,7 @@ void Plugin::commitPendingSwitches() {
   osTopologySignature = ~uint64_t{0};
 }
 
-void Plugin::reloadModelsForOversample(bool forceAll) {
+void Plugin::reloadModelsForOversample() {
   // Re-send every loaded model path through the worker so the models are
   // re-created with the loader external rate matching the new domain.
   // Never clobber an in-flight load (workResponse re-domains it on completion)
@@ -2681,11 +2693,11 @@ void Plugin::reloadModelsForOversample(bool forceAll) {
     if (pending.ready) {
       const size_t len = strnlen(pending.path, MAX_FILE_NAME);
       if (pending.model && len > 0 && len < MAX_FILE_NAME &&
-          (forceAll || normalizeLoadMode(stage, pending.oversampleMode) != mode)) {
+          normalizeLoadMode(stage, pending.oversampleMode) != mode) {
         scheduleModelLoad(stage, pending.path, len, mode);
       }
     } else if (loadGeneration[i] == respondedGeneration[i] && models[i] &&
-               !irs[i] && (forceAll || osApplied[i] != mode) && !modelPaths[i].empty() &&
+               !irs[i] && osApplied[i] != mode && !modelPaths[i].empty() &&
                modelPaths[i].size() < MAX_FILE_NAME) {
       scheduleModelLoad(stage, modelPaths[i].c_str(), modelPaths[i].size(), mode);
     }

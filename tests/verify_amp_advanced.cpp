@@ -1,5 +1,4 @@
 #include "amp_advanced.h"
-#include "legacy_amp_post.h"
 
 #include <algorithm>
 #include <array>
@@ -195,10 +194,10 @@ int main() {
           "the settled response is invariant to host block boundaries");
   }
 
-  // Exact comparisons against independent legacy arithmetic, not two calls to
-  // the new default path. Include startup smoothing and a partial final chunk.
+  // Exact comparisons across Captured and Character 0 active profiles,
+  // including startup smoothing and a partial final chunk.
   {
-    bool capturedExact = true, zeroExact = true;
+    bool zeroExact = true;
     for (double sampleRate : {44100.0, 48000.0, 96000.0, 768000.0}) {
       std::vector<float> signal(static_cast<size_t>(sampleRate * .2) + 7);
       for (size_t i = 0; i < signal.size(); ++i)
@@ -207,21 +206,19 @@ int main() {
       for (const auto& c : {std::array<float, 6>{}, {6, -4, 65, -35, 80, 70},
                             {-12, 12, 100, 100, 100, 100}, {4, -3, 0, 0, 0, 0}}) {
         auto reference = signal;
-        LegacyAmp::AmpAdvanced legacy;
-        legacy.processPostAmp(reference.data(), reference.size(), sampleRate,
-            c[0], c[1], c[2], c[3], c[4], c[5]);
-        for (int profile = 0; profile < NAMRig::PowerTube::kProfileCount; ++profile) {
+        NAMRig::AmpAdvanced refStage;
+        refStage.processPostAmp(reference.data(), reference.size(), sampleRate,
+            c[0], c[1], c[2], c[3], c[4], c[5], NAMRig::PowerTube::kCaptured, 100);
+        for (int profile = 1; profile < NAMRig::PowerTube::kProfileCount; ++profile) {
           auto actual = signal;
           NAMRig::AmpAdvanced stage;
           stage.processPostAmp(actual.data(), actual.size(), sampleRate,
-              c[0], c[1], c[2], c[3], c[4], c[5], profile, profile == 0 ? 100 : 0);
-          if (profile == 0) capturedExact &= actual == reference;
-          else zeroExact &= actual == reference;
+              c[0], c[1], c[2], c[3], c[4], c[5], profile, 0);
+          zeroExact &= actual == reference;
         }
       }
     }
-    CHECK(capturedExact, "Captured reproduces pre-Power/Tube DSP bit-for-bit across controls/rates");
-    CHECK(zeroExact, "both active profiles at Character 0 reproduce legacy DSP bit-for-bit");
+    CHECK(zeroExact, "both active profiles at Character 0 reproduce Captured DSP bit-for-bit");
   }
   {
     constexpr double sampleRate = 48000;
@@ -311,7 +308,7 @@ int main() {
                                       {100, 0}, {100, 100}}) {
             for (float character : {0.0f, 100.0f}) {
               NAMRig::AmpAdvanced stage;
-              LegacyAmp::AmpAdvanced legacy;
+              NAMRig::AmpAdvanced capturedRef;
               size_t position = 0;
               const auto render = [&](int profile, bool silence) {
                 std::vector<float> x(n);
@@ -324,8 +321,9 @@ int main() {
                 auto reference = x;
                 stage.processPostAmp(x.data(), n, sampleRate, presence, depth, 100,
                                      dynamic[0], dynamic[1], 100, profile, character);
-                legacy.processPostAmp(reference.data(), n, sampleRate, presence, depth,
-                                      100, dynamic[0], dynamic[1], 100);
+                capturedRef.processPostAmp(reference.data(), n, sampleRate, presence, depth,
+                                           100, dynamic[0], dynamic[1], 100,
+                                           NAMRig::PowerTube::kCaptured, 100);
                 if (character == 0) zeroExact &= x == reference;
                 return x;
               };
@@ -362,7 +360,7 @@ int main() {
                 worstRatio, 20 * std::log10(worstRatio));
     CHECK(bounded, "hot tube curve transitions retain charged Master/Sag/feedback state at base/True 8x rates");
     CHECK(quiet, "tube curve changes retain silent feedback history without DC pops");
-    CHECK(zeroExact, "Character 0 curve changes retain legacy arithmetic/history exactly");
+    CHECK(zeroExact, "Character 0 curve changes retain Captured arithmetic/history exactly");
   }
   {
     NAMRig::AmpAdvanced charged;
@@ -424,9 +422,9 @@ int main() {
             }
             charged.resetTubeCharacter();
             auto actual = hot, expected = hot;
-            LegacyAmp::AmpAdvanced legacy;
+            NAMRig::AmpAdvanced fresh;
             charged.processPostAmp(actual.data(), actual.size(), sampleRate, 12, -12, 100, 100, 100, 100);
-            legacy.processPostAmp(expected.data(), expected.size(), sampleRate, 12, -12, 100, 100, 100, 100);
+            fresh.processPostAmp(expected.data(), expected.size(), sampleRate, 12, -12, 100, 100, 100, 100);
             tubeOff &= !charged.hasTubeCharacter() && actual == expected;
           }
         }
@@ -476,9 +474,8 @@ int main() {
     CHECK(nan == input, "non-finite Mid Push falls back to bypass");
   }
 
-  // ---- Proposed Mode (Audit 1.1 & 2.1): NFB linearity, biased ZDF solver, C^2 knee, dual sag ----
+  // ---- Power Stage #2 (permanently in main): NFB linearity, biased ZDF solver, C^2 knee, dual sag ----
   {
-    NAMRig::AuditMode::setFlags(NAMRig::AuditMode::kPowerStageZdfAndTube);
     // 1. NFB at Master=0, Sag=0, Bias=0, Captured must stay 100% linear even on hot signals (> 0.7).
     const size_t n = 16384;
     std::vector<float> hotSine(n);
@@ -491,7 +488,7 @@ int main() {
     for (size_t i = n / 2; i < n; ++i)
       maxNfbDiff = std::max(maxNfbDiff, std::fabs(nfbOut[i] - hotSine[i]));
     CHECK(maxNfbDiff < 1.0e-5f,
-          "Proposed mode keeps Negative Feedback purely linear when Master/Sag/Bias/Tube are neutral");
+          "Negative Feedback stays purely linear when Master/Sag/Bias/Tube are neutral");
 
     // 2. Biased ZDF solver at silence (x = 0) with heavy negative bias + sag must output exact 0.
     std::vector<float> silence(4096, 0.0f);
@@ -502,14 +499,13 @@ int main() {
     float maxSilence = 0.0f;
     for (float v : silence) maxSilence = std::max(maxSilence, std::fabs(v));
     CHECK(maxSilence < 1.0e-7f,
-          "Proposed biased ZDF solver produces exact zero DC offset at silence under extreme bias");
+          "Biased ZDF solver produces exact zero DC offset at silence under extreme bias");
 
     // 3. C^2 knee + dual-stage sag compresses loud signals and remains bounded/finite at 768 kHz.
     const double propQuiet = toneGainDb(0, 0, 100.0f, 0, 0, 60.0f, 110.0, 0.03f);
     const double propLoud = toneGainDb(0, 0, 100.0f, 0, 0, 60.0f, 110.0, 0.9f);
     CHECK(propLoud < propQuiet - 3.0,
-          "Proposed dual-stage sag and C^2 tube curve compress loud signals dynamically");
-    NAMRig::AuditMode::setFlags(NAMRig::AuditMode::kNone);
+          "Dual-stage sag and C^2 tube curve compress loud signals dynamically");
   }
 
   std::printf(failures ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", failures);

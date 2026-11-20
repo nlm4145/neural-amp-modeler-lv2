@@ -284,7 +284,6 @@ int main(int argc, char** argv) {
     check(m && !isPolyphase(m.get()), "SetPolyphaseOversampling(false) disables it");
   }
   {
-    NeuralAudio::UsePolyphaseConditionDspFlag().store(true, std::memory_order_relaxed);
     NeuralModelLoader loader;
     loader.SetExternalSampleRate(kNativeRate * 4);
     loader.SetDefaultMaxAudioBufferSize(kMaxBlock);
@@ -292,9 +291,8 @@ int main(int argc, char** argv) {
     loader.SetPolyphaseRecurrent(true);
     std::unique_ptr<NeuralModel> mCond(loader.CreateFromFile(core + "wavenet_condition_dsp.nam", true));
     std::unique_ptr<NeuralModel> mA2Max(loader.CreateFromFile(core + "wavenet_a2_max.nam", true));
-    NeuralAudio::UsePolyphaseConditionDspFlag().store(false, std::memory_order_relaxed);
     check(mCond && isPolyphase(mCond.get()) && mA2Max && isPolyphase(mA2Max.get()),
-          "Proposed mode wraps condition_dsp and A2-max in PolyphaseModel when polyphaseRecurrent is true");
+          "condition_dsp and A2-max wrap in PolyphaseModel when polyphaseRecurrent is true");
   }
 
   std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures,
