@@ -6757,7 +6757,7 @@ static void addLowerStudioDeck(RigUIState* state,
     irTrim.buttonType = NSButtonTypeToggle;
     irTrim.check = YES;
     irTrim.state = state->cabIrAutoTrim ? NSControlStateValueOn : NSControlStateValueOff;
-    irTrim.toolTip = @"Auto-trim leading digital silence from loaded WAV cab IRs while keeping L/R arrival delay and full 170 ms tail.";
+    irTrim.toolTip = @"IR Trim — Removes leading digital silence (< -80 dB) from WAV cab IRs for a tighter, more immediate pick attack and cleaner Dual Cab phase alignment (reduces hollow comb-filtering when blending two IRs). Preserves L/R arrival delay and the full 170 ms room tail.";
     state->cabIrAutoTrimButton = irTrim;
     [cutsRow addArrangedSubview:irTrim];
     [[irTrim.widthAnchor constraintEqualToConstant:68] setActive:YES];
