@@ -256,6 +256,30 @@ void testExecutor() {
   verifyRanges(worker, 16, 64, true, "zero helper pool");
   worker.stop();
 
+  // Live runtime helper-limit A/B switching (Wide -> Legacy -> Serial -> Wide)
+  // without restarting the pool, plus persistence across stop/start.
+  require(worker.start(nullptr, kOfflinePeriod, 6), "start 6-helper pool for live limit A/B");
+  require(worker.effectiveHelperCount() == 6, "wide limit uses all 6 helpers");
+  require(verifyRanges(worker, 64, 32, false, "live limit wide").helpers == 6,
+          "wide pool dispatches 6 helpers for 64 phases");
+  worker.setActiveHelperLimit(3);
+  require(worker.effectiveHelperCount() == 3, "legacy limit caps effective helpers to 3");
+  require(verifyRanges(worker, 64, 32, false, "live limit legacy").helpers == 3,
+          "legacy pool dispatches 3 helpers for 64 phases");
+  worker.setActiveHelperLimit(0);
+  require(worker.effectiveHelperCount() == 0, "serial limit caps effective helpers to 0");
+  require(verifyRanges(worker, 64, 32, true, "live limit serial").helpers == 0,
+          "serial limit runs all phases on caller thread");
+  worker.stop();
+  require(worker.activeHelperLimit() == 0, "activeHelperLimit survives stop");
+  require(worker.start(nullptr, kOfflinePeriod, 6), "restart pool with preserved limit");
+  require(worker.effectiveHelperCount() == 0, "preserved serial limit still active after restart");
+  worker.setActiveHelperLimit(PolyphaseWorker::kMaxHelpers);
+  require(worker.effectiveHelperCount() == 6, "restoring wide limit re-enables all 6 helpers");
+  require(verifyRanges(worker, 64, 32, false, "live limit restored wide").helpers == 6,
+          "restored wide pool dispatches all 6 helpers");
+  worker.stop();
+
 #ifdef NAMRIG_VERIFY_POLYPHASE_POLICY_FAILURE
   mach_timebase_info_data_t timebase{};
   require(mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.numer != 0 &&

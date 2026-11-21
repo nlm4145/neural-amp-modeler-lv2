@@ -951,6 +951,13 @@ class StandaloneHost {
     return true;
   }
 
+  enum class MulticoreMode : int {
+    Wide = 0,
+    Legacy = 1,
+    Serial = 2,
+  };
+  static constexpr size_t kLegacyMulticoreHelpers = 3;
+
   int oversampleMode() const {
     return static_cast<int>(controls_[17] + 0.5f);
   }
@@ -961,6 +968,111 @@ class StandaloneHost {
     if (uiDescriptor_ && uiHandle_) {
       uiDescriptor_->port_event(uiHandle_, 20, sizeof(float), 0, &controls_[16]);
       uiDescriptor_->port_event(uiHandle_, 21, sizeof(float), 0, &controls_[17]);
+    }
+  }
+
+  MulticoreMode multicoreMode() const noexcept { return multicoreMode_; }
+  size_t totalMulticoreHelpers() const noexcept { return polyphaseWorker_.helperCount(); }
+  size_t activeMulticoreThreads() const noexcept {
+    return polyphaseWorker_.effectiveHelperCount() + 1;
+  }
+
+  void setMulticoreMode(MulticoreMode mode) {
+    multicoreMode_ = mode;
+    const size_t limit =
+        mode == MulticoreMode::Wide ? NAMRig::PolyphaseWorker::kMaxHelpers
+        : mode == MulticoreMode::Legacy ? kLegacyMulticoreHelpers
+                                        : 0;
+    polyphaseWorker_.setActiveHelperLimit(limit);
+    updateMulticoreDisplay();
+  }
+
+  void toggleMulticoreMode() {
+    const size_t total = polyphaseWorker_.helperCount();
+    if (total == 0) {
+      updateMulticoreDisplay();
+      return;
+    }
+    if (total > kLegacyMulticoreHelpers) {
+      // Flip Wide (e.g. 7T) <-> Legacy (4T); return from Serial to Wide.
+      setMulticoreMode(multicoreMode_ == MulticoreMode::Wide
+                           ? MulticoreMode::Legacy
+                           : MulticoreMode::Wide);
+    } else {
+      setMulticoreMode(multicoreMode_ == MulticoreMode::Serial
+                           ? MulticoreMode::Wide
+                           : MulticoreMode::Serial);
+    }
+  }
+
+  void setMulticoreButton(NSButton* button) {
+    mcPillBtn_ = button;
+    updateMulticoreDisplay();
+  }
+
+  void updateMulticoreDisplay() {
+    if (!mcPillBtn_) return;
+    const size_t total = polyphaseWorker_.helperCount();
+    const size_t activeThreads = polyphaseWorker_.effectiveHelperCount() + 1;
+    const size_t wideThreads = total + 1;
+
+    NSString* title = nil;
+    NSColor* textColor = nil;
+    NSColor* borderColor = nil;
+    NSColor* bgColor = nil;
+    NSString* tip = nil;
+
+    if (total == 0) {
+      title = @"1T SERIAL";
+      textColor = [NSColor colorWithSRGBRed:0.62 green:0.66 blue:0.74 alpha:1.0];
+      borderColor = [NSColor colorWithSRGBRed:0.145 green:0.165 blue:0.208 alpha:1.0];
+      bgColor = [NSColor colorWithSRGBRed:0.086 green:0.098 blue:0.129 alpha:1.0];
+      tip = @"Multicore Polyphase Pool unavailable (running single-threaded on audio thread).";
+    } else if (multicoreMode_ == MulticoreMode::Serial) {
+      title = @"1T SERIAL";
+      textColor = [NSColor colorWithSRGBRed:1.00 green:0.56 blue:0.56 alpha:1.0];
+      borderColor = [NSColor colorWithSRGBRed:0.90 green:0.38 blue:0.38 alpha:0.72];
+      bgColor = [NSColor colorWithSRGBRed:0.16 green:0.08 blue:0.09 alpha:1.0];
+      tip = [NSString stringWithFormat:
+          @"Multicore Pool A/B — Serial (1 thread, helpers paused). "
+          @"Click (or press ⇧⌘M) to restore Wide Pool (%zu threads). Right-click to choose mode.",
+          wideThreads];
+    } else if (multicoreMode_ == MulticoreMode::Legacy && total > kLegacyMulticoreHelpers) {
+      title = [NSString stringWithFormat:@"%zuT LEGACY", activeThreads];
+      textColor = [NSColor colorWithSRGBRed:1.00 green:0.78 blue:0.34 alpha:1.0];
+      borderColor = [NSColor colorWithSRGBRed:0.95 green:0.68 blue:0.22 alpha:0.75];
+      bgColor = [NSColor colorWithSRGBRed:0.16 green:0.12 blue:0.06 alpha:1.0];
+      tip = [NSString stringWithFormat:
+          @"Multicore Pool A/B — Legacy (%zu threads / %zu helpers, single-cluster cap). "
+          @"Click (or press ⇧⌘M) to flip to Wide Pool (%zu threads) live. Right-click for Serial.",
+          activeThreads, polyphaseWorker_.effectiveHelperCount(), wideThreads];
+    } else {
+      title = total > kLegacyMulticoreHelpers
+          ? [NSString stringWithFormat:@"%zuT WIDE", activeThreads]
+          : [NSString stringWithFormat:@"%zuT MULTI", activeThreads];
+      textColor = [NSColor colorWithSRGBRed:0.34 green:0.88 blue:1.00 alpha:1.0];
+      borderColor = [NSColor colorWithSRGBRed:0.20 green:0.78 blue:0.94 alpha:0.70];
+      bgColor = [NSColor colorWithSRGBRed:0.06 green:0.13 blue:0.17 alpha:1.0];
+      tip = total > kLegacyMulticoreHelpers
+          ? [NSString stringWithFormat:
+                @"Multicore Pool A/B — Wide (%zu threads / %zu helpers, cross-cluster for True 16x/32x). "
+                @"Click (or press ⇧⌘M) to flip to Legacy (4 threads) live. Right-click for Serial.",
+                activeThreads, polyphaseWorker_.effectiveHelperCount()]
+          : [NSString stringWithFormat:
+                @"Multicore Pool A/B — Active (%zu threads / %zu helpers). "
+                @"Click (or press ⇧⌘M) to toggle Serial (1 thread) live.",
+                activeThreads, polyphaseWorker_.effectiveHelperCount()];
+    }
+
+    NSDictionary* attrs = @{
+      NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10.0 weight:NSFontWeightBold],
+      NSForegroundColorAttributeName: textColor,
+    };
+    mcPillBtn_.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:attrs];
+    mcPillBtn_.toolTip = tip;
+    if (mcPillBtn_.layer) {
+      mcPillBtn_.layer.borderColor = borderColor.CGColor;
+      mcPillBtn_.layer.backgroundColor = bgColor.CGColor;
     }
   }
 
@@ -2411,6 +2523,8 @@ class StandaloneHost {
   NSWindow* __weak window_ = nil;
   NAMRig::CabinetWorker cabinetWorker_;
   NAMRig::PolyphaseWorker polyphaseWorker_;
+  MulticoreMode multicoreMode_ = MulticoreMode::Wide;
+  NSButton* __weak mcPillBtn_ = nil;
   static constexpr uint32_t kRenderActive = 1, kRenderSuspended = 2;
   std::atomic<uint32_t> renderState_{kRenderSuspended};
   double audioTicksPerFrame_ = 0.0;
@@ -2600,6 +2714,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
 
 @interface StandaloneContentRootView : NSView
 @property(nonatomic, strong) NSView* cpuPill;
+@property(nonatomic, strong) NSButton* mcPill;
 @property(nonatomic, strong) NSPopUpButton* audioPopup;
 @property(nonatomic, strong) StandaloneAnimatedAmpView* ampIconView;
 @property(nonatomic, strong) NSView* pluginHostView;
@@ -2641,15 +2756,22 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   const CGFloat pillH = 24.0;
   const CGFloat pillX = self.bounds.size.width - 24.0 - pillW;
   const CGFloat pillY = self.bounds.size.height - kToolbarStripHeight + (kToolbarStripHeight - pillH) / 2.0;
+  const CGFloat mcW = 86.0;
+  const CGFloat mcX = pillX - 8.0 - mcW;
   if (_audioPopup) {
     // Narrow enough that the plugin's header (A/B START button) stays uncovered.
     const CGFloat audioW = kAudioPopupWidth;
     const CGFloat audioH = 24.0;
-    const CGFloat audioX = pillX - 8.0 - audioW;
+    const CGFloat audioX = (_mcPill ? mcX : pillX) - 8.0 - audioW;
     const CGFloat audioY = self.bounds.size.height - kToolbarStripHeight + (kToolbarStripHeight - audioH) / 2.0;
     _audioPopup.frame = NSMakeRect(audioX, audioY, audioW, audioH);
     [_audioPopup removeFromSuperview];
     [self addSubview:_audioPopup positioned:NSWindowAbove relativeTo:nil];
+  }
+  if (_mcPill) {
+    _mcPill.frame = NSMakeRect(mcX, pillY, mcW, pillH);
+    [_mcPill removeFromSuperview];
+    [self addSubview:_mcPill positioned:NSWindowAbove relativeTo:nil];
   }
   if (_cpuPill) {
     _cpuPill.frame = NSMakeRect(pillX, pillY, pillW, pillH);
@@ -2682,6 +2804,7 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   NSWindow* _window;
   NSView* _pluginHostView;
   NSPopUpButton* _audioPopup;
+  NSMenu* _mcPillMenu;
   NSMenu* _appAudioSubmenu;
   NSMenu* _appPerfSubmenu;
   NSMenu* _appCalibrationSubmenu;
@@ -2950,6 +3073,11 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     }
   }
 
+  // 7a. MULTICORE THREAD POOL (LIVE A/B)
+  [menu addItem:[NSMenuItem separatorItem]];
+  addHeader(@"MULTICORE THREAD POOL (A/B)");
+  [self appendMulticoreItemsToMenu:menu];
+
   // 7b. INTERFACE INPUT CALIBRATION (dBu)
   [menu addItem:[NSMenuItem separatorItem]];
   addHeader(@"INTERFACE INPUT CALIBRATION (dBu)");
@@ -3000,8 +3128,69 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   }
 }
 
+- (void)appendMulticoreItemsToMenu:(NSMenu*)menu {
+  const size_t totalHelpers = _host ? _host->totalMulticoreHelpers() : 0;
+  const size_t wideThreads = totalHelpers + 1;
+  const auto curMode = _host ? _host->multicoreMode() : StandaloneHost::MulticoreMode::Wide;
+
+  struct McEntry {
+    StandaloneHost::MulticoreMode mode;
+    NSString* title;
+    NSString* tip;
+    BOOL enabled;
+  };
+  NSString* wideTitle = totalHelpers > StandaloneHost::kLegacyMulticoreHelpers
+      ? [NSString stringWithFormat:@"Wide Pool — %zu Threads (New / Auto)", wideThreads]
+      : (totalHelpers > 0
+             ? [NSString stringWithFormat:@"Multicore Pool — %zu Threads (Auto)", wideThreads]
+             : @"Multicore Pool (Unavailable)");
+  const BOOL hasWideSplit = totalHelpers > StandaloneHost::kLegacyMulticoreHelpers;
+  NSString* legacyTitle = hasWideSplit
+      ? @"Legacy Pool — 4 Threads (Old / 3 Helpers)"
+      : @"Legacy Pool — 4 Threads (Same as Auto)";
+  const McEntry kEntries[] = {
+    {StandaloneHost::MulticoreMode::Wide, wideTitle,
+     @"Use all available audio workgroup helper threads (spans both P-core clusters for True 16x/32x).",
+     totalHelpers > 0},
+    {StandaloneHost::MulticoreMode::Legacy, legacyTitle,
+     @"Cap helper dispatch to 3 helpers (4 threads total) to A/B test against the legacy single-cluster pool.",
+     hasWideSplit},
+    {StandaloneHost::MulticoreMode::Serial, @"Serial — 1 Thread (Single Core)",
+     @"Pause helper dispatch live and run all model phases on the audio callback thread.",
+     totalHelpers > 0},
+  };
+  for (const auto& e : kEntries) {
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:e.title
+                                                  action:@selector(selectMulticoreMode:)
+                                           keyEquivalent:@""];
+    item.target = self;
+    item.tag = static_cast<NSInteger>(e.mode);
+    item.toolTip = e.tip;
+    item.enabled = e.enabled;
+    const BOOL checked = (totalHelpers == 0)
+        ? (e.mode == StandaloneHost::MulticoreMode::Serial)
+        : (curMode == e.mode || (!hasWideSplit && curMode == StandaloneHost::MulticoreMode::Legacy &&
+                                 e.mode == StandaloneHost::MulticoreMode::Wide));
+    item.state = checked ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:item];
+  }
+}
+
+- (void)populateMulticoreMenu:(NSMenu*)menu {
+  [menu removeAllItems];
+  menu.autoenablesItems = NO;
+  NSMenuItem* hdr = [[NSMenuItem alloc] initWithTitle:@"Multicore Thread Pool (Live A/B · ⇧⌘M)"
+                                               action:NULL
+                                        keyEquivalent:@""];
+  hdr.enabled = NO;
+  [menu addItem:hdr];
+  [menu addItem:[NSMenuItem separatorItem]];
+  [self appendMulticoreItemsToMenu:menu];
+}
+
 - (void)populatePerformanceMenu:(NSMenu*)menu {
   [menu removeAllItems];
+  menu.autoenablesItems = NO;
   struct ModeEntry {
     int mode;
     NSString* title;
@@ -3027,6 +3216,13 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     item.state = (curMode == m.mode) ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:item];
   }
+  [menu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem* mcHdr = [[NSMenuItem alloc] initWithTitle:@"MULTICORE THREAD POOL (A/B)"
+                                                 action:NULL
+                                          keyEquivalent:@""];
+  mcHdr.enabled = NO;
+  [menu addItem:mcHdr];
+  [self appendMulticoreItemsToMenu:menu];
 }
 
 - (void)populateCalibrationMenu:(NSMenu*)menu {
@@ -3085,6 +3281,9 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   if (_appCalibrationSubmenu) {
     [self populateCalibrationMenu:_appCalibrationSubmenu];
   }
+  if (_host) {
+    _host->updateMulticoreDisplay();
+  }
 }
 
 - (void)menuNeedsUpdate:(NSMenu*)menu {
@@ -3096,6 +3295,8 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     [self populatePerformanceMenu:menu];
   } else if (menu == _appCalibrationSubmenu) {
     [self populateCalibrationMenu:menu];
+  } else if (menu == _mcPillMenu) {
+    [self populateMulticoreMenu:menu];
   }
 }
 
@@ -3182,6 +3383,32 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   [self refreshAudioMenusAndTitle];
 }
 
+- (void)selectMulticoreMode:(NSMenuItem*)sender {
+  if (!_host) return;
+  const int raw = static_cast<int>(sender.tag);
+  const auto mode = raw == 1 ? StandaloneHost::MulticoreMode::Legacy
+                  : raw == 2 ? StandaloneHost::MulticoreMode::Serial
+                             : StandaloneHost::MulticoreMode::Wide;
+  _host->setMulticoreMode(mode);
+  [self refreshAudioMenusAndTitle];
+}
+
+- (void)toggleMulticorePoolAction:(id)sender {
+  (void)sender;
+  if (!_host) return;
+  _host->toggleMulticoreMode();
+  [self refreshAudioMenusAndTitle];
+}
+
+extern void openAICopilotInActiveRig();
+extern void toggleAmpOversampleABInActiveRig();
+
+- (void)toggleAmpOversampleABAction:(id)sender {
+  (void)sender;
+  toggleAmpOversampleABInActiveRig();
+  [self refreshAudioMenusAndTitle];
+}
+
 - (void)profileActivePresetAction:(id)sender {
   (void)sender;
   [RigStandaloneProfiler profileActivePresetWithParentWindow:_window];
@@ -3191,8 +3418,6 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
   (void)sender;
   [RigStandaloneProfiler profileAllPresetsWithParentWindow:_window];
 }
-
-extern void openAICopilotInActiveRig();
 
 - (void)openAICopilotAction:(id)sender {
   (void)sender;
@@ -3305,6 +3530,22 @@ extern void openAICopilotInActiveRig();
   _appCalibrationSubmenu.delegate = self;
   calMenuItem.submenu = _appCalibrationSubmenu;
   [appMenu addItem:calMenuItem];
+
+  [appMenu addItem:[NSMenuItem separatorItem]];
+
+  NSMenuItem* ampOsAbItem = [[NSMenuItem alloc] initWithTitle:@"A/B Toggle Amp Oversampling"
+                                                       action:@selector(toggleAmpOversampleABAction:)
+                                                keyEquivalent:@"o"];
+  ampOsAbItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+  ampOsAbItem.target = self;
+  [appMenu addItem:ampOsAbItem];
+
+  NSMenuItem* mcToggleItem = [[NSMenuItem alloc] initWithTitle:@"Toggle Multicore Pool (Wide / Legacy)"
+                                                        action:@selector(toggleMulticorePoolAction:)
+                                                 keyEquivalent:@"M"];
+  mcToggleItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  mcToggleItem.target = self;
+  [appMenu addItem:mcToggleItem];
 
   [appMenu addItem:[NSMenuItem separatorItem]];
 
@@ -3443,7 +3684,7 @@ extern void openAICopilotInActiveRig();
   [rootContent addSubview:headerAmp positioned:NSWindowAbove relativeTo:nil];
 
   // Top-banner Audio I/O dropdown menu (Input Device, Input Channel, Output Device, Output Channel, kHz, Buffer Size).
-  _audioPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(1520 - 24 - 136 - 8 - kAudioPopupWidth, 980 + 2, kAudioPopupWidth, 24)
+  _audioPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(1520 - 24 - 136 - 8 - 86 - 8 - kAudioPopupWidth, 980 + 2, kAudioPopupWidth, 24)
                                            pullsDown:YES];
   _audioPopup.controlSize = NSControlSizeSmall;
   _audioPopup.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium];
@@ -3451,6 +3692,24 @@ extern void openAICopilotInActiveRig();
   _audioPopup.menu.delegate = self;
   rootContent.audioPopup = _audioPopup;
   [rootContent addSubview:_audioPopup positioned:NSWindowAbove relativeTo:nil];
+
+  // Live Multicore Pool A/B pill right next to the CPU meter (Wide / Legacy / Serial).
+  NSButton* mcPill = [[NSButton alloc] initWithFrame:NSMakeRect(1520 - 24 - 136 - 8 - 86, 980 + 2, 86, 24)];
+  mcPill.bordered = NO;
+  mcPill.bezelStyle = NSBezelStyleInline;
+  mcPill.wantsLayer = YES;
+  mcPill.layer.cornerRadius = 8.0;
+  mcPill.layer.borderWidth = 1.0;
+  mcPill.layer.backgroundColor = [NSColor colorWithSRGBRed:0.06 green:0.13 blue:0.17 alpha:1.0].CGColor;
+  mcPill.layer.borderColor = [NSColor colorWithSRGBRed:0.20 green:0.78 blue:0.94 alpha:0.70].CGColor;
+  mcPill.target = self;
+  mcPill.action = @selector(toggleMulticorePoolAction:);
+  _mcPillMenu = [[NSMenu alloc] initWithTitle:@"Multicore Thread Pool"];
+  _mcPillMenu.autoenablesItems = NO;
+  _mcPillMenu.delegate = self;
+  mcPill.menu = _mcPillMenu;
+  rootContent.mcPill = mcPill;
+  [rootContent addSubview:mcPill positioned:NSWindowAbove relativeTo:nil];
 
   // Top-right CPU meter pill in the header toolbar strip (matches input/output dB pills).
   NSView* cpuPill = [[NSView alloc] initWithFrame:NSMakeRect(1520 - 24 - 136, 980 + 2, 136, 24)];
@@ -3606,6 +3865,7 @@ extern void openAICopilotInActiveRig();
     return;
   }
   _host->setCpuMeterViews(cpuLabel, cpuFill, cpuSlot);
+  _host->setMulticoreButton(mcPill);
   _host->setRecordingViews(recPill, recToggleBtn, recTimeLabel, recRevealBtn);
   _host->setDIPlaybackViews(diPill, diToggleBtn, diLoadBtn);
   _host->setAnimatedAmpViews(headerAmp, _dockAmpView);

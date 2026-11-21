@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <NeuralAudio/PolyphaseModel.h>
@@ -60,6 +61,15 @@ class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
   }
 
   size_t helperCount() const noexcept { return helperCount_; }
+  void setActiveHelperLimit(size_t limit) noexcept {
+    activeHelperLimit_.store(std::min(limit, kMaxHelpers), std::memory_order_relaxed);
+  }
+  size_t activeHelperLimit() const noexcept {
+    return activeHelperLimit_.load(std::memory_order_relaxed);
+  }
+  size_t effectiveHelperCount() const noexcept {
+    return std::min(helperCount_, activeHelperLimit_.load(std::memory_order_relaxed));
+  }
   void setDeadline(uint64_t deadline) noexcept { deadline_ = deadline; }
 
   void process(NeuralAudio::NeuralModel* model, float* input, float* output,
@@ -81,7 +91,9 @@ class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
                size_t phaseCount, size_t minimumPhaseSamples) noexcept override {
     if (phaseCount == 0) return;
 #if defined(__APPLE__) || defined(_WIN32)
-    const size_t helpers = helpersFor(helperCount_, phaseCount, minimumPhaseSamples);
+    const size_t available =
+        std::min(helperCount_, activeHelperLimit_.load(std::memory_order_relaxed));
+    const size_t helpers = helpersFor(available, phaseCount, minimumPhaseSamples);
     struct Job {
       void (*process)(void*, size_t, size_t) noexcept;
       void* context;
@@ -120,6 +132,7 @@ class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
   std::array<CabinetWorker, kMaxHelpers> workers_;
 #endif
   size_t helperCount_ = 0;
+  std::atomic<size_t> activeHelperLimit_{kMaxHelpers};
   uint64_t deadline_ = 0;
 };
 

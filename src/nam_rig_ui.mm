@@ -182,6 +182,8 @@ static double copilotParseClock(NSString* text) {
 - (void)knobFieldCommitted:(NSTextField*)sender;
 - (void)tunerToggled:(NSButton*)sender;
 - (void)stageOversampleChanged:(NSPopUpButton*)sender;     // per-stage (tiles)
+- (void)ampOversampleABClicked:(id)sender;
+- (void)selectAmpOversampleABAlt:(NSMenuItem*)sender;
 - (void)irNormalizationChanged:(NSPopUpButton*)sender;
 - (void)transformerChanged:(NSPopUpButton*)sender;
 - (void)showTransformerControls:(NSButton*)sender;
@@ -799,6 +801,42 @@ static double copilotParseClock(NSString* text) {
   [menu removeAllItems];
   if (!_state) return;
 
+  if ([menu.identifier isEqualToString:@"amp_os_ab_menu"]) {
+    menu.autoenablesItems = NO;
+    NSMenuItem* hdr = [[NSMenuItem alloc] initWithTitle:@"A/B Alternate Rate (Click or ⌥⌘O)"
+                                                 action:NULL
+                                          keyEquivalent:@""];
+    hdr.enabled = NO;
+    [menu addItem:hdr];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    const int modes[] = {
+      NAMRig::kOversampleNone,
+      NAMRig::kOversampleTrue2,
+      NAMRig::kOversampleTrue4,
+      NAMRig::kOversampleTrue8,
+      NAMRig::kOversampleTrue16,
+      NAMRig::kOversampleTrue32,
+    };
+    const int cur = RigUIState::canonicalOversampleMode(_state->ampOsCurrentMode);
+    const int alt = RigUIState::canonicalOversampleMode(_state->ampOsAltMode);
+    for (int mode : modes) {
+      NSString* label = RigUIState::oversampleFullLabel(mode);
+      if (mode == cur) {
+        label = [NSString stringWithFormat:@"%@ (Active)", label];
+      }
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:label
+                                                    action:@selector(selectAmpOversampleABAlt:)
+                                             keyEquivalent:@""];
+      item.target = self;
+      item.tag = mode;
+      item.enabled = (mode != cur);
+      item.state = (mode == alt) ? NSControlStateValueOn : NSControlStateValueOff;
+      [menu addItem:item];
+    }
+    return;
+  }
+
   NSInteger stage = -1;
   if ([menu.identifier isEqualToString:@"stage_card_menu_0"]) stage = 0;
   else if ([menu.identifier isEqualToString:@"stage_card_menu_1"]) stage = 1;
@@ -1090,7 +1128,29 @@ static double copilotParseClock(NSString* text) {
   const int mode = NAMRig::oversampleModeFromMenuIndex(
       static_cast<int>(sender.indexOfSelectedItem));
   _state->sendControl((uint32_t)sender.tag, static_cast<float>(mode));
+  if (sender.tag == 21) {
+    _state->updateControl(21, static_cast<float>(mode));
+  }
   [self markPresetModified];
+}
+
+- (void)ampOversampleABClicked:(id)sender {
+  (void)sender;
+  if (!_state) return;
+  _state->updateAmpOsAbButton();
+  const int target = RigUIState::canonicalOversampleMode(_state->ampOsAltMode);
+  _state->sendControl(21, static_cast<float>(target));
+  _state->updateControl(21, static_cast<float>(target));
+  [self markPresetModified];
+}
+
+- (void)selectAmpOversampleABAlt:(NSMenuItem*)sender {
+  if (!_state) return;
+  const int alt = RigUIState::canonicalOversampleMode(static_cast<int>(sender.tag));
+  if (alt != RigUIState::canonicalOversampleMode(_state->ampOsCurrentMode)) {
+    _state->ampOsAltMode = alt;
+  }
+  _state->updateAmpOsAbButton();
 }
 
 - (void)irNormalizationChanged:(NSPopUpButton*)sender {
@@ -5047,6 +5107,13 @@ void openAICopilotInActiveRig() {
   }
 }
 
+void toggleAmpOversampleABInActiveRig() {
+  RigUIState* state = RigUIState::activeState();
+  if (state && state->uiController && [state->uiController respondsToSelector:@selector(ampOversampleABClicked:)]) {
+    [state->uiController performSelector:@selector(ampOversampleABClicked:) withObject:state->ampOsAbBtn];
+  }
+}
+
 // Mode selector buttons are built inline in addToneBrowser with per-button
 // state tracking; no extra helper needed.
 
@@ -7983,9 +8050,31 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*,
         so.toolTip = popupTooltip(
             [NSString stringWithFormat:@"Sets %@-stage oversampling.", stageName(i)], so);
         state->stageOsPopup[(size_t)i] = so;
-        // Keep the stage architecture badge clear of the popup.
-        [[hdrArch.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
-                                                          constant:-6] setActive:YES];
+        if (i == 1) {
+          // Instant Amp oversampling A/B toggle (flips between active and alternate rate;
+          // right-click picks the alternate rate, shortcut ⌥⌘O in standalone).
+          RigButton* abBtn = rigButton(header, @"⇄ 32x", state->uiController,
+                                       @selector(ampOversampleABClicked:), NSZeroRect);
+          abBtn.buttonType = NSButtonTypeToggle;
+          abBtn.translatesAutoresizingMaskIntoConstraints = NO;
+          NSMenu* abMenu = [[NSMenu alloc] initWithTitle:@"Amp Oversampling A/B"];
+          abMenu.identifier = @"amp_os_ab_menu";
+          abMenu.autoenablesItems = NO;
+          abMenu.delegate = state->uiController;
+          abBtn.menu = abMenu;
+          [[abBtn.trailingAnchor constraintEqualToAnchor:so.leadingAnchor constant:-6] setActive:YES];
+          [[abBtn.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] setActive:YES];
+          [[abBtn.widthAnchor constraintEqualToConstant:56] setActive:YES];
+          [[abBtn.heightAnchor constraintEqualToConstant:24] setActive:YES];
+          state->ampOsAbBtn = abBtn;
+          state->updateAmpOsAbButton();
+          [[hdrArch.trailingAnchor constraintLessThanOrEqualToAnchor:abBtn.leadingAnchor
+                                                            constant:-6] setActive:YES];
+        } else {
+          // Keep the stage architecture badge clear of the popup.
+          [[hdrArch.trailingAnchor constraintLessThanOrEqualToAnchor:so.leadingAnchor
+                                                            constant:-6] setActive:YES];
+        }
       } else {
         NSPopUpButton* norm = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         [norm addItemsWithTitles:@[@"Peak", @"Loudness"]];

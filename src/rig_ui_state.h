@@ -376,6 +376,56 @@ struct RigUIState {
 
   // Per-stage oversample mode dropdowns (ports 20/21: None / True 2x / 4x / 8x / 16x / 32x).
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
+  __strong NSButton* ampOsAbBtn = nil;
+  int ampOsCurrentMode = NAMRig::kOversampleTrue8;
+  int ampOsAltMode = NAMRig::kOversampleTrue32;
+
+  static int canonicalOversampleMode(int mode) {
+    return NAMRig::oversampleModeFromMenuIndex(NAMRig::oversampleMenuIndexFromMode(mode));
+  }
+
+  static NSString* oversampleShortLabel(int mode) {
+    switch (canonicalOversampleMode(mode)) {
+      case NAMRig::kOversampleNone:   return @"Off";
+      case NAMRig::kOversampleTrue2:  return @"2x";
+      case NAMRig::kOversampleTrue4:  return @"4x";
+      case NAMRig::kOversampleTrue8:  return @"8x";
+      case NAMRig::kOversampleTrue16: return @"16x";
+      default:                        return @"32x";
+    }
+  }
+
+  static NSString* oversampleFullLabel(int mode) {
+    switch (canonicalOversampleMode(mode)) {
+      case NAMRig::kOversampleNone:   return @"None (Off)";
+      case NAMRig::kOversampleTrue2:  return @"True 2x";
+      case NAMRig::kOversampleTrue4:  return @"True 4x";
+      case NAMRig::kOversampleTrue8:  return @"True 8x";
+      case NAMRig::kOversampleTrue16: return @"True 16x";
+      default:                        return @"True 32x";
+    }
+  }
+
+  void updateAmpOsAbButton() {
+    ampOsCurrentMode = canonicalOversampleMode(ampOsCurrentMode);
+    ampOsAltMode = canonicalOversampleMode(ampOsAltMode);
+    if (ampOsAltMode == ampOsCurrentMode) {
+      ampOsAltMode = (ampOsCurrentMode == NAMRig::kOversampleTrue32)
+          ? NAMRig::kOversampleTrue8
+          : NAMRig::kOversampleTrue32;
+    }
+    if (!ampOsAbBtn) return;
+    ampOsAbBtn.title = [NSString stringWithFormat:@"⇄ %@", oversampleShortLabel(ampOsAltMode)];
+    ampOsAbBtn.state = (ampOsCurrentMode > ampOsAltMode)
+        ? NSControlStateValueOn
+        : NSControlStateValueOff;
+    ampOsAbBtn.toolTip = [NSString stringWithFormat:
+        @"Amp Oversampling A/B Toggle — Active: %@ · Alternate: %@. "
+        @"Click (or press ⌥⌘O) to flip between them. Right-click to choose a different alternate rate.",
+        oversampleFullLabel(ampOsCurrentMode),
+        oversampleFullLabel(ampOsAltMode)];
+    ampOsAbBtn.needsDisplay = YES;
+  }
   __strong NSPopUpButton* irNormPopup = nil;
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
   __strong NSPopover* ampAdvancedPopover = nil;
@@ -2829,21 +2879,28 @@ struct RigUIState {
     }
     if (port == 20 || port == 21) {   // per-stage oversample mode (0..8)
       NSPopUpButton* popup = stageOsPopup[port - 20];
-      if (popup) {
-        const int mode = (int)(value + 0.5f);
-        const int idx = NAMRig::oversampleMenuIndexFromMode(mode);
-        auto updateOversample = ^{
-          if (!alive || !*alive) return;
+      const int mode = canonicalOversampleMode((int)(value + 0.5f));
+      const int idx = NAMRig::oversampleMenuIndexFromMode(mode);
+      auto updateOversample = ^{
+        if (!alive || !*alive) return;
+        if (popup) {
           if (idx >= 0 && idx < popup.itemArray.count)
             [popup selectItemAtIndex:idx];
           NSString* role = port == 20 ? @"pedal" : @"amp";
           NSString* selected = popup.selectedItem.toolTip ?: @"";
           popup.toolTip = [NSString stringWithFormat:
               @"Sets %@-stage oversampling. %@", role, selected];
-        };
-        if ([NSThread isMainThread]) updateOversample();
-        else dispatch_async(dispatch_get_main_queue(), updateOversample);
-      }
+        }
+        if (port == 21) {
+          if (mode != ampOsCurrentMode) {
+            ampOsAltMode = ampOsCurrentMode;
+            ampOsCurrentMode = mode;
+          }
+          updateAmpOsAbButton();
+        }
+      };
+      if ([NSThread isMainThread]) updateOversample();
+      else dispatch_async(dispatch_get_main_queue(), updateOversample);
       return;
     }
     if (port == 24) {
