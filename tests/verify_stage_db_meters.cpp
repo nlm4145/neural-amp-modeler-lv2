@@ -291,7 +291,7 @@ void slicedPlacement(const LV2_Descriptor* d, int pedalMode, int ampMode, bool a
             cab->samples == host.block * factor(ampMode) && host.finite,
         label + ": four 512-frame slices preserve each model's domain and finite audio");
   const auto latency = [](int mode) { return factor(mode) == 2 ? 23 : factor(mode) == 4 ? 35 :
-      factor(mode) == 8 ? 41 : 44; };
+      factor(mode) == 8 ? 41 : factor(mode) == 16 ? 44 : 45; };
   check(host.controls[29] == latency(ampMode) + (active && pedalMode == ampMode ? 0 : latency(pedalMode)),
         label + ": latency confirms merged or unequal-factor domains, counted once per host block");
   const float post = host.readings[Post];
@@ -323,7 +323,7 @@ void placement(const LV2_Descriptor* d, int mode, bool pedal, bool parallel) {
             (!cabB || cabB->samples == kBlock * factor(mode)),
         label + ": actual model sample counts exercise requested domains");
   const unsigned latency = mode == 0 ? 0 : factor(mode) == 2 ? 23 : factor(mode) == 4 ? 35 :
-      factor(mode) == 8 ? 41 : 44;
+      factor(mode) == 8 ? 41 : factor(mode) == 16 ? 44 : 45;
   check(host.controls[29] == static_cast<float>(latency * (parallel ? 2 : 1)),
         label + ": latency confirms merged group or independent parallel cab domain");
   const float pre = host.readings[Pre], post = host.readings[Post], output = db(host.outputPeak);
@@ -436,7 +436,7 @@ int main(int argc, char** argv) {
     const auto* d = get(0);
     WavFixture fixture;
     notificationGate(d);
-    for (int mode : {0, kOversampleTrue2, kOversampleTrue4, kOversampleTrue8, kOversampleTrue16}) {
+    for (int mode : {0, kOversampleTrue2, kOversampleTrue4, kOversampleTrue8, kOversampleTrue16, kOversampleTrue32}) {
       placement(d, mode, true, false);
       placement(d, mode, false, false);
       placement(d, mode, true, true);
@@ -449,6 +449,7 @@ int main(int argc, char** argv) {
     }
     slicedPlacement(d, kOversampleTrue2, kOversampleTrue8);
     slicedPlacement(d, kOversampleTrue16, kOversampleTrue4);
+    slicedPlacement(d, kOversampleTrue32, kOversampleTrue8);
     slicedPlacement(d, kOversampleTrue4, kOversampleTrue4, false);
     slicedPlacement(d, kOversampleTrue8, kOversampleTrue2, false);
     sculptSilence(d, 0);

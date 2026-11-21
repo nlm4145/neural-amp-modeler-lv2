@@ -240,14 +240,16 @@ int main(int argc, char** argv) {
     const Measurement off = measure(d, rate, argv[2], NAMRig::kOversampleNone);
     const Measurement true8 = measure(d, rate, argv[2], NAMRig::kOversampleTrue8);
     const Measurement true16 = measure(d, rate, argv[2], NAMRig::kOversampleTrue16);
-    check(off.loaded && true8.loaded && true16.loaded, "LSTM amp model loads in Off, True 8x and True 16x");
+    const Measurement true32 = measure(d, rate, argv[2], NAMRig::kOversampleTrue32);
+    check(off.loaded && true8.loaded && true16.loaded && true32.loaded,
+          "LSTM amp model loads in Off, True 8x, True 16x and True 32x");
 
     std::snprintf(message, sizeof(message),
                   "%.0f Hz: Off adds no latency (latency %.0f, alias %.1f dB)",
                   rate, off.latency, off.aliasDb);
     check(off.latency == 0.0f, message);
 
-    // True Nx means N x 96 kHz. One cascade is 41 frames at 8x and 44 at 16x.
+    // True Nx means N x 96 kHz. One cascade is 41 / 44 / 45 frames at 8x / 16x / 32x.
     const int factor8 = rate < 72000.0 ? 16 : 8;
     const float cascade8 = factor8 == 16 ? 44.0f : 41.0f;
     std::snprintf(message, sizeof(message),
@@ -259,12 +261,19 @@ int main(int argc, char** argv) {
                   rate, true8.aliasDb);
     check(true8.aliasDb <= -80.0, message);
 
-    const int factor16 = 16;
-    const float cascade16 = 44.0f;
+    const int factor16 = rate < 72000.0 ? 32 : 16;
+    const float cascade16 = factor16 == 32 ? 45.0f : 44.0f;
     std::snprintf(message, sizeof(message),
                   "%.0f Hz: True 16x runs the LSTM in the True domain (latency %.0f = one %dx cascade %.0f, alias %.1f dB)",
                   rate, true16.latency, factor16, cascade16, true16.aliasDb);
     check(true16.latency == cascade16 && true16.aliasDb <= -80.0, message);
+
+    const int factor32 = 32;
+    const float cascade32 = 45.0f;
+    std::snprintf(message, sizeof(message),
+                  "%.0f Hz: True 32x runs the LSTM in the True domain (latency %.0f = one %dx cascade %.0f, alias %.1f dB)",
+                  rate, true32.latency, factor32, cascade32, true32.aliasDb);
+    check(true32.latency == cascade32 && true32.aliasDb <= -80.0, message);
   }
 
   std::puts(failures ? "FAILED" : "ALL PASSED (0 failures)");

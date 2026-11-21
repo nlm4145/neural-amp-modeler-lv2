@@ -128,8 +128,8 @@ int main() {
     CHECK(tail < 1.0e-6, "removed pin must return to exact dry (err %.2e)", tail);
   }
 
-  // Stability: extreme low/high settings at the 16x True rate stay finite.
-  {
+  // Stability: extreme low/high settings at 16x and 32x True rates stay finite.
+  for (double highRate : {1536000.0, 3072000.0}) {
     PinEq eq;
     PinBands bands;
     bands[0] = {kPinLowShelf, 20.0, 18.0, 0.1};
@@ -138,10 +138,10 @@ int main() {
     std::vector<float> buf(1 << 16);
     for (size_t i = 0; i < buf.size(); ++i) buf[i] = (i % 977) < 3 ? 1.0f : 0.0f;
     float* ch[1] = {buf.data()};
-    eq.process(ch, 1, buf.size(), 1536000.0, bands);
+    eq.process(ch, 1, buf.size(), highRate, bands);
     bool finite = true;
     for (float v : buf) finite &= std::isfinite(v) && std::fabs(v) < 1.0e3f;
-    CHECK(finite, "extreme pins at 1.536 MHz must stay finite and bounded");
+    CHECK(finite, "extreme pins at %.3f MHz must stay finite and bounded", highRate / 1.0e6);
   }
 
   // The Speaker graph draws SpeakerDynamics::responseDb (quiet-signal static

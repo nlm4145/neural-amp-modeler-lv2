@@ -322,7 +322,8 @@ class AmpAdvanced {
           // Symmetric Class AB crossover & overdrive grid-current blocking (zero DC).
           const double t0 = 0.65 * effKnee;
           const double odExcess = std::max(0.0, std::fabs(uSolved) - t0);
-          gridBlockEnv_ += (std::tanh(odExcess) - gridBlockEnv_) *
+          const double gridDrive = odExcess > 0.0 ? std::tanh(odExcess) : 0.0;
+          gridBlockEnv_ += (gridDrive - gridBlockEnv_) *
                            (odExcess > gridBlockEnv_ ? gridBlockAttack : gridBlockRelease);
           const double coldCrossover = std::min(0.46,
               0.30 * coldBias * biasSensitivity + 0.14 * gridBlockEnv_ * nonlinearAmount);
@@ -482,8 +483,9 @@ class AmpAdvanced {
       const double D = 1.0 + v + vv;
       const double invD = 1.0 / D;
       const double phi = (v + vv) * invD;
-      const double dphi = (1.0 + 2.0 * v) * invD * invD;
       const double err = v + G * phi - rho;
+      if (std::fabs(err) <= 1.0e-12) break;
+      const double dphi = (1.0 + 2.0 * v) * invD * invD;
       v = std::max(0.0, v - err / (1.0 + G * dphi));
     }
     if (outU) *outU = sign * (t0 + d * v);

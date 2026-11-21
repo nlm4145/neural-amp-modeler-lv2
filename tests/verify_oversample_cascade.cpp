@@ -108,6 +108,56 @@ int main() {
     CHECK(m2 >= 4096 * 4 - 256 && m2 <= 4096 * 4, "level 2 emits ~4x samples");
   }
 
+  // --- 3. Streaming True-32x round trip (5 levels) with per-level sizing ---
+  {
+    constexpr size_t kLevels = 5;
+    const size_t n = 4096;
+    std::vector<float> x(n);
+    for (size_t i = 0; i < n; ++i)
+      x[i] = (float)(0.8 * std::sin(2 * M_PI * 3000.0 * (double)i / 48000.0));
+    constexpr size_t kMaxBlk = 512;
+    std::array<Up2x, kLevels> ups;
+    std::array<Down2x, kLevels> downs;
+    for (size_t l = 0; l < kLevels; ++l) {
+      ups[l].setMaxBlockSize((size_t{1} << l) * kMaxBlk + 16);
+      downs[l].setMaxBlockSize((size_t{2} << l) * kMaxBlk + 16);
+      ups[l].reset();
+      downs[l].reset();
+    }
+    std::vector<float> bufA(32 * kMaxBlk + 64), bufB(32 * kMaxBlk + 64);
+    float* bufs[2] = {bufA.data(), bufB.data()};
+    std::vector<float> y(n + 1024);
+    size_t got = 0, fed = 0, maxDomain = 0;
+    while (fed < n) {
+      const size_t blk = std::min<size_t>(1 + rng() % kMaxBlk, n - fed);
+      size_t m = ups[0].process(x.data() + fed, blk, bufs[0]);
+      for (size_t c = 1; c < kLevels && m > 0; ++c)
+        m = ups[c].process(bufs[(c - 1) % 2], m, bufs[c % 2]);
+      maxDomain = std::max(maxDomain, m);
+      if (m > 0) {
+        float* domain = bufs[(kLevels - 1) % 2];
+        for (size_t i = 0; i < m; ++i) domain[i] *= 0.5f;
+        size_t back = m;
+        const float* dnIn = domain;
+        for (size_t c = kLevels; c-- > 0;) {
+          float* dnOut = (c == 0) ? y.data() + got : bufs[(c - 1) % 2];
+          back = downs[c].process(dnIn, back, dnOut);
+          dnIn = dnOut;
+        }
+        got += back;
+      }
+      fed += blk;
+    }
+    double worst = 0.0;
+    for (size_t i = 1024; i < got && i < n; ++i)
+      worst = std::max(worst, (double)std::fabs(y[i] - 0.5f * x[i]));
+    char msg[128];
+    std::snprintf(msg, sizeof msg,
+                  "True-32x linear round trip == 0.5*x (worst %.2e, max domain %zu)",
+                  worst, maxDomain);
+    CHECK(worst < 1e-3 && maxDomain > 1000, msg);
+  }
+
   std::printf(g_fail ? "\nFAILED (%d)\n" : "\nALL PASSED (0 failures)\n", g_fail);
   return g_fail ? 1 : 0;
 }

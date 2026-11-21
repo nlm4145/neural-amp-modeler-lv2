@@ -153,18 +153,18 @@ RangeStats verifyRanges(PolyphaseWorker& worker, size_t phases, size_t samples,
   else
     require(stats.calls >= 1 && stats.calls <= std::min(phases, worker.helperCount() + 1),
             label + ": nonzero phases invoke bounded nonempty ranges");
-  std::array<thread_t, 3> threads{};
+  std::array<thread_t, PolyphaseWorker::kMaxHelpers> threads{};
   for (size_t i = 0; i < stats.calls; ++i) {
     const auto& range = observation.ranges[i];
     stats.maxRange = std::max(stats.maxRange, range.end - range.begin);
     if (range.thread == observation.caller) continue;
     const auto known = std::find(threads.begin(), threads.end(), range.thread);
     if (known == threads.end()) {
-      require(stats.helpers < threads.size(), label + ": at most three helpers");
+      require(stats.helpers < threads.size(), label + ": at most kMaxHelpers helpers");
       threads[stats.helpers++] = range.thread;
     }
   }
-  require(stats.helpers <= worker.helperCount() && stats.peak <= 4,
+  require(stats.helpers <= worker.helperCount() && stats.peak <= PolyphaseWorker::kMaxHelpers + 1,
           label + ": bounded worker/concurrency observations");
   const bool expectSerial = serial || phases == 0;
   require(expectSerial ? stats.helpers == 0 : stats.helpers > 0,
@@ -189,6 +189,10 @@ void testExecutor() {
   require(PolyphaseWorker::helpersFor(3, 16, 16) == 3, "short sixteen-phase job uses three helpers");
   require(PolyphaseWorker::helpersFor(1, 16, 16) == 1, "respect available helper cap");
   require(PolyphaseWorker::helpersFor(3, 2, 32) == 1, "old long-block policy unchanged");
+  require(PolyphaseWorker::helpersFor(6, 16, 32) == 3, "True 8x stays on one cluster (3 helpers)");
+  require(PolyphaseWorker::helpersFor(6, 32, 32) == 4, "True 16x expands onto second cluster");
+  require(PolyphaseWorker::helpersFor(6, 64, 32) == 6, "True 32x uses all six helpers");
+  require(PolyphaseWorker::helpersFor(7, 64, 32) == 7, "True 32x scales up to kMaxHelpers");
   static_assert(std::is_base_of<PolyphaseModel::Executor, PolyphaseWorker>::value);
   static_assert(std::is_same<decltype(&PolyphaseWorker::start),
                             bool (PolyphaseWorker::*)(void*, double, size_t)
@@ -212,10 +216,10 @@ void testExecutor() {
   for (size_t requested : {size_t{1}, size_t{3}, size_t{64}}) {
     const bool started = worker.start(nullptr, kOfflinePeriod, requested);
     // Above the cap, either reject cleanly or clamp; no overflow-sized pool.
-    require(started || requested > 3, "offline start with one/three helpers");
-    require(worker.helperCount() <= 3 &&
-                (!started || worker.helperCount() == std::min<size_t>(requested, 3)),
-            "requested helper count bounded to three");
+    require(started || requested > PolyphaseWorker::kMaxHelpers, "offline start with one/three helpers");
+    require(worker.helperCount() <= PolyphaseWorker::kMaxHelpers &&
+                (!started || worker.helperCount() == std::min<size_t>(requested, PolyphaseWorker::kMaxHelpers)),
+            "requested helper count bounded to kMaxHelpers");
     if (!started) {
       require(worker.helperCount() == 0, "rejected oversized start leaves pool stopped");
       verifyRanges(worker, 16, 1024, true, "rejected oversized pool");
@@ -276,7 +280,8 @@ void testExecutor() {
 #else
   std::printf("NOTE: partial-submit injection disabled in this build\n");
 #endif
-  require(maxCalls == 4 && maxHelpers == 3, "three-helper pool uses four bounded ranges");
+  require(maxCalls == PolyphaseWorker::kMaxHelpers + 1 && maxHelpers == PolyphaseWorker::kMaxHelpers,
+          "full pool uses kMaxHelpers + 1 bounded ranges");
   std::printf("PASS: executor coverage, thresholds, deadlines, stop/restart; "
               "max ranges=%zu helpers=%zu range phases=%zu concurrent=%zu\n",
               maxCalls, maxHelpers, maxRange, maxPeak);

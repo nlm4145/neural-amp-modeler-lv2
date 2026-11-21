@@ -3,9 +3,9 @@
 #include <cstdio>
 
 int main() {
-  constexpr int expectedModes[] = {0, 4, 5, 6, 7};
+  constexpr int expectedModes[] = {0, 4, 5, 6, 7, 8};
   int failures = 0;
-  for (int index = 0; index < 5; ++index) {
+  for (int index = 0; index < 6; ++index) {
     const int mode = NAMRig::oversampleModeFromMenuIndex(index);
     const int roundTrip = NAMRig::oversampleMenuIndexFromMode(mode);
     if (mode != expectedModes[index] || roundTrip != index) {

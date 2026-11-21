@@ -20,7 +20,7 @@ future changes (human or agent) don't have to re-derive them. Ground truth:
 | `src/dynamics.h` | Pre-amp dynamics: expander noise gate, one-knob studio compressor, and transient shaper / studio limiter |
 | `src/overdrive.h` | Built-in analog overdrive / boost voices (Mid Drive, Clean Boost, K-Style, Fuzz/Rectified, Tight Metal, etc.) before Pedal NAM |
 | `src/pin_eq.h` | 64-pin interactive graphic/custom EQ curve processor (Pre-Amp and Post-Amp Pin EQ slots) |
-| `src/oversample.{h,cpp}`, `src/oversample_modes.h`, `src/polyphase_worker.h` | Multi-rate polyphase FIR/IIR oversampling (Off, 2x, 4x, 8x, Eco/True cascades) and background worker state |
+| `src/oversample.{h,cpp}`, `src/oversample_modes.h`, `src/polyphase_worker.h` | Multi-rate polyphase FIR oversampling (Off, True 2x/4x/8x/16x/32x cascades) and background worker state |
 | `src/model_band_limit.h` | Bypassable, configurable Chebyshev Type I low-pass in front of each NAM model that runs above its training rate (ports 228, 231–233) |
 | `src/rate_adapter.h` | Rational polyphase sample-rate converter and the 44.1 kHz-family session adapter constants |
 | `src/cabinet_worker.{h,cpp}`, `src/ir_normalization.h` | Dual-slot cabinet blending, phase alignment, mic/room modeling, and IR loudness/peak normalization |
@@ -492,8 +492,8 @@ caches while dispatched. Moving controls retain the original per-sample math
 and smoothing cadence; settled Width uses the same gain pair for the whole
 slice. Neither optimization adds latency or changes quality/oversampling.
 
-**Per-stage oversampling (ports 20/21)** uses the five-mode dropdown
-None / Legacy / True 2x / True 4x / True 8x. Fresh instances default both
+**Per-stage oversampling (ports 20/21)** uses the six-mode dropdown
+None / True 2x / True 4x / True 8x / True 16x / True 32x (port values 0, 4, 5, 6, 7, 8). Fresh instances default both
 nonlinear stages to **True 8x** for maximum sound quality; lower modes remain
 available for live CPU/latency trade-offs. Legacy port 19 remains only for
 saved-session compatibility and is ignored by DSP:

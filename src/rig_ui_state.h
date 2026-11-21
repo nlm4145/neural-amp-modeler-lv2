@@ -374,7 +374,7 @@ struct RigUIState {
     else dispatch_async(dispatch_get_main_queue(), select);
   }
 
-  // Per-stage oversample mode dropdowns (ports 20/21: None / True 2x / 4x / 8x / 16x).
+  // Per-stage oversample mode dropdowns (ports 20/21: None / True 2x / 4x / 8x / 16x / 32x).
   __strong NSPopUpButton* stageOsPopup[2] = {nil, nil};  // pedal, amp
   __strong NSPopUpButton* irNormPopup = nil;
   __strong NSPopUpButton* transformerPopup = nil;  // amp output iron, port 30
@@ -2827,7 +2827,7 @@ struct RigUIState {
       else dispatch_async(dispatch_get_main_queue(), updatePower);
       return;
     }
-    if (port == 20 || port == 21) {   // per-stage oversample mode (0..7)
+    if (port == 20 || port == 21) {   // per-stage oversample mode (0..8)
       NSPopUpButton* popup = stageOsPopup[port - 20];
       if (popup) {
         const int mode = (int)(value + 0.5f);

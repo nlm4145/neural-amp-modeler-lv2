@@ -306,43 +306,46 @@ void Plugin::setMaxBufferSize(int size) noexcept {
   configureHostRateAdapter();
   for (auto& loader : loaders)
     loader.SetDefaultMaxAudioBufferSize(size);
-  // Per-stage, per-level converter sizing. Level L of a True-2^L cascade sees
-  // a block of 2^L * size samples: level 0 (2x) sees 2x ... level 3 (16x)
-  // sees 16x. Every level is sized for the worst case (kMaxOsFactor) so any
-  // mode change is safe with no host callback; the domain scratch and the
-  // pedal->amp chain buffer are sized for it too.
+  // Per-stage, per-level converter sizing. Level L of a True-2^(L+1) cascade
+  // feeds Up2x[L] at most 2^L * size samples and Down2x[L] at most 2^(L+1) * size
+  // samples (e.g. level 0: 1x->2x / 2x->1x ... level 4: 16x->32x / 32x->16x).
+  // Native-rate decimation uses at most 1x on Down2x[0] and <=1x on higher levels,
+  // which fits comfortably inside these bounds. Sizing each level to its own
+  // worst-case rate keeps mode switches allocation-free without inflating RAM.
+  const size_t safeSize = static_cast<size_t>(std::max(1, size));
+  const size_t maxDomainSamples = static_cast<size_t>(kMaxOsFactor) * safeSize;
   for (size_t st = 0; st < kStageCount; ++st) {
     for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
-      osUp[st][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
-      osDown[st][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+      osUp[st][lvl].setMaxBlockSize((size_t{1} << lvl) * safeSize + 16);
+      osDown[st][lvl].setMaxBlockSize((size_t{2} << lvl) * safeSize + 16);
       osUp[st][lvl].reset();
       osDown[st][lvl].reset();
     }
-    osScratch[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
-    osScratch2[st].assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
-    stageRateMidBuf[st].assign(static_cast<size_t>(std::max(1, size)) + 64, 0.0f);
-    stageRateOutBuf[st].assign(static_cast<size_t>(std::max(1, size)) * 2 + 64, 0.0f);
+    osScratch[st].assign(maxDomainSamples + 64, 0.0f);
+    osScratch2[st].assign(maxDomainSamples + 64, 0.0f);
+    stageRateMidBuf[st].assign(safeSize + 64, 0.0f);
+    stageRateOutBuf[st].assign(safeSize * 2 + 64, 0.0f);
     resetNativeStream(st);
     resetRationalStageStream(st);
   }
   for (size_t bank = 0; bank < kAnalogBanks; ++bank) {
     for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
-      analogUp[bank][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
-      analogDown[bank][lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+      analogUp[bank][lvl].setMaxBlockSize((size_t{1} << lvl) * safeSize + 16);
+      analogDown[bank][lvl].setMaxBlockSize((size_t{2} << lvl) * safeSize + 16);
       analogUp[bank][lvl].reset();
       analogDown[bank][lvl].reset();
     }
     for (auto& scratch : analogScratch[bank])
-      scratch.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
+      scratch.assign(maxDomainSamples + 64, 0.0f);
   }
   for (size_t lvl = 0; lvl < kMaxOsLevels; ++lvl) {
-    splitSpeakerDown[lvl].setMaxBlockSize(static_cast<size_t>(kMaxOsFactor * size));
+    splitSpeakerDown[lvl].setMaxBlockSize((size_t{2} << lvl) * safeSize + 16);
     splitSpeakerDown[lvl].reset();
   }
-  splitSpeakerScratch.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
-  splitSpeakerScratch2.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
-  osChain.assign(static_cast<size_t>(kMaxOsFactor * size) + 64, 0.0f);
-  const size_t post = static_cast<size_t>(std::max(1, size));
+  splitSpeakerScratch.assign(maxDomainSamples + 64, 0.0f);
+  splitSpeakerScratch2.assign(maxDomainSamples + 64, 0.0f);
+  osChain.assign(maxDomainSamples + 64, 0.0f);
+  const size_t post = safeSize;
   postL.assign(post, 0.0f);
   postR.assign(post, 0.0f);
   preCab.assign(post, 0.0f);
@@ -1361,8 +1364,8 @@ void Plugin::processCore(uint32_t sampleCount, uint64_t deadlineTicks) noexcept 
                          | (models[st] ? 2u : 0u)
                          | (irs[st] ? 4u : 0u)
                          | ((uint64_t)(truePipelineFactor(osApplied[st], sampleRate) + 1) << 3)
-                         | ((uint64_t)nativeDecimation(st) << 8)
-                         | ((activeRateBundles[st] ? 1ULL : 0ULL) << 12);
+                         | ((uint64_t)nativeDecimation(st) << 10)
+                         | ((activeRateBundles[st] ? 1ULL : 0ULL) << 14);
     topology = (topology * 1099511628211ULL) ^ state;
   }
   topology = (topology * 1099511628211ULL) ^ static_cast<uint64_t>(appliedPedalOrder);

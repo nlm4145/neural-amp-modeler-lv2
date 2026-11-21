@@ -138,14 +138,14 @@ int main(int argc, char** argv) {
     state.selectedPaths = {}; state.confirmedPaths = {};
     for (size_t i = 0; i < 4; ++i) state.powerButtons[i].state = NSControlStateValueOff;
     state.stageOsPopup[1] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
-    [state.stageOsPopup[1] addItemsWithTitles:@[@"off", @"2", @"4", @"8", @"16"]];
+    [state.stageOsPopup[1] addItemsWithTitles:@[@"off", @"2", @"4", @"8", @"16", @"32"]];
     state.irNormPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
     [state.irNormPopup addItemsWithTitles:@[@"peak", @"loudness"]];
     state.speakerProfilePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
     for (int i = 0; i < 8; ++i) [state.speakerProfilePopup addItemWithTitle:[NSString stringWithFormat:@"%d", i]];
     RigAICopilotResult* result = [NSClassFromString(@"RigAICopilotResult") new];
     result.controls = @{@"bass": @-2, @"od_tone": @62, @"compressor_enabled": @0, @"od_enabled": @0,
-                        @"speaker_profile": @6, @"amp_oversample": @7, @"ir_normalization": @2, @"cab_enabled": @1, @"input_level": @3};
+                        @"speaker_profile": @6, @"amp_oversample": @8, @"ir_normalization": @2, @"cab_enabled": @1, @"input_level": @3};
     NSError* error = nil;
     CHECK([copilot applyResult:result toState:&state saveUndoState:YES error:&error]);
     CHECK(copilot.canUndo && writes == 17);
@@ -153,7 +153,7 @@ int main(int argc, char** argv) {
     CHECK([captured controlForPort:12] == -2 && [captured controlForPort:180] == 62);
     CHECK([captured controlForPort:4] == 3);
     CHECK([captured controlForPort:184] == 0 && [captured controlForPort:185] == 0);
-    CHECK([captured controlForPort:21] == 7 && [captured controlForPort:24] == 2 && [captured controlForPort:9] == 1);
+    CHECK([captured controlForPort:21] == 8 && [captured controlForPort:24] == 2 && [captured controlForPort:9] == 1);
     CHECK([copilot undoLastAIApplicationToState:&state error:nil]);
     CHECK(state.compressorEnabled == 1 && state.boostEnabled == 1 && copilot.canUndo);
     CHECK([copilot undoLastAIApplicationToState:&state error:nil]);

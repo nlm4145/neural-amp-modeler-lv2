@@ -226,6 +226,9 @@ class SpeakerDynamics {
     const double mixStep = 1.0 / (sampleRate * 0.005);
     const double attack = 1.0 - std::exp(-1.0 / (sampleRate * p.attackSeconds));
     const double release = 1.0 - std::exp(-1.0 / (sampleRate * p.releaseSeconds));
+    const double midTrimSlope = -0.18 * (p.resonanceDb + p.inductanceDb) / 20.0;
+    double cachedLoadScale = -1.0;
+    double midTrim = 1.0;
 
     for (size_t i = 0; i < count; ++i) {
       smoothedDrive_ += (driveTarget - smoothedDrive_) * smooth;
@@ -251,8 +254,10 @@ class SpeakerDynamics {
       x += loadScale * (inductive - x);
 
       // Impedance mid-band saddle trim keeps perceived loudness neutral.
-      const double midTrim = std::pow(
-          10.0, -0.18 * loadScale * (p.resonanceDb + p.inductanceDb) / 20.0);
+      if (std::fabs(loadScale - cachedLoadScale) > 1.0e-7) {
+        cachedLoadScale = loadScale;
+        midTrim = std::pow(10.0, midTrimSlope * loadScale);
+      }
       x *= midTrim;
 
       // Low-band onset transient drives dynamic cabinet Thump (explosive
@@ -428,11 +433,28 @@ class SpeakerDynamics {
   // 2x midpoint-oversampled ADAA1 step with [0.25, 0.5, 0.25] residual decimation.
   static double evalAdaa2xStep(double xCur, double& prevX, double& prevResidual,
                                double gain, double bias) noexcept {
-    const double sig0 = bias > 1.0e-12 ? sigmoid(bias) : 0.0;
-    const double deriv0 = bias > 1.0e-12 ? std::pow(1.0 + bias * bias, -1.5) : 1.0;
+    double sig0 = 0.0;
+    double deriv0 = 1.0;
+    if (bias > 1.0e-12) {
+      const double t = 1.0 + bias * bias;
+      const double invSqrt = 1.0 / std::sqrt(t);
+      sig0 = bias * invSqrt;
+      deriv0 = invSqrt / t;
+    }
     const double xMid = 0.5 * (prevX + xCur);
-    const double rMid = evalAdaaResidual(prevX, xMid, gain, bias, sig0, deriv0);
-    const double rCur = evalAdaaResidual(xMid, xCur, gain, bias, sig0, deriv0);
+    const double halfDx = xMid - prevX;
+    double rMid, rCur;
+    if (std::fabs(halfDx) < 1.0e-6) {
+      rMid = asymResidual(0.5 * (prevX + xMid), gain, bias, sig0, deriv0);
+      rCur = asymResidual(0.5 * (xMid + xCur), gain, bias, sig0, deriv0);
+    } else {
+      const double fPrev = asymAntiderivativeResidual(prevX, gain, bias, sig0, deriv0);
+      const double fMid  = asymAntiderivativeResidual(xMid, gain, bias, sig0, deriv0);
+      const double fCur  = asymAntiderivativeResidual(xCur, gain, bias, sig0, deriv0);
+      const double invHalfDx = 1.0 / halfDx;
+      rMid = (fMid - fPrev) * invHalfDx;
+      rCur = (fCur - fMid) / (xCur - xMid);
+    }
     const double out = 0.25 * prevResidual + 0.5 * rMid + 0.25 * rCur;
     prevX = xCur;
     prevResidual = rCur;

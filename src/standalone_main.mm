@@ -2289,7 +2289,10 @@ class StandaloneHost {
         // the helper has retained it for its entire join/leave lifetime.
         os_workgroup_t group = (__bridge_transfer os_workgroup_t)rawGroup;
         const size_t maxThreads = os_workgroup_max_parallel_threads(group, nullptr);
-        size_t helpers = maxThreads > 1 ? maxThreads - 1 : 0;
+        // Leave 1 P-core of headroom when the workgroup spans > 4 threads so
+        // coreaudiod's RT IO thread does not contend with the last helper core.
+        size_t helpers = maxThreads > 4 ? maxThreads - 2
+                                        : (maxThreads > 1 ? maxThreads - 1 : 0);
         if (helpers && useParallelCabs &&
             cabinetWorker_.start((__bridge void*)group, bufferSize_ / streamRate)) {
           plugin_->setCabinetWorker(&cabinetWorker_);
@@ -2927,6 +2930,8 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
       NSString* title;
     };
     const ModeEntry kModes[] = {
+      {NAMRig::kOversampleTrue32, @"True 32× (Ludicrous — 3.072 MHz)"},
+      {NAMRig::kOversampleTrue16, @"True 16× (Extreme — 1.536 MHz)"},
       {NAMRig::kOversampleTrue8, @"True 8× (Maximum Quality — Default)"},
       {NAMRig::kOversampleTrue4, @"True 4× (Low Latency / Live)"},
       {NAMRig::kOversampleTrue2, @"True 2× (Ultra-Low CPU)"},
@@ -3003,6 +3008,8 @@ static NSString* compactDeviceTitle(const std::string& rawName) {
     NSString* tip;
   };
   const ModeEntry kModes[] = {
+    {NAMRig::kOversampleTrue32, @"True 32× (Ludicrous — 3.072 MHz)", @"32x oversampled neural amp stage (3.072 MHz target domain). Pure overkill."},
+    {NAMRig::kOversampleTrue16, @"True 16× (Extreme — 1.536 MHz)", @"16x oversampled neural amp stage. Roughly double the CPU of True 8x."},
     {NAMRig::kOversampleTrue8, @"True 8× (Maximum Quality — Default)", @"Highest fidelity. 8x oversampled neural amp stage."},
     {NAMRig::kOversampleTrue4, @"True 4× (Low Latency / Live)", @"Recommended for 32/64 samples. Great balance of low latency and sound quality."},
     {NAMRig::kOversampleTrue2, @"True 2× (Ultra-Low CPU)", @"Minimal CPU impact for high sample rates or older hardware."},

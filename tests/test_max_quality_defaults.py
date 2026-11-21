@@ -33,7 +33,7 @@ assert "osApplied = {kOsTrue8, kOsTrue8, kOsTrue8, kOsTrue8, kOsTrue8, kOsTrue8}
     "all neural stages (pedal/amp/cab A/cab B) must start in True 8x"
 )
 assert "osRequested = {kOsTrue8, kOsTrue8}" in header
-assert 'addItemsWithTitles:@[@"None", @"True 2x", @"True 4x", @"True 8x", @"True 16x"]' in ui
+assert 'addItemsWithTitles:@[@"None", @"True 2x", @"True 4x", @"True 8x", @"True 16x", @"True 32x"]' in ui
 assert "osPopup" not in ui
 assert "[so selectItemAtIndex:3]" in ui
 assert "loader.SetDefaultQualityScaleFactor(1.0f)" in dsp

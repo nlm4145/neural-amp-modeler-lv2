@@ -14,18 +14,29 @@ namespace NAMRig {
 // Reuses the workgroup, deadline, fenv and completion guarantees of CabinetWorker.
 class PolyphaseWorker final : public NeuralAudio::PolyphaseModel::Executor {
  public:
-  static constexpr size_t kMaxHelpers = 3;
+  static constexpr size_t kMaxHelpers = 7;
 
   // Short blocks can still contain substantial work when many independent
-  // phases are grouped per thread. Keep tiny phase blocks serial, and require
-  // at least 64 native-rate samples per range below the old 32-sample cutoff.
+  // phases are grouped per thread. Keep tiny phase blocks serial, require at
+  // least 64 native-rate samples per range below the 32-sample cutoff, and
+  // only spill past 3 helpers (second P-core cluster on Apple Silicon) when
+  // total native-rate work is large enough to amortize cross-cluster wakeups
+  // (e.g. True 16x/32x or large blocks).
   static size_t helpersFor(size_t available, size_t phases, size_t samples) noexcept {
     if (phases < 2 || samples < 16) return 0;
     const size_t limit = std::min({available, kMaxHelpers, phases - 1});
-    if (samples >= 32) return limit;
-    const size_t phasesPerRange = (64 + samples - 1) / samples;
-    const size_t ranges = phases / phasesPerRange;
-    return ranges > 1 ? std::min(limit, ranges - 1) : 0;
+    size_t want = limit;
+    if (samples < 32) {
+      const size_t phasesPerRange = (64 + samples - 1) / samples;
+      const size_t ranges = phases / phasesPerRange;
+      want = ranges > 1 ? std::min(limit, ranges - 1) : 0;
+    }
+    if (want > 3) {
+      const size_t wideRanges = (phases * samples) / 192;
+      const size_t wideCap = wideRanges > 4 ? wideRanges - 1 : 3;
+      want = std::min(want, std::max<size_t>(3, wideCap));
+    }
+    return want;
   }
 
   bool start(void* workgroup, double periodSeconds, size_t helperCount) noexcept {

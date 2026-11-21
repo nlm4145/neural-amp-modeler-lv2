@@ -78,7 +78,7 @@ std::string formatHz(float v) {
 }
 
 std::string formatOversample(float v) {
-  int mode = static_cast<int>(v);
+  int mode = static_cast<int>(v + 0.5f);
   switch (mode) {
     case 0: return "1x (Off)";
     case 1: return "Eco 2x";
@@ -87,6 +87,8 @@ std::string formatOversample(float v) {
     case 4: return "True 2x";
     case 5: return "True 4x";
     case 6: return "True 8x";
+    case 7: return "True 16x";
+    case 8: return "True 32x";
     default: return "True 8x";
   }
 }
@@ -189,7 +191,7 @@ void Win32UIView::initLayout() {
   addControl(179, ControlType::Knob, 40, 175, 65, 60, "DRIVE", 0.0f, 100.0f, 0.0f, "%", formatPercent);
   addControl(180, ControlType::Knob, 120, 175, 65, 60, "TONE", 0.0f, 100.0f, 50.0f, "%", formatPercent);
   addControl(181, ControlType::Knob, 200, 175, 65, 60, "LEVEL", -12.0f, 12.0f, 0.0f, "dB", formatDb);
-  addControl(20, ControlType::Dropdown, 140, 275, 120, 26, "OVERSAMPLE", 0.0f, 6.0f, 6.0f, "", formatOversample);
+  addControl(20, ControlType::Dropdown, 140, 275, 120, 26, "OVERSAMPLE", 0.0f, 8.0f, 6.0f, "", formatOversample);
 
   // Stage 2: AMP (x = 300, y = 80, w = 575, h = 320)
   addControl(8, ControlType::Toggle, 810, 92, 50, 24, "ON", 0.0f, 1.0f, 1.0f, "", nullptr);
@@ -206,7 +208,7 @@ void Win32UIView::initLayout() {
   addControl(38, ControlType::Knob, 430, 255, 60, 55, "NFB", 0.0f, 100.0f, 0.0f, "%", formatPercent);
   addControl(39, ControlType::Knob, 510, 255, 60, 55, "BRIGHT", 0.0f, 100.0f, 0.0f, "%", formatPercent);
   addControl(40, ControlType::Knob, 590, 255, 60, 55, "IN CUT", 0.0f, 100.0f, 0.0f, "%", formatPercent);
-  addControl(21, ControlType::Dropdown, 720, 265, 120, 26, "OVERSAMPLE", 0.0f, 6.0f, 6.0f, "", formatOversample);
+  addControl(21, ControlType::Dropdown, 720, 265, 120, 26, "OVERSAMPLE", 0.0f, 8.0f, 6.0f, "", formatOversample);
 
   // Stage 3: TRANSFORMER & TUBE (x = 890, y = 80, w = 270, h = 320)
   addControl(30, ControlType::Dropdown, 990, 135, 150, 26, "PROFILE", 0.0f, 12.0f, 0.0f, "", formatTransformer);
@@ -848,9 +850,9 @@ void Win32UIView::onMouseDown(int x, int y, bool isRight) {
         return;
       } else if (c.type == ControlType::Dropdown) {
         if (c.port == 20 || c.port == 21) {
-          float next = c.currentValue + 1.0f;
-          if (next > 6.0f) next = 0.0f;
-          setControlValue(c.port, next, true);
+          const int curIdx = NAMRig::oversampleMenuIndexFromMode(static_cast<int>(c.currentValue + 0.5f));
+          const int nextIdx = (curIdx + 1) % 6;
+          setControlValue(c.port, static_cast<float>(NAMRig::oversampleModeFromMenuIndex(nextIdx)), true);
         } else if (c.port == 30) {
           float next = c.currentValue + 1.0f;
           if (next > 12.0f) next = 0.0f;

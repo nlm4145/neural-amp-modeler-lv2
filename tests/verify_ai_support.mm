@@ -18,15 +18,16 @@ int main(int argc, char** argv) {
     for (NSDictionary* bad in @[@{@"bass": @13}, @{@"bass": @"5"}, @{@"bass": NSNull.null},
           @{@"unknown": @1}, @{@"quality_scale": @1}, @{@"speaker_profile": @8},
           @{@"speaker_profile": @3.5}, @{@"power_tube_type": @5}, @{@"amp_oversample": @2},
-          @{@"ir_normalization": @0}, @{@"bass": @YES}, @{@"delay_mix": @101},
+          @{@"amp_oversample": @9}, @{@"ir_normalization": @0}, @{@"bass": @YES}, @{@"delay_mix": @101},
           @{@"master": @(std::numeric_limits<double>::infinity())}]) {
       error = nil;
       CHECK(!rigAIValidateControls(bad, &error) && error);
     }
-    CHECK(rigAIValidateControls(@{@"cab_enabled": @YES}, nil));
+    CHECK(rigAIValidateControls(@{@"cab_enabled": @YES, @"amp_oversample": @8}, nil));
     CHECK([rigAIControlReference() containsString:@"3=Open Back"]);
     CHECK([rigAIControlReference() containsString:@"6=Modern 4x12"]);
     CHECK([rigAIControlReference() containsString:@"7=True 16x"]);
+    CHECK([rigAIControlReference() containsString:@"8=True 32x"]);
     CHECK(![rigAIControlReference() containsString:@"quality_scale:"]);
     NSString* json = @"{\"controls\":{\"bass\":-2,\"od_tone\":62},\"amp_model\":\"Amp/A/clean.nam\"}";
     CHECK(rigAIParseResponse(json, nil).controls[@"od_tone"].floatValue == 62);

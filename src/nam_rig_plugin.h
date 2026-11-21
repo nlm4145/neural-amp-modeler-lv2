@@ -167,8 +167,8 @@ public:
                                     //     index 19 or every port after it
                                     //     shifts — that bug silently ate the
                                     //     amp mode and corrupted sampleRate)
-    float* pedal_oversample;   // in: port 20, pedal mode (0..6, decodeOversample)
-    float* amp_oversample;     // in: port 21, amp mode (0..6); cab follows amp
+    float* pedal_oversample;   // in: port 20, pedal mode (0..8, decodeOversample)
+    float* amp_oversample;     // in: port 21, amp mode (0..8); cab follows amp
     float* amp_drive;          // in: port 22, gain between pedal and amp (dB)
     float* gate_release;       // in: port 23, expander release time (ms)
     float* ir_normalization;   // in: port 24, 1 peak / 2 loudness; legacy 0/3 -> loudness
@@ -565,7 +565,7 @@ private:
   } meter, preAmpMeter, postAmpMeter, outMeter;
 
   // TRUE oversampling cascades. Each factor is a CHAIN of 2x half-band
-  // pairs: 2x = 1 pair, 4x = 2, 8x = 3, 16x = 4. Every level needs its OWN converter
+  // pairs: 2x = 1 pair, 4x = 2, 8x = 3, 16x = 4, 32x = 5. Every level needs its OWN converter
   // instance — a level's streaming history belongs to that level's rate
   // (sharing one instance across levels corrupts the stream state; that was
   // the 2026-08-29 True-4x/8x bug). osUp[stage][level] / osDown[stage][level];
@@ -574,7 +574,7 @@ private:
   // osScratch[st] is the stage's Nx-rate domain buffer; osChain is the
   // base-rate pedal->amp work buffer.
   // Cab WAV IR + EQ stay at the base rate (linear stages cannot alias).
-  static constexpr size_t kMaxOsLevels = 4;    // 2x, 4x, 8x, 16x
+  static constexpr size_t kMaxOsLevels = 5;    // 2x, 4x, 8x, 16x, 32x
   static constexpr int kMaxOsFactor = 1 << kMaxOsLevels;
   std::array<std::array<Up2x, kMaxOsLevels>, kStageCount> osUp;
   std::array<std::array<Down2x, kMaxOsLevels>, kStageCount> osDown;
@@ -695,18 +695,18 @@ private:
   bool rackTransitionActive = false;
   // Per-stage oversample mode (pedal port 20, amp port 21; cab follows amp).
   // 0 = NONE   (no rate adaptation)
-  // 4/5/6/7 = TRUE 2x/4x/8x/16x (genuine UP -> model@Nx -> DOWN pipeline in this
+  // 4/5/6/7/8 = TRUE 2x/4x/8x/16x/32x (genuine UP -> model@Nx -> DOWN pipeline in this
   //             plugin; the aliasing fix).
   // The stage ports supersede the old global port 19 (kept in the TTL for
   // session-compat; process() ignores it).
   static constexpr int kOsNone = 0, kOsLegacy2 = 1, kOsLegacy4 = 2,
                        kOsLegacy8 = 3, kOsTrue2 = 4, kOsTrue4 = 5, kOsTrue8 = 6,
-                       kOsTrue16 = 7;
+                       kOsTrue16 = 7, kOsTrue32 = 8;
 
   static int decodeOversample(float v) {
     const int i = static_cast<int>(v + 0.5f);
     if (i < 0) return kOsNone;
-    if (i > kOsTrue16) return kOsTrue16;
+    if (i > kOsTrue32) return kOsTrue32;
     // Legacy oversampling removed: map any legacy mode (1, 2, 3) to True 2x.
     if (i == kOsLegacy2 || i == kOsLegacy4 || i == kOsLegacy8) return kOsTrue2;
     return i;
@@ -875,32 +875,33 @@ private:
 
   // Fixed pipeline delay of one True cascade, in base-rate frames, measured
   // impulse-through (block-size independent): each 2x pair holds back 23
-  // samples at ITS input rate, so 2x = 23, 4x = 23 + 12, 8x = 23 + 12 + 6,
-  // 16x = 8x + 3.
+  // samples at ITS input rate, so 2x = 23, 4x = 35, 8x = 41, 16x = 44,
+  // 32x = 45.
   // Summed per active group and reported on the lv2:latency port so the
   // host's delay compensation keeps parallel paths phase-aligned.
   static uint32_t cascadeLatencyFrames(int factor) {
     return factor == 2 ? 23u : factor == 4 ? 35u : factor == 8 ? 41u
-         : factor == 16 ? 44u : 0u;
+         : factor == 16 ? 44u : factor == 32 ? 45u : 0u;
   }
 
   // 0 = not a TRUE mode (base-rate path). Otherwise the pipeline factor for
   // this mode at this incoming rate (1 = coast: wrapper already covers it).
   static int truePipelineFactor(int mode, double incomingRate) {
     if (mode < kOsTrue2) return 0;
-    const int n = 1 << (mode - kOsTrue2 + 1);          // 2 / 4 / 8 / 16
+    const int n = 1 << (mode - kOsTrue2 + 1);          // 2 / 4 / 8 / 16 / 32
     if (incomingRate <= 0.0) return n;
     const double want = kTrueBaseRate * n / incomingRate;
     // The implementation is a cascade of 2x stages, so never return an
-    // unsupported factor such as 3 or 32.
+    // unsupported factor such as 3 or 64.
     if (want < 1.5) return 1;
     if (want < 3.0) return 2;
     if (want < 6.0) return 4;
     if (want < 12.0) return 8;
-    return 16;
+    if (want < 24.0) return 16;
+    return 32;
   }
 
-  // Number of 2x pairs in a True cascade of this factor (2 -> 1 ... 16 -> 4).
+  // Number of 2x pairs in a True cascade of this factor (2 -> 1 ... 32 -> 5).
   static size_t cascadeLevels(int factor) {
     size_t levels = 1;
     while ((2 << levels) <= factor && levels < kMaxOsLevels) ++levels;

@@ -1,7 +1,7 @@
 // Verifies the fixed pipeline delay of the True-Nx cascades (the values the
 // plugin reports on the lv2:latency port): an impulse through the same
 // up-chain -> down-chain path as Plugin::processTrueGroup must land exactly
-// 23 / 35 / 41 / 44 base frames late for 2x / 4x / 8x / 16x, at every block size.
+// 23 / 35 / 41 / 44 / 45 base frames late for 2x / 4x / 8x / 16x / 32x, at every block size.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -17,18 +17,18 @@ static int g_fail = 0;
   } while (0)
 
 static int measure(int levels, int block) {
-  NAMRig::Up2x up[4];
-  NAMRig::Down2x dn[4];
-  for (int l = 0; l < 4; ++l) {
-    up[l].setMaxBlockSize(16 * (size_t)block);
-    dn[l].setMaxBlockSize(16 * (size_t)block);
+  NAMRig::Up2x up[5];
+  NAMRig::Down2x dn[5];
+  for (int l = 0; l < 5; ++l) {
+    up[l].setMaxBlockSize(((size_t)1 << l) * (size_t)block + 16);
+    dn[l].setMaxBlockSize(((size_t)2 << l) * (size_t)block + 16);
     up[l].reset();
     dn[l].reset();
   }
   const int impulsePos = 10000, totalLen = 20000;
   std::vector<float> in(totalLen, 0.0f), out(totalLen, 0.0f);
   in[impulsePos] = 1.0f;
-  std::vector<float> bufA(16 * block + 64), bufB(16 * block + 64);
+  std::vector<float> bufA(32 * block + 64), bufB(32 * block + 64);
   float* bufs[2] = {bufA.data(), bufB.data()};
   std::vector<float> chain(block);
   for (int off = 0; off < totalLen; off += block) {
@@ -38,15 +38,17 @@ static int measure(int levels, int block) {
     for (int c = 1; c < levels && n > 0; ++c)
       n = up[c].process(bufs[(c - 1) % 2], n, bufs[c % 2]);
     size_t back = n;
-    const float* dnIn = bufs[(levels - 1) % 2];
-    for (int c = levels; c-- > 0;) {
-      float* dnOut = (c == 0) ? chain.data() : bufs[(c - 1) % 2];
-      back = dn[c].process(dnIn, back, dnOut);
-      dnIn = dnOut;
-    }
-    if ((int)back < count) {
-      const float fill = back > 0 ? chain[back - 1] : chain[0];
-      for (int i = (int)back; i < count; ++i) chain[i] = fill;
+    if (n > 0) {
+      const float* dnIn = bufs[(levels - 1) % 2];
+      for (int c = levels; c-- > 0;) {
+        float* dnOut = (c == 0) ? chain.data() : bufs[(c - 1) % 2];
+        back = dn[c].process(dnIn, back, dnOut);
+        dnIn = dnOut;
+      }
+      if ((int)back < count) {
+        const float fill = back > 0 ? chain[back - 1] : chain[0];
+        for (int i = (int)back; i < count; ++i) chain[i] = fill;
+      }
     }
     std::memcpy(out.data() + off, chain.data(), count * sizeof(float));
   }
@@ -57,11 +59,11 @@ static int measure(int levels, int block) {
 }
 
 int main() {
-  const int expected[4] = {23, 35, 41, 44};  // == Plugin::cascadeLatencyFrames
-  for (int levels = 1; levels <= 4; ++levels) {
+  const int expected[5] = {23, 35, 41, 44, 45};  // == Plugin::cascadeLatencyFrames
+  for (int levels = 1; levels <= 5; ++levels) {
     bool ok = true;
     int got = -1;
-    for (int block : {512, 137, 64}) {
+    for (int block : {512, 137, 64, 32, 17, 1}) {
       got = measure(levels, block);
       if (got != expected[levels - 1]) ok = false;
     }
