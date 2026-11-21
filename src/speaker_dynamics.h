@@ -254,7 +254,7 @@ class SpeakerDynamics {
       x += loadScale * (inductive - x);
 
       // Impedance mid-band saddle trim keeps perceived loudness neutral.
-      if (std::fabs(loadScale - cachedLoadScale) > 1.0e-7) {
+      if (loadScale != cachedLoadScale) {
         cachedLoadScale = loadScale;
         midTrim = std::pow(10.0, midTrimSlope * loadScale);
       }
